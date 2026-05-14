@@ -1,0 +1,221 @@
+name: ghoststream
+
+services:
+  db:
+    # pgvector image is a drop-in superset of postgres:16 — same wire protocol,
+    # adds the `vector` extension required for the Knowledge Base RAG layer.
+    image: pgvector/pgvector:pg16
+    container_name: ghost-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - ghoststream_postgres_data:/var/lib/postgresql/data
+      # Init scripts run ONCE, only when the data volume is empty.
+      # Existing deployments need the extension created manually — see db/init/README.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - ghoststream_network
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64M
+
+  redis:
+    image: redis:7-alpine
+    container_name: ghost-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - ghoststream_redis_data:/data
+    networks:
+      - ghoststream_network
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64M
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: ghost-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${POSTGRES_DB}
+      DATABASE_USER: ${POSTGRES_USER}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      APP_BASE_URL: ${APP_BASE_URL:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_ANALYSIS_MODEL: ${GEMINI_ANALYSIS_MODEL:-gemini-2.5-pro}
+      GEMINI_CONTENT_MODEL: ${GEMINI_CONTENT_MODEL:-gemini-2.5-flash}
+      GEMINI_RESEARCH_MODEL: ${GEMINI_RESEARCH_MODEL:-}
+      GEMINI_KEYPOINTS_MODEL: ${GEMINI_KEYPOINTS_MODEL:-}
+      GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-2}
+      GEMINI_EMBEDDING_DIM: ${GEMINI_EMBEDDING_DIM:-768}
+      KB_CHUNK_TOKENS: ${KB_CHUNK_TOKENS:-512}
+      KB_CHUNK_OVERLAP: ${KB_CHUNK_OVERLAP:-50}
+      KB_RETRIEVAL_K: ${KB_RETRIEVAL_K:-8}
+      KB_RECENCY_EPSILON: ${KB_RECENCY_EPSILON:-0.05}
+      KB_UPLOAD_MAX_MB: ${KB_UPLOAD_MAX_MB:-100}
+      # Omni-Sync provider credentials. Endpoints respond with 503 + a clear
+      # error message until these are populated; no API calls are attempted.
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      FIRECRAWL_BASE_URL: ${FIRECRAWL_BASE_URL:-}
+      PHYLLO_CLIENT_ID: ${PHYLLO_CLIENT_ID:-}
+      PHYLLO_CLIENT_SECRET: ${PHYLLO_CLIENT_SECRET:-}
+      PHYLLO_BASE_URL: ${PHYLLO_BASE_URL:-}
+      GOOGLE_PROJECT_ID: ${GOOGLE_PROJECT_ID:-}
+      GOOGLE_REGION: ${GOOGLE_REGION:-us-central1}
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      CAPTURE_SERVICE_URL: http://capture:8000
+      RECALL_AI_API_KEY: ${RECALL_AI_API_KEY:-}
+      RECALL_AI_REGION: ${RECALL_AI_REGION:-us-west-2}
+      RECALL_AI_WEBHOOK_SECRET: ${RECALL_AI_WEBHOOK_SECRET:-}
+      # Cloudflare R2 (S3-compatible) — used for signed URLs + raw recordings
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      R2_PUBLIC_BASE_URL: ${R2_PUBLIC_BASE_URL:-}
+      # Cloudflare Stream — used for highlight clip uploads
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_STREAM_API_TOKEN: ${CLOUDFLARE_STREAM_API_TOKEN:-}
+      CLOUDFLARE_STREAM_CUSTOMER_SUBDOMAIN: ${CLOUDFLARE_STREAM_CUSTOMER_SUBDOMAIN:-}
+      # SendGrid — transactional email. Sender domain authenticated at
+      # eel-global.com. Flows wired later; for now only the connection helper.
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-no-reply@eel-global.com}
+      SENDGRID_FROM_NAME: ${SENDGRID_FROM_NAME:-GhostStream}
+      SENDGRID_REPLY_TO: ${SENDGRID_REPLY_TO:-}
+      # Calendar integrations.
+      #  - Nylas: one connect flow for Google / Microsoft 365 / iCloud calendars.
+      #    Create a Nylas v3 app, add the callback URI (shown on the Integrations
+      #    page), set the key + client id. NYLAS_API_URI → api.eu.nylas.com for EU.
+      #  - Calendly: OAuth app (client id + secret) + a webhook signing key.
+      #    "Connect Calendly" on the Integrations page registers an
+      #    invitee.created webhook on /webhooks/calendly that auto-creates missions.
+      # All blank until configured (endpoints respond with a clear 503).
+      NYLAS_API_KEY: ${NYLAS_API_KEY:-}
+      NYLAS_CLIENT_ID: ${NYLAS_CLIENT_ID:-}
+      NYLAS_API_URI: ${NYLAS_API_URI:-https://api.us.nylas.com}
+      CALENDLY_CLIENT_ID: ${CALENDLY_CLIENT_ID:-}
+      CALENDLY_CLIENT_SECRET: ${CALENDLY_CLIENT_SECRET:-}
+      CALENDLY_WEBHOOK_SIGNING_KEY: ${CALENDLY_WEBHOOK_SIGNING_KEY:-}
+      # Override only if the redirect URI registered in your Calendly app
+      # differs from ${APP_BASE_URL}/api/integrations/calendly/callback.
+      CALENDLY_REDIRECT_URI: ${CALENDLY_REDIRECT_URI:-}
+      CALENDLY_API_BASE: ${CALENDLY_API_BASE:-https://api.calendly.com}
+      CALENDLY_AUTH_BASE: ${CALENDLY_AUTH_BASE:-https://auth.calendly.com}
+      CALENDLY_API_TOKEN: ${CALENDLY_API_TOKEN:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - ghoststream_network
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64M
+
+  capture:
+    build:
+      context: ./capture
+      dockerfile: Dockerfile
+    container_name: ghost-capture
+    restart: unless-stopped
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PORT: 8000
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      APP_BASE_URL: ${APP_BASE_URL:-}
+      RECALL_AI_API_KEY: ${RECALL_AI_API_KEY:-}
+      RECALL_AI_REGION: ${RECALL_AI_REGION:-us-west-2}
+      RECALL_AI_WEBHOOK_SECRET: ${RECALL_AI_WEBHOOK_SECRET:-}
+      SKRIBBY_API_KEY: ${SKRIBBY_API_KEY:-}
+      SKRIBBY_WEBHOOK_SECRET: ${SKRIBBY_WEBHOOK_SECRET:-}
+      API_SERVICE_URL: http://api:3000
+      # Cloudflare R2 — capture writes raw meeting recordings here
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      # Cloudflare Stream — capture pushes highlight clips for delivery
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_STREAM_API_TOKEN: ${CLOUDFLARE_STREAM_API_TOKEN:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - ghoststream_network
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64M
+
+  proxy:
+    image: nginx:1.27-alpine
+    container_name: ghost-proxy
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      capture:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8090:80"
+    volumes:
+      - ./proxy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./web:/usr/share/nginx/html:ro
+    networks:
+      - ghoststream_network
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  ghoststream_postgres_data:
+  ghoststream_redis_data:
+
+networks:
+  ghoststream_network:
+    driver: bridge

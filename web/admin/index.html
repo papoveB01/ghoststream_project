@@ -1,0 +1,567 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard · GhostStream Admin</title>
+  <meta name="theme-color" content="#ffffff">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/admin/admin.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234F46E5'/%3E%3Ctext x='16' y='22' font-family='Inter' font-size='18' font-weight='800' text-anchor='middle' fill='white'%3EG%3C/text%3E%3C/svg%3E">
+</head>
+<body class="admin-page">
+
+  <div class="admin-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/">
+        <span class="brand-mark">
+          <svg width="28" height="28" viewBox="0 0 28 28"><rect width="28" height="28" rx="7" fill="#4F46E5"/><path d="M9 14a5 5 0 0110 0v3l2 2H7l2-2v-3z" fill="white"/></svg>
+        </span>
+        <span class="brand-name">GhostStream</span>
+      </a>
+      <div class="sidebar-tag">Admin</div>
+      <nav class="sidebar-nav" id="nav">
+        <a href="#overview" data-section="overview" class="active">Overview</a>
+        <a href="#company" data-section="company">Company</a>
+        <a href="#knowledge" data-section="knowledge">Knowledge Base</a>
+        <a href="#missions" data-section="missions">Missions</a>
+        <a href="#portals" data-section="portals">Portals</a>
+        <a href="#sessions" data-section="sessions">Arena Sessions</a>
+        <a href="#meetings" data-section="meetings">Meetings</a>
+        <a href="#integrations" data-section="integrations">Integrations</a>
+        <a href="#caches" data-section="caches">Gemini Caches</a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="user-block">
+          <div class="user-avatar" id="user-avatar">A</div>
+          <div>
+            <div class="user-email" id="user-email">—</div>
+            <div class="user-role">admin</div>
+          </div>
+        </div>
+        <button class="logout-btn" id="logout-btn">Sign out</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section class="content-loading" id="content-loading">
+        <div class="spinner"></div>
+      </section>
+
+      <div class="content-body hidden" id="content-body">
+        <header class="content-head">
+          <h1 id="page-title">Overview</h1>
+          <button class="refresh-btn" id="refresh-btn">↻ Refresh</button>
+        </header>
+
+        <!-- OVERVIEW -->
+        <section id="section-overview" class="section">
+          <div class="stat-cards" id="stat-cards"></div>
+          <div class="grid-2">
+            <div class="card">
+              <div class="card-h">Gemini Context Caching</div>
+              <div class="card-b" id="cache-stats"></div>
+            </div>
+            <div class="card">
+              <div class="card-h">Environment</div>
+              <div class="card-b" id="env-stats"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- COMPANY PROFILE -->
+        <section id="section-company" class="section hidden">
+          <div class="card">
+            <div class="card-b" id="company-header"></div>
+          </div>
+          <div class="stat-cards" id="company-stat-cards"></div>
+          <div class="card">
+            <div class="card-h">Product lines
+              <span class="pf-hint">File a piece of company intel under one product line, or leave it company-wide. Tagging happens on the Knowledge → Intel tab; you can also add lines here.</span>
+            </div>
+            <div class="card-b">
+              <form id="company-product-form" class="pf-form">
+                <input id="company-product-name" type="text" placeholder="New product line — e.g. Fraud Solution" required>
+                <input id="company-product-desc" type="text" placeholder="Description (optional)">
+                <button type="submit" class="primary-cta">Add product line</button>
+              </form>
+              <div class="table-wrap" id="company-product-list"></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-h">Company intel
+              <span class="pf-hint">Everything the AI knows about your own company — file uploads, web pages, social posts — grouped by product line. Add more from the Knowledge → Intel tab ("Our company").</span>
+            </div>
+            <div class="card-b" id="company-intel"></div>
+          </div>
+        </section>
+
+        <!-- KNOWLEDGE BASE -->
+        <section id="section-knowledge" class="section hidden">
+          <div class="kb-tabs" id="kb-tabs">
+            <button class="kb-tab active" data-kb-tab="status">Status</button>
+            <button class="kb-tab" data-kb-tab="library">Library</button>
+            <button class="kb-tab" data-kb-tab="intel">Intel</button>
+            <button class="kb-tab" data-kb-tab="search">Search</button>
+          </div>
+
+          <!-- STATUS -->
+          <div id="kb-pane-status" class="kb-pane">
+            <div class="kb-hero card" id="kb-hero"></div>
+            <div class="stat-cards" id="kb-stat-cards"></div>
+            <div class="grid-2">
+              <div class="card">
+                <div class="card-h">By category</div>
+                <div class="card-b" id="kb-category-breakdown"></div>
+              </div>
+              <div class="card">
+                <div class="card-h">Embeddings &amp; storage</div>
+                <div class="card-b" id="kb-engine-info"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SEARCH (manual retrieval probe) -->
+          <div id="kb-pane-search" class="kb-pane hidden">
+            <div class="card">
+              <div class="card-h">Retrieval probe
+                <span class="pf-hint">Same query that runs during analysis. Tests embedding + recency tiebreaker + filters.</span>
+              </div>
+              <div class="card-b">
+                <form id="kb-search-form" class="kb-form">
+                  <div class="field">
+                    <label for="kb-search-query">Query</label>
+                    <input id="kb-search-query" name="query" type="text" placeholder="e.g. enterprise pricing 30-day exit clause" required>
+                  </div>
+                  <div class="field kb-inline-pair">
+                    <div>
+                      <label for="kb-search-k">Top-K results</label>
+                      <input id="kb-search-k" name="k" type="number" min="1" max="50" value="8">
+                    </div>
+                    <div>
+                      <label for="kb-search-category">Category filter</label>
+                      <select id="kb-search-category" name="category">
+                        <option value="">All categories</option>
+                        <option value="PRODUCT_INTEL">Product Intel</option>
+                        <option value="ORG_INTELLIGENCE">Org Intelligence</option>
+                        <option value="BATTLECARDS">Battlecards</option>
+                      </select>
+                    </div>
+                  </div>
+                  <button type="submit" class="primary-cta" id="kb-search-btn">Run search</button>
+                </form>
+                <div id="kb-search-results"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- LIBRARY -->
+          <div id="kb-pane-library" class="kb-pane hidden">
+            <div class="kb-subtle" style="margin:2px 0 14px">Intel about your <strong>competitors</strong> and <strong>prospects</strong>, grouped by who it's about. Your own company's intel lives on the <strong>Company</strong> page.</div>
+            <div id="kb-library-body"></div>
+          </div>
+
+          <!-- INTEL — pick a source card, its form shows below -->
+          <div id="kb-pane-intel" class="kb-pane hidden">
+            <div class="kb-source-cards" id="kb-source-cards">
+              <button type="button" class="kb-source-card stream-file active" data-kb-source="file">
+                <span class="kb-source-icon">📄</span>
+                <span class="kb-source-name">File upload</span>
+                <span class="kb-source-desc">Add a PDF, Markdown, or text document — datasheets, decks, pricing, briefs.</span>
+              </button>
+              <button type="button" class="kb-source-card stream-web" data-kb-source="web">
+                <span class="kb-source-icon">🌐</span>
+                <span class="kb-source-name">Web page</span>
+                <span class="kb-source-desc">Pull a page via Firecrawl — pricing pages, product docs, competitor sites.</span>
+              </button>
+              <button type="button" class="kb-source-card stream-social" data-kb-source="social">
+                <span class="kb-source-icon">📱</span>
+                <span class="kb-source-name">Social posts</span>
+                <span class="kb-source-desc">Fetch posts from a connected X / LinkedIn / TikTok handle via Phyllo.</span>
+              </button>
+            </div>
+
+            <!-- FILE -->
+            <div id="kb-subpane-file" class="kb-subpane">
+              <div class="card">
+                <div class="card-h">📄 Add a file</div>
+                <div class="card-b">
+                  <form id="kb-upload-form" class="kb-form">
+                    <div class="field">
+                      <label for="kb-file">File (PDF, Markdown, or plain text)</label>
+                      <input id="kb-file" name="file" type="file" accept=".pdf,.md,.markdown,.txt,application/pdf,text/markdown,text/plain" required>
+                    </div>
+                    <div class="field">
+                      <label for="kb-category">Category</label>
+                      <select id="kb-category" name="category" required>
+                        <option value="PRODUCT_INTEL">Product Intel</option>
+                        <option value="ORG_INTELLIGENCE">Org Intelligence</option>
+                        <option value="BATTLECARDS">Battlecards</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="kb-title">Title</label>
+                      <input id="kb-title" name="title" type="text" placeholder="e.g. 2026 Pricing Guide" required>
+                      <div class="field-hint">Re-uploading with the same title in the same category archives the prior version.</div>
+                    </div>
+                    <div class="field">
+                      <label for="kb-metadata">Metadata (optional JSON)</label>
+                      <textarea id="kb-metadata" name="metadata" rows="3" placeholder='{"version":"v2","effectiveDate":"2026-01-01"}'></textarea>
+                    </div>
+                    <div class="field kb-entity-block" data-lane="file">
+                      <label>What is this document about?</label>
+                      <div class="kb-entity-seg">
+                        <button type="button" class="kb-entity-opt active" data-lane="file" data-entity="TENANT">Our company</button>
+                        <button type="button" class="kb-entity-opt" data-lane="file" data-entity="PROSPECT">A prospect</button>
+                        <button type="button" class="kb-entity-opt" data-lane="file" data-entity="COMPETITOR">A competitor</button>
+                      </div>
+                      <div class="kb-entity-detail" data-lane="file" data-entity-detail="TENANT">
+                        <div class="kb-entity-tenant" id="kb-file-tenant-label">Workspace intel (Basis — available to every mission)</div>
+                        <select id="kb-file-tenant-select" class="kb-filter-select hidden"></select>
+                        <div class="field" style="margin-top:10px">
+                          <label for="kb-file-product">Product line <span class="field-hint-inline">(optional — empty = company-wide intel)</span></label>
+                          <input id="kb-file-product" type="text" list="kb-file-product-list" placeholder="Pick a product line, or type a new one — e.g. Fraud Solution, Payment Gateway">
+                          <datalist id="kb-file-product-list"></datalist>
+                          <div class="field-hint">Files this document under one product line. Leave empty for intel that spans the whole company.</div>
+                        </div>
+                      </div>
+                      <div class="kb-entity-detail hidden" data-lane="file" data-entity-detail="PROSPECT">
+                        <input id="kb-file-prospect" type="text" list="kb-file-prospect-list" placeholder="Pick an existing prospect, or type a new company name">
+                        <datalist id="kb-file-prospect-list"></datalist>
+                        <div class="field-hint">Stored as Tier 2 "Prospect Memory" — surfaces in briefs for missions against this company.</div>
+                        <div class="field" style="margin-top:10px">
+                          <label for="kb-file-persona">Buyer persona <span class="field-hint-inline">(optional)</span></label>
+                          <input id="kb-file-persona" type="text" list="kb-file-persona-list" placeholder="Pick a buyer persona, or type a new one — e.g. CFO, Head of Fraud">
+                          <datalist id="kb-file-persona-list"></datalist>
+                          <div class="field-hint">The buyer this intel speaks to inside the prospect's org. Leave empty if it isn't persona-specific.</div>
+                        </div>
+                      </div>
+                      <div class="kb-entity-detail hidden" data-lane="file" data-entity-detail="COMPETITOR">
+                        <input id="kb-file-competitor" type="text" list="kb-file-competitor-list" placeholder="Pick an existing competitor, or type a new one">
+                        <datalist id="kb-file-competitor-list"></datalist>
+                        <div class="field-hint">Stored as competitor / battlecard intel.</div>
+                      </div>
+                    </div>
+                    <div class="kb-btn-row">
+                      <button type="button" class="kb-secondary-btn" id="kb-upload-preview-btn">Preview</button>
+                      <button type="submit" class="primary-cta" id="kb-upload-btn">Upload &amp; index</button>
+                    </div>
+                    <div id="kb-upload-result" class="kb-result hidden"></div>
+                  </form>
+                </div>
+              </div>
+            </div>
+
+            <!-- WEB SUB-FORM (Firecrawl) -->
+            <div id="kb-subpane-web" class="kb-subpane hidden">
+              <div class="card">
+                <div class="card-h">🌐 Add a web page (Firecrawl)</div>
+                <div class="card-b">
+                  <form id="kb-web-form" class="kb-form">
+                    <div class="field">
+                      <label for="kb-web-url">URL</label>
+                      <input id="kb-web-url" name="url" type="url" placeholder="https://example.com/pricing" required>
+                      <div class="field-hint">Firecrawl scrapes the page → markdown → chunks. Effective date comes from the page's publishedTime / modifiedTime, falling back to fetch time.</div>
+                    </div>
+                    <div class="field">
+                      <label for="kb-web-category">Category</label>
+                      <select id="kb-web-category" name="category" required>
+                        <option value="PRODUCT_INTEL">Product Intel</option>
+                        <option value="ORG_INTELLIGENCE">Org Intelligence</option>
+                        <option value="BATTLECARDS">Battlecards</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="kb-web-title">Title (optional)</label>
+                      <input id="kb-web-title" name="title" type="text" placeholder="Defaults to Firecrawl's page title">
+                    </div>
+                    <div class="field kb-entity-block" data-lane="web">
+                      <label>What is this page about?</label>
+                      <div class="kb-entity-seg">
+                        <button type="button" class="kb-entity-opt active" data-lane="web" data-entity="TENANT">Our company</button>
+                        <button type="button" class="kb-entity-opt" data-lane="web" data-entity="PROSPECT">A prospect</button>
+                        <button type="button" class="kb-entity-opt" data-lane="web" data-entity="COMPETITOR">A competitor</button>
+                      </div>
+                      <div class="kb-entity-detail" data-lane="web" data-entity-detail="TENANT">
+                        <div class="kb-entity-tenant" id="kb-web-tenant-label">Workspace intel (Basis — available to every mission)</div>
+                        <select id="kb-web-tenant-select" class="kb-filter-select hidden"></select>
+                        <div class="field" style="margin-top:10px">
+                          <label for="kb-web-product">Product line <span class="field-hint-inline">(optional — empty = company-wide intel)</span></label>
+                          <input id="kb-web-product" type="text" list="kb-web-product-list" placeholder="Pick a product line, or type a new one — e.g. Fraud Solution, Payment Gateway">
+                          <datalist id="kb-web-product-list"></datalist>
+                          <div class="field-hint">Files this page under one product line. Leave empty for intel that spans the whole company.</div>
+                        </div>
+                      </div>
+                      <div class="kb-entity-detail hidden" data-lane="web" data-entity-detail="PROSPECT">
+                        <input id="kb-web-prospect" type="text" list="kb-web-prospect-list" placeholder="Pick an existing prospect, or type a new company name">
+                        <datalist id="kb-web-prospect-list"></datalist>
+                        <div class="field-hint">Stored as Tier 2 "Prospect Memory" — surfaces in briefs for missions against this company.</div>
+                        <div class="field" style="margin-top:10px">
+                          <label for="kb-web-persona">Buyer persona <span class="field-hint-inline">(optional)</span></label>
+                          <input id="kb-web-persona" type="text" list="kb-web-persona-list" placeholder="Pick a buyer persona, or type a new one — e.g. CFO, Head of Fraud">
+                          <datalist id="kb-web-persona-list"></datalist>
+                          <div class="field-hint">The buyer this page speaks to inside the prospect's org. Leave empty if it isn't persona-specific.</div>
+                        </div>
+                      </div>
+                      <div class="kb-entity-detail hidden" data-lane="web" data-entity-detail="COMPETITOR">
+                        <input id="kb-web-competitor" type="text" list="kb-web-competitor-list" placeholder="Pick an existing competitor, or type a new one">
+                        <datalist id="kb-web-competitor-list"></datalist>
+                        <div class="field-hint">Stored as competitor / battlecard intel.</div>
+                      </div>
+                    </div>
+                    <div class="field kb-inline-field">
+                      <label class="kb-checkbox">
+                        <input id="kb-web-dryrun" type="checkbox" checked>
+                        <span>Preview only (dry run — fetches but doesn't ingest)</span>
+                      </label>
+                    </div>
+                    <button type="submit" class="primary-cta" id="kb-web-btn">Fetch &amp; index</button>
+                    <div id="kb-web-result" class="kb-result hidden"></div>
+                  </form>
+                </div>
+              </div>
+            </div>
+
+            <!-- SOCIAL SUB-FORM (Phyllo) -->
+            <div id="kb-subpane-social" class="kb-subpane hidden">
+              <div class="card">
+                <div class="card-h">📱 Add social posts (Phyllo)</div>
+                <div class="card-b">
+                  <form id="kb-social-form" class="kb-form">
+                    <div class="field">
+                      <label for="kb-social-account">Phyllo account ID</label>
+                      <input id="kb-social-account" name="accountId" type="text" placeholder="e.g. e8a4f2b1-..." required>
+                      <div class="field-hint">Created via Phyllo Connect when a user links their X / LinkedIn / TikTok handle. Find it on dashboard.getphyllo.com → Accounts.</div>
+                    </div>
+                    <div class="field">
+                      <label for="kb-social-category">Category</label>
+                      <select id="kb-social-category" name="category" required>
+                        <option value="BATTLECARDS">Battlecards</option>
+                        <option value="PRODUCT_INTEL">Product Intel</option>
+                        <option value="ORG_INTELLIGENCE">Org Intelligence</option>
+                      </select>
+                    </div>
+                    <div class="field kb-inline-pair">
+                      <div>
+                        <label for="kb-social-since">From date</label>
+                        <input id="kb-social-since" name="since" type="date">
+                      </div>
+                      <div>
+                        <label for="kb-social-limit">Limit</label>
+                        <input id="kb-social-limit" name="limit" type="number" min="1" max="100" value="25">
+                      </div>
+                    </div>
+                    <div class="field kb-entity-block" data-lane="social">
+                      <label>What are these posts about?</label>
+                      <div class="kb-entity-seg">
+                        <button type="button" class="kb-entity-opt active" data-lane="social" data-entity="TENANT">Our company</button>
+                        <button type="button" class="kb-entity-opt" data-lane="social" data-entity="PROSPECT">A prospect</button>
+                        <button type="button" class="kb-entity-opt" data-lane="social" data-entity="COMPETITOR">A competitor</button>
+                      </div>
+                      <div class="kb-entity-detail" data-lane="social" data-entity-detail="TENANT">
+                        <div class="kb-entity-tenant" id="kb-social-tenant-label">Workspace intel (Basis — available to every mission)</div>
+                        <select id="kb-social-tenant-select" class="kb-filter-select hidden"></select>
+                        <div class="field" style="margin-top:10px">
+                          <label for="kb-social-product">Product line <span class="field-hint-inline">(optional — applies to every post; empty = company-wide)</span></label>
+                          <input id="kb-social-product" type="text" list="kb-social-product-list" placeholder="Pick a product line, or type a new one — e.g. Fraud Solution, Payment Gateway">
+                          <datalist id="kb-social-product-list"></datalist>
+                          <div class="field-hint">Files every post in this sync under one product line. Leave empty for company-wide intel.</div>
+                        </div>
+                      </div>
+                      <div class="kb-entity-detail hidden" data-lane="social" data-entity-detail="PROSPECT">
+                        <input id="kb-social-prospect" type="text" list="kb-social-prospect-list" placeholder="Pick an existing prospect, or type a new company name">
+                        <datalist id="kb-social-prospect-list"></datalist>
+                        <div class="field-hint">Every post in this sync is stored as Tier 2 "Prospect Memory" for this company.</div>
+                        <div class="field" style="margin-top:10px">
+                          <label for="kb-social-persona">Buyer persona <span class="field-hint-inline">(optional — applies to every post)</span></label>
+                          <input id="kb-social-persona" type="text" list="kb-social-persona-list" placeholder="Pick a buyer persona, or type a new one — e.g. CFO, Head of Fraud">
+                          <datalist id="kb-social-persona-list"></datalist>
+                          <div class="field-hint">The buyer these posts speak to inside the prospect's org. Leave empty if not persona-specific.</div>
+                        </div>
+                      </div>
+                      <div class="kb-entity-detail hidden" data-lane="social" data-entity-detail="COMPETITOR">
+                        <input id="kb-social-competitor" type="text" list="kb-social-competitor-list" placeholder="Pick an existing competitor, or type a new one">
+                        <datalist id="kb-social-competitor-list"></datalist>
+                        <div class="field-hint">Every post in this sync is stored as competitor / battlecard intel.</div>
+                      </div>
+                    </div>
+                    <div class="field kb-inline-field">
+                      <label class="kb-checkbox">
+                        <input id="kb-social-dryrun" type="checkbox" checked>
+                        <span>Preview only (dry run — fetches but doesn't ingest)</span>
+                      </label>
+                    </div>
+                    <button type="submit" class="primary-cta" id="kb-social-btn">Fetch &amp; index</button>
+                    <div id="kb-social-result" class="kb-result hidden"></div>
+                  </form>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- MISSIONS -->
+        <section id="section-missions" class="section hidden">
+          <div class="kb-tabs" id="missions-tabs">
+            <button class="kb-tab active" data-missions-tab="upcoming">Upcoming</button>
+            <button class="kb-tab" data-missions-tab="past">Past</button>
+            <button class="kb-tab" data-missions-tab="schedule">Schedule</button>
+          </div>
+
+          <!-- UPCOMING + PAST share the same list rendering -->
+          <div id="missions-pane-upcoming" class="kb-pane">
+            <div class="card">
+              <div class="card-h">Upcoming missions
+                <span class="pf-hint">T-24h before the call, the brief auto-generates. Click any row for the full brief.</span>
+              </div>
+              <div class="card-b table-wrap" id="missions-upcoming-table"></div>
+            </div>
+          </div>
+          <div id="missions-pane-past" class="kb-pane hidden">
+            <div class="card">
+              <div class="card-h">Past missions</div>
+              <div class="card-b table-wrap" id="missions-past-table"></div>
+            </div>
+          </div>
+
+          <!-- SCHEDULE form -->
+          <div id="missions-pane-schedule" class="kb-pane hidden">
+            <div class="card">
+              <div class="card-h">Schedule a mission
+                <span class="pf-hint">Three fields and you're done. Coming soon: pick straight from your Google / Outlook calendar.</span>
+              </div>
+              <div class="card-b">
+                <div class="schedule-import-row" id="missions-import-row">
+                  <button type="button" class="kb-secondary-btn" id="missions-import-btn" disabled title="Connect a calendar in Integrations first">📅 Import from calendar</button>
+                  <button type="button" class="kb-secondary-btn" id="missions-calendly-btn" disabled title="Connect Calendly in Integrations first">🗓️ From Calendly</button>
+                  <span class="schedule-import-hint" id="missions-import-hint">Connect a calendar in <a href="#integrations">Integrations</a> to skip the typing — or point Calendly at us to skip the form entirely.</span>
+                </div>
+                <form id="missions-form" class="kb-form">
+                  <!-- Always visible: the only fields the system can't derive -->
+                  <div class="field">
+                    <label for="missions-company">Company</label>
+                    <input id="missions-company" name="companyName" type="text" list="missions-company-list" placeholder="e.g. Acme Corp" required>
+                    <datalist id="missions-company-list"></datalist>
+                    <div class="field-hint">Typing an existing name pulls the prospect's prior context (domain, tags, last meeting).</div>
+                  </div>
+                  <div id="missions-snap-banner" class="snap-banner hidden" aria-live="polite"></div>
+                  <div class="field kb-inline-pair">
+                    <div>
+                      <label for="missions-scheduled-at">When</label>
+                      <input id="missions-scheduled-at" name="scheduledAt" type="datetime-local" required>
+                    </div>
+                    <div>
+                      <label for="missions-url">Meeting URL <span class="field-hint-inline">(Zoom / Meet / Teams)</span></label>
+                      <input id="missions-url" name="meetingUrl" type="url" placeholder="https://zoom.us/j/…">
+                    </div>
+                  </div>
+
+                  <!-- Everything else collapses out of the way. The rep only opens
+                       it for first-time prospects (auto-opened by JS in that case)
+                       or to override the auto-filled values. -->
+                  <details id="missions-advanced" class="schedule-advanced">
+                    <summary class="schedule-advanced-summary">
+                      <span class="schedule-advanced-toggle">More options</span>
+                      <span class="kb-subtle">— domain · contact · attendees · tags · notes</span>
+                    </summary>
+                    <div class="schedule-advanced-body">
+                      <div class="field kb-inline-pair">
+                        <div>
+                          <label for="missions-domain">Domain</label>
+                          <input id="missions-domain" name="companyDomain" type="text" placeholder="acme.com (auto-derived from emails if blank)">
+                        </div>
+                        <div>
+                          <label for="missions-primary-contact">Primary contact</label>
+                          <input id="missions-primary-contact" name="primaryContact" type="text" placeholder="Sara Chen, CFO">
+                        </div>
+                      </div>
+                      <div class="field">
+                        <label for="missions-emails">Attendee emails <span class="field-hint-inline">(one per line)</span></label>
+                        <textarea id="missions-emails" name="prospectEmails" rows="2" placeholder="bill@acme.com&#10;sara@acme.com"></textarea>
+                      </div>
+                      <div class="field">
+                        <label>Tags <span class="field-hint-inline">(products · personas · competitors — auto-filled from your last meeting with this prospect)</span></label>
+                        <div class="kb-tag-grid">
+                          <select id="missions-product" name="productIds" multiple size="3"></select>
+                          <select id="missions-persona" name="personaIds" multiple size="3"></select>
+                          <select id="missions-competitor" name="competitorIds" multiple size="3"></select>
+                        </div>
+                      </div>
+                      <div class="field">
+                        <label for="missions-notes">Notes</label>
+                        <textarea id="missions-notes" name="notes" rows="2" placeholder="Anything the AI should know — internal context, prior calls, etc."></textarea>
+                      </div>
+                    </div>
+                  </details>
+
+                  <button type="submit" class="primary-cta" id="missions-submit-btn">Schedule mission</button>
+                  <div id="missions-form-result" class="kb-result hidden"></div>
+                </form>
+              </div>
+            </div>
+          </div>
+
+          <!-- DETAIL pane — shown when a row is clicked -->
+          <div id="missions-pane-detail" class="kb-pane hidden">
+            <div class="card">
+              <div class="card-h">
+                <button type="button" class="kb-secondary-btn" id="missions-detail-back">← Back</button>
+                <span id="missions-detail-title">Mission</span>
+              </div>
+              <div class="card-b" id="missions-detail-body"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- PORTALS -->
+        <section id="section-portals" class="section hidden">
+          <div class="card">
+            <div class="card-h">Recent portals</div>
+            <div class="card-b table-wrap" id="portals-table"></div>
+          </div>
+        </section>
+
+        <!-- SESSIONS -->
+        <section id="section-sessions" class="section hidden">
+          <div class="card">
+            <div class="card-h">Recent Arena sessions</div>
+            <div class="card-b table-wrap" id="sessions-table"></div>
+          </div>
+        </section>
+
+        <!-- MEETINGS -->
+        <section id="section-meetings" class="section hidden">
+          <div class="card">
+            <div class="card-h">Recent meetings</div>
+            <div class="card-b table-wrap" id="meetings-table"></div>
+          </div>
+        </section>
+
+        <!-- INTEGRATIONS -->
+        <section id="section-integrations" class="section hidden">
+          <div class="card">
+            <div class="card-h">Calendar integrations
+              <span class="pf-hint">Stop re-typing meeting details. Connect a calendar to import events, or point Calendly at us to auto-create missions when prospects book.</span>
+            </div>
+            <div class="card-b">
+              <div id="integrations-body"><div class="kb-subtle">Loading…</div></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- CACHES -->
+        <section id="section-caches" class="section hidden">
+          <div class="card">
+            <div class="card-h">Active Gemini caches</div>
+            <div class="card-b table-wrap" id="caches-table"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="/admin/admin.js"></script>
+</body>
+</html>

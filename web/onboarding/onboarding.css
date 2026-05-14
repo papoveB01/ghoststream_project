@@ -1,0 +1,169 @@
+/* Free-trial onboarding wizard. Leans on /styles.css for tokens + .btn.* */
+
+.ob-body {
+  min-height: 100vh;
+  background:
+    radial-gradient(900px 400px at 50% -120px, rgba(79,70,229,0.10), transparent 70%),
+    var(--bg, #fff);
+  display: flex;
+  flex-direction: column;
+}
+
+.ob-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
+}
+.ob-topbar .brand { display: flex; align-items: center; gap: 9px; font-weight: 800; color: #0f172a; text-decoration: none; }
+.ob-topbar .brand-mark {
+  width: 28px; height: 28px; border-radius: 7px; background: var(--accent, #4f46e5);
+  color: #fff; display: grid; place-items: center; font-weight: 800; font-size: 16px;
+}
+.ob-topbar .brand-name { font-size: 16px; }
+.ob-signin { font-size: 13.5px; color: var(--muted, #64748b); text-decoration: none; }
+.ob-signin:hover { color: var(--accent, #4f46e5); }
+
+.ob-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 16px 56px;
+}
+
+.ob-card {
+  width: 100%;
+  max-width: 560px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  box-shadow: 0 18px 50px -24px rgba(15,23,42,0.25);
+  padding: 32px 32px 36px;
+}
+
+/* Steps header */
+.ob-steps {
+  list-style: none;
+  display: flex;
+  gap: 10px;
+  padding: 0;
+  margin: 0 0 26px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #9ca3af;
+}
+.ob-steps li {
+  display: flex; align-items: center; gap: 7px;
+  flex: 1;
+  padding-bottom: 9px;
+  border-bottom: 2px solid #eef2f7;
+}
+.ob-steps li.active { color: var(--accent, #4f46e5); border-bottom-color: var(--accent, #4f46e5); }
+.ob-steps li.done { color: #047857; border-bottom-color: #a7f3d0; }
+.ob-step-num {
+  width: 18px; height: 18px; border-radius: 999px; display: grid; place-items: center;
+  background: #eef2f7; color: inherit; font-size: 11px; font-weight: 700;
+}
+.ob-steps li.active .ob-step-num { background: var(--accent, #4f46e5); color: #fff; }
+.ob-steps li.done  .ob-step-num { background: #047857; color: #fff; }
+
+/* Panes */
+.ob-pane.hidden { display: none; }
+.ob-h1 { font-size: 22px; font-weight: 800; line-height: 1.25; margin: 0 0 6px; color: #0f172a; }
+.ob-sub { font-size: 14.5px; color: var(--muted, #64748b); margin: 0 0 22px; line-height: 1.5; }
+
+/* Forms */
+.ob-form { display: flex; flex-direction: column; gap: 16px; }
+.ob-field { display: flex; flex-direction: column; gap: 6px; }
+.ob-field > span { font-size: 13px; font-weight: 600; color: #334155; }
+.ob-field input, .ob-field select {
+  font: inherit; font-size: 14.5px;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 9px;
+  background: #fff;
+  color: #0f172a;
+  outline: none;
+  transition: border-color .12s, box-shadow .12s;
+}
+.ob-field input:focus, .ob-field select:focus {
+  border-color: var(--accent, #4f46e5);
+  box-shadow: 0 0 0 3px rgba(79,70,229,0.14);
+}
+.ob-field input:disabled, .ob-field select:disabled { background: #f8fafc; color: #94a3b8; }
+.ob-hint { font-size: 12px; color: #94a3b8; }
+
+.ob-error, .ob-warn {
+  font-size: 13.5px;
+  border-radius: 9px;
+  padding: 10px 12px;
+  line-height: 1.45;
+}
+.ob-error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+.ob-warn  { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+.ob-error.hidden, .ob-warn.hidden { display: none; }
+
+button.btn[disabled] { opacity: .6; cursor: not-allowed; transform: none; box-shadow: none; }
+
+/* Password strength meter */
+.ob-strength { height: 5px; border-radius: 999px; background: #eef2f7; overflow: hidden; margin-top: 4px; }
+.ob-strength > span { display: block; height: 100%; width: 0; transition: width .18s, background .18s; }
+.ob-strength.weak   > span { width: 33%;  background: #ef4444; }
+.ob-strength.medium > span { width: 66%;  background: #f59e0b; }
+.ob-strength.strong > span { width: 100%; background: #10b981; }
+
+/* Researching pane */
+.ob-spinner {
+  width: 44px; height: 44px; margin: 6px auto 18px;
+  border: 4px solid #e5e7eb; border-top-color: var(--accent, #4f46e5);
+  border-radius: 50%; animation: ob-spin .8s linear infinite;
+}
+@keyframes ob-spin { to { transform: rotate(360deg); } }
+.ob-progress-log {
+  list-style: none; padding: 0; margin: 18px 0 0;
+  font-size: 13px; color: #64748b;
+}
+.ob-progress-log li { padding: 4px 0; }
+.ob-progress-log li::before { content: "› "; color: var(--accent, #4f46e5); font-weight: 700; }
+
+/* Brief pane */
+.ob-badge {
+  display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--accent, #4f46e5); background: var(--accent-light, #eef2ff);
+  border-radius: 999px; padding: 4px 10px; margin-bottom: 12px;
+}
+.ob-brief { display: flex; flex-direction: column; gap: 0; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; }
+.ob-brief-row { display: grid; grid-template-columns: 130px 1fr; gap: 12px; padding: 13px 14px; border-bottom: 1px solid #f1f5f9; }
+.ob-brief-row:last-child { border-bottom: none; }
+.ob-brief-k { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #94a3b8; padding-top: 2px; }
+.ob-brief-v { font-size: 14px; color: #1e293b; line-height: 1.5; }
+.ob-chips { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.ob-chips li {
+  font-size: 12.5px; font-weight: 600;
+  background: #f1f5f9; color: #334155;
+  border-radius: 7px; padding: 3px 9px;
+}
+
+.ob-actions { display: flex; gap: 10px; margin-top: 22px; }
+.ob-actions .btn { flex: 1; }
+
+/* Done pane */
+.ob-check {
+  width: 52px; height: 52px; margin: 4px auto 16px;
+  border-radius: 50%; background: #ecfdf5; color: #047857;
+  display: grid; place-items: center; font-size: 26px; font-weight: 800;
+}
+
+.ob-foot { font-size: 12px; color: #94a3b8; margin-top: 20px; text-align: center; max-width: 560px; }
+.ob-foot a { color: #64748b; }
+
+@media (max-width: 560px) {
+  .ob-card { padding: 24px 20px 28px; }
+  .ob-brief-row { grid-template-columns: 1fr; gap: 4px; }
+  .ob-steps { font-size: 11.5px; }
+  .ob-actions { flex-direction: column-reverse; }
+}

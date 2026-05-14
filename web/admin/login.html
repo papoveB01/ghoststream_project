@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · GhostStream Admin</title>
+  <meta name="theme-color" content="#ffffff">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/admin/admin.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234F46E5'/%3E%3Ctext x='16' y='22' font-family='Inter' font-size='18' font-weight='800' text-anchor='middle' fill='white'%3EG%3C/text%3E%3C/svg%3E">
+</head>
+<body class="login-page">
+
+  <main class="login-wrap">
+    <div class="login-card">
+      <a class="brand" href="/">
+        <span class="brand-mark">
+          <svg width="36" height="36" viewBox="0 0 28 28"><rect width="28" height="28" rx="7" fill="#4F46E5"/><path d="M9 14a5 5 0 0110 0v3l2 2H7l2-2v-3z" fill="white"/></svg>
+        </span>
+        <span class="brand-name">GhostStream</span>
+      </a>
+      <h1>Admin sign-in</h1>
+      <p class="lede">Restricted access · Operators only.</p>
+
+      <form id="login-form">
+        <div class="field">
+          <label for="email">Email</label>
+          <input type="email" id="email" name="email" autocomplete="username" required placeholder="admin@ghoststream.io">
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" autocomplete="current-password" required>
+        </div>
+        <div class="error hidden" id="error"></div>
+        <button type="submit" class="primary-cta" id="submit-btn">Sign in</button>
+      </form>
+
+      <div class="login-foot">
+        <a href="/">← Back to site</a>
+      </div>
+    </div>
+  </main>
+
+  <script src="/admin/login.js"></script>
+</body>
+</html>

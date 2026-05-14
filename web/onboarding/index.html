@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Start your free trial · GhostStream</title>
+  <meta name="robots" content="noindex">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/onboarding/onboarding.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234F46E5'/%3E%3Ctext x='16' y='22' font-family='Inter,sans-serif' font-size='18' font-weight='800' text-anchor='middle' fill='white'%3EG%3C/text%3E%3C/svg%3E">
+</head>
+<body class="ob-body">
+  <header class="ob-topbar">
+    <a class="brand" href="/">
+      <span class="brand-mark">G</span><span class="brand-name">GhostStream</span>
+    </a>
+    <a class="link ob-signin" href="/admin/login.html">Already have an account? Sign in</a>
+  </header>
+
+  <main class="ob-main">
+    <div class="ob-card">
+      <ol class="ob-steps" id="ob-steps">
+        <li data-step="1" class="active"><span class="ob-step-num">1</span> Identity</li>
+        <li data-step="2"><span class="ob-step-num">2</span> Verify</li>
+        <li data-step="3"><span class="ob-step-num">3</span> Secure</li>
+      </ol>
+
+      <!-- ============ STEP 1 — IDENTITY ============ -->
+      <section class="ob-pane" id="pane-identity">
+        <h1 class="ob-h1">Let's get GhostStream working for you</h1>
+        <p class="ob-sub">Tell us who you are. We'll start pulling intelligence on your company immediately.</p>
+        <form id="form-identity" class="ob-form" novalidate>
+          <label class="ob-field">
+            <span>Company name</span>
+            <input type="text" id="f-company" name="companyName" placeholder="e.g. Acme Corp" autocomplete="organization" required>
+          </label>
+          <label class="ob-field">
+            <span>Industry</span>
+            <select id="f-industry" name="industry" required>
+              <option value="" disabled selected>Select your industry…</option>
+            </select>
+          </label>
+          <label class="ob-field">
+            <span>Company website</span>
+            <input type="text" id="f-website" name="website" placeholder="e.g. acme.com" autocomplete="url" inputmode="url" required>
+            <small class="ob-hint">As soon as you continue, we start researching your company.</small>
+          </label>
+          <label class="ob-field">
+            <span>Work email</span>
+            <input type="email" id="f-email" name="email" placeholder="you@yourcompany.com" autocomplete="email" required>
+            <small class="ob-hint">Must be your corporate email — public mailboxes (Gmail, Outlook…) aren't supported.</small>
+          </label>
+          <div class="ob-error hidden" id="err-identity"></div>
+          <button type="submit" class="btn btn-primary btn-block" id="btn-identity">Start free trial →</button>
+        </form>
+      </section>
+
+      <!-- ============ STEP 2a — RESEARCHING ============ -->
+      <section class="ob-pane hidden" id="pane-researching">
+        <div class="ob-spinner" aria-hidden="true"></div>
+        <h1 class="ob-h1">Researching <span id="researching-company">your company</span>…</h1>
+        <p class="ob-sub">We're scanning your website and building your Company Intelligence Brief. This usually takes a few seconds.</p>
+        <ul class="ob-progress-log" id="researching-log">
+          <li>Reaching your website…</li>
+        </ul>
+      </section>
+
+      <!-- ============ STEP 2b — CONFIRM BRIEF ============ -->
+      <section class="ob-pane hidden" id="pane-brief">
+        <div class="ob-badge">Company Intelligence Brief</div>
+        <h1 class="ob-h1" id="brief-headline">Here's what we found.</h1>
+        <p class="ob-sub">GhostStream has indexed your homepage. Confirm this looks right — you can refine it later from your workspace.</p>
+
+        <div class="ob-brief">
+          <div class="ob-brief-row">
+            <div class="ob-brief-k">Mission</div>
+            <div class="ob-brief-v" id="brief-mission">—</div>
+          </div>
+          <div class="ob-brief-row" id="brief-products-row">
+            <div class="ob-brief-k">Key products</div>
+            <div class="ob-brief-v"><ul class="ob-chips" id="brief-products"></ul></div>
+          </div>
+          <div class="ob-brief-row" id="brief-audience-row">
+            <div class="ob-brief-k">Primary audience</div>
+            <div class="ob-brief-v" id="brief-audience">—</div>
+          </div>
+        </div>
+
+        <div class="ob-warn hidden" id="brief-warn"></div>
+
+        <div class="ob-actions">
+          <button type="button" class="btn btn-secondary" id="btn-brief-back">← Start over</button>
+          <button type="button" class="btn btn-primary" id="btn-brief-confirm">Looks right — continue →</button>
+        </div>
+      </section>
+
+      <!-- ============ STEP 3 — SECURE ============ -->
+      <section class="ob-pane hidden" id="pane-secure">
+        <h1 class="ob-h1">Secure your account</h1>
+        <p class="ob-sub">One last step — set a password for <strong id="secure-email">your account</strong>.</p>
+        <form id="form-secure" class="ob-form" novalidate>
+          <label class="ob-field">
+            <span>Password</span>
+            <input type="password" id="f-password" name="password" placeholder="At least 12 characters" autocomplete="new-password" minlength="12" required>
+            <div class="ob-strength" id="pw-strength"><span></span></div>
+            <small class="ob-hint" id="pw-hint">Use 12+ characters. A passphrase works great.</small>
+          </label>
+          <label class="ob-field">
+            <span>Confirm password</span>
+            <input type="password" id="f-password2" name="password2" placeholder="Re-enter your password" autocomplete="new-password" required>
+          </label>
+          <div class="ob-error hidden" id="err-secure"></div>
+          <button type="submit" class="btn btn-primary btn-block" id="btn-secure">Create my workspace</button>
+        </form>
+      </section>
+
+      <!-- ============ DONE ============ -->
+      <section class="ob-pane hidden" id="pane-done">
+        <div class="ob-check" aria-hidden="true">✓</div>
+        <h1 class="ob-h1">Your workspace is live</h1>
+        <p class="ob-sub" id="done-sub">We've sent a verification link to your email. Confirm it when you can — meanwhile, we're taking you to your workspace…</p>
+        <a class="btn btn-primary btn-block" href="/admin/" id="btn-done">Go to my workspace →</a>
+      </section>
+    </div>
+
+    <p class="ob-foot">By creating an account you agree to GhostStream's terms. Need help? <a href="mailto:hello@ghoststream.exact-it.net">hello@ghoststream.exact-it.net</a></p>
+  </main>
+
+  <script src="/onboarding/onboarding.js"></script>
+</body>
+</html>
