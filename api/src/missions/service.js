@@ -105,6 +105,29 @@ async function schedule(tenantId, {
     await insertTags(client, 'scheduled_meeting_competitors', 'competitor_id', missionId, competitorIds);
   });
 
+  // Same-day briefing: the T-24h cron (scheduler.js#findDueMissions) only fires
+  // for missions whose scheduled_at falls inside (now+23h, now+25h]. A mission
+  // booked for <23h from now would otherwise NEVER be picked up — the cron
+  // window has already moved past it. Fire-and-forget here so the HTTP
+  // response isn't blocked on Gemini (~10-30s). brief.generate is async-safe:
+  // it manages its own status transitions (PENDING → BRIEFED|FAILED) and
+  // records errors via setBriefError so the admin UI surfaces failures.
+  //
+  // We use `< LOOKAHEAD_END_HOURS` to match the upper bound of the cron's
+  // window — anything closer than that, we eagerly handle ourselves. If the
+  // mission is also in the cron's [23h, 25h] band, the cron may also fire;
+  // a duplicate run produces a second pre_call_briefs row (the table is
+  // 1:many by design) and is harmless beyond a wasted Gemini call.
+  const inlineLookaheadHours = parseFloat(process.env.BRIEF_LOOKAHEAD_END_HOURS || '25');
+  const hoursUntilCall = (new Date(scheduledAt).getTime() - Date.now()) / 3600000;
+  if (Number.isFinite(hoursUntilCall) && hoursUntilCall < inlineLookaheadHours) {
+    // Lazy require to dodge the missions/brief → missions/service circular import.
+    const brief = require('./brief');
+    brief.generate(missionId, tenantId).catch((err) => {
+      console.warn(`[missions] inline brief generation failed for mission ${missionId}: ${err.message}`);
+    });
+  }
+
   return get(tenantId, missionId);
 }
 
