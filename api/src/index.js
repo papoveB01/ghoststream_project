@@ -598,6 +598,40 @@ app.get('/admin/meetings', auth.authMiddleware, async (_req, res, next) => {
   catch (err) { next(err); }
 });
 
+// Unified Calls view — assessment-003 Phase 1 (additive; /admin/portals and
+// /admin/meetings remain untouched). Joins all meeting records with their
+// portal (if any), buckets lifecycle status, and returns filtered +
+// faceted + paginated results.
+//
+// Auth:
+//   superadmin    → may pass tenant=<uuid> (CSV) to scope across tenants
+//   non-superadmin → force-scoped to req.tenantId; tenant= param ignored
+app.get('/admin/calls', auth.authMiddleware, async (req, res, next) => {
+  try {
+    const isSuperadmin = !!(req.user && req.user.adm);
+    // req.tenantId is guaranteed non-null here: authMiddleware calls
+    // verifyToken() (auth.js), which explicitly rejects any JWT where
+    // !claims.tid — including legacy pre-multitenancy tokens — returning
+    // null → 401 before next() fires. So the non-superadmin branch below
+    // can never silently drop the tenant filter due to an absent tid claim.
+    const result = await store.buildCallsList({
+      status:     req.query.status,
+      source:     req.query.source,
+      // Superadmin passes tenant= freely; non-superadmin is hard-scoped.
+      tenant:     isSuperadmin ? (req.query.tenant || null) : req.tenantId,
+      mission_id: req.query.mission_id,
+      company_id: req.query.company_id,
+      has_gaps:   req.query.has_gaps,
+      from:       req.query.from,
+      to:         req.query.to,
+      q:          req.query.q,
+      cursor:     req.query.cursor,
+      limit:      req.query.limit,
+    });
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
 // Platform-superadmin only — list of all tenants. Used by the KB upload
 // form's "Tenant" picker so a Founders admin can do concierge KB setup.
 app.get('/tenants', auth.authMiddleware, auth.requireSuperadmin, async (_req, res, next) => {
