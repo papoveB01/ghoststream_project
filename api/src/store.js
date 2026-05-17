@@ -235,6 +235,21 @@ function _csvToSet(v) {
   return arr.length > 0 ? new Set(arr) : null;
 }
 
+// Validate and parse a date query-param string. Returns a UTC timestamp (ms)
+// or null when the param is absent. Throws a 400-status error when the value
+// is present but not parseable as a date, so callers get an explicit error
+// rather than a silent NaN no-op in the filter (finding B from PR #9 review).
+function _parseDateParam(name, value) {
+  if (!value) return null;
+  const t = new Date(value).getTime();
+  if (isNaN(t)) {
+    const err = new Error(`invalid \`${name}\` date — expected ISO 8601 (e.g. 2024-01-15T00:00:00Z)`);
+    err.status = 400;
+    throw err;
+  }
+  return t;
+}
+
 // buildCallsList — unified store query backing GET /api/admin/calls.
 //
 // Reads both prefix scans (meetings + portals), joins on portal.meetingId,
@@ -330,8 +345,10 @@ async function buildCallsList(filters = {}) {
   const sourceSet  = _csvToSet(sourceFilter);
   const missionSet = _csvToSet(mission_id);
   const companySet = _csvToSet(company_id);
-  const fromTs     = fromParam ? new Date(fromParam).getTime() : null;
-  const toTs       = toParam   ? new Date(toParam).getTime()   : null;
+  // _parseDateParam throws a 400-status error for present-but-unparseable
+  // values; absent params return null. No more silent NaN no-ops.
+  const fromTs     = _parseDateParam('from', fromParam);
+  const toTs       = _parseDateParam('to',   toParam);
   const qLower     = q ? q.toLowerCase() : null;
 
   const needsFilter = statusSet || sourceSet || missionSet || companySet ||
