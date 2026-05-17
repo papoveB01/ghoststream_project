@@ -18,6 +18,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const redis = require('./redis');
+const userModel = require('./users'); // for FOUNDERS_TENANT_ID — Calendly is Founders-only in Phase 1
 
 const APP_BASE_URL =
   process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net';
@@ -111,7 +112,7 @@ async function deleteGrant(tenantId, userId) {
   await redis.del(grantKey(tenantId, userId));
 }
 
-// ── Nylas API helpers ─────────────────────────────────────────────────────
+// ── Nylas API helpers ────────────────────────────────────────
 
 // Providers we let a rep connect (must have a matching connector in the Nylas
 // app). `outlook` is an alias for `microsoft`; `icloud` for `imap`.
@@ -216,7 +217,7 @@ async function calendarConnection(tenantId, userId) {
   };
 }
 
-// ── Event listing + normalization ─────────────────────────────────────────
+// ── Event listing + normalization ─────────────────────────────────
 
 const PUBLIC_EMAIL_DOMAINS = new Set([
   'gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.co.uk', 'outlook.com',
@@ -388,7 +389,7 @@ async function fetchUpcomingEvents(tenantId, userId, { days = 14, limit = 30 } =
     .sort((a, b) => new Date(a.start) - new Date(b.start));
 }
 
-// ── Calendly webhook (unchanged) ──────────────────────────────────────────
+// ── Calendly webhook (unchanged) ──────────────────────────────────
 
 function verifyCalendlyWebhook(rawBody, signatureHeader) {
   const key = process.env.CALENDLY_WEBHOOK_SIGNING_KEY || null;
@@ -438,7 +439,7 @@ function missionFromCalendlyEvent(payload) {
   };
 }
 
-// ── Calendly OAuth + webhook subscription ─────────────────────────────────
+// ── Calendly OAuth + webhook subscription ───────────────────────────
 // Connecting Calendly: OAuth code flow → access token (the token response also
 // carries `owner` (user URI) and `organization` (org URI)) → register an
 // `invitee.created` webhook subscription on /webhooks/calendly, signed with
@@ -658,6 +659,13 @@ async function handleCalendlyCallback(req, res) {
     if (!code || !state) return finish('cal_error', 'missing code/state');
     const st = await consumeOAuthState(state);
     if (!st) return finish('cal_error', 'state expired — please try connecting again');
+    // Founders-only guard (mirrors the /calendly/connect route). Until the
+    // inbound webhook can route bookings by Calendly org_uri → tenant_id, any
+    // non-Founders OAuth completion would silently funnel its bookings into
+    // the Founders tenant.
+    if (st.tenantId !== userModel.FOUNDERS_TENANT_ID) {
+      return finish('cal_error', 'Calendly is Founders-only in Phase 1 — multi-tenant booking routing is not wired yet');
+    }
     const tok = await calendlyExchangeCode(code);
     const orgUri = tok.organization || null;
     let subscriptionUri = null;
@@ -697,7 +705,7 @@ async function handleCalendlyCallback(req, res) {
   }
 }
 
-// ── Status payload for the admin page ─────────────────────────────────────
+// ── Status payload for the admin page ────────────────────────────────
 
 async function statusPayload(tenantId, userId) {
   const [calConn, calyConn] = await Promise.all([
@@ -802,10 +810,23 @@ router.get('/calendar/events', async (req, res, next) => {
 });
 
 // GET /api/integrations/calendly/connect — start the Calendly OAuth flow.
+//
+// Founders-only in Phase 1: the inbound `/webhooks/calendly` handler in
+// index.js hardcodes FOUNDERS_TENANT_ID when creating missions from
+// invitee.created events, so connecting a non-Founders tenant would route
+// its bookings into the Founders KB / portal — a cross-tenant data leak.
+// Block at the connect step (fast-fail before the OAuth round-trip) AND at
+// the callback (defence in depth, in case someone bypasses /connect).
 router.get('/calendly/connect', async (req, res, next) => {
   try {
     if (!isConfigured('calendly')) {
       return res.status(503).json({ error: 'Calendly not configured — set CALENDLY_CLIENT_ID + CALENDLY_CLIENT_SECRET + CALENDLY_WEBHOOK_SIGNING_KEY.', code: 'NOT_CONFIGURED' });
+    }
+    if (req.tenantId !== userModel.FOUNDERS_TENANT_ID) {
+      return res.status(403).json({
+        error: 'Calendly is Founders-only in Phase 1 — multi-tenant booking routing is not wired yet. Inbound bookings would land in the Founders tenant.',
+        code: 'TENANT_NOT_ALLOWED',
+      });
     }
     const state = await makeOAuthState(req.tenantId, req.user.sub);
     res.redirect(calendlyAuthUrl(state));

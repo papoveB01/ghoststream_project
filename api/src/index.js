@@ -218,13 +218,34 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
     // queried the Founders KB instead of the meeting owner's KB → no
     // grounding chunks ever matched. (H4 in the review.)
     const tenantId = (m.meta && m.meta.tenantId) || userModel.FOUNDERS_TENANT_ID;
+    const missionId = (m.meta && m.meta.missionId) || null;
 
     let engagementProfile = null;
     let missionCompanyId = (m.meta && m.meta.missionCompanyId) || null;
-    if (m.meta && m.meta.missionId) {
+    if (missionId) {
       try {
-        const mission = await missionsService.get(tenantId, m.meta.missionId);
+        let mission = await missionsService.get(tenantId, missionId);
         if (mission) {
+          // Last-chance brief generation: if the mission still PENDING by the
+          // time the call has finished, the pre-call pipeline never ran (cron
+          // missed it / same-day booking outside the (now+23h, now+25h] window
+          // / Gemini outage at brief time). Generate synchronously now so the
+          // Stage-1 analysis prompt has the predictions to compare against
+          // (the brief→analysis pass-through in analysis.js#runPipeline will
+          // pick up the freshly-written pre_call_briefs row).
+          if (mission.status === 'PENDING') {
+            try {
+              const brief = require('./missions/brief');
+              console.log(`[process] mission ${missionId} still PENDING at bot.done — generating brief synchronously`);
+              await brief.generate(missionId, tenantId);
+              mission = await missionsService.get(tenantId, missionId) || mission;
+            } catch (err) {
+              // brief.generate already records setBriefError. Proceed without
+              // the brief — analysis still runs (KB-only), and the operator
+              // sees the failure on the mission detail panel.
+              console.warn(`[process] last-chance brief generation failed for mission ${missionId}: ${err.message}`);
+            }
+          }
           engagementProfile = missionsService.profileFromMission(mission);
           // H9: dispatch.js used to omit missionCompanyId from meta. Pull
           // it from the mission row so PROSPECT_MEMORY tier retrieval lights
@@ -232,6 +253,12 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
           if (!missionCompanyId && mission.company_id) missionCompanyId = mission.company_id;
         }
       } catch { /* no mission found / db hiccup → run unfiltered */ }
+    } else {
+      // Manual `POST /meetings` (e.g. paste-a-Zoom-link) creates a meeting
+      // with no mission link, so no brief is ever generated and analysis
+      // runs against the tenant's KB without engagement scope. Intentional,
+      // but worth flagging so operators can audit how often this path fires.
+      console.warn(`[process] orphan-meeting: meeting ${m.id} has no missionId — running analysis without a brief or engagement profile`);
     }
 
     // STEP 2 — Gemini analysis. If this throws the transcript is still safe.
@@ -240,7 +267,7 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
       pipeline = await analysis.runPipeline(transcript, {
         tenantId,
         engagementProfile,
-        currentMissionId: (m.meta && m.meta.missionId) || null,
+        currentMissionId: missionId,
         missionCompanyId,
       });
     } catch (err) {
@@ -569,6 +596,40 @@ app.get('/admin/sessions', auth.authMiddleware, async (_req, res, next) => {
 app.get('/admin/meetings', auth.authMiddleware, async (_req, res, next) => {
   try { res.json({ meetings: await store.listMeetings(100) }); }
   catch (err) { next(err); }
+});
+
+// Unified Calls view — assessment-003 Phase 1 (additive; /admin/portals and
+// /admin/meetings remain untouched). Joins all meeting records with their
+// portal (if any), buckets lifecycle status, and returns filtered +
+// faceted + paginated results.
+//
+// Auth:
+//   superadmin    → may pass tenant=<uuid> (CSV) to scope across tenants
+//   non-superadmin → force-scoped to req.tenantId; tenant= param ignored
+app.get('/admin/calls', auth.authMiddleware, async (req, res, next) => {
+  try {
+    const isSuperadmin = !!(req.user && req.user.adm);
+    // req.tenantId is guaranteed non-null here: authMiddleware calls
+    // verifyToken() (auth.js), which explicitly rejects any JWT where
+    // !claims.tid — including legacy pre-multitenancy tokens — returning
+    // null → 401 before next() fires. So the non-superadmin branch below
+    // can never silently drop the tenant filter due to an absent tid claim.
+    const result = await store.buildCallsList({
+      status:     req.query.status,
+      source:     req.query.source,
+      // Superadmin passes tenant= freely; non-superadmin is hard-scoped.
+      tenant:     isSuperadmin ? (req.query.tenant || null) : req.tenantId,
+      mission_id: req.query.mission_id,
+      company_id: req.query.company_id,
+      has_gaps:   req.query.has_gaps,
+      from:       req.query.from,
+      to:         req.query.to,
+      q:          req.query.q,
+      cursor:     req.query.cursor,
+      limit:      req.query.limit,
+    });
+    res.json(result);
+  } catch (err) { next(err); }
 });
 
 // Platform-superadmin only — list of all tenants. Used by the KB upload

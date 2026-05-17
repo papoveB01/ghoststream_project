@@ -165,6 +165,262 @@ async function getCounts() {
   return { portals: pk.length, sessions: sk.length, meetings: mk.length };
 }
 
+// Calls (unified view) — assessment-003 Phase 1 ---------------------------
+//
+// Status bucket → raw meeting.status mapping (§3.1).
+const _PENDING_STATUSES = new Set([
+  'creating', 'pending', 'joining_call', 'in_waiting_room', 'in_call_not_recording',
+]);
+const _ANALYSING_STATUSES = new Set([
+  'in_call_recording', 'call_ended', 'recording_done', 'analyzing',
+]);
+
+function _bucketStatus(rawStatus, hasPortal) {
+  if (_PENDING_STATUSES.has(rawStatus)) return 'pending';
+  if (_ANALYSING_STATUSES.has(rawStatus)) return 'analysing';
+  if (rawStatus === 'done' && hasPortal) return 'ready';
+  // Covers: 'failed', 'analysis_failed', and 'done' with no portal (orphan).
+  return 'failed';
+}
+
+// Safe portal projection for list responses — never includes transcript,
+// analysis, or grounding (all potentially kilobytes in size).
+// Matches the portalRefFromRecord shape specified in assessment-003 §3.1.
+function portalRefFromRecord(p) {
+  if (!p) return null;
+  const allGaps = (p.moments && Array.isArray(p.moments.knowledgeGaps))
+    ? p.moments.knowledgeGaps : [];
+  const audit = {
+    gapCount: allGaps.length,
+    hasHighSeverity: allGaps.some(
+      (g) => String(g.severity || '').toUpperCase() === 'HIGH'
+    ),
+  };
+  return {
+    id: p.id,
+    title: p.title || null,
+    participants: p.participants || [],
+    objectionQuote: (p.moments && p.moments.objection && p.moments.objection.quote) || null,
+    audit,
+    reanalyzedAt: p.reanalyzedAt || null,
+  };
+}
+
+// Compact meeting projection for call rows. Sibling to meetingRefFromRecord
+// in index.js; adds missionCompanyId and analysisError that the ops/failed
+// view needs, without shipping transcript or analysis blobs.
+function _meetingRefForCall(m) {
+  if (!m) return null;
+  return {
+    id: m.id,
+    source: m.source || null,
+    meetingUrl: m.meetingUrl || null,
+    botId: m.botId || null,
+    durationSeconds: (m.transcript && m.transcript.durationSeconds) || null,
+    missionId: (m.meta && m.meta.missionId) || null,
+    missionCompanyId: (m.meta && m.meta.missionCompanyId) || null,
+    tenantId: (m.meta && m.meta.tenantId) || null,
+    analysisError: m.analysisError || null,
+    createdAt: m.createdAt || null,
+  };
+}
+
+// Split a CSV query-param value (or an already-an-array value) into a Set.
+// Returns null when the param is absent or empty so callers can short-circuit.
+function _csvToSet(v) {
+  if (!v) return null;
+  const arr = Array.isArray(v)
+    ? v.filter(Boolean)
+    : v.split(',').map((s) => s.trim()).filter(Boolean);
+  return arr.length > 0 ? new Set(arr) : null;
+}
+
+// Validate and parse a date query-param string. Returns a UTC timestamp (ms)
+// or null when the param is absent. Throws a 400-status error when the value
+// is present but not parseable as a date, so callers get an explicit error
+// rather than a silent NaN no-op in the filter (finding B from PR #9 review).
+function _parseDateParam(name, value) {
+  if (!value) return null;
+  const t = new Date(value).getTime();
+  if (isNaN(t)) {
+    const err = new Error(`invalid \`${name}\` date — expected ISO 8601 (e.g. 2024-01-15T00:00:00Z)`);
+    err.status = 400;
+    throw err;
+  }
+  return t;
+}
+
+// buildCallsList — unified store query backing GET /api/admin/calls.
+//
+// Reads both prefix scans (meetings + portals), joins on portal.meetingId,
+// derives the bucketed status, applies filters and pagination, returns
+// { calls[], pageInfo, facets }.
+//
+// Facets are computed over the tenant-scoped full set — before other filters
+// — so the UI can display how many calls exist in each bucket regardless of
+// the active status/source/etc filter.
+//
+// Pagination: cursor is a base64-encoded integer offset into the sorted,
+// filtered array. The 50/100-row ceiling in _listByPrefix is intentionally
+// bypassed here; pagination lives at this layer per the ADR.
+async function buildCallsList(filters = {}) {
+  const {
+    status: statusFilter,
+    source: sourceFilter,
+    // `tenant` is pre-resolved by the route handler:
+    //   superadmin → req.query.tenant (CSV of tenant ids, or absent = all)
+    //   non-superadmin → req.tenantId (forced; query param ignored)
+    tenant: tenantFilter,
+    mission_id,
+    company_id,
+    has_gaps,
+    from: fromParam,
+    to: toParam,
+    q,
+    cursor,
+    limit: limitParam,
+  } = filters;
+
+  const limit = Math.min(Math.max(parseInt(limitParam, 10) || 50, 1), 200);
+
+  // ── 1. Load portals → build meetingId → portal map ──────────────────────
+  const pKeys = await redis.keys(NS.portal + '*');
+  const pRaws = pKeys.length > 0 ? await redis.mget(pKeys) : [];
+  const portalByMeeting = new Map();
+  for (const raw of pRaws) {
+    if (!raw) continue;
+    try {
+      const p = JSON.parse(raw);
+      if (p && p.meetingId) portalByMeeting.set(p.meetingId, p);
+    } catch { /* corrupt blob — skip */ }
+  }
+
+  // ── 2. Load all meetings ─────────────────────────────────────────────────
+  const mKeys = await redis.keys(NS.meeting + '*');
+  const mRaws = mKeys.length > 0 ? await redis.mget(mKeys) : [];
+  const allMeetings = mRaws
+    .filter(Boolean)
+    .map((v) => { try { return JSON.parse(v); } catch { return null; } })
+    .filter(Boolean);
+
+  // ── 3. Build unified call rows ───────────────────────────────────────────
+  let calls = allMeetings.map((m) => {
+    const portal = portalByMeeting.get(m.id) || null;
+    const bucket = _bucketStatus(m.status || '', !!portal);
+    return {
+      id: m.id,
+      status: bucket,
+      rawStatus: m.status || null,
+      source: m.source || null,
+      createdAt: m.createdAt || null,
+      meeting: _meetingRefForCall(m),
+      portal: portalRefFromRecord(portal),
+    };
+  });
+
+  // ── 4. Tenant scope — security boundary, applied before facets ───────────
+  // A non-null tenantFilter means the caller is either non-superadmin
+  // (forced to their own tenantId) or a superadmin who passed tenant= param.
+  // Absent tenantFilter (superadmin, no param) → all tenants visible.
+  const tenantSet = _csvToSet(tenantFilter);
+  if (tenantSet) {
+    calls = calls.filter((c) => c.meeting && tenantSet.has(c.meeting.tenantId));
+  }
+
+  // ── 5. Compute facets over the full tenant-scoped set ────────────────────
+  const facets = {
+    status:  { pending: 0, analysing: 0, ready: 0, failed: 0 },
+    source:  {},
+    tenants: {},
+  };
+  for (const c of calls) {
+    if (c.status in facets.status) facets.status[c.status]++;
+    if (c.source) facets.source[c.source] = (facets.source[c.source] || 0) + 1;
+    const tid = c.meeting && c.meeting.tenantId;
+    if (tid) facets.tenants[tid] = (facets.tenants[tid] || 0) + 1;
+  }
+
+  // ── 6. Apply remaining filters ───────────────────────────────────────────
+  const statusSet  = _csvToSet(statusFilter);
+  const sourceSet  = _csvToSet(sourceFilter);
+  const missionSet = _csvToSet(mission_id);
+  const companySet = _csvToSet(company_id);
+  // _parseDateParam throws a 400-status error for present-but-unparseable
+  // values; absent params return null. No more silent NaN no-ops.
+  const fromTs     = _parseDateParam('from', fromParam);
+  const toTs       = _parseDateParam('to',   toParam);
+  const qLower     = q ? q.toLowerCase() : null;
+
+  const needsFilter = statusSet || sourceSet || missionSet || companySet ||
+                      fromTs !== null || toTs !== null || has_gaps || qLower;
+
+  if (needsFilter) {
+    calls = calls.filter((c) => {
+      if (statusSet && !statusSet.has(c.status)) return false;
+      if (sourceSet && !sourceSet.has(c.source)) return false;
+      if (missionSet && !(c.meeting && missionSet.has(c.meeting.missionId))) return false;
+      if (companySet && !(c.meeting && companySet.has(c.meeting.missionCompanyId))) return false;
+
+      if (fromTs !== null || toTs !== null) {
+        const ts = c.createdAt ? new Date(c.createdAt).getTime() : 0;
+        if (fromTs !== null && ts < fromTs) return false;
+        if (toTs   !== null && ts > toTs)   return false;
+      }
+
+      if (has_gaps) {
+        const audit = c.portal && c.portal.audit;
+        if (has_gaps === 'none' && (!audit || audit.gapCount > 0)) return false;
+        if (has_gaps === 'any'  && (!audit || audit.gapCount === 0)) return false;
+        if (has_gaps === 'high' && (!audit || !audit.hasHighSeverity)) return false;
+      }
+
+      if (qLower) {
+        const candidates = [
+          c.id,
+          c.portal && c.portal.title,
+          c.meeting && c.meeting.meetingUrl,
+        ];
+        const participants = (c.portal && c.portal.participants) || [];
+        for (const p of participants) {
+          if (p && p.name) candidates.push(p.name);
+        }
+        if (!candidates.some((f) => f && f.toLowerCase().includes(qLower))) return false;
+      }
+
+      return true;
+    });
+  }
+
+  // ── 7. Sort by createdAt DESC ─────────────────────────────────────────────
+  calls.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+  // ── 8. Cursor-based pagination ────────────────────────────────────────────
+  // Cursor is an opaque base64-encoded integer offset. Rebuilt fresh on every
+  // request so drift from concurrent writes is bounded to one page.
+  let offset = 0;
+  if (cursor) {
+    try {
+      offset = Math.max(
+        parseInt(Buffer.from(cursor, 'base64').toString('utf8'), 10) || 0,
+        0
+      );
+    } catch { offset = 0; }
+  }
+
+  const page       = calls.slice(offset, offset + limit);
+  const nextOffset = offset + page.length;
+  const hasMore    = nextOffset < calls.length;
+  const nextCursor = hasMore
+    ? Buffer.from(String(nextOffset)).toString('base64')
+    : null;
+
+  return {
+    calls: page,
+    pageInfo: { cursor: nextCursor, hasMore, total: calls.length },
+    facets,
+  };
+}
+
 module.exports = {
   newId,
   createMeeting,
@@ -181,4 +437,6 @@ module.exports = {
   listSessions,
   listMeetings,
   getCounts,
+  portalRefFromRecord,
+  buildCallsList,
 };
