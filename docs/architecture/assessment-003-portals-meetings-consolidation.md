@@ -43,9 +43,9 @@ Defended:
 - Status is the dominant axis. Tabs are right for a small finite enum; chips would let users combine incoherent states like "Ready + Failed."
 - Generalises forward: manual uploads and sample runs are still calls; `source` becomes a filter, not a separate page.
 
-**Why not (b) Meetings-as-ops + Portals-as-manager.** Two URLs for one entity perpetuates the exact question being asked. The H4/H9 enrichment becomes vestigial.
+**Why not (b) Meetings-as-ops + Portals-as-manager.** Two URLs for one entity; H4/H9 enrichment becomes vestigial.
 
-**Why not (c) Mission → Meeting → Portal tree.** Many meetings have no mission (manual `POST /meetings`, `/first-loop`, smoke tests) — a synthetic `(no mission)` node is messier than a flat list. Mission detail UI already exists at `#missions`.
+**Why not (c) Mission → Meeting → Portal tree.** Many meetings have no mission — a `(no mission)` node is messier than a flat list. Mission detail UI already exists at `#missions`.
 
 ---
 
@@ -113,8 +113,6 @@ Row identity is the **meeting id** (stable across the lifecycle); `portal` is nu
 - **Right-rail facet panel (collapsed by default):** Source, Tenant (superadmin only), Mission / Company autocomplete, Date range, Has-gaps tri-state, Has-portal.
 - **Per-row:** `Open ↗` (portal when `ready`, ops detail otherwise) plus overflow: `Replay` (for `failed`), `Reanalyze` (for `ready`).
 
-Right rail keeps the table wide and filtering discoverable — canonical for ops tables (chip-only cramped past three filters; left panel competes with the sidebar).
-
 ---
 
 ## 4. Migration path
@@ -141,11 +139,20 @@ Schema → API → UI, every step additive until the final removal.
 
 ## 6. Open questions for human decision
 
-1. **Is failure triage a manager concern or strictly sysadmin?** Drives the default tab and whether a `Calls (operations)` link is needed.
-2. **Is `POST /meetings` (paste-a-Zoom-link) being deprecated?** If so, "orphan (no-mission)" stops being a row state and the `has-mission` facet disappears.
-3. **Retention for failed meetings?** Redis keys live forever — the Failed tab fills with stale `analysis_failed` rows without a policy.
-4. **Tenant-scoped vs. platform-wide superadmin view?** Drives whether `tenant` is a facet or a top-of-page selector when multi-tenant lands.
-5. **Should First-Loop and sample runs hide from `Ready` by default?** They clutter the manager view; engineers still want them visible somewhere.
+**Decision #1 — Default tab** · **RESOLVED**
+Default tab = `Ready`. Rationale: managers should land on actionable/completed calls; in-flight rows are noise.
+Downstream commitments:
+- `Calls (operations)` superadmin link is **mandatory** (not optional).
+- Overview "success rate" tile sources from `Ready` count.
+- `Failed` tab must surface a count badge visible from the `Ready` view so managers see failure pressure without leaving their default tab.
+
+**Decision #2 — Failure triage owner** · **RESOLVED**
+Sysadmin owns failure triage. Consistent with Decision #1: the `Calls (operations)` link lands sysadmins on `Failed`; managers stay on `Ready`.
+
+3. **Is `POST /meetings` (paste-a-Zoom-link) being deprecated?** If so, "orphan (no-mission)" stops being a row state and the `has-mission` facet disappears.
+4. **Retention for failed meetings?** Redis keys live forever — the Failed tab fills with stale `analysis_failed` rows without a policy.
+5. **Tenant-scoped vs. platform-wide superadmin view?** Drives whether `tenant` is a facet or a top-of-page selector when multi-tenant lands.
+6. **Should First-Loop and sample runs hide from `Ready` by default?** They clutter the manager view; engineers still want them visible somewhere.
 
 ---
 
