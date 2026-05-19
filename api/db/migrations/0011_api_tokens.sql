@@ -30,7 +30,11 @@ CREATE TABLE api_tokens (
 
 CREATE INDEX api_tokens_tenant_user ON api_tokens (tenant_id, user_id);
 
--- Partial index — only active tokens — keeps the working set lean. The
--- per-user-cap query (count active tokens for this user) hits this directly.
+-- Partial index — only non-revoked tokens. We can't include
+-- `expires_at > now()` in the predicate because Postgres requires index
+-- predicates to be IMMUTABLE, and `now()` is STABLE. Expired-token
+-- filtering happens at query time in auth-tokens.js via the WHERE clause
+-- `(expires_at IS NULL OR expires_at > now())` — which DOES use the index
+-- (postgres will scan partial-index rows and filter expired post-scan).
 CREATE INDEX api_tokens_active_user ON api_tokens (user_id)
-  WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now());
+  WHERE revoked_at IS NULL;
