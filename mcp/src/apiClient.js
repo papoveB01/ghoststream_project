@@ -8,8 +8,16 @@
 // tool handler can map them to MCP error responses without re-parsing.
 // ---------------------------------------------------------------------------
 
+const PKG = require("../package.json");
+
 const DEFAULT_TIMEOUT_MS = 15000;
-const CLIENT_HEADER = "lili-mcp/0.1.0";
+
+// §11 Q9 (resolved 2026-05-19) — X-Client / User-Agent attribution.
+// Default to this package's own name+version. Lili overrides via the
+// GHOSTSTREAM_CLIENT_NAME env var (e.g. "lili-mcp/0.1.0") so server-side
+// audit logs can attribute calls to the spawning client. Capped at 100
+// chars per the RFC; longer is truncated.
+const CLIENT_HEADER = (process.env.GHOSTSTREAM_CLIENT_NAME || `${PKG.name}/${PKG.version}`).slice(0, 100);
 
 function classifyError(status, body) {
   if (status === 401 || status === 403) {
