@@ -3,15 +3,15 @@
   const show = (id) => $(id).classList.remove('hidden');
   const hide = (id) => $(id).classList.add('hidden');
 
-  const sections = ['overview', 'company', 'knowledge', 'missions', 'portals', 'sessions', 'meetings', 'integrations', 'caches', 'settings'];
+  const sections = ['overview', 'company', 'knowledge', 'missions', 'calls', 'calls-ops', 'sessions', 'integrations', 'caches', 'settings'];
   const loaders = {
     overview: loadOverview,
     company: loadCompany,
     knowledge: loadKnowledge,
     missions: loadMissions,
-    portals: loadPortals,
+    calls: loadCalls,
+    'calls-ops': loadCallsOps,
     sessions: loadSessions,
-    meetings: loadMeetings,
     integrations: loadIntegrations,
     caches: loadCaches,
     settings: loadSettings,
@@ -40,15 +40,52 @@
     $('user-avatar').textContent = (me.email || '?')[0].toUpperCase();
     isSuperadmin = !!me.isAdmin;
 
+    // Reveal superadmin-only nav entries before rendering the initial section
+    // so deep-linking to e.g. #calls-ops on a fresh load works.
+    if (isSuperadmin) {
+      document.querySelectorAll('.superadmin-only').forEach((el) => el.classList.remove('hidden'));
+    }
+
     wireNav();
     wireLogout();
     wireRefresh();
 
-    const initial = (window.location.hash.replace('#', '') || 'overview');
-    await switchSection(sections.includes(initial) ? initial : 'overview');
+    const initialRaw = window.location.hash.replace('#', '') || 'overview';
+    const { section: initialSection, query: initialQuery } = parseHash(initialRaw);
+    const redirected = legacyHashRedirect(initialSection, initialQuery);
+    if (redirected) {
+      history.replaceState(null, '', redirected.href);
+      await switchSection(redirected.section, redirected.query);
+    } else {
+      await switchSection(sections.includes(initialSection) ? initialSection : 'overview', initialQuery);
+    }
 
     hide('content-loading');
     show('content-body');
+  }
+
+  // Parse a hash like "calls?status=ready&q=foo" → { section, query }.
+  function parseHash(raw) {
+    if (!raw) return { section: 'overview', query: {} };
+    const [section, qs] = raw.split('?');
+    const query = {};
+    if (qs) {
+      const sp = new URLSearchParams(qs);
+      sp.forEach((v, k) => { query[k] = v; });
+    }
+    return { section, query };
+  }
+
+  // #portals → #calls?status=ready (Decision #1 cascade — Portals were always
+  // ready-only). #meetings → #calls (no filter). Returns null when no redirect.
+  function legacyHashRedirect(section, query) {
+    if (section === 'portals') {
+      return { section: 'calls', query: { ...query, status: 'ready' }, href: '#calls?status=ready' };
+    }
+    if (section === 'meetings') {
+      return { section: 'calls', query, href: '#calls' };
+    }
+    return null;
   }
 
   function wireNav() {
@@ -56,7 +93,7 @@
       a.addEventListener('click', (e) => {
         e.preventDefault();
         const sec = a.dataset.section;
-        switchSection(sec);
+        switchSection(sec, {});
         history.replaceState(null, '', `#${sec}`);
       });
     });
@@ -64,8 +101,17 @@
     // (the sidebar handler uses replaceState, which doesn't fire hashchange) —
     // honour them so cross-section deep links work everywhere.
     window.addEventListener('hashchange', () => {
-      const sec = window.location.hash.replace('#', '');
-      if (sections.includes(sec) && sec !== currentSection) switchSection(sec);
+      const raw = window.location.hash.replace('#', '');
+      const { section, query } = parseHash(raw);
+      const redirected = legacyHashRedirect(section, query);
+      if (redirected) {
+        history.replaceState(null, '', redirected.href);
+        switchSection(redirected.section, redirected.query);
+        return;
+      }
+      if (sections.includes(section) && (section !== currentSection || Object.keys(query).length > 0)) {
+        switchSection(section, query);
+      }
     });
   }
 
@@ -83,19 +129,24 @@
     });
   }
 
-  async function switchSection(sec) {
+  async function switchSection(sec, query) {
     currentSection = sec;
     document.querySelectorAll('#nav a').forEach((a) => {
       a.classList.toggle('active', a.dataset.section === sec);
     });
     sections.forEach((s) => {
       const el = $(`section-${s}`);
+      if (!el) return;
       if (s === sec) el.classList.remove('hidden'); else el.classList.add('hidden');
     });
     $('page-title').textContent = titleFor(sec);
     if (!loaded[sec]) {
-      try { await loaders[sec](); loaded[sec] = true; }
+      try { await loaders[sec](query || {}); loaded[sec] = true; }
       catch (err) { console.error(err); }
+    } else if (sec === 'calls' && query) {
+      // Already-loaded Calls page — re-apply the query so deep-linked filter
+      // changes (e.g. clicking a chip or external link) take effect.
+      applyCallsQuery(query);
     }
   }
 
@@ -105,9 +156,9 @@
       company: 'Company Profile',
       knowledge: 'Knowledge Base',
       missions: 'Missions',
-      portals: 'Portals',
+      calls: 'Calls',
+      'calls-ops': 'Calls — Operations',
       sessions: 'Arena Sessions',
-      meetings: 'Meetings',
       integrations: 'Integrations',
       caches: 'Gemini Caches',
       settings: 'Settings',
@@ -127,10 +178,20 @@
   async function loadOverview() {
     const o = await fetchJson('/api/admin/overview');
 
+    // ADR-003 Decision #1 cascade — Portals + Meetings collapse into a single
+    // "Calls" pipeline. The overview now surfaces Ready (= analysed call you
+    // can open) and Success rate (= ready / non-pending), which is the metric
+    // the user actually reads when triaging the pipeline. Sessions/caches
+    // remain in their own cards since they live on a different axis.
+    const callsCounts = o.counts.calls || {};
+    const ready = callsCounts.ready ?? o.counts.portals ?? 0;
+    const total = callsCounts.total ?? ((callsCounts.pending || 0) + (callsCounts.analysing || 0) + (callsCounts.ready || 0) + (callsCounts.failed || 0));
+    const denom = total - (callsCounts.pending || 0);
+    const successRate = denom > 0 ? Math.round((ready / denom) * 100) : null;
     $('stat-cards').innerHTML = [
-      statCard('Portals', o.counts.portals),
+      statCard('Ready calls', ready),
+      statCard('Success rate', successRate == null ? '—' : `${successRate}%`),
       statCard('Arena Sessions', o.counts.sessions),
-      statCard('Meetings', o.counts.meetings),
       statCard('Active Caches', o.counts.caches),
     ].join('');
 
@@ -152,20 +213,6 @@
         <div class="k">App base URL</div><div class="v mono">${escapeHtml(o.env.appBaseUrl || '')}</div>
       </dl>
     `;
-  }
-
-  async function loadPortals() {
-    const { portals } = await fetchJson('/api/admin/portals');
-    $('portals-table').innerHTML = portals.length === 0
-      ? '<div class="empty">No portals yet. Run <code>POST /api/first-loop</code> to generate one.</div>'
-      : `
-        <table class="dt">
-          <thead><tr>
-            <th>ID</th><th>Title</th><th>Meeting</th><th>Duration</th>
-            <th>Objection</th><th>Created</th><th></th>
-          </tr></thead>
-          <tbody>${portals.map(portalRow).join('')}</tbody>
-        </table>`;
   }
 
   // mm:ss for short calls, h:mm:ss for >= 1h. Returns '—' when missing.
@@ -213,21 +260,6 @@
       </div>`;
   }
 
-  function portalRow(p) {
-    const o = (p.moments && p.moments.objection) || {};
-    const duration = p.meeting && p.meeting.durationSeconds;
-    return `
-      <tr>
-        <td class="mono">${escapeHtml(p.id)}</td>
-        <td class="truncate">${escapeHtml(p.title || '—')}</td>
-        <td>${meetingRefCell(p.meeting)}</td>
-        <td class="mono">${fmtDuration(duration)}</td>
-        <td class="truncate"><em>${escapeHtml((o.quote || '').slice(0, 90))}${o.quote && o.quote.length > 90 ? '…' : ''}</em></td>
-        <td>${fmtDate(p.createdAt)}</td>
-        <td><a href="/portal/?id=${encodeURIComponent(p.id)}" target="_blank">Open ↗</a></td>
-      </tr>`;
-  }
-
   async function loadSessions() {
     const { sessions } = await fetchJson('/api/admin/sessions');
     $('sessions-table').innerHTML = sessions.length === 0
@@ -249,31 +281,6 @@
         <td>${userTurns}</td>
         <td>${fmtDate(s.createdAt)}</td>
         <td><a href="/arena/?id=${encodeURIComponent(s.id)}" target="_blank">Open ↗</a></td>
-      </tr>`;
-  }
-
-  async function loadMeetings() {
-    const { meetings } = await fetchJson('/api/admin/meetings');
-    $('meetings-table').innerHTML = meetings.length === 0
-      ? '<div class="empty">No meetings yet.</div>'
-      : `
-        <table class="dt">
-          <thead><tr><th>ID</th><th>Source</th><th>Status</th><th>Portal</th><th>Created</th></tr></thead>
-          <tbody>${meetings.map(meetingRow).join('')}</tbody>
-        </table>`;
-  }
-
-  function meetingRow(m) {
-    const portalLink = m.portalId
-      ? `<a href="/portal/?id=${encodeURIComponent(m.portalId)}" target="_blank">${escapeHtml(m.portalId)} ↗</a>`
-      : '—';
-    return `
-      <tr>
-        <td class="mono">${escapeHtml(m.id)}</td>
-        <td>${escapeHtml(m.source || '—')}</td>
-        <td>${escapeHtml(m.status || '—')}</td>
-        <td class="mono">${portalLink}</td>
-        <td>${fmtDate(m.createdAt)}</td>
       </tr>`;
   }
 
@@ -2665,5 +2672,437 @@
   function revealNewToken(plaintext) {
     $('api-token-plaintext').textContent = plaintext;
     show('api-token-reveal-card');
+  }
+
+  // ── Calls page ─────────────────────────────────────────────────────────────
+  // ADR-003 Phase-2 unified replacement for Portals + Meetings. Talks to the
+  // additive GET /admin/calls endpoint shipped in PR #9. State lives in the
+  // closure so re-entering the section via hash-link picks up the previous
+  // tab/search/facets, but a fresh page load starts clean. The API uses
+  // cursor pagination — we keep a forward stack so Prev works without a
+  // re-query.
+
+  const _callsState = {
+    cursor: null,           // current page cursor; null = first page
+    cursorStack: [],        // previous cursors, for Prev
+    nextCursor: null,       // cursor for Next (from pageInfo)
+    limit: 25,
+    status: '',
+    q: '',
+    // Facets map directly onto API query params:
+    //   source     → CSV
+    //   mission_id → CSV
+    //   company_id → CSV
+    //   has_gaps   → 'none' | 'any' | 'high'
+    //   has_portal → 'true' | 'false'
+    facets: {},
+    includeSamples: false,
+    tenant: '',             // superadmin only — empty = own tenant (or all if no filter)
+    inflight: 0,
+    searchDebounce: null,
+  };
+
+  function applyCallsQuery(query) {
+    if (!query) return;
+    if (typeof query.status === 'string') _callsState.status = query.status;
+    if (typeof query.q === 'string') _callsState.q = query.q;
+    if (query.include_samples === '1' || query.include_samples === 'true') _callsState.includeSamples = true;
+    ['source', 'mission_id', 'company_id'].forEach((k) => {
+      if (typeof query[k] === 'string' && query[k]) {
+        _callsState.facets[k] = query[k].split(',').filter(Boolean);
+      }
+    });
+    if (typeof query.has_gaps === 'string' && query.has_gaps) _callsState.facets.has_gaps = query.has_gaps;
+    if (typeof query.has_portal === 'string' && query.has_portal) _callsState.facets.has_portal = query.has_portal;
+    if (typeof query.tenant === 'string') _callsState.tenant = query.tenant;
+    _callsState.cursor = null;
+    _callsState.cursorStack = [];
+
+    const tabBtns = document.querySelectorAll('#calls-tabs .calls-tab');
+    tabBtns.forEach((b) => b.classList.toggle('active', (b.dataset.status || '') === _callsState.status));
+    const searchInput = $('calls-search');
+    if (searchInput) searchInput.value = _callsState.q;
+    const samplesToggle = $('calls-samples-toggle');
+    if (samplesToggle) samplesToggle.checked = _callsState.includeSamples;
+    refreshCalls();
+  }
+
+  async function loadCalls(query) {
+    // Wire controls once; idempotent guard via dataset flag.
+    const tabsHost = $('calls-tabs');
+    if (tabsHost && tabsHost.dataset.wired !== '1') {
+      tabsHost.dataset.wired = '1';
+      tabsHost.querySelectorAll('.calls-tab').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          _callsState.status = btn.dataset.status || '';
+          _callsState.cursor = null;
+          _callsState.cursorStack = [];
+          tabsHost.querySelectorAll('.calls-tab').forEach((b) => b.classList.toggle('active', b === btn));
+          pushCallsHash();
+          refreshCalls();
+        });
+      });
+    }
+
+    const searchInput = $('calls-search');
+    if (searchInput && searchInput.dataset.wired !== '1') {
+      searchInput.dataset.wired = '1';
+      searchInput.addEventListener('input', () => {
+        clearTimeout(_callsState.searchDebounce);
+        _callsState.searchDebounce = setTimeout(() => {
+          _callsState.q = searchInput.value.trim();
+          _callsState.cursor = null;
+          _callsState.cursorStack = [];
+          pushCallsHash();
+          refreshCalls();
+        }, 250);
+      });
+    }
+
+    const samplesToggle = $('calls-samples-toggle');
+    if (samplesToggle && samplesToggle.dataset.wired !== '1') {
+      samplesToggle.dataset.wired = '1';
+      samplesToggle.addEventListener('change', () => {
+        _callsState.includeSamples = samplesToggle.checked;
+        _callsState.cursor = null;
+        _callsState.cursorStack = [];
+        pushCallsHash();
+        refreshCalls();
+      });
+    }
+
+    // Tenant selector — only superadmins can switch.
+    if (isSuperadmin) {
+      const row = $('calls-tenant-row');
+      if (row) row.classList.remove('hidden');
+      const select = $('calls-tenant-select');
+      if (select && select.dataset.wired !== '1') {
+        select.dataset.wired = '1';
+        try {
+          const { tenants } = await fetchJson('/api/admin/tenants');
+          select.innerHTML =
+            '<option value="">All tenants</option>' +
+            tenants.map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name || t.id)}</option>`).join('');
+        } catch (err) {
+          console.warn('tenant list failed', err);
+          select.innerHTML = '<option value="">All tenants</option>';
+        }
+        select.addEventListener('change', () => {
+          _callsState.tenant = select.value;
+          _callsState.cursor = null;
+          _callsState.cursorStack = [];
+          pushCallsHash();
+          refreshCalls();
+        });
+      }
+    }
+
+    if (query) {
+      applyCallsQuery(query);
+    } else {
+      refreshCalls();
+    }
+  }
+
+  function pushCallsHash() {
+    // Persistent URL parts only — cursor is page-local navigation state and
+    // would just clutter shared links.
+    const params = new URLSearchParams();
+    if (_callsState.status) params.set('status', _callsState.status);
+    if (_callsState.q) params.set('q', _callsState.q);
+    if (_callsState.includeSamples) params.set('include_samples', '1');
+    if (_callsState.tenant) params.set('tenant', _callsState.tenant);
+    Object.entries(_callsState.facets).forEach(([k, v]) => {
+      if (Array.isArray(v) && v.length) params.set(k, v.join(','));
+      else if (typeof v === 'string' && v) params.set(k, v);
+    });
+    const qs = params.toString();
+    history.replaceState(null, '', qs ? `#calls?${qs}` : '#calls');
+  }
+
+  function _buildCallsQuery() {
+    const params = new URLSearchParams();
+    if (_callsState.status) params.set('status', _callsState.status);
+    if (_callsState.q) params.set('q', _callsState.q);
+    params.set('limit', String(_callsState.limit));
+    if (_callsState.cursor) params.set('cursor', _callsState.cursor);
+    if (_callsState.includeSamples) params.set('include_samples', '1');
+    if (_callsState.tenant) params.set('tenant', _callsState.tenant);
+    Object.entries(_callsState.facets).forEach(([k, v]) => {
+      if (Array.isArray(v) && v.length) params.set(k, v.join(','));
+      else if (typeof v === 'string' && v) params.set(k, v);
+    });
+    return params;
+  }
+
+  async function refreshCalls() {
+    const token = ++_callsState.inflight;
+    const params = _buildCallsQuery();
+
+    const tableHost = $('calls-table');
+    if (tableHost && !tableHost.dataset.everLoaded) tableHost.innerHTML = '<div class="kb-subtle">Loading…</div>';
+
+    let body;
+    try {
+      body = await fetchJson(`/api/admin/calls?${params.toString()}`);
+    } catch (err) {
+      if (token !== _callsState.inflight) return;
+      if (tableHost) tableHost.innerHTML = `<div class="empty">Couldn't load calls: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    if (token !== _callsState.inflight) return;
+
+    updateCallsTable(body);
+    if (tableHost) tableHost.dataset.everLoaded = '1';
+  }
+
+  function updateCallsTable(body) {
+    const calls = body.calls || [];
+    const facets = body.facets || {};
+    const pageInfo = body.pageInfo || { hasMore: false, cursor: null, total: calls.length };
+    _callsState.nextCursor = pageInfo.cursor || null;
+    const statusCounts = (facets && facets.status) || { pending: 0, analysing: 0, ready: 0, failed: 0 };
+
+    // Tab counts come from the status facet — which is computed over the
+    // tenant-scoped full set, BEFORE the active status filter, so the badges
+    // remain meaningful when a tab is selected.
+    document.querySelectorAll('#calls-tabs .calls-tab-count').forEach((el) => {
+      const key = el.dataset.count;
+      const n = key === 'all'
+        ? ((statusCounts.pending || 0) + (statusCounts.analysing || 0) + (statusCounts.ready || 0) + (statusCounts.failed || 0))
+        : (statusCounts[key] || 0);
+      el.textContent = n > 0 ? n : '';
+    });
+
+    // Active filter chips.
+    _renderCallsChips();
+
+    // Table body.
+    const tableHost = $('calls-table');
+    if (tableHost) {
+      tableHost.innerHTML = calls.length === 0
+        ? '<div class="empty">No calls match the current filters.</div>'
+        : `
+          <table class="dt">
+            <thead><tr>
+              <th>Title</th><th>Source</th><th>Status</th><th>Mission</th>
+              <th>Duration</th><th>Created</th><th></th>
+            </tr></thead>
+            <tbody>${calls.map(callsRow).join('')}</tbody>
+          </table>`;
+    }
+
+    // Right-rail facets + pagination.
+    _renderCallsFacets(facets);
+    _renderCallsPagination(pageInfo);
+  }
+
+  function callsRow(c) {
+    const meeting = c.meeting || {};
+    const portal = c.portal || null;
+    const duration = meeting.durationSeconds;
+    const statusPill = `<span class="pill pill-${escapeHtml(c.status || 'pending')}">${escapeHtml(c.status || 'pending')}</span>`;
+    const sourcePill = c.source
+      ? `<span class="pill pill-${escapeHtml(c.source)}">${escapeHtml(c.source)}</span>`
+      : '<span class="muted">—</span>';
+    const missionId = meeting.missionId;
+    const missionCell = missionId
+      ? `<span class="mono muted" title="mission ${escapeHtml(missionId)}">${escapeHtml(missionId.slice(0, 8))}…</span>`
+      : '<span class="muted">—</span>';
+    const title = (portal && portal.title) || meeting.title || meeting.meetingUrl || c.id;
+    // Action column — buckets dictate options:
+    //   ready  → Open ↗ to the portal viewer
+    //   others → no action (pending/analysing finish on their own; failed
+    //            requires capture re-run, not a UI button)
+    const action = (c.status === 'ready' && portal)
+      ? `<a href="/portal/?id=${encodeURIComponent(portal.id)}" target="_blank">Open ↗</a>`
+      : '<span class="muted">—</span>';
+    return `
+      <tr>
+        <td class="truncate" title="${escapeHtml(title)}">${escapeHtml(title)}</td>
+        <td>${sourcePill}</td>
+        <td>${statusPill}</td>
+        <td>${missionCell}</td>
+        <td class="mono">${fmtDuration(duration)}</td>
+        <td>${fmtDate(c.createdAt)}</td>
+        <td>${action}</td>
+      </tr>`;
+  }
+
+  async function callsReanalyze(portalId, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Reanalyzing…'; }
+    try {
+      const r = await fetch(`/api/portals/${encodeURIComponent(portalId)}/reanalyze`, {
+        method: 'POST', credentials: 'include',
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      refreshCalls();
+    } catch (err) {
+      alert(`Reanalyze failed: ${err.message}`);
+      if (btn) { btn.disabled = false; btn.textContent = 'Reanalyze'; }
+    }
+  }
+
+  function _renderCallsChips() {
+    const host = $('calls-chips');
+    if (!host) return;
+    const chips = [];
+    if (_callsState.q) chips.push({ k: 'q', label: `“${_callsState.q}”` });
+    Object.entries(_callsState.facets).forEach(([k, v]) => {
+      if (Array.isArray(v)) v.forEach((val) => chips.push({ k, val, label: `${k}: ${val}` }));
+      else if (v) chips.push({ k, label: `${k}: ${v}` });
+    });
+    if (_callsState.includeSamples) chips.push({ k: 'samples', label: 'showing samples' });
+    if (chips.length === 0) { host.innerHTML = ''; return; }
+    host.innerHTML = chips.map((c, i) =>
+      `<button type="button" class="calls-chip" data-chip-idx="${i}" data-chip-k="${escapeHtml(c.k)}" data-chip-val="${escapeHtml(c.val || '')}">${escapeHtml(c.label)} ✕</button>`
+    ).join('') + ' <button type="button" class="calls-chip calls-chip-clear" data-chip-clear="1">Clear all ✕</button>';
+    host.querySelectorAll('[data-chip-clear]').forEach((b) => b.addEventListener('click', () => {
+      _callsState.q = ''; _callsState.facets = {}; _callsState.includeSamples = false;
+      _callsState.cursor = null; _callsState.cursorStack = [];
+      $('calls-search').value = '';
+      $('calls-samples-toggle').checked = false;
+      pushCallsHash(); refreshCalls();
+    }));
+    host.querySelectorAll('.calls-chip[data-chip-k]').forEach((b) => b.addEventListener('click', () => {
+      const k = b.dataset.chipK;
+      const val = b.dataset.chipVal;
+      if (k === 'q') { _callsState.q = ''; $('calls-search').value = ''; }
+      else if (k === 'samples') { _callsState.includeSamples = false; $('calls-samples-toggle').checked = false; }
+      else if (Array.isArray(_callsState.facets[k])) {
+        _callsState.facets[k] = _callsState.facets[k].filter((v) => v !== val);
+        if (_callsState.facets[k].length === 0) delete _callsState.facets[k];
+      } else {
+        delete _callsState.facets[k];
+      }
+      _callsState.cursor = null;
+      _callsState.cursorStack = [];
+      pushCallsHash(); refreshCalls();
+    }));
+  }
+
+  function _renderCallsFacets(facets) {
+    const host = $('calls-facets');
+    if (!host) return;
+    // Right-rail (§3.2). API returns facets.source as { value: count } map.
+    // Mission/Company facets aren't surfaced by the API yet — they're driven
+    // by direct deep-links from the Missions page (?mission_id=…) instead.
+    const groups = [];
+
+    const sourceItems = Object.entries(facets.source || {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([value, count]) => ({ value, count }));
+    if (sourceItems.length) groups.push({ key: 'source', label: 'Source', items: sourceItems, multi: true });
+
+    // Has-gaps & Has-portal — tri-state toggles. Buttons cycle off/'any'/'none'
+    // for gaps; off/'true'/'false' for portal. Tap to apply, tap again to clear.
+    groups.push({ key: 'has_gaps', label: 'Has gaps', items: [
+      { value: 'any',  label: 'Has gaps' },
+      { value: 'high', label: 'High-severity gaps' },
+      { value: 'none', label: 'No gaps' },
+    ], multi: false });
+    groups.push({ key: 'has_portal', label: 'Portal', items: [
+      { value: 'true',  label: 'Has portal' },
+      { value: 'false', label: 'No portal' },
+    ], multi: false });
+
+    host.innerHTML = groups.map((g) => {
+      const items = (g.items || []).map((it) => {
+        const value = it.value;
+        const label = it.label || value;
+        const count = it.count;
+        const active = g.multi
+          ? (_callsState.facets[g.key] || []).includes(value)
+          : _callsState.facets[g.key] === value;
+        return `<button type="button" class="facet-item${active ? ' active' : ''}" data-facet-k="${escapeHtml(g.key)}" data-facet-v="${escapeHtml(value)}" data-facet-multi="${g.multi ? '1' : '0'}">
+          <span>${escapeHtml(label)}</span>${count != null ? `<span class="facet-count">${count}</span>` : ''}
+        </button>`;
+      }).join('');
+      return `<div class="facet-group"><h4>${escapeHtml(g.label)}</h4>${items}</div>`;
+    }).join('');
+
+    host.querySelectorAll('.facet-item').forEach((b) => b.addEventListener('click', () => {
+      const k = b.dataset.facetK;
+      const v = b.dataset.facetV;
+      const multi = b.dataset.facetMulti === '1';
+      if (multi) {
+        const cur = _callsState.facets[k] || [];
+        if (cur.includes(v)) {
+          _callsState.facets[k] = cur.filter((x) => x !== v);
+          if (_callsState.facets[k].length === 0) delete _callsState.facets[k];
+        } else {
+          _callsState.facets[k] = [...cur, v];
+        }
+      } else {
+        if (_callsState.facets[k] === v) delete _callsState.facets[k];
+        else _callsState.facets[k] = v;
+      }
+      _callsState.cursor = null;
+      _callsState.cursorStack = [];
+      pushCallsHash(); refreshCalls();
+    }));
+  }
+
+  function _renderCallsPagination(pageInfo) {
+    const host = $('calls-pagination');
+    if (!host) return;
+    const hasMore = !!pageInfo.hasMore;
+    const hasPrev = _callsState.cursorStack.length > 0;
+    const total = pageInfo.total || 0;
+    if (!hasMore && !hasPrev) {
+      host.innerHTML = total > 0 ? `<span class="muted">${total} call${total === 1 ? '' : 's'}</span>` : '';
+      return;
+    }
+    host.innerHTML = `
+      <button type="button" class="kb-secondary-btn" data-page-prev="1" ${hasPrev ? '' : 'disabled'}>← Prev</button>
+      <span class="muted">${total} total</span>
+      <button type="button" class="kb-secondary-btn" data-page-next="1" ${hasMore ? '' : 'disabled'}>Next →</button>`;
+    const prev = host.querySelector('[data-page-prev]');
+    if (prev) prev.addEventListener('click', () => {
+      const c = _callsState.cursorStack.pop() || null;
+      _callsState.cursor = c;
+      refreshCalls();
+    });
+    const next = host.querySelector('[data-page-next]');
+    if (next) next.addEventListener('click', () => {
+      if (!_callsState.nextCursor) return;
+      _callsState.cursorStack.push(_callsState.cursor);
+      _callsState.cursor = _callsState.nextCursor;
+      refreshCalls();
+    });
+  }
+
+  // ── Calls operations (superadmin) — failed/stuck queue surface ─────────────
+  // No replay UI yet: a failed capture run isn't fixable from a button (the
+  // upstream Recall bot has to be restarted server-side). This is a read-only
+  // triage table — sort failed calls newest-first and link to capture logs.
+  async function loadCallsOps() {
+    if (!isSuperadmin) {
+      $('calls-ops-table').innerHTML = '<div class="empty">Superadmin only.</div>';
+      return;
+    }
+    let data;
+    try {
+      data = await fetchJson('/api/admin/calls?status=failed&limit=50&include_samples=1');
+    } catch (err) {
+      $('calls-ops-table').innerHTML = `<div class="empty">Couldn't load: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    const calls = data.calls || [];
+    $('calls-ops-table').innerHTML = calls.length === 0
+      ? '<div class="empty">No failed calls.</div>'
+      : `
+        <table class="dt">
+          <thead><tr>
+            <th>ID</th><th>Source</th><th>Raw status</th><th>Created</th>
+          </tr></thead>
+          <tbody>${calls.map((c) => `
+            <tr>
+              <td class="mono">${escapeHtml(c.id)}</td>
+              <td>${escapeHtml(c.source || '—')}</td>
+              <td class="mono">${escapeHtml(c.rawStatus || '—')}</td>
+              <td>${fmtDate(c.createdAt)}</td>
+            </tr>`).join('')}</tbody>
+        </table>`;
   }
 })();
