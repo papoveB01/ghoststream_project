@@ -55,7 +55,7 @@ Calls: retrieval.retrieveContext(query, { tenantId, k, categories, ... })
 Returns: { chunks: [...], query: string }
 ```
 
-`retrieveContext()` resolves tenant scope from `req.tenant.id` (set by the auth middleware), so once we add a second auth path that also sets `req.tenant`, the search route works unchanged.
+`retrieveContext()` resolves tenant scope from `req.tenantId` (set by `authMiddleware` in `api/src/auth.js:100` — `req.tenantId = claims.tid`), so once we add a second auth path that also populates `req.tenantId`, the search route works unchanged.
 
 ### 2.3 Why an MCP server (vs. a REST integration in Lili directly)
 
@@ -116,7 +116,7 @@ Returns: { chunks: [...], query: string }
                           │   │   └─ Bearer-token path (NEW)  │ │
                           │   └──────────────┬───────────────┘  │
                           │                  │ sets req.user,   │
-                          │                  │ req.tenant       │
+                          │                  │ req.tenantId     │
                           │                  ▼                  │
                           │   POST /knowledge/search → retrieveContext()  │
                           │                  │                  │
@@ -182,7 +182,9 @@ New file `api/src/auth-token.js` exporting `apiTokenMiddleware(req, res, next)`:
 4. `SELECT * FROM api_tokens WHERE prefix = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())`.
 5. If no row → `401 invalid_token`.
 6. `bcrypt.compare(plaintext, row.token_hash)`. If false → `401 invalid_token`.
-7. Set `req.user = { id: row.user_id }`, `req.tenant = { id: row.tenant_id }`, plus whatever else `authMiddleware` populates today.
+7. Populate request context to match `authMiddleware`'s JWT-path shape exactly:
+   - `req.tenantId = row.tenant_id` (flat, **not** `req.tenant.id` — see `api/src/auth.js:100`).
+   - `req.user = { sub: row.user_id, tid: row.tenant_id, email, role, adm, token_id: row.id }` — JOIN `api_tokens` against `users` at lookup time so `email`, `role`, `adm` come from the live user row. **Critical:** the admin guard at `auth.js:116` reads `req.user.adm`; missing that field silently breaks bearer-token requests to admin routes.
 8. Async-fire `UPDATE api_tokens SET last_used_at = now() WHERE id = $1` (don't await — best-effort).
 9. `next()`.
 
@@ -200,6 +202,8 @@ All gated by `authMiddleware` (so token creation requires a logged-in session �
 
 Rate-limit `POST /auth/tokens` to, say, 5/hour/user to discourage scripting token generation.
 
+**Dependency note:** no rate-limiter middleware exists in `api/src/` today. Add `express-rate-limit` (Redis-backed via `rate-limit-redis` if we want multi-instance cleanliness) as a workstream-A sub-deliverable, or document that v1 ships without the limit and accept that risk explicitly.
+
 ### 5.5 Web UI changes (`web/`)
 
 Settings page: "API tokens" section.
@@ -214,6 +218,8 @@ Settings page: "API tokens" section.
 - Log every successful Bearer auth with `{ token_id, tenant_id, user_id, route, ip }` at INFO. (Don't log the token itself, ever.)
 - Metric: `api_tokens_used_total{result=ok|invalid|revoked|expired}` counter.
 - Alert on >50 invalid token attempts/min from one IP — possible brute force.
+
+**Dependency note:** the project has no metrics pipeline or alerting infrastructure today (per PR #9's CodeReviewer review, no CI is configured either). The structured INFO log is trivial to add. The counter and brute-force alert require infra that doesn't yet exist — treat them as best-effort for v1. The structured log is the durable surface; the metric and alert can land once observability becomes its own workstream.
 
 ### 5.7 Tests the GhostStream team should write
 
@@ -232,6 +238,17 @@ Settings page: "API tokens" section.
 4. **`last_used_at` write strategy**: hot-path update on every request, or buffer-write every N seconds? Suggest the latter via Redis to keep search latency clean.
 5. **Audit log table** vs. log lines: do you want `api_token_events (token_id, kind, occurred_at, ip, route)` as its own table for queryable history, or are structured logs enough?
 6. **Tenant switch**: a user can belong to multiple tenants. Should the token bind to a specific tenant at mint time (recommended) or carry the user's "default tenant"?
+
+### 5.9 Token rotation procedure
+
+There is no in-place refresh. A user rotating a token (suspected compromise or routine rotation) follows this order:
+
+1. Mint a new token via Settings → API tokens (`POST /auth/tokens`).
+2. Copy the plaintext.
+3. In Lili → Connections → GhostStream → update the `ghoststream_api_token` secret.
+4. Revoke the old token via Settings → API tokens (`DELETE /auth/tokens/:id`).
+
+**Order matters** — revoking before swapping causes a window where Lili authenticates with a dead token and tool calls 401-out. The Settings UI should show a "Rotate" affordance that walks the user through this ordering.
 
 ---
 
@@ -420,6 +437,18 @@ If empirical testing shows the model under-uses the tool, we'll add a one-line h
 - **Tray menu**: unchanged for v1.
 - **Voice flow**: identical to existing wake-then-ask. Latency budget: target end-to-end p50 under 3s from wake-end to first TTS token (search + Gemini stream).
 
+### 7.5 MCP server lifecycle and failure modes
+
+The MCP server is a child process spawned by Lili. Three failure modes need explicit Lili-side handling — none affect the GhostStream API contract:
+
+1. **Process crash** — Lili detects the dead stdio pipe and re-spawns the server on the next tool call. Exponential backoff on repeated crashes (1s → 4s → 16s, cap at 60s). After 3 consecutive failed spawns, surface "GhostStream connection lost" in the Connections panel and disable the preset until manual retry.
+2. **Hang / unresponsive** — every tool call has a hard timeout (default 15s per `GHOSTSTREAM_TIMEOUT_MS`, see §6.2). On timeout, cancel the call and return `is_error: true` with "GhostStream took too long to respond." The agent loop decides whether to retry or answer from priors.
+3. **Auth failure surfacing** — `is_error: true` from §6.3 step 4 propagates to Lili's UI as: "Your GhostStream API token may be revoked or expired — re-mint at Settings → API tokens and update the secret in Connections."
+
+### 7.6 Lili-side response cache
+
+For the "user repeats themselves within a minute" case, Lili holds an LRU-64 in-memory cache keyed on `(query, k, categories)` with a 60s TTL on `kb_search` results. Single-user desktop app — no Redis needed. Cache is busted on app restart and on token-secret change (token-change implies tenant-change in v1).
+
 ---
 
 ## 8. End-to-end call sequence
@@ -447,10 +476,10 @@ Lili invokes MCP tool → spawned ghoststream MCP server (already running on std
   ▼
 GhostStream api (Express)
   ├─ apiTokenMiddleware: parse prefix → SELECT api_tokens → bcrypt.compare
-  ├─ Sets req.user, req.tenant
+  ├─ Sets req.user, req.tenantId
   ├─ knowledge router → retrieval.retrieveContext()
   │    ├─ text-embedding-004(query) → 768-d vector
-  │    ├─ pgvector cosine search over kb_chunks WHERE tenant_id = req.tenant.id
+  │    ├─ pgvector cosine search over kb_chunks WHERE tenant_id = req.tenantId
   │    └─ Returns top-8 chunks with metadata
   ├─ Response JSON
   │
@@ -518,7 +547,7 @@ For the GhostStream team:
 7. Chunk response trimming policy?
 8. Citation format for voice consumption?
 9. `X-Client` attribution header support?
-10. Acceptable end-to-end latency budget on `/knowledge/search`? Lili targets p50 < 3s wake-to-speech, of which the API call is the dominant variable cost.
+10. **Latency budget for `/knowledge/search` — proposed:** **p50 < 400ms, p95 < 800ms** (warm cache, after embedding). Reasoning: Lili's wake-to-speech budget = STT ≈ 300ms + agent loop ≈ 500ms + TTS first-token ≈ 600ms + search ≈ 400ms ≈ 1.8s p50, leaving margin under the 3s end-to-end target. If the GhostStream team has different numbers, counter-propose — but pick something **measurable in A2 staging**, not "as fast as possible."
 
 For the Lili team (resolved here, captured for visibility):
 
