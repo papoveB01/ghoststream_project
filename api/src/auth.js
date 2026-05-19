@@ -8,6 +8,7 @@
 
 const jwt = require('jsonwebtoken');
 const users = require('./users');
+const apiTokens = require('./auth-tokens');
 
 const JWT_SECRET = process.env.JWT_SECRET || '';
 const COOKIE_NAME = 'gs_admin';
@@ -90,24 +91,58 @@ function tokenFromRequest(req) {
 }
 
 // Require a valid session. Attaches:
-//   req.user     — the token claims ({ sub, tid, email, role, adm })
+//   req.user     — the token claims ({ sub, tid, email, role, adm } [+ token_id
+//                  when authenticated via a bearer PAT])
 //   req.tenantId — shorthand for req.user.tid; the value every data query
-//                  must scope by once tenant-scoping lands.
-function authMiddleware(req, res, next) {
-  const claims = verifyToken(tokenFromRequest(req));
-  if (!claims) return res.status(401).json({ error: 'unauthorized' });
-  req.user = claims;
-  req.tenantId = claims.tid;
-  next();
+//                  must scope by.
+//
+// Two auth paths, tried in order:
+//   1. JWT  — cookie or `Authorization: Bearer <jwt>` (the web app + legacy)
+//   2. PAT  — `Authorization: Bearer gs_pat_v1_...` (Lili MCP / scripts;
+//             see auth-tokens.js and docs/rfcs/0001-lili-integration.md)
+async function authMiddleware(req, res, next) {
+  try {
+    const token = tokenFromRequest(req);
+
+    const claims = verifyToken(token);
+    if (claims) {
+      req.user = claims;
+      req.tenantId = claims.tid;
+      return next();
+    }
+
+    // Bearer-PAT path — only attempted when the token *looks* like a PAT,
+    // to avoid an extra DB lookup on every unauthenticated request.
+    if (token && token.startsWith('gs_pat_')) {
+      const ctx = await apiTokens.verifyApiToken(token);
+      if (ctx) {
+        req.user = ctx.user;
+        req.tenantId = ctx.tenantId;
+        return next();
+      }
+    }
+
+    return res.status(401).json({ error: 'unauthorized' });
+  } catch (err) { return next(err); }
 }
 
 // Optional auth — populates req.user/req.tenantId when a valid token is
 // present, otherwise leaves them undefined and continues. Used by the portal
-// endpoint, which serves a stripped payload to anonymous viewers.
-function optionalAuth(req, _res, next) {
-  const claims = verifyToken(tokenFromRequest(req));
-  if (claims) { req.user = claims; req.tenantId = claims.tid; }
-  next();
+// endpoint, which serves a stripped payload to anonymous viewers. Same two
+// auth paths as authMiddleware.
+async function optionalAuth(req, _res, next) {
+  try {
+    const token = tokenFromRequest(req);
+    const claims = verifyToken(token);
+    if (claims) {
+      req.user = claims;
+      req.tenantId = claims.tid;
+    } else if (token && token.startsWith('gs_pat_')) {
+      const ctx = await apiTokens.verifyApiToken(token);
+      if (ctx) { req.user = ctx.user; req.tenantId = ctx.tenantId; }
+    }
+    next();
+  } catch (err) { next(err); }
 }
 
 // Require platform superadmin (Founders tenant owner). Layer on top of
