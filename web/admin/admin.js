@@ -3,7 +3,7 @@
   const show = (id) => $(id).classList.remove('hidden');
   const hide = (id) => $(id).classList.add('hidden');
 
-  const sections = ['overview', 'company', 'knowledge', 'missions', 'portals', 'sessions', 'meetings', 'integrations', 'caches'];
+  const sections = ['overview', 'company', 'knowledge', 'missions', 'portals', 'sessions', 'meetings', 'integrations', 'caches', 'settings'];
   const loaders = {
     overview: loadOverview,
     company: loadCompany,
@@ -14,6 +14,7 @@
     meetings: loadMeetings,
     integrations: loadIntegrations,
     caches: loadCaches,
+    settings: loadSettings,
   };
   const loaded = {};
   let currentSection = 'overview';
@@ -109,6 +110,7 @@
       meetings: 'Meetings',
       integrations: 'Integrations',
       caches: 'Gemini Caches',
+      settings: 'Settings',
     }[sec];
   }
 
@@ -2527,5 +2529,141 @@
         btn.disabled = false; btn.textContent = 'Upload & index';
       }
     });
+  }
+
+  // ===========================================================================
+  // SETTINGS — API tokens for non-browser clients (Lili MCP, scripts).
+  // See api/src/auth-tokens.js and docs/rfcs/0001-lili-integration.md §5.
+  // ===========================================================================
+
+  async function loadSettings() {
+    await loadApiTokensTable();
+    wireApiTokensForm();
+  }
+
+  async function loadApiTokensTable() {
+    let tokens;
+    try { tokens = await fetchJson('/api/auth/tokens'); }
+    catch (err) {
+      $('api-tokens-table').innerHTML =
+        `<div class="empty">Couldn't load tokens: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    const tbl = $('api-tokens-table');
+    if (!tokens || tokens.length === 0) {
+      tbl.innerHTML = '<div class="empty">No API tokens yet. Create one above to connect Lili or other MCP clients.</div>';
+      return;
+    }
+    tbl.innerHTML = `
+      <table class="dt">
+        <thead><tr>
+          <th>Label</th><th>Prefix</th><th>Created</th><th>Last used</th>
+          <th>Expires</th><th>Status</th><th></th>
+        </tr></thead>
+        <tbody>${tokens.map(apiTokenRow).join('')}</tbody>
+      </table>`;
+    tbl.querySelectorAll('[data-revoke]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Revoke this token? Any client using it will be locked out immediately.')) return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/auth/tokens/${encodeURIComponent(btn.dataset.revoke)}`, {
+            method: 'DELETE', credentials: 'include',
+          });
+          if (!r.ok && r.status !== 404) throw new Error(`HTTP ${r.status}`);
+          await loadApiTokensTable();
+        } catch (err) {
+          alert('Failed to revoke: ' + err.message);
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  function apiTokenRow(t) {
+    const isActive = !t.revoked_at && (!t.expires_at || new Date(t.expires_at) > new Date());
+    const status = isActive
+      ? '<span class="pill pill-ok">active</span>'
+      : t.revoked_at
+        ? '<span class="pill pill-warn">revoked</span>'
+        : '<span class="pill pill-warn">expired</span>';
+    const action = isActive
+      ? `<button type="button" data-revoke="${escapeHtml(t.id)}">Revoke</button>`
+      : '<span class="muted">—</span>';
+    return `
+      <tr>
+        <td>${escapeHtml(t.label || '')}</td>
+        <td><code>${escapeHtml(t.prefix)}</code></td>
+        <td>${fmtDate(t.created_at)}</td>
+        <td>${t.last_used_at ? fmtDate(t.last_used_at) : '<span class="muted">—</span>'}</td>
+        <td>${t.expires_at ? fmtDate(t.expires_at) : '<span class="muted">never</span>'}</td>
+        <td>${status}</td>
+        <td>${action}</td>
+      </tr>`;
+  }
+
+  function wireApiTokensForm() {
+    const form = $('api-tokens-create-form');
+    if (!form || form.dataset.wired === '1') return;
+    form.dataset.wired = '1';
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const label = $('api-token-label').value.trim();
+      const expirySel = $('api-token-expiry').value;
+      if (!label) return;
+      const body = { label };
+      if (expirySel !== '') body.expires_in_days = parseInt(expirySel, 10);
+      const btn = $('api-token-create-btn');
+      btn.disabled = true;
+      try {
+        const r = await fetch('/api/auth/tokens', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err.detail || err.error || `HTTP ${r.status}`);
+        }
+        const created = await r.json();
+        revealNewToken(created.plaintext_token);
+        form.reset();
+        await loadApiTokensTable();
+      } catch (err) {
+        alert('Failed to create: ' + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    const copyBtn = $('api-token-copy');
+    if (copyBtn && copyBtn.dataset.wired !== '1') {
+      copyBtn.dataset.wired = '1';
+      copyBtn.addEventListener('click', async () => {
+        const text = $('api-token-plaintext').textContent;
+        try {
+          await navigator.clipboard.writeText(text);
+          const orig = copyBtn.textContent;
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+        } catch { alert('Copy failed — select the token and copy manually.'); }
+      });
+    }
+
+    const doneBtn = $('api-token-reveal-done');
+    if (doneBtn && doneBtn.dataset.wired !== '1') {
+      doneBtn.dataset.wired = '1';
+      doneBtn.addEventListener('click', () => {
+        hide('api-token-reveal-card');
+        $('api-token-plaintext').textContent = '';
+      });
+    }
+  }
+
+  function revealNewToken(plaintext) {
+    $('api-token-plaintext').textContent = plaintext;
+    show('api-token-reveal-card');
   }
 })();
