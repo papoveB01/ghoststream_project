@@ -3,16 +3,21 @@
 // First MCP tool: knowledge base search over the user's tenant.
 // Wraps POST /knowledge/search → retrieval.retrieveContext().
 //
-// Open RFC questions still pending GhostStream-team alignment (#13):
-//   Q7  Chunk projection — which fields to forward to the LLM consumer.
-//   Q8  Citation format for voice consumption.
-// Until those land, this tool forwards a *conservative* projection (text,
-// title, date, category) and a simple "<title> • <date>" citation string.
-// The unanswered detail is marked TODO(Q7|Q8) so the diff is small once the
-// answers ship.
+// §11 Q7 + Q8 resolved 2026-05-19 (see docs/rfcs/0001-lili-integration.md):
+//   Q7 — Projection: { id, content (≤600 chars), document: { title,
+//        category, effectiveDate }, relevance: 'high' | 'medium' | 'low' }.
+//        Always-excluded: embedding, tokenCount, ordinal, raw distance,
+//        tier, sourceUrl, documentId.
+//   Q8 — Citation: `${title}${effectiveDate ? ' from <date>' : ''}`. Raw
+//        IDs never appear in voice text; they live only in the structured
+//        `id` field for UI deep-linking.
 // ---------------------------------------------------------------------------
 
 const { postJson } = require("../apiClient");
+
+const TEXT_CLIP = 600;
+const RELEVANCE_HIGH_MAX = 0.30;
+const RELEVANCE_MED_MAX = 0.60;
 
 const SCHEMA = {
   name: "kb_search",
@@ -40,36 +45,61 @@ const SCHEMA = {
         type: "array",
         items: { type: "string" },
         description:
-          "Optional category filter, e.g. [\"meeting_transcript\", " +
-          "\"prospect_intel\"]. Omit to search everything.",
+          "Optional category filter, e.g. [\"BATTLECARDS\", \"PRODUCT_INTEL\"]. " +
+          "Omit to search everything.",
       },
     },
     required: ["query"],
   },
 };
 
-// TODO(Q7): trim/select fields once the GhostStream team finalises the
-// projection. For now we forward title + date + category + a clipped text
-// body, which is the minimum the LLM needs to reason. We deliberately drop
-// embedding/metadata/distance to keep the tool output small.
-const TEXT_CLIP = 600;
-
-function formatCitation(chunk) {
-  // TODO(Q8): replace with the agreed canonical citation form. For now,
-  // "<title> • <date>" is what voice consumers can read aloud naturally.
-  const title = chunk.documentTitle || "untitled";
-  const date = chunk.effectiveDate
-    ? new Date(chunk.effectiveDate).toISOString().slice(0, 10)
-    : null;
-  return date ? `${title} • ${date}` : title;
+// Voice-friendly date formatter. "2026-05-12" → "May 12". Year omitted when
+// the date is in the current calendar year (keeps the spoken citation tight).
+function formatDateForVoice(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const MONTHS = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+  const sameYear = d.getUTCFullYear() === new Date().getUTCFullYear();
+  return sameYear
+    ? `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`
+    : `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
 }
 
-function shapeChunk(chunk) {
+// §11 Q8 — title + optional " from <date>". Raw IDs never appear in spoken
+// citations; they live only in the projection's `id` field.
+function formatCitation(chunk) {
+  const title = chunk.documentTitle || "untitled document";
+  const date = formatDateForVoice(chunk.effectiveDate);
+  return date ? `${title} from ${date}` : title;
+}
+
+// §11 Q7 — bucket cosine distance into one of three labels. More LLM-
+// actionable than a raw number (the model doesn't know whether 0.42 is
+// "good" or "bad").
+function bucketRelevance(distance) {
+  if (typeof distance !== "number" || Number.isNaN(distance)) return "medium";
+  if (distance < RELEVANCE_HIGH_MAX) return "high";
+  if (distance < RELEVANCE_MED_MAX) return "medium";
+  return "low";
+}
+
+// §11 Q7 — strict projection. Always-excluded fields: embedding, tokenCount,
+// ordinal, raw distance, tier, sourceUrl, documentId.
+function projectChunk(chunk) {
   const text = typeof chunk.text === "string" ? chunk.text : "";
   return {
-    citation: formatCitation(chunk),
-    category: chunk.category || null,
-    text: text.length > TEXT_CLIP ? text.slice(0, TEXT_CLIP) + "…" : text,
+    id: chunk.chunkId || null,
+    content: text.length > TEXT_CLIP ? text.slice(0, TEXT_CLIP).trimEnd() + "…" : text,
+    document: {
+      title: chunk.documentTitle || null,
+      category: chunk.category || null,
+      effectiveDate: chunk.effectiveDate || null,
+    },
+    relevance: bucketRelevance(chunk.distance),
   };
 }
 
@@ -87,7 +117,7 @@ async function handler(args, ctx) {
 
   const res = await postJson(
     "/knowledge/search",
-    { query, k, ...(categories ? { categories } : {}) },
+    { query: query.trim(), k, ...(categories ? { categories } : {}) },
     ctx,
   );
 
@@ -108,11 +138,14 @@ async function handler(args, ctx) {
     };
   }
 
-  const lines = [`Found ${chunks.length} result${chunks.length === 1 ? "" : "s"} for "${query}":`, ""];
-  chunks.forEach((c, i) => {
-    const shaped = shapeChunk(c);
-    lines.push(`${i + 1}. [${shaped.category || "uncategorised"}] ${shaped.citation}`);
-    if (shaped.text) lines.push(`   ${shaped.text}`);
+  const projected = chunks.map(projectChunk);
+  const lines = [`Found ${projected.length} result${projected.length === 1 ? "" : "s"} for "${query}":`, ""];
+  projected.forEach((p, i) => {
+    const citation = formatCitation(chunks[i]);
+    const cat = p.document.category || "uncategorised";
+    lines.push(`${i + 1}. [${cat}] ${citation} — ${p.relevance} relevance`);
+    if (p.content) lines.push(`   ${p.content.replace(/\s+/g, " ").trim()}`);
+    lines.push(`   source-id: ${p.id || "(unknown)"}`);
     lines.push("");
   });
 
@@ -121,4 +154,12 @@ async function handler(args, ctx) {
   };
 }
 
-module.exports = { SCHEMA, handler };
+module.exports = {
+  SCHEMA,
+  handler,
+  // Exported for unit tests / self-doc:
+  projectChunk,
+  bucketRelevance,
+  formatCitation,
+  formatDateForVoice,
+};
