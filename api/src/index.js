@@ -576,8 +576,13 @@ function meetingRefFromRecord(m) {
   };
 }
 
+// /admin/portals — DEPRECATED per ADR-003 Phase 3 step 5. Use /admin/calls.
+// Endpoint stays functional for one release so any consumers (none known
+// outside the admin UI, which has been migrated to /admin/calls in this PR)
+// have time to migrate. Slated for removal in a follow-up.
 app.get('/admin/portals', auth.authMiddleware, async (_req, res, next) => {
   try {
+    res.set('X-Deprecated', 'use /admin/calls — see docs/architecture/assessment-003-portals-meetings-consolidation.md');
     const portals = await store.listPortals(100);
     // Batched MGET avoids N+1 — one Redis call for all parent meetings.
     const meetings = await store.getMeetingsByIds(portals.map((p) => p.meetingId));
@@ -594,9 +599,22 @@ app.get('/admin/sessions', auth.authMiddleware, async (_req, res, next) => {
   catch (err) { next(err); }
 });
 
+// /admin/meetings — DEPRECATED per ADR-003 Phase 3 step 5. Use /admin/calls.
+// Same migration timeline as /admin/portals above.
 app.get('/admin/meetings', auth.authMiddleware, async (_req, res, next) => {
-  try { res.json({ meetings: await store.listMeetings(100) }); }
-  catch (err) { next(err); }
+  try {
+    res.set('X-Deprecated', 'use /admin/calls — see docs/architecture/assessment-003-portals-meetings-consolidation.md');
+    res.json({ meetings: await store.listMeetings(100) });
+  } catch (err) { next(err); }
+});
+
+// /admin/tenants — superadmin-only tenant list for the Calls page tenant
+// selector (ADR-003 §6 Decision #5). Minimal { id, name } projection.
+app.get('/admin/tenants', auth.authMiddleware, auth.requireSuperadmin, async (_req, res, next) => {
+  try {
+    const r = await db.query('SELECT id, name FROM tenants ORDER BY name NULLS LAST, id');
+    res.json({ tenants: r.rows });
+  } catch (err) { next(err); }
 });
 
 // Unified Calls view — assessment-003 Phase 1 (additive; /admin/portals and
@@ -623,11 +641,15 @@ app.get('/admin/calls', auth.authMiddleware, async (req, res, next) => {
       mission_id: req.query.mission_id,
       company_id: req.query.company_id,
       has_gaps:   req.query.has_gaps,
+      has_portal: req.query.has_portal,
       from:       req.query.from,
       to:         req.query.to,
       q:          req.query.q,
       cursor:     req.query.cursor,
       limit:      req.query.limit,
+      // Decision #6 — samples are hidden by default unless explicitly
+      // requested. Forwarded as-is; store.js does the truthy check.
+      include_samples: req.query.include_samples,
     });
     res.json(result);
   } catch (err) { next(err); }

@@ -1515,3 +1515,175 @@ details.schedule-advanced > .schedule-advanced-body {
 .research-sources summary { cursor: pointer; color: var(--muted); }
 .research-sources ol { margin: 6px 0 0; padding-left: 18px; }
 .research-sources li { margin-bottom: 2px; }
+
+/* ── Calls page (ADR-003 Phase 2) ────────────────────────────────────────── */
+.calls-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.calls-tenant-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.calls-tenant-row label { color: var(--text-2); font-weight: 600; }
+.calls-tenant-row select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 13px;
+}
+.calls-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.calls-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.calls-tab:hover { color: var(--text); background: var(--surface); }
+.calls-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.calls-tab-count {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  min-width: 16px;
+  text-align: center;
+}
+.calls-tab-count:empty { display: none; }
+.calls-tab.active .calls-tab-count { background: var(--accent-light); color: var(--accent); }
+.calls-tools {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.calls-search {
+  flex: 1;
+  min-width: 240px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  background: var(--bg);
+}
+.calls-search:focus { outline: none; border-color: var(--accent); }
+.calls-samples-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.calls-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.calls-chips:empty { display: none; }
+.calls-chip {
+  background: var(--accent-light);
+  border: 1px solid var(--accent-soft);
+  color: var(--accent);
+  padding: 3px 9px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.calls-chip:hover { background: var(--accent-soft); }
+.calls-chip-clear {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text-2);
+}
+.calls-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  gap: 16px;
+}
+@media (max-width: 1100px) {
+  .calls-layout { grid-template-columns: 1fr; }
+}
+.calls-table-card { min-width: 0; }
+.calls-facets {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  font-size: 13px;
+}
+.facet-group {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.facet-group h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.facet-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 4px 6px;
+  margin: 1px 0;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+  text-align: left;
+}
+.facet-item:hover { background: var(--bg); color: var(--text); }
+.facet-item.active { background: var(--accent-light); color: var(--accent); font-weight: 600; }
+.facet-count {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 500;
+  margin-left: 8px;
+}
+.facet-item.active .facet-count { color: var(--accent); }
+.calls-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 12px;
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+}
+.calls-pagination:empty { display: none; padding: 0; border: none; }
