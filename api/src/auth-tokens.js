@@ -180,6 +180,12 @@ router.get('/', async (req, res, next) => {
 
 router.delete('/:id', async (req, res, next) => {
   try {
+    // Validate UUID shape before hitting the DB — otherwise Postgres throws
+    // 22P02 (invalid_text_representation) for `WHERE id = '<garbage>'`,
+    // which would bubble up as a 500 to the caller. We want 404.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) {
+      return res.status(404).json({ error: 'token_not_found' });
+    }
     const r = await db.query(
       `UPDATE api_tokens
           SET revoked_at = now()
