@@ -108,9 +108,9 @@ Row identity is the **meeting id** (stable across the lifecycle); `portal` is nu
 
 ### 3.2 Frontend affordances
 
-- **Top of page:** status tab row (`All · Pending · Analysing · Ready · Failed`) plus a search box bound to `q`.
+- **Top of page:** tenant selector dropdown (superadmin only — per Decision #5), status tab row (`All · Pending · Analysing · Ready · Failed`), search box bound to `q`, and a `Show samples` toggle (off by default — per Decision #6, hides `source=sample` from the active view).
 - **Below tabs:** active-filter chips the user can dismiss individually (`source: recall ×`, `mission: m_42… ×`).
-- **Right-rail facet panel (collapsed by default):** Source, Tenant (superadmin only), Mission / Company autocomplete, Date range, Has-gaps tri-state, Has-portal.
+- **Right-rail facet panel (collapsed by default):** Source, Mission / Company autocomplete, Date range, Has-gaps tri-state, Has-portal. (Tenant is a page-level selector per Decision #5, not a facet.)
 - **Per-row:** `Open ↗` (portal when `ready`, ops detail otherwise) plus overflow: `Replay` (for `failed`), `Reanalyze` (for `ready`).
 
 ---
@@ -137,7 +137,7 @@ Schema → API → UI, every step additive until the final removal.
 
 ---
 
-## 6. Open questions for human decision
+## 6. Decisions
 
 **Decision #1 — Default tab** · **RESOLVED**
 Default tab = `Ready`. Rationale: managers should land on actionable/completed calls; in-flight rows are noise.
@@ -149,10 +149,30 @@ Downstream commitments:
 **Decision #2 — Failure triage owner** · **RESOLVED**
 Sysadmin owns failure triage. Consistent with Decision #1: the `Calls (operations)` link lands sysadmins on `Failed`; managers stay on `Ready`.
 
-3. **Is `POST /meetings` (paste-a-Zoom-link) being deprecated?** If so, "orphan (no-mission)" stops being a row state and the `has-mission` facet disappears.
-4. **Retention for failed meetings?** Redis keys live forever — the Failed tab fills with stale `analysis_failed` rows without a policy.
-5. **Tenant-scoped vs. platform-wide superadmin view?** Drives whether `tenant` is a facet or a top-of-page selector when multi-tenant lands.
-6. **Should First-Loop and sample runs hide from `Ready` by default?** They clutter the manager view; engineers still want them visible somewhere.
+**Decision #3 — `POST /meetings` (paste-a-Zoom-link)** · **RESOLVED**
+Keep — no deprecation, no removal. Rationale: the impromptu "rep just got a Zoom link 5 minutes before the call" workflow is a real support need; structured-scheduling-only would surprise reps.
+Downstream commitments:
+- Orphan / no-mission rows remain a supported state in the unified `/admin/calls` view.
+- The `has-mission` facet stays in the right-rail panel.
+- This endpoint is **NOT** in any Phase 3 retirement plan.
+
+**Decision #4 — Retention for failed meetings** · **RESOLVED**
+Indefinite (status quo). No aging policy, no tenant-configurable retention. Rationale: lack of production data on storage cost shape; premature policy is hard to walk back. Revisit only when storage cost or compliance surfaces a real ask.
+Downstream commitments:
+- No retention logic, no aging cron, no "expires on" badges in the UI.
+
+**Decision #5 — Tenant-scoped vs. platform-wide superadmin view** · **RESOLVED**
+Page selector — top-of-page tenant dropdown for superadmin; non-superadmins don't see it (force-scoped to `req.tenantId`). Rationale: consistent with Decision #1's "managers land on a clean view"; strong "you are looking at tenant X" mental model.
+Downstream commitments:
+- `tenant` is **NOT** a right-rail facet.
+- Right-rail facets stay: Source, Mission, Company, Date, Has-gaps, Has-portal.
+- §3.2 frontend affordances reflect this.
+
+**Decision #6 — First-Loop and sample runs hiding** · **RESOLVED**
+Hidden by default. Excluded from default `Ready`/`All` views; visible only via a `Show samples` toggle. Rationale: consistent with Decision #1 — manager view should be actionable; engineering/QA still get visibility through the toggle.
+Downstream commitments:
+- `GET /admin/calls` treats `?source=sample` (and the First-Loop equivalent) as opt-in; default queries exclude them automatically.
+- UI toggle state persists per-user (localStorage or similar).
 
 ---
 
