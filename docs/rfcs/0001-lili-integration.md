@@ -534,25 +534,48 @@ A0–A2 must complete before B1 can be tested end-to-end. C1–C2 can begin agai
 
 ---
 
-## 11. Open questions (consolidated)
+## 11. Decisions (resolved)
 
-For the GhostStream team:
+All ten questions in this section are resolved. Q1–Q6 (auth side) were ratified on 2026-05-19 and are implemented in PR #12. Q7–Q9 (MCP side) are resolved here and gate Workstream B implementation. Q10 (latency) is a proposal from the consolidated review.
 
-1. Hash algorithm (bcrypt vs argon2id)?
-2. Token format versioning (`gs_pat_v1_...`)?
-3. Per-user active-token cap?
-4. `last_used_at` write strategy?
-5. Audit log table vs structured logs?
-6. Token tenant-binding at mint vs default-tenant resolution?
-7. Chunk response trimming policy?
-8. Citation format for voice consumption?
-9. `X-Client` attribution header support?
-10. **Latency budget for `/knowledge/search` — proposed:** **p50 < 400ms, p95 < 800ms** (warm cache, after embedding). Reasoning: Lili's wake-to-speech budget = STT ≈ 300ms + agent loop ≈ 500ms + TTS first-token ≈ 600ms + search ≈ 400ms ≈ 1.8s p50, leaving margin under the 3s end-to-end target. If the GhostStream team has different numbers, counter-propose — but pick something **measurable in A2 staging**, not "as fast as possible."
+### Workstream A — auth
 
-For the Lili team (resolved here, captured for visibility):
+1. **Hash algorithm** → `bcryptjs` cost 12. Same library as the password path; one dep to maintain. With prefix-based lookup the bcrypt cost is the dominant verify cost — argon2id's stronger memory-hardness is not load-bearing here.
+2. **Token format versioning** → `gs_pat_v1_<8>_<32>`. Version byte enables future format change without parser ambiguity. Total length 51 chars.
+3. **Per-user active-token cap** → **10**, enforced in `POST /auth/tokens` (HTTP 409 on overflow).
+4. **`last_used_at` write strategy** → async fire-and-forget UPDATE on the hot path; no Redis buffer in v1.
+5. **Audit log table vs structured logs** → structured stdout JSON only (`api_token.created`, `api_token.revoked`). No separate audit table for v1.
+6. **Tenant binding** → at mint time. `api_tokens.tenant_id` is set from the minting request's `req.tenantId`. To switch tenants, mint a new token.
+
+### Workstream B — MCP server
+
+7. **Chunk response trimming policy.** Each `kb_search` result is projected as:
+   ```json
+   {
+     "id": "<chunk_id>",
+     "content": "<text, max 600 chars, '…' truncation suffix>",
+     "document": {
+       "title": "<documentTitle>",
+       "category": "<category>",
+       "effectiveDate": "<ISO date or null>"
+     },
+     "relevance": "high" | "medium" | "low"
+   }
+   ```
+   Always excluded: `embedding`, `tokenCount`, `chunkIndex`, raw cosine `distance`. `metadata` is included only when present and < 200 chars; dropped otherwise. `relevance` is bucketed from cosine distance: `< 0.30 → high`, `< 0.60 → medium`, else `low` — more LLM-actionable than a raw number. Default k=8 → response budget ~5 KB.
+
+8. **Citation format for voice.** `${title}${effectiveDate ? ' from ' + formatDateForVoice(effectiveDate) : ''}` — produces "Q2 Roadmap Sync from May 12" or "Multi-tenant knowledge isolation" when no date. Raw IDs (`documentId`, `chunkId`) NEVER appear in spoken text — they live in the structured `id` field for UI deep-linking only.
+
+9. **`X-Client` attribution header.** Accept optional `X-Client: <name>/<version>` (e.g. `lili-mcp/0.1.0`). When present, append to the structured log line as `client: "<value>"`. Untrusted — no behaviour gates on it; pure observability. Max 100 chars, truncated longer. Missing header is fine; the log field is simply omitted.
+
+### Workstream C — Lili (recorded for visibility)
 
 - Local MCP path via `AVOA_GHOSTSTREAM_MCP_PATH` env var in v1; npm package later.
 - No system-prompt nudges for v1; revisit if model under-uses the tool.
+
+### Latency
+
+10. **Latency budget for `/knowledge/search` — proposed:** **p50 < 400ms, p95 < 800ms** (warm cache, after embedding). Reasoning: Lili's wake-to-speech budget = STT ≈ 300ms + agent loop ≈ 500ms + TTS first-token ≈ 600ms + search ≈ 400ms ≈ 1.8s p50, leaving margin under the 3s end-to-end target. If the GhostStream team has different numbers, counter-propose — but pick something **measurable in A2 staging**, not "as fast as possible."
 
 ---
 
