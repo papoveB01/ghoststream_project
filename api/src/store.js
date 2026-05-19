@@ -274,6 +274,7 @@ async function buildCallsList(filters = {}) {
     mission_id,
     company_id,
     has_gaps,
+    has_portal,
     from: fromParam,
     to: toParam,
     q,
@@ -327,6 +328,22 @@ async function buildCallsList(filters = {}) {
     calls = calls.filter((c) => c.meeting && tenantSet.has(c.meeting.tenantId));
   }
 
+  // ── 4.5. Sample hiding — per ADR-003 §6 Decision #6 ──────────────────────
+  // Default queries exclude source='sample' rows. Opt-in by either:
+  //   - ?include_samples=1 (general flag)
+  //   - ?source=...,sample (explicit inclusion in the source CSV)
+  // Applied before facets so the facet counts reflect what the caller will
+  // actually see — toggling "Show samples" on the UI reveals both the rows
+  // AND their facet contribution.
+  const includeSamples = filters.include_samples === '1' ||
+                         filters.include_samples === 'true' ||
+                         filters.include_samples === true;
+  const explicitlyRequestSamples = sourceFilter &&
+    String(sourceFilter).split(',').map((s) => s.trim()).includes('sample');
+  if (!includeSamples && !explicitlyRequestSamples) {
+    calls = calls.filter((c) => c.source !== 'sample');
+  }
+
   // ── 5. Compute facets over the full tenant-scoped set ────────────────────
   const facets = {
     status:  { pending: 0, analysing: 0, ready: 0, failed: 0 },
@@ -352,7 +369,7 @@ async function buildCallsList(filters = {}) {
   const qLower     = q ? q.toLowerCase() : null;
 
   const needsFilter = statusSet || sourceSet || missionSet || companySet ||
-                      fromTs !== null || toTs !== null || has_gaps || qLower;
+                      fromTs !== null || toTs !== null || has_gaps || has_portal || qLower;
 
   if (needsFilter) {
     calls = calls.filter((c) => {
@@ -373,6 +390,9 @@ async function buildCallsList(filters = {}) {
         if (has_gaps === 'any'  && (!audit || audit.gapCount === 0)) return false;
         if (has_gaps === 'high' && (!audit || !audit.hasHighSeverity)) return false;
       }
+
+      if (has_portal === 'true' && !c.portal) return false;
+      if (has_portal === 'false' && c.portal) return false;
 
       if (qLower) {
         const candidates = [
