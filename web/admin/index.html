@@ -32,6 +32,7 @@
         <a href="#meetings" data-section="meetings">Meetings</a>
         <a href="#integrations" data-section="integrations">Integrations</a>
         <a href="#caches" data-section="caches">Gemini Caches</a>
+        <a href="#settings" data-section="settings">Settings</a>
       </nav>
       <div class="sidebar-foot">
         <div class="user-block">
@@ -556,6 +557,49 @@
           <div class="card">
             <div class="card-h">Active Gemini caches</div>
             <div class="card-b table-wrap" id="caches-table"></div>
+          </div>
+        </section>
+
+        <!-- SETTINGS — API tokens for non-browser clients (Lili MCP, scripts) -->
+        <section id="section-settings" class="section hidden">
+          <div class="card">
+            <div class="card-h">API tokens</div>
+            <div class="card-b">
+              <p>Long-lived tokens for non-browser clients (Lili MCP server, scripts). Treat them like passwords — anyone with one can act as you within your tenant.</p>
+              <form id="api-tokens-create-form" class="kb-form">
+                <div class="field">
+                  <label for="api-token-label">Label</label>
+                  <input id="api-token-label" name="label" type="text" required maxlength="100" placeholder="e.g. Lili on Win desktop">
+                </div>
+                <div class="field">
+                  <label for="api-token-expiry">Expires in</label>
+                  <select id="api-token-expiry" name="expiry">
+                    <option value="30">30 days</option>
+                    <option value="90" selected>90 days</option>
+                    <option value="365">1 year</option>
+                    <option value="">Never</option>
+                  </select>
+                </div>
+                <button type="submit" class="primary-cta" id="api-token-create-btn">Create token</button>
+              </form>
+            </div>
+          </div>
+
+          <div class="card hidden" id="api-token-reveal-card">
+            <div class="card-h">Copy your new token now — you won't see it again</div>
+            <div class="card-b">
+              <div class="api-token-plaintext-row">
+                <code id="api-token-plaintext" class="api-token-plaintext"></code>
+                <button type="button" id="api-token-copy" class="primary-cta">Copy</button>
+              </div>
+              <p class="field-hint">Treat it like a password. If it leaks, revoke it below and mint a new one.</p>
+              <button type="button" id="api-token-reveal-done">Done</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h">Your tokens</div>
+            <div class="card-b table-wrap" id="api-tokens-table"></div>
           </div>
         </section>
       </div>
