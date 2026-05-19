@@ -20,6 +20,7 @@ const email = require('./email');
 const userModel = require('./users');
 const onboarding = require('./onboarding');
 const integrations = require('./integrations');
+const authTokens = require('./auth-tokens');
 
 const app = express();
 // Capture the raw request body alongside JSON parsing so webhook receivers
@@ -792,6 +793,12 @@ app.use('/onboarding', onboarding.router);
 app.get('/integrations/calendar/callback', integrations.handleCalendarCallback);
 app.get('/integrations/calendly/callback', integrations.handleCalendlyCallback);
 app.use('/integrations', auth.authMiddleware, integrations.router);
+
+// API tokens — long-lived PATs for non-browser clients (Lili MCP server,
+// scripts). See docs/rfcs/0001-lili-integration.md. Routes require an
+// authenticated session (cookie-JWT or another PAT); minting/listing/revoking
+// always acts on req.user.sub within req.tenantId.
+app.use('/auth/tokens', auth.authMiddleware, authTokens.router);
 
 // PUBLIC (Calendly calls it) — signature-verified. "Internal use" booking
 // links land on the Founders tenant for now, consistent with the recall.ai
