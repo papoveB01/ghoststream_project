@@ -1280,9 +1280,10 @@
         ? `<div class="ci-brief">${escapeHtml(brief)}</div>`
         : `<div class="ci-brief is-empty">No preview text available.</div>`;
     }
+    const scoreboardHtml = renderScoreboard(md.assessment);
     const actions = [];
     if (opts.keyPointsAction) {
-      actions.push(`<button class="kb-link-btn ci-kp-btn" data-kb-keypoints="${escapeHtml(d.id)}">${points.length ? '↻ refresh key points' : '✨ generate key points'}</button>`);
+      actions.push(`<button class="kb-link-btn ci-kp-btn" data-kb-keypoints="${escapeHtml(d.id)}">${points.length ? '↻ refresh analysis' : '✨ generate analysis'}</button>`);
     }
     if (opts.deletable) {
       actions.push(`<button class="kb-link-btn" data-kb-delete="${escapeHtml(d.id)}">Delete</button>`);
@@ -1297,8 +1298,63 @@
           <span>${escapeHtml(fmtDate(d.effective_date || d.created_at))}</span>
         </div>
         ${contentHtml}
+        ${scoreboardHtml}
         ${actions.length ? `<div class="ci-actions">${actions.join('')}</div>` : ''}
       </div>`;
+  }
+
+  // Competitive scoreboard renderer. `a` is metadata.assessment as produced by
+  // api/src/knowledge/assessment.js — { summary, axes[8], topImprovements,
+  // weightedAdvantage }. Returns '' when there's no assessment.
+  function renderScoreboard(a) {
+    if (!a || !Array.isArray(a.axes) || !a.axes.length) return '';
+    const adv = Number(a.weightedAdvantage) || 0;
+    const verdictClass = adv > 5 ? 'win' : adv < -5 ? 'lose' : 'tie';
+    const verdictLabel = adv > 5 ? `We lead by ${adv}%`
+                       : adv < -5 ? `We trail by ${Math.abs(adv)}%`
+                       : `Roughly tied (${adv >= 0 ? '+' : ''}${adv}%)`;
+    const winnerPill = (w) => {
+      const map = { us: ['ours', 'We win'], them: ['theirs', 'They win'], tie: ['tie', 'Tie'], unknown: ['unknown', 'No data'] };
+      const [cls, label] = map[w] || map.unknown;
+      return `<span class="sb-winner sb-${cls}">${label}</span>`;
+    };
+    const rows = a.axes.map((ax) => {
+      const our = Math.max(0, Math.min(10, Number(ax.ourScore) || 0));
+      const their = Math.max(0, Math.min(10, Number(ax.theirScore) || 0));
+      const gap = ax.gapToOvercome ? `<div class="sb-gap">▲ ${escapeHtml(ax.gapToOvercome)}</div>` : '';
+      return `
+        <div class="sb-row">
+          <div class="sb-axis">
+            <span class="sb-axis-name">${escapeHtml(ax.label || ax.key)}</span>
+            <span class="sb-weight">${Number(ax.weight) || 0}%</span>
+          </div>
+          <div class="sb-bars">
+            <div class="sb-bar sb-bar-ours"><span style="width:${our * 10}%"></span><em>${our}</em></div>
+            <div class="sb-bar sb-bar-theirs"><span style="width:${their * 10}%"></span><em>${their}</em></div>
+          </div>
+          ${winnerPill(ax.winner)}
+          ${gap}
+        </div>`;
+    }).join('');
+    const improvements = Array.isArray(a.topImprovements) && a.topImprovements.length
+      ? `<div class="sb-improvements">
+           <div class="sb-improvements-h">Areas to overcome</div>
+           <ol>${a.topImprovements.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ol>
+         </div>`
+      : '';
+    return `
+      <details class="ci-scoreboard">
+        <summary>
+          <span class="sb-title">⚔ Competitive scoreboard</span>
+          <span class="sb-verdict sb-${verdictClass}">${escapeHtml(verdictLabel)}</span>
+        </summary>
+        <div class="sb-body">
+          ${a.summary ? `<div class="sb-summary">${escapeHtml(a.summary)}</div>` : ''}
+          <div class="sb-legend"><span class="sb-dot sb-bar-ours"></span>Us &nbsp; <span class="sb-dot sb-bar-theirs"></span>Them &nbsp; · &nbsp; weight = importance in this matchup</div>
+          <div class="sb-rows">${rows}</div>
+          ${improvements}
+        </div>
+      </details>`;
   }
 
   async function kbRegenKeyPoints(id, btn) {
@@ -1395,6 +1451,8 @@
         if (pdl) pdl.innerHTML = companyList.map((c) => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.domain || '')}</option>`).join('');
         const cdl = document.getElementById(`kb-${lane}-competitor-list`);
         if (cdl) cdl.innerHTML = competitorList.map((c) => `<option value="${escapeHtml(c.name)}"></option>`).join('');
+        // Battlecard "applies to which products" checkbox list (COMPETITOR lane).
+        renderAppliesList(lane, productList);
         // Tenant detail: superadmins get a dropdown of all tenants; everyone
         // else just sees the static "workspace intel" label already in the HTML.
         const tsel = document.getElementById(`kb-${lane}-tenant-select`);
@@ -1405,6 +1463,7 @@
           if (lbl) lbl.textContent = 'Workspace (pick which tenant this Basis doc belongs to):';
         }
       }
+      wireAppliesAllToggles();
     } catch (err) {
       console.warn('upload-form population failed:', err.message);
     }
@@ -1444,6 +1503,7 @@
     const p = $(`kb-${lane}-prospect`); if (p) p.value = '';
     const c = $(`kb-${lane}-competitor`); if (c) c.value = '';
     const pe = $(`kb-${lane}-persona`); if (pe) pe.value = '';
+    resetAppliesTo(lane);
   }
 
   // Resolve a typed prospect name → companies row id (find-or-create).
@@ -1591,6 +1651,66 @@
   function readSelectedValues(el) {
     if (!el) return [];
     return Array.from(el.selectedOptions).map((o) => o.value).filter(Boolean);
+  }
+
+  // ---- Battlecard "Which of our products does this cover?" multi-select ----
+  // Three lanes (file/web/social) each have one [data-applies-list] inside
+  // their COMPETITOR detail block + one [data-applies-all] master checkbox.
+  // When master is checked, the list is hidden + all selections cleared
+  // (semantics: empty = covers all products). When master is unchecked, the
+  // user picks the specific product lines.
+  function renderAppliesList(lane, products) {
+    const host = document.querySelector(`[data-applies-list][data-lane="${lane}"]`);
+    if (!host) return;
+    if (!products.length) {
+      host.innerHTML = `<div class="kb-subtle">No product lines yet — add one from the Company page first.</div>`;
+      return;
+    }
+    host.innerHTML = products.map((p) =>
+      `<label class="kb-checkbox kb-applies-item">
+        <input type="checkbox" data-applies-product value="${escapeHtml(p.id)}">
+        <span>${escapeHtml(p.name)}</span>
+      </label>`
+    ).join('');
+  }
+
+  function wireAppliesAllToggles() {
+    document.querySelectorAll('[data-applies-all]').forEach((box) => {
+      if (box.dataset.wired === '1') return;
+      box.dataset.wired = '1';
+      box.addEventListener('change', () => {
+        const lane = box.dataset.lane;
+        const list = document.querySelector(`[data-applies-list][data-lane="${lane}"]`);
+        if (!list) return;
+        if (box.checked) {
+          list.hidden = true;
+          list.querySelectorAll('[data-applies-product]').forEach((cb) => { cb.checked = false; });
+        } else {
+          list.hidden = false;
+        }
+      });
+    });
+  }
+
+  // Returns the productIds the battlecard covers. Empty array = "all products"
+  // (master checkbox is on, OR no individual boxes ticked). Caller decides
+  // whether to send the field at all when empty.
+  function readAppliesToProductIds(lane) {
+    const master = document.querySelector(`[data-applies-all][data-lane="${lane}"]`);
+    if (!master || master.checked) return [];
+    const list = document.querySelector(`[data-applies-list][data-lane="${lane}"]`);
+    if (!list) return [];
+    return Array.from(list.querySelectorAll('[data-applies-product]:checked')).map((cb) => cb.value);
+  }
+
+  function resetAppliesTo(lane) {
+    const master = document.querySelector(`[data-applies-all][data-lane="${lane}"]`);
+    if (master) master.checked = true;
+    const list = document.querySelector(`[data-applies-list][data-lane="${lane}"]`);
+    if (list) {
+      list.hidden = true;
+      list.querySelectorAll('[data-applies-product]').forEach((cb) => { cb.checked = false; });
+    }
   }
 
   function wireKbTabs() {
@@ -2181,6 +2301,11 @@
         if (ent.competitorIds) body.competitorIds = ent.competitorIds;
         if (ent.tenantId) body.tenantId = ent.tenantId;
         if (ent._competitorName) body.competitorName = ent._competitorName;
+        // Battlecard product scope — COMPETITOR intel only; empty = all products.
+        if (ent.scope === 'COMPETITOR') {
+          const applies = readAppliesToProductIds('web');
+          if (applies.length) body.appliesToProductIds = applies;
+        }
         // Buyer persona — only when this is prospect intel; find-or-created on
         // a real ingest (skipped on dry run, which makes no DB writes).
         if (ent.scope === 'PROSPECT' && !dryRun) {
@@ -2262,6 +2387,11 @@
         if (ent.companyId) body.companyId = ent.companyId;
         if (ent.competitorIds) body.competitorIds = ent.competitorIds;
         if (ent.tenantId) body.tenantId = ent.tenantId;
+        // Battlecard product scope — COMPETITOR intel only; empty = all products.
+        if (ent.scope === 'COMPETITOR') {
+          const applies = readAppliesToProductIds('social');
+          if (applies.length) body.appliesToProductIds = applies;
+        }
         // Buyer persona — only when this is prospect intel; find-or-created on
         // a real ingest (skipped on dry run, which makes no DB writes).
         if (ent.scope === 'PROSPECT' && !dryRun) {
@@ -2496,6 +2626,11 @@
         if (ent.companyId) fd.append('companyId', ent.companyId);
         for (const id of (ent.competitorIds || [])) fd.append('competitorIds', id);
         if (ent.tenantId) fd.append('tenantId', ent.tenantId);
+        // Battlecard product scope — only meaningful for COMPETITOR intel.
+        // Empty = "all products" (master checkbox on); field is omitted then.
+        if (ent.scope === 'COMPETITOR') {
+          for (const id of readAppliesToProductIds('file')) fd.append('appliesToProductIds', id);
+        }
         // Buyer persona — only meaningful for prospect intel; find-or-created.
         if (ent.scope === 'PROSPECT') {
           const pid = await resolvePersonaName(($('kb-file-persona').value || '').trim());

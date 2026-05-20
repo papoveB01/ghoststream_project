@@ -83,6 +83,7 @@ router.post('/upload', uploadMiddleware, async (req, res, next) => {
       productIds:    normalizeIds(req.body.productIds),
       personaIds:    normalizeIds(req.body.personaIds),
       competitorIds: normalizeIds(req.body.competitorIds),
+      appliesToProductIds: normalizeIds(req.body.appliesToProductIds),
     });
     res.status(201).json({ ok: true, document: doc });
   } catch (err) { next(err); }
@@ -221,7 +222,7 @@ router.delete('/documents/:id', async (req, res, next) => {
 // =========================================================================
 router.post('/web-sync', express.json(), async (req, res, next) => {
   try {
-    const { url, category, title, dryRun, scope, competitorName, productIds, personaIds, competitorIds, companyId } = req.body || {};
+    const { url, category, title, dryRun, scope, competitorName, productIds, personaIds, competitorIds, companyId, appliesToProductIds } = req.body || {};
     if (!url || !category) {
       return res.status(400).json({ error: 'url and category required' });
     }
@@ -232,7 +233,7 @@ router.post('/web-sync', express.json(), async (req, res, next) => {
       scope: (scope || 'TENANT').toUpperCase(),
       competitorName: competitorName || null,
       companyId: companyId || null,
-      productIds, personaIds, competitorIds,
+      productIds, personaIds, competitorIds, appliesToProductIds,
     });
     res.status(dryRun ? 200 : 201).json({ ok: true, ...(dryRun ? { preview: result } : { document: result }) });
   } catch (err) { next(err); }
@@ -244,7 +245,7 @@ router.post('/web-sync', express.json(), async (req, res, next) => {
 // =========================================================================
 router.post('/social-sync', express.json(), async (req, res, next) => {
   try {
-    const { accountId, category, since, limit, dryRun, scope, productIds, personaIds, competitorIds, companyId } = req.body || {};
+    const { accountId, category, since, limit, dryRun, scope, productIds, personaIds, competitorIds, companyId, appliesToProductIds } = req.body || {};
     if (!accountId || !category) {
       return res.status(400).json({ error: 'accountId and category required' });
     }
@@ -256,7 +257,7 @@ router.post('/social-sync', express.json(), async (req, res, next) => {
       dryRun: !!dryRun,
       scope: (scope || 'TENANT').toUpperCase(),
       companyId: companyId || null,
-      productIds, personaIds, competitorIds,
+      productIds, personaIds, competitorIds, appliesToProductIds,
     });
     res.status(dryRun ? 200 : 201).json({ ok: true, ...(dryRun ? { preview: result } : { result }) });
   } catch (err) { next(err); }

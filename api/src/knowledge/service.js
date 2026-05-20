@@ -20,6 +20,7 @@ const parsers = require('./parsers');
 const chunker = require('./chunker');
 const embeddings = require('./embeddings');
 const keypoints = require('./keypoints');
+const assessment = require('./assessment');
 const globalCache = require('./globalCache');
 const web = require('./web');
 const social = require('./social');
@@ -139,6 +140,11 @@ async function ingest({
   scope = 'TENANT',
   // For scope=PROSPECT: the companies row this doc belongs to (same tenant).
   companyId = null,
+  // For BATTLECARDS / scope=COMPETITOR: which of OUR products this battlecard
+  // applies to. Stored on metadata.appliesToProductIds (NOT the kb_document_products
+  // junction — that's deliberately 0-or-1 per migration 0009). Empty / null /
+  // missing = applies to all products (the default).
+  appliesToProductIds = null,
 }) {
   if (!tenantId) { const e = new Error('tenantId required'); e.status = 400; throw e; }
   assertValidCategory(category);
@@ -160,6 +166,7 @@ async function ingest({
 
   // ----- scope-specific validation + normalization -----
   const compIds = Array.isArray(competitorIds) ? competitorIds.filter(Boolean) : [];
+  let competitorName = null;
   if (scope === 'TENANT') {
     companyId = null; // a doc about our own company never carries a prospect link
   } else if (scope === 'PROSPECT') {
@@ -176,12 +183,13 @@ async function ingest({
       const e = new Error('scope=COMPETITOR requires at least one competitorId'); e.status = 400; throw e;
     }
     const found = await db.query(
-      `SELECT id FROM competitors WHERE tenant_id = $1 AND id = ANY($2)`,
+      `SELECT id, name FROM competitors WHERE tenant_id = $1 AND id = ANY($2)`,
       [tenantId, compIds]
     );
     if (found.rows.length !== compIds.length) {
       const e = new Error('one or more competitors not found in this workspace'); e.status = 404; throw e;
     }
+    competitorName = found.rows.map((r) => r.name).join(' / ');
   }
 
   // 1. Parse
@@ -210,8 +218,28 @@ async function ingest({
   // every page load. Best-effort (never blocks ingest), and skipped for
   // transient mission-prep docs and individual social posts (too thin).
   let keyPoints = { kind: keypoints.kindFor(scope), points: [] };
+  let scoreboard = null;
   if ((scope === 'COMPETITOR' || scope === 'PROSPECT') && streamType !== 'SOCIAL' && !transientForMissionId) {
     keyPoints = await keypoints.extractKeyPoints({ scope, text: parsed.text, tenantId, title });
+  }
+  // Competitive scoreboard — runs on COMPETITOR-scoped docs and any
+  // BATTLECARDS-category doc. Stored on metadata.assessment; never blocks
+  // ingest if the model call fails (returns null).
+  const cleanAppliesTo = Array.isArray(appliesToProductIds)
+    ? [...new Set(appliesToProductIds.filter((v) => typeof v === 'string' && v.length > 0))]
+    : [];
+  if ((scope === 'COMPETITOR' || category === 'BATTLECARDS') && streamType !== 'SOCIAL' && !transientForMissionId) {
+    let appliesProductNames = [];
+    if (cleanAppliesTo.length) {
+      const pr = await db.query(
+        `SELECT name FROM products WHERE tenant_id = $1 AND id = ANY($2)`,
+        [tenantId, cleanAppliesTo]
+      );
+      appliesProductNames = pr.rows.map((r) => r.name);
+    }
+    scoreboard = await assessment.extractCompetitiveAssessment({
+      text: parsed.text, tenantId, title, competitorName, appliesProductNames,
+    });
   }
 
   // 5. R2 archive — best-effort. If R2 isn't configured, we still ingest but
@@ -276,6 +304,8 @@ async function ingest({
           originalFilename: file.originalname,
           supersedes: archived.rows.map((r) => r.id),
           ...(keyPoints.points.length ? { keyPoints: keyPoints.points, keyPointsKind: keyPoints.kind } : {}),
+          ...(scoreboard ? { assessment: scoreboard } : {}),
+          ...(cleanAppliesTo.length ? { appliesToProductIds: cleanAppliesTo } : {}),
         }),
         streamType,
         resolvedEffectiveDate.toISOString(),
@@ -489,10 +519,36 @@ async function regenerateKeyPoints(tenantId, documentId) {
   const md = { ...(doc.metadata || {}) };
   if (points.length) { md.keyPoints = points; md.keyPointsKind = kind; }
   else { delete md.keyPoints; delete md.keyPointsKind; }
+
+  // Refresh the competitive scoreboard alongside key points whenever it
+  // applies (COMPETITOR scope or BATTLECARDS category). Cleared on null
+  // so a doc that's been re-scoped away from competitive doesn't keep a
+  // stale scoreboard.
+  if (doc.scope === 'COMPETITOR' || doc.category === 'BATTLECARDS') {
+    const competitorName = Array.isArray(doc.competitor_ids) && doc.competitor_ids.length
+      ? (await db.query(
+          `SELECT name FROM competitors WHERE tenant_id = $1 AND id = ANY($2)`,
+          [tenantId, doc.competitor_ids]
+        )).rows.map((r) => r.name).join(' / ')
+      : null;
+    const scoreboard = await assessment.extractCompetitiveAssessment({
+      text, tenantId, title: doc.title, competitorName,
+    });
+    if (scoreboard) md.assessment = scoreboard;
+    else delete md.assessment;
+  } else {
+    delete md.assessment;
+  }
   await db.query(
     `UPDATE kb_documents SET metadata = $1, updated_at = now() WHERE id = $2 AND tenant_id = $3`,
     [JSON.stringify(md), documentId, tenantId]
   );
+
+  // BATTLECARDS docs feed the Arena's global cache. Refreshing the
+  // scoreboard changes what the persona sees, so rebuild.
+  if (doc.category === 'BATTLECARDS') {
+    await maybeRebuildGlobalCache(doc.category, tenantId);
+  }
   return getDocument(tenantId, documentId);
 }
 

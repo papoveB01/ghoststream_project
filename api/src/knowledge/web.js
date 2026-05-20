@@ -212,7 +212,7 @@ function deriveTitle(explicit, metadata, url) {
   catch { return url; }
 }
 
-async function syncUrl({ tenantId = null, url, category, title, dryRun = false, productIds = null, personaIds = null, competitorIds = null, transientForMissionId = null, companyId = null, scope = 'TENANT', competitorName = null }) {
+async function syncUrl({ tenantId = null, url, category, title, dryRun = false, productIds = null, personaIds = null, competitorIds = null, transientForMissionId = null, companyId = null, scope = 'TENANT', competitorName = null, appliesToProductIds = null }) {
   if (!url || typeof url !== 'string') {
     const err = new Error('url (string) required'); err.status = 400; throw err;
   }
@@ -279,6 +279,7 @@ async function syncUrl({ tenantId = null, url, category, title, dryRun = false, 
     productIds,
     personaIds,
     competitorIds,
+    appliesToProductIds,
     transientForMissionId,
     companyId,
     scope,

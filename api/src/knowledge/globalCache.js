@@ -17,6 +17,7 @@
 const crypto = require('crypto');
 const db = require('../db');
 const gemini = require('../gemini');
+const assessment = require('./assessment');
 const { FOUNDERS_TENANT_ID } = require('../users');
 
 const CACHE_NAME = 'kb:global';
@@ -49,6 +50,13 @@ async function assembleContent() {
       ORDER BY category ASC, lower(title) ASC`,
     [FOUNDERS_TENANT_ID, GLOBAL_CATEGORIES]
   );
+  // metadata comes back as a JS object from node-postgres' jsonb adapter,
+  // but be defensive for tests / direct query paths.
+  for (const r of docs.rows) {
+    if (typeof r.metadata === 'string') {
+      try { r.metadata = JSON.parse(r.metadata); } catch { r.metadata = {}; }
+    }
+  }
 
   if (docs.rows.length === 0) {
     return { text: '', documents: [], tokenCount: 0 };
@@ -64,9 +72,21 @@ async function assembleContent() {
       [d.id]
     );
     const body = chunks.rows.map((c) => c.text).join('\n\n');
+
+    // BATTLECARDS with a stored scoreboard get a compact "## SCOREBOARD"
+    // block injected ABOVE the raw text. The Arena AI reads this block to
+    // know exactly which axes we're weak on — that's where it pushes hardest
+    // when roleplaying a prospect. The raw text stays so the AI also has the
+    // underlying facts to pull from.
+    const scoreboard = (d.metadata && d.metadata.assessment) || null;
+    const scoreboardBlock = scoreboard
+      ? `### SCOREBOARD (use this to attack the rep where we're weakest)\n${assessment.renderAssessmentText(scoreboard)}\n\n### SOURCE TEXT\n`
+      : '';
+
     sections.push(
       `## [${d.category}] ${d.title}\n` +
       `(source: ${d.source_type} · document_id: ${d.id})\n\n` +
+      scoreboardBlock +
       body
     );
     docManifest.push({
@@ -74,6 +94,7 @@ async function assembleContent() {
       title: d.title,
       category: d.category,
       tokenCount: d.token_count,
+      hasScoreboard: !!scoreboard,
     });
   }
 

@@ -27,9 +27,9 @@
         <a href="#company" data-section="company">Company</a>
         <a href="#knowledge" data-section="knowledge">Knowledge Base</a>
         <a href="#missions" data-section="missions">Missions</a>
-        <a href="#portals" data-section="portals">Portals</a>
+        <a href="#calls" data-section="calls">Calls</a>
+        <a href="#calls-ops" data-section="calls-ops" class="superadmin-only hidden">Calls (operations)</a>
         <a href="#sessions" data-section="sessions">Arena Sessions</a>
-        <a href="#meetings" data-section="meetings">Meetings</a>
         <a href="#integrations" data-section="integrations">Integrations</a>
         <a href="#caches" data-section="caches">Gemini Caches</a>
         <a href="#settings" data-section="settings">Settings</a>
@@ -243,6 +243,15 @@
                         <input id="kb-file-competitor" type="text" list="kb-file-competitor-list" placeholder="Pick an existing competitor, or type a new one">
                         <datalist id="kb-file-competitor-list"></datalist>
                         <div class="field-hint">Stored as competitor / battlecard intel.</div>
+                        <div class="kb-applies-block" data-lane="file" style="margin-top:10px">
+                          <label>Which of our products does this battlecard cover?</label>
+                          <label class="kb-checkbox kb-applies-all">
+                            <input type="checkbox" data-lane="file" data-applies-all checked>
+                            <span><strong>All products</strong> — score the whole portfolio against this competitor</span>
+                          </label>
+                          <div class="kb-applies-list" data-lane="file" data-applies-list hidden></div>
+                          <div class="field-hint">Untick "All products" to scope this battlecard to specific product lines. The AI scoreboard will be scoped accordingly.</div>
+                        </div>
                       </div>
                     </div>
                     <div class="kb-btn-row">
@@ -310,6 +319,15 @@
                         <input id="kb-web-competitor" type="text" list="kb-web-competitor-list" placeholder="Pick an existing competitor, or type a new one">
                         <datalist id="kb-web-competitor-list"></datalist>
                         <div class="field-hint">Stored as competitor / battlecard intel.</div>
+                        <div class="kb-applies-block" data-lane="web" style="margin-top:10px">
+                          <label>Which of our products does this battlecard cover?</label>
+                          <label class="kb-checkbox kb-applies-all">
+                            <input type="checkbox" data-lane="web" data-applies-all checked>
+                            <span><strong>All products</strong> — score the whole portfolio against this competitor</span>
+                          </label>
+                          <div class="kb-applies-list" data-lane="web" data-applies-list hidden></div>
+                          <div class="field-hint">Untick "All products" to scope this battlecard to specific product lines.</div>
+                        </div>
                       </div>
                     </div>
                     <div class="field kb-inline-field">
@@ -386,6 +404,15 @@
                         <input id="kb-social-competitor" type="text" list="kb-social-competitor-list" placeholder="Pick an existing competitor, or type a new one">
                         <datalist id="kb-social-competitor-list"></datalist>
                         <div class="field-hint">Every post in this sync is stored as competitor / battlecard intel.</div>
+                        <div class="kb-applies-block" data-lane="social" style="margin-top:10px">
+                          <label>Which of our products does this battlecard cover?</label>
+                          <label class="kb-checkbox kb-applies-all">
+                            <input type="checkbox" data-lane="social" data-applies-all checked>
+                            <span><strong>All products</strong> — score the whole portfolio against this competitor</span>
+                          </label>
+                          <div class="kb-applies-list" data-lane="social" data-applies-list hidden></div>
+                          <div class="field-hint">Untick "All products" to scope this battlecard to specific product lines.</div>
+                        </div>
                       </div>
                     </div>
                     <div class="field kb-inline-field">
@@ -516,11 +543,43 @@
           </div>
         </section>
 
-        <!-- PORTALS -->
-        <section id="section-portals" class="section hidden">
+        <!-- CALLS (unified portals + meetings per ADR-003) -->
+        <section id="section-calls" class="section hidden">
+          <div class="calls-controls">
+            <div class="calls-tenant-row hidden" id="calls-tenant-row">
+              <label for="calls-tenant-select">Tenant</label>
+              <select id="calls-tenant-select"></select>
+            </div>
+            <div class="calls-tabs" id="calls-tabs" role="tablist">
+              <button type="button" class="calls-tab active" data-status="" role="tab">All <span class="calls-tab-count" data-count="all"></span></button>
+              <button type="button" class="calls-tab" data-status="pending" role="tab">Pending <span class="calls-tab-count" data-count="pending"></span></button>
+              <button type="button" class="calls-tab" data-status="analysing" role="tab">Analysing <span class="calls-tab-count" data-count="analysing"></span></button>
+              <button type="button" class="calls-tab" data-status="ready" role="tab">Ready <span class="calls-tab-count" data-count="ready"></span></button>
+              <button type="button" class="calls-tab" data-status="failed" role="tab">Failed <span class="calls-tab-count" data-count="failed"></span></button>
+            </div>
+            <div class="calls-tools">
+              <input id="calls-search" type="search" class="calls-search" placeholder="Search title, participants, company…" autocomplete="off">
+              <label class="calls-samples-toggle">
+                <input id="calls-samples-toggle" type="checkbox"> Show samples
+              </label>
+            </div>
+            <div class="calls-chips" id="calls-chips"></div>
+          </div>
+          <div class="calls-layout">
+            <div class="card calls-table-card">
+              <div class="card-h">Calls</div>
+              <div class="card-b table-wrap" id="calls-table"></div>
+              <div class="calls-pagination" id="calls-pagination"></div>
+            </div>
+            <aside class="calls-facets" id="calls-facets"></aside>
+          </div>
+        </section>
+
+        <!-- CALLS OPERATIONS (superadmin only — replay / reanalyze queues) -->
+        <section id="section-calls-ops" class="section hidden">
           <div class="card">
-            <div class="card-h">Recent portals</div>
-            <div class="card-b table-wrap" id="portals-table"></div>
+            <div class="card-h">Operations — failed &amp; stuck</div>
+            <div class="card-b table-wrap" id="calls-ops-table"></div>
           </div>
         </section>
 
@@ -529,14 +588,6 @@
           <div class="card">
             <div class="card-h">Recent Arena sessions</div>
             <div class="card-b table-wrap" id="sessions-table"></div>
-          </div>
-        </section>
-
-        <!-- MEETINGS -->
-        <section id="section-meetings" class="section hidden">
-          <div class="card">
-            <div class="card-h">Recent meetings</div>
-            <div class="card-b table-wrap" id="meetings-table"></div>
           </div>
         </section>
 
