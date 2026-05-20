@@ -1548,6 +1548,36 @@ details.schedule-advanced > .schedule-advanced-body {
 .kb-applies-list { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 2px; padding-left: 2px; }
 .kb-applies-item { font-weight: 400; }
 
+/* "View full document" collapse on intel cards */
+.ci-detail {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.ci-detail > summary {
+  cursor: pointer; list-style: none;
+  padding: 7px 11px; font-weight: 600; color: var(--accent);
+}
+.ci-detail > summary::-webkit-details-marker { display: none; }
+.ci-detail > summary:hover { text-decoration: underline; }
+.ci-detail[open] > summary { border-bottom: 1px solid var(--border); }
+.ci-detail-body { padding: 9px 11px; }
+.ci-detail-note { font-size: 11px; color: var(--warn); margin-bottom: 6px; }
+.ci-detail-text {
+  margin: 0; max-height: 360px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word;
+  font-size: 12px; line-height: 1.55; color: var(--text-2);
+  font-family: inherit;
+}
+
+/* Post-upload "View document" jump — brief pulse on the target card */
+.doc-flash { animation: doc-flash-kf 2.4s ease-out; }
+@keyframes doc-flash-kf {
+  0%, 18%   { box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); border-color: var(--accent); }
+  100%      { box-shadow: var(--shadow); }
+}
+
 /* ── Deep-research panel (Library → Prospects) ────────────────────────── */
 .research-panel { margin: 4px 0 12px; font-size: 12.5px; }
 .research-empty, .research-running, .research-failed { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); }

@@ -164,6 +164,16 @@ router.get('/documents/:id/download', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /knowledge/documents/:id/text — the full indexed text (chunks joined),
+// for the "View full document" collapse on intel cards.
+router.get('/documents/:id/text', async (req, res, next) => {
+  try {
+    const out = await service.getDocumentText(req.tenantId, req.params.id);
+    if (!out) return res.status(404).json({ error: 'not found' });
+    res.json(out);
+  } catch (err) { next(err); }
+});
+
 router.patch('/documents/:id/tags', express.json(), async (req, res, next) => {
   try {
     const { productIds, personaIds, competitorIds } = req.body || {};

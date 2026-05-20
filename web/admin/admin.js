@@ -1188,6 +1188,7 @@
 
     // ---- intel grouped by product line ----
     $('company-intel').innerHTML = renderCompanyIntel(docs, products);
+    wireDocDetails($('company-intel'));
   }
 
   // Group scope=TENANT docs by their (single) product line into card grids;
@@ -1281,6 +1282,13 @@
         : `<div class="ci-brief is-empty">No preview text available.</div>`;
     }
     const scoreboardHtml = renderScoreboard(md.assessment);
+    // Collapsible full-document view — lazy-loads the indexed text on first open
+    // (see wireDocDetails). Every doc has text, so it's always offered.
+    const detailHtml = `
+      <details class="ci-detail">
+        <summary>📄 View full document</summary>
+        <div class="ci-detail-body" data-doc-fulltext="${escapeHtml(d.id)}"></div>
+      </details>`;
     const actions = [];
     if (opts.keyPointsAction) {
       actions.push(`<button class="kb-link-btn ci-kp-btn" data-kb-keypoints="${escapeHtml(d.id)}">${points.length ? '↻ refresh analysis' : '✨ generate analysis'}</button>`);
@@ -1289,7 +1297,7 @@
       actions.push(`<button class="kb-link-btn" data-kb-delete="${escapeHtml(d.id)}">Delete</button>`);
     }
     return `
-      <div class="company-intel-card stream-${streamType.toLowerCase()}">
+      <div class="company-intel-card stream-${streamType.toLowerCase()}" data-doc-id="${escapeHtml(d.id)}">
         <div class="ci-title">${title}</div>
         <div class="ci-meta">
           ${streamPill}
@@ -1299,8 +1307,42 @@
         </div>
         ${contentHtml}
         ${scoreboardHtml}
+        ${detailHtml}
         ${actions.length ? `<div class="ci-actions">${actions.join('')}</div>` : ''}
       </div>`;
+  }
+
+  // Lazy-load wiring for the "View full document" collapse on intel cards.
+  // The `toggle` event doesn't bubble, so we attach per-<details> after each
+  // render. First open fetches /documents/:id/text; subsequent opens are cached.
+  function wireDocDetails(root) {
+    if (!root) return;
+    root.querySelectorAll('details.ci-detail').forEach((det) => {
+      if (det.dataset.wired === '1') return;
+      det.dataset.wired = '1';
+      det.addEventListener('toggle', async () => {
+        if (!det.open) return;
+        const body = det.querySelector('[data-doc-fulltext]');
+        if (!body || body.dataset.loaded === '1' || body.dataset.loading === '1') return;
+        body.dataset.loading = '1';
+        body.innerHTML = '<div class="kb-subtle">Loading full document…</div>';
+        try {
+          const id = body.dataset.docFulltext;
+          const r = await fetch(`/api/knowledge/documents/${encodeURIComponent(id)}/text`, { credentials: 'include' });
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+          const note = data.truncated
+            ? '<div class="ci-detail-note">⚠ Large document — showing the first portion only.</div>'
+            : '';
+          body.innerHTML = note + `<pre class="ci-detail-text">${escapeHtml(data.text || '(no text extracted)')}</pre>`;
+          body.dataset.loaded = '1';
+        } catch (err) {
+          body.innerHTML = `<div class="kb-result error">Couldn't load document text: ${escapeHtml(err.message)}</div>`;
+        } finally {
+          delete body.dataset.loading;
+        }
+      });
+    });
   }
 
   // Competitive scoreboard renderer. `a` is metadata.assessment as produced by
@@ -1752,6 +1794,53 @@
     if (tab === 'search')  wireKbSearchForm();
   }
 
+  // After an upload, jump to wherever the new document actually lives and
+  // highlight it. TENANT intel lives on the Company page; COMPETITOR / PROSPECT
+  // intel lives in the Library (under its entity tile). `doc` is the document
+  // object returned by the upload endpoint.
+  async function revealDocument(doc) {
+    if (!doc) return;
+    const scope = String(doc.scope || 'TENANT').toUpperCase();
+    if (scope === 'COMPETITOR' || scope === 'PROSPECT') {
+      // Pre-select the owning entity tile so the Library opens on its detail
+      // view (where the doc card is rendered) rather than the tile grid.
+      if (scope === 'COMPETITOR') {
+        const cid = Array.isArray(doc.competitor_ids) ? doc.competitor_ids[0] : null;
+        if (cid) _libSelected.competitor = cid;
+      } else if (doc.company_id) {
+        _libSelected.prospect = doc.company_id;
+      }
+      loaded.knowledge = false;
+      await switchSection('knowledge');
+      history.replaceState(null, '', '#knowledge');
+      await switchKbTab('library');
+    } else {
+      loaded.company = false;
+      await switchSection('company');
+      history.replaceState(null, '', '#company');
+    }
+    // Social syncs ingest many posts with no single target — navigate only.
+    if (doc.id) flashDocCard(doc.id);
+  }
+
+  // Scroll to a doc card by id and pulse it. The card may render a frame or
+  // two after the section loader resolves, so retry briefly before giving up.
+  function flashDocCard(id) {
+    const sel = `[data-doc-id="${(window.CSS && CSS.escape) ? CSS.escape(id) : id}"]`;
+    let tries = 0;
+    const tick = () => {
+      const card = document.querySelector(sel);
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.add('doc-flash');
+        setTimeout(() => card.classList.remove('doc-flash'), 2600);
+        return;
+      }
+      if (++tries < 25) setTimeout(tick, 80);
+    };
+    tick();
+  }
+
   function wireKbSearchForm() {
     const form = $('kb-search-form');
     if (!form || form.dataset.wired === '1') return;
@@ -2017,6 +2106,7 @@
       b.addEventListener('click', () => kbDeleteDoc(b.dataset.kbDelete)));
     host.querySelectorAll('[data-kb-keypoints]').forEach((b) =>
       b.addEventListener('click', () => kbRegenKeyPoints(b.dataset.kbKeypoints, b)));
+    wireDocDetails(host);
     host.querySelectorAll('[data-research-start],[data-research-rerun]').forEach((b) =>
       b.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -2331,18 +2421,18 @@
           result.innerHTML = `
             <strong>Indexed.</strong> ${escapeHtml(d.title || '—')} — <span class="kb-row-scope scope-${String(d.scope || 'tenant').toLowerCase()}">${escapeHtml(d.scope || 'TENANT')}</span> · ${fmtNum(d.chunk_count)} chunks,
             ${fmtNum(d.token_count)} tokens · <span class="kb-stream-pill stream-web">WEB</span>.
-            <a href="#" id="kb-web-go-library">Open Library</a>
+            <a href="#" id="kb-web-go-doc">View document →</a>
           `;
           form.reset();
           $('kb-web-dryrun').checked = true;
           resetEntitySelector('web');
-          const go = document.getElementById('kb-web-go-library');
-          if (go) go.addEventListener('click', (ev) => {
-            ev.preventDefault();
-            switchKbTab('library');
-          });
           loaded.knowledge = false;
           loaded.company = false; // a TENANT page changes the Company profile
+          const go = document.getElementById('kb-web-go-doc');
+          if (go) go.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            revealDocument(d);
+          });
         }
       } catch (err) {
         result.classList.remove('hidden');
@@ -2413,22 +2503,26 @@
           result.innerHTML = renderSocialPreview(payload.preview || {});
         } else {
           const res = payload.result || {};
+          const destLabel = ent.scope === 'TENANT' ? 'View on Company page →' : 'Open Library →';
           result.innerHTML = `
             <strong>Indexed.</strong> ${fmtNum(res.ingested)} of ${fmtNum(res.fetched)} posts ingested
             (${fmtNum(res.skipped)} skipped) · stream: <span class="kb-stream-pill stream-social">SOCIAL</span>.
-            <a href="#" id="kb-social-go-library">Open Library</a>
+            <a href="#" id="kb-social-go-doc">${destLabel}</a>
           `;
           form.reset();
           $('kb-social-dryrun').checked = true;
           $('kb-social-limit').value = '25';
           resetEntitySelector('social');
-          const go = document.getElementById('kb-social-go-library');
-          if (go) go.addEventListener('click', (ev) => {
-            ev.preventDefault();
-            switchKbTab('library');
-          });
           loaded.knowledge = false;
           loaded.company = false; // TENANT posts change the Company profile
+          // Social ingests many posts — no single doc to flash; navigate to
+          // wherever this batch landed (Company for TENANT, Library otherwise).
+          const socialDest = { scope: ent.scope, competitor_ids: ent.competitorIds || [], company_id: ent.companyId || null };
+          const go = document.getElementById('kb-social-go-doc');
+          if (go) go.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            revealDocument(socialDest);
+          });
         }
       } catch (err) {
         result.classList.remove('hidden');
@@ -2648,19 +2742,19 @@
         const d = body.document;
         result.innerHTML = `
           <strong>Indexed.</strong> ${escapeHtml(d.title)} — <span class="kb-row-scope scope-${String(d.scope || 'tenant').toLowerCase()}">${escapeHtml(d.scope || 'TENANT')}</span> · ${fmtNum(d.chunk_count)} chunks,
-          ${fmtNum(d.token_count)} tokens. Switch to <a href="#" id="kb-go-library">Library</a> to view.
+          ${fmtNum(d.token_count)} tokens. <a href="#" id="kb-go-doc">View document →</a>
         `;
         form.reset();
         resetEntitySelector('file');
-        const goLibrary = document.getElementById('kb-go-library');
-        if (goLibrary) goLibrary.addEventListener('click', (ev) => {
-          ev.preventDefault();
-          switchKbTab('library');
-        });
         // Invalidate the Knowledge status cache (hero number) and the Company
         // profile (its intel grouping + doc counts change on a TENANT upload).
         loaded.knowledge = false;
         loaded.company = false;
+        const goDoc = document.getElementById('kb-go-doc');
+        if (goDoc) goDoc.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          revealDocument(d);
+        });
       } catch (err) {
         result.classList.remove('hidden');
         result.classList.add('error');

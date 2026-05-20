@@ -559,6 +559,33 @@ async function getDownloadUrl(tenantId, id) {
   return r2.presignGet(doc.r2_key, 300);
 }
 
+// Full indexed text of a document — the chunks concatenated in ordinal order.
+// Powers the "View full document" collapse on intel cards. Soft-capped so a
+// pathologically large doc can't blow up the response; `truncated` tells the
+// UI to show a notice. Returns null when the doc isn't in this tenant.
+const DOC_TEXT_CAP = parseInt(process.env.KB_DOC_TEXT_CAP || '600000', 10);
+async function getDocumentText(tenantId, id) {
+  const doc = await getDocument(tenantId, id);
+  if (!doc) return null;
+  const r = await db.query(
+    `SELECT string_agg(text, E'\n\n' ORDER BY ordinal) AS body,
+            COUNT(*)::int AS n
+       FROM kb_chunks WHERE document_id = $1`,
+    [id]
+  );
+  let text = (r.rows[0] && r.rows[0].body) || '';
+  const truncated = text.length > DOC_TEXT_CAP;
+  if (truncated) text = text.slice(0, DOC_TEXT_CAP);
+  return {
+    id: doc.id,
+    title: doc.title,
+    sourceUrl: doc.source_url || null,
+    chunkCount: (r.rows[0] && r.rows[0].n) || 0,
+    text,
+    truncated,
+  };
+}
+
 // Status payload — drives the Admin "Knowledge Status" page. Scoped to one
 // tenant.
 async function getStatus(tenantId) {
@@ -654,6 +681,7 @@ module.exports = {
   listDocuments,
   deleteDocument,
   getDownloadUrl,
+  getDocumentText,
   updateTags,
   regenerateKeyPoints,
   getStatus,
