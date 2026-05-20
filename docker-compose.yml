@@ -82,6 +82,8 @@ services:
       # error message until these are populated; no API calls are attempted.
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
       FIRECRAWL_BASE_URL: ${FIRECRAWL_BASE_URL:-}
+      BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      BRAVE_BASE_URL: ${BRAVE_BASE_URL:-}
       PHYLLO_CLIENT_ID: ${PHYLLO_CLIENT_ID:-}
       PHYLLO_CLIENT_SECRET: ${PHYLLO_CLIENT_SECRET:-}
       PHYLLO_BASE_URL: ${PHYLLO_BASE_URL:-}
