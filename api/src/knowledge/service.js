@@ -584,6 +584,7 @@ async function getStatus(tenantId) {
     storage: { r2Configured: r2.isConfigured() },
     providers: {
       firecrawl: web.isConfigured(),
+      brave: web.isBraveConfigured(),
       phyllo: social.isConfigured(),
     },
   };
