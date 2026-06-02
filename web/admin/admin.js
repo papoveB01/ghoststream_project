@@ -878,6 +878,12 @@
         <label class="comp-finder-field">Region
           <select id="pdisc-region">${COMPETITOR_REGIONS.map((r) => `<option>${escapeHtml(r)}</option>`).join('')}</select>
         </label>
+        <label class="comp-finder-field">Country <span class="kb-subtle">(optional)</span>
+          <input id="pdisc-country" type="text" placeholder="e.g. United States">
+        </label>
+        <label class="comp-finder-field">City <span class="kb-subtle">(optional)</span>
+          <input id="pdisc-city" type="text" placeholder="e.g. Houston">
+        </label>
         <label class="comp-finder-field">Target customer segment
           <select id="pdisc-industry" title="The businesses you sell TO (e.g. bars, clubs, restaurants) — not your own industry"><option value="">Any segment</option></select>
         </label>
@@ -895,12 +901,15 @@
   async function runProspectDiscover() {
     const btn = $('pdisc-search'); const body = $('pdisc-body');
     const region = $('pdisc-region').value; const industry = $('pdisc-industry').value;
+    const country = ($('pdisc-country').value || '').trim();
+    const city = ($('pdisc-city').value || '').trim();
+    const where = [city, country].filter(Boolean).join(', ') || (region && !/global|any/i.test(region) ? region : '');
     btn.disabled = true; const o = btn.textContent; btn.textContent = 'Searching…';
-    body.innerHTML = `<div class="kb-subtle" style="padding:12px">🔎 Searching the web for prospects${industry ? ` in ${escapeHtml(industry)}` : ''}${region && !/global|any/i.test(region) ? `, ${escapeHtml(region)}` : ''}…</div>`;
+    body.innerHTML = `<div class="kb-subtle" style="padding:12px">🔎 Searching the web for prospects${industry ? ` in ${escapeHtml(industry)}` : ''}${where ? ` · ${escapeHtml(where)}` : ''}…</div>`;
     try {
       const data = await fetchJson('/api/companies/discover', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region, industry }),
+        body: JSON.stringify({ region, industry, country, city }),
       });
       renderProspectCandidates(body, (data && data.prospects) || []);
     } catch (err) {
@@ -1714,6 +1723,12 @@
             <label class="comp-finder-field">Region
               <select id="comp-finder-region">${COMPETITOR_REGIONS.map((r) => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('')}</select>
             </label>
+            <label class="comp-finder-field">Country <span class="kb-subtle">(optional)</span>
+              <input id="comp-finder-country" type="text" placeholder="e.g. United States">
+            </label>
+            <label class="comp-finder-field">City <span class="kb-subtle">(optional)</span>
+              <input id="comp-finder-city" type="text" placeholder="e.g. Houston">
+            </label>
             <button type="button" class="primary-cta" id="comp-finder-search">Search</button>
           </div>
           <div class="comp-discover-body" id="comp-finder-body"></div>
@@ -1734,12 +1749,15 @@
     const btn = $('comp-finder-search');
     const body = $('comp-finder-body');
     const region = $('comp-finder-region').value;
+    const country = ($('comp-finder-country').value || '').trim();
+    const city = ($('comp-finder-city').value || '').trim();
+    const where = [city, country].filter(Boolean).join(', ') || (region && !/global|any/i.test(region) ? region : '');
     btn.disabled = true; const o = btn.textContent; btn.textContent = 'Searching…';
-    body.innerHTML = `<div class="kb-subtle" style="padding:14px">🔎 Searching the web for competitors${region && !/global|any/i.test(region) ? ` in ${escapeHtml(region)}` : ''}…</div>`;
+    body.innerHTML = `<div class="kb-subtle" style="padding:14px">🔎 Searching the web for competitors${where ? ` in ${escapeHtml(where)}` : ''}…</div>`;
     try {
       const data = await fetchJson('/api/portfolio/competitors/discover', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region }),
+        body: JSON.stringify({ region, country, city }),
       });
       renderCompetitorCandidates(body, (data && data.competitors) || []);
     } catch (err) {

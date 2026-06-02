@@ -838,7 +838,11 @@ router.post('/competitors/discover', gating.requireCapacity('competitor_research
     if (!web.isConfigured() && !web.isBraveConfigured()) {
       return res.status(503).json({ error: 'web search is not configured on this workspace' });
     }
-    const region = String((req.body && req.body.region) || '').trim();
+    const broadRegion = String((req.body && req.body.region) || '').trim();
+    const country = String((req.body && req.body.country) || '').trim();
+    const city = String((req.body && req.body.city) || '').trim();
+    // Most specific location wins: "City, Country" > broad region.
+    const region = [city, country].filter(Boolean).join(', ') || broadRegion;
     const tenant = (await db.query(`SELECT name FROM tenants WHERE id = $1`, [req.tenantId])).rows[0];
     if (!tenant || !tenant.name) return res.status(422).json({ error: 'set your company name first (Company page) so we know who to find rivals for' });
     const prof = (await db.query(`SELECT positioning, objectives, ideal_customer_profile FROM tenant_profiles WHERE tenant_id = $1`, [req.tenantId])).rows[0] || {};
