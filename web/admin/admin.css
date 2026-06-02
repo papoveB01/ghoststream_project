@@ -3375,11 +3375,16 @@ details.schedule-advanced > .schedule-advanced-body {
   padding: 14px 18px; border-bottom: 1px solid var(--border);
 }
 .comp-finder-field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 600; color: var(--text); }
-.comp-finder-field select {
-  min-width: 200px; padding: 8px 10px; font: inherit; font-size: 13.5px;
-  border: 1px solid var(--border-2); border-radius: var(--radius-sm); background: #fff;
+.comp-finder-field select,
+.comp-finder-field input {
+  min-width: 180px; height: 38px; padding: 8px 10px; font: inherit; font-size: 13.5px;
+  border: 1px solid var(--border-2); border-radius: var(--radius-sm); background: #fff; color: var(--text);
+  box-sizing: border-box;
 }
-.comp-finder-field select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+.comp-finder-field input::placeholder { color: var(--muted); font-weight: 400; }
+.comp-finder-field select:focus,
+.comp-finder-field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+.comp-finder-field .kb-subtle { font-weight: 400; }
 .prospect-quick-find { margin-top: 8px; font-size: 12.5px; color: var(--text-2); }
 .comp-threat {
   display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700;

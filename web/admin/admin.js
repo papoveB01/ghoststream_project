@@ -879,7 +879,7 @@
           <select id="pdisc-region">${COMPETITOR_REGIONS.map((r) => `<option>${escapeHtml(r)}</option>`).join('')}</select>
         </label>
         <label class="comp-finder-field">Country <span class="kb-subtle">(optional)</span>
-          <input id="pdisc-country" type="text" placeholder="e.g. United States">
+          <select id="pdisc-country">${countryOptions()}</select>
         </label>
         <label class="comp-finder-field">City <span class="kb-subtle">(optional)</span>
           <input id="pdisc-city" type="text" placeholder="e.g. Houston">
@@ -917,6 +917,18 @@
     } finally { btn.disabled = false; btn.textContent = o; }
   }
 
+  // Location + public contact info a discovery candidate carries (any may be
+  // empty). Rendered as a compact sub-line under the company name.
+  function contactLines(c) {
+    const loc = [c.city, c.country].filter(Boolean).join(', ');
+    const bits = [];
+    if (loc) bits.push(`📍 ${escapeHtml(loc)}`);
+    if (c.address) bits.push(escapeHtml(c.address));
+    if (c.phone) bits.push(`☎ ${escapeHtml(c.phone)}`);
+    if (c.email) bits.push(`✉ <a href="mailto:${escapeHtml(c.email)}">${escapeHtml(c.email)}</a>`);
+    return bits.length ? `<div class="kb-subtle" style="margin-top:3px;line-height:1.5">${bits.join(' · ')}</div>` : '';
+  }
+
   function renderProspectCandidates(body, list) {
     if (!list.length) {
       body.innerHTML = '<div class="empty" style="padding:16px">No prospects surfaced. Try a different region or industry.</div>';
@@ -931,7 +943,7 @@
       return `
       <tr data-pcand="${i}">
         <td><span class="prio prio-${lvl}">${prioLabel(lvl)}</span></td>
-        <td class="dt-name"><strong>${escapeHtml(c.name)}</strong>${sub}</td>
+        <td class="dt-name"><strong>${escapeHtml(c.name)}</strong>${sub}${contactLines(c)}</td>
         <td class="dt-what">${escapeHtml(c.signal || '')}${c.fitReason ? `<div class="kb-subtle">${escapeHtml(c.fitReason)}</div>` : ''}</td>
         <td class="dt-vs">${fits}</td>
         <td class="dt-act">${c.exists ? '<span class="kb-subtle">✓ tracked</span>' : `<button type="button" class="kb-secondary-btn pcand-add" data-i="${i}">＋ Add prospect</button>`}</td>
@@ -1516,6 +1528,8 @@
 
   let _competitorsState = { competitors: [], selectedId: null };
   const COMPETITOR_REGIONS = ['Global / Any', 'Africa', 'Europe', 'GCC / Middle East', 'North America', 'Latin America', 'Asia-Pacific'];
+  const COUNTRIES = ['Afghanistan','Albania','Algeria','Angola','Argentina','Armenia','Australia','Austria','Azerbaijan','Bahamas','Bahrain','Bangladesh','Barbados','Belarus','Belgium','Belize','Benin','Bhutan','Bolivia','Bosnia and Herzegovina','Botswana','Brazil','Brunei','Bulgaria','Burkina Faso','Cambodia','Cameroon','Canada','Chad','Chile','China','Colombia','Costa Rica','Croatia','Cuba','Cyprus','Czechia','Democratic Republic of the Congo','Denmark','Dominican Republic','Ecuador','Egypt','El Salvador','Estonia','Eswatini','Ethiopia','Fiji','Finland','France','Gabon','Georgia','Germany','Ghana','Greece','Guatemala','Guinea','Guyana','Haiti','Honduras','Hong Kong','Hungary','Iceland','India','Indonesia','Iran','Iraq','Ireland','Israel','Italy','Ivory Coast','Jamaica','Japan','Jordan','Kazakhstan','Kenya','Kuwait','Kyrgyzstan','Laos','Latvia','Lebanon','Libya','Lithuania','Luxembourg','Madagascar','Malawi','Malaysia','Maldives','Mali','Malta','Mauritius','Mexico','Moldova','Monaco','Mongolia','Montenegro','Morocco','Mozambique','Myanmar','Namibia','Nepal','Netherlands','New Zealand','Nicaragua','Niger','Nigeria','North Macedonia','Norway','Oman','Pakistan','Panama','Papua New Guinea','Paraguay','Peru','Philippines','Poland','Portugal','Qatar','Romania','Rwanda','Saudi Arabia','Senegal','Serbia','Sierra Leone','Singapore','Slovakia','Slovenia','Somalia','South Africa','South Korea','Spain','Sri Lanka','Sudan','Sweden','Switzerland','Syria','Taiwan','Tajikistan','Tanzania','Thailand','Togo','Trinidad and Tobago','Tunisia','Turkey','Turkmenistan','Uganda','Ukraine','United Arab Emirates','United Kingdom','United States','Uruguay','Uzbekistan','Venezuela','Vietnam','Yemen','Zambia','Zimbabwe'];
+  const countryOptions = (sel) => ['<option value="">Any country</option>'].concat(COUNTRIES.map((c) => `<option${c === sel ? ' selected' : ''}>${c}</option>`)).join('');
   let _finderAddedAny = false; // any competitor added in the finder modal → reload the list on close
 
   async function loadCompetitors() {
@@ -1724,7 +1738,7 @@
               <select id="comp-finder-region">${COMPETITOR_REGIONS.map((r) => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('')}</select>
             </label>
             <label class="comp-finder-field">Country <span class="kb-subtle">(optional)</span>
-              <input id="comp-finder-country" type="text" placeholder="e.g. United States">
+              <select id="comp-finder-country">${countryOptions()}</select>
             </label>
             <label class="comp-finder-field">City <span class="kb-subtle">(optional)</span>
               <input id="comp-finder-city" type="text" placeholder="e.g. Houston">
@@ -1782,7 +1796,7 @@
       const sub = [c.website ? `<a href="https://${escapeHtml(c.website)}" target="_blank" rel="noopener">${escapeHtml(c.website)}</a>` : '', c.region ? escapeHtml(c.region) : ''].filter(Boolean).join(' · ');
       return `
       <tr data-cand="${i}">
-        <td class="dt-name"><strong>${escapeHtml(c.name)}</strong>${sub ? `<div class="kb-subtle">${sub}</div>` : ''}</td>
+        <td class="dt-name"><strong>${escapeHtml(c.name)}</strong>${sub ? `<div class="kb-subtle">${sub}</div>` : ''}${contactLines(c)}</td>
         <td class="dt-what">${escapeHtml(c.description || '')}</td>
         <td class="dt-their">${escapeHtml(c.theirStrength || c.whyRelevant || '')}</td>
         <td class="dt-vs">${threatens}</td>

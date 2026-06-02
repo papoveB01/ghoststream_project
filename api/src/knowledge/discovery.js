@@ -202,6 +202,30 @@ async function discoverCompetitorProducts({ competitorName, competitorDomain = '
   }
 }
 
+// Location + public contact details extracted from the findings (empty string
+// when not evident — never invented). Spread into the prospect/competitor schemas
+// and mapped onto each result so the UI can show "where + how to reach them".
+const CONTACT_PROPS = {
+  country: { type: 'string', description: 'Country, if evident in the findings; else empty string.' },
+  city:    { type: 'string', description: 'City/locality, if evident; else empty string.' },
+  address: { type: 'string', description: 'Street/postal address, if evident; else empty string.' },
+  phone:   { type: 'string', description: 'Public phone number, if evident; else empty string.' },
+  email:   { type: 'string', description: 'Public contact email, if evident; else empty string.' },
+};
+const CONTACT_REQUIRED = ['country', 'city', 'address', 'phone', 'email'];
+const CONTACT_INSTRUCTION =
+  'Also extract, ONLY when the findings clearly state it, each company\'s location (country, city, address) ' +
+  'and public contact details (phone, email). Leave any of these empty if not found — never guess or invent contact info.';
+function pickContact(c) {
+  return {
+    country: String((c && c.country) || '').trim(),
+    city:    String((c && c.city) || '').trim(),
+    address: String((c && c.address) || '').trim(),
+    phone:   String((c && c.phone) || '').trim(),
+    email:   String((c && c.email) || '').trim(),
+  };
+}
+
 // ── Competitor discovery (find rivals of OUR company) ─────────────────────
 
 const COMPETITORS_SCHEMA = {
@@ -221,8 +245,9 @@ const COMPETITORS_SCHEMA = {
           theirStrength: { type: 'string', description: 'One short phrase: this competitor\'s main strength / why buyers pick them.' },
           threatToProductIds: { type: 'array', items: { type: 'string' }, description: 'The ids of OUR products this competitor most directly threatens, chosen ONLY from the provided product id list. Empty array if none of ours overlaps.' },
           threatLevel: { type: 'integer', description: 'How directly/severely they compete with us, 1 (minimal) to 5 (critical / head-on). Weigh overlap with our products, their strength, and market presence.' },
+          ...CONTACT_PROPS,
         },
-        required: ['name', 'description', 'website', 'region', 'whyRelevant', 'theirStrength', 'threatToProductIds', 'threatLevel'],
+        required: ['name', 'description', 'website', 'region', 'whyRelevant', 'theirStrength', 'threatToProductIds', 'threatLevel', ...CONTACT_REQUIRED],
       },
     },
   },
@@ -280,7 +305,7 @@ async function generateSearchQueries({ mode, ctx, products = [], region = '', se
 // Find companies that compete with OUR company, optionally focused on a region.
 // Returns { competitors: [...] } (possibly empty) or null on hard failure.
 // Read-only research: no ingest, no storage (the rep adds the relevant ones).
-async function discoverCompetitors({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '' } = {}) {
+async function discoverCompetitors({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', buyerMarket = '' } = {}) {
   const name = String(companyName || '').trim();
   if (!name) return null;
 
@@ -288,7 +313,11 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
   const regionIsGlobal = !regionLabel || /global|any|worldwide/i.test(regionLabel);
   const regionTerm = regionIsGlobal ? '' : regionLabel.replace(/\s*\/\s*/g, ' ');
   const topProducts = (ourProducts || []).map((p) => p && p.name).filter(Boolean).slice(0, 3);
-  const ctx = buildContext({ name, positioning, objectives, idealCustomerProfile });
+  // Rivals (other vendors of our kind of product) are usually national/global,
+  // NOT in the buyer's city — so `buyerMarket` (e.g. "Houston, US") is context
+  // about WHO we serve, kept separate from the competitor search scope (region).
+  const ctx = buildContext({ name, positioning, objectives, idealCustomerProfile })
+    + (buyerMarket ? `\nOur customers/market are located in: ${buyerMarket}` : '');
 
   // Name/product-anchored rivals + LLM-generated "same solution, same buyers"
   // queries. (Dropped the old "companies like <name>" query — it invited
@@ -323,6 +352,7 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
     'For EACH competitor, also assess: their main strength; which of OUR products (by id, from the ' +
     'list) they most directly THREATEN; and a threatLevel 1-5 (5 = critical / head-on) weighing ' +
     'product overlap, their strength, and market presence.\n' +
+    CONTACT_INSTRUCTION + '\n' +
     'Rules: only list companies the findings actually support (don\'t invent); EXCLUDE our own ' +
     'company; one company per row; keep strings short; threatToProductIds MUST be chosen from the ' +
     'provided ids (or empty); give the primary website domain only if evident; ignore website ' +
@@ -371,6 +401,7 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
         threatToProductIds: threatIds,
         threatToProductNames: threatIds.map((id) => byId.get(id)).filter(Boolean),
         threatLevel,
+        ...pickContact(c),
       });
       if (competitors.length >= MAX_PRODUCTS) break;
     }
@@ -400,8 +431,9 @@ const PROSPECTS_SCHEMA = {
           matchedProductIds: { type: 'array', items: { type: 'string' }, description: 'The ids of OUR products that fit the need this signal creates, chosen ONLY from the provided product id list. Empty if none clearly fits.' },
           fitReason:  { type: 'string', description: 'One sentence: why our product(s) meet the need the signal creates.' },
           priority:   { type: 'integer', description: 'How strong + timely a prospect, 1 (low) to 5 (critical: clear product fit AND a fresh, relevant signal).' },
+          ...CONTACT_PROPS,
         },
-        required: ['name', 'domain', 'signal', 'matchedProductIds', 'fitReason', 'priority'],
+        required: ['name', 'domain', 'signal', 'matchedProductIds', 'fitReason', 'priority', ...CONTACT_REQUIRED],
       },
     },
   },
@@ -475,6 +507,7 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
     (regionIsGlobal ? '' : `Focus on companies in or serving ${regionLabel}. `) +
     'For each company: the signal (why now), which of OUR products fit (ids from the list) + a one-sentence ' +
     'fit reason, and priority 1-5 (5 = critical: clear ICP/product fit AND a fresh relevant signal).\n' +
+    CONTACT_INSTRUCTION + '\n' +
     'Aim for BREADTH: list EVERY distinct company in the findings that plausibly matches our ICP ' +
     `(up to ${PROSPECT_MAX}). Include lower-priority ones too (rank them 1-2).\n` +
     'Rules: only companies the findings actually support (don\'t invent); EXCLUDE our own company and our ' +
@@ -522,6 +555,7 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
         matchedProductNames: ids.map((id) => byId.get(id)).filter(Boolean),
         fitReason: String(c.fitReason || '').trim(),
         priority,
+        ...pickContact(c),
       });
       if (prospects.length >= PROSPECT_MAX) break;
     }

@@ -841,8 +841,10 @@ router.post('/competitors/discover', gating.requireCapacity('competitor_research
     const broadRegion = String((req.body && req.body.region) || '').trim();
     const country = String((req.body && req.body.country) || '').trim();
     const city = String((req.body && req.body.city) || '').trim();
-    // Most specific location wins: "City, Country" > broad region.
-    const region = [city, country].filter(Boolean).join(', ') || broadRegion;
+    // Competitors (rival vendors) are usually national/global — scope their search
+    // to Country/Region, NOT the city; pass City as buyer-market CONTEXT instead.
+    const region = country || broadRegion;
+    const buyerMarket = [city, country].filter(Boolean).join(', ');
     const tenant = (await db.query(`SELECT name FROM tenants WHERE id = $1`, [req.tenantId])).rows[0];
     if (!tenant || !tenant.name) return res.status(422).json({ error: 'set your company name first (Company page) so we know who to find rivals for' });
     const prof = (await db.query(`SELECT positioning, objectives, ideal_customer_profile FROM tenant_profiles WHERE tenant_id = $1`, [req.tenantId])).rows[0] || {};
@@ -858,6 +860,7 @@ router.post('/competitors/discover', gating.requireCapacity('competitor_research
       objectives: prof.objectives || '',
       idealCustomerProfile: prof.ideal_customer_profile || '',
       region,
+      buyerMarket,
     });
     if (!result) return res.status(502).json({ error: 'discovery could not find competitors right now — try again' });
 
