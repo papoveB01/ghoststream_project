@@ -25,10 +25,13 @@ for (const [resource, conf] of Object.entries(TABLES)) {
   // LIST — only this tenant's entities. Doc counts are scoped via a join on
   // kb_documents.tenant_id so a shared junction row from another tenant
   // (impossible today, but defensive) doesn't inflate the count.
+  // Competitors carry location + contact columns (migration 0030); products/
+  // personas don't — so only widen the select/patch for competitors.
+  const contactCols = resource === 'competitors' ? ', e.website, e.country, e.city, e.address, e.phone, e.email' : '';
   router.get(`/${resource}`, async (req, res, next) => {
     try {
       const r = await db.query(
-        `SELECT e.id, e.name, e.description, e.created_at,
+        `SELECT e.id, e.name, e.description${contactCols}, e.created_at,
                 COALESCE(j.doc_count, 0)::int AS doc_count
            FROM ${conf.table} e
            LEFT JOIN LATERAL (
@@ -70,12 +73,17 @@ for (const [resource, conf] of Object.entries(TABLES)) {
   // PATCH — name/description only; id is immutable.
   router.patch(`/${resource}/:id`, async (req, res, next) => {
     try {
-      const { name, description } = req.body || {};
+      const b = req.body || {};
       const sets = [];
       const params = [];
-      if (name !== undefined)        { params.push(name);        sets.push(`name = $${params.length}`); }
-      if (description !== undefined) { params.push(description); sets.push(`description = $${params.length}`); }
-      if (sets.length === 0) return res.status(400).json({ error: 'nothing to update; pass name and/or description' });
+      if (b.name !== undefined)        { params.push(b.name);        sets.push(`name = $${params.length}`); }
+      if (b.description !== undefined) { params.push(b.description); sets.push(`description = $${params.length}`); }
+      if (resource === 'competitors') {
+        for (const f of ['website', 'country', 'city', 'address', 'phone', 'email']) {
+          if (b[f] !== undefined) { params.push(b[f] || null); sets.push(`${f} = $${params.length}`); }
+        }
+      }
+      if (sets.length === 0) return res.status(400).json({ error: 'nothing to update' });
       params.push(req.params.id);
       params.push(req.tenantId);
       const r = await db.query(
@@ -899,12 +907,20 @@ router.post('/competitors/discover/add', async (req, res, next) => {
     if (b.region) descBits.push(`Region: ${String(b.region).trim()}.`);
     const description = descBits.join(' ').slice(0, 1000) || null;
 
+    const website = String(b.website || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '') || null;
+    const ct = {
+      country: String(b.country || '').trim() || null, city: String(b.city || '').trim() || null,
+      address: String(b.address || '').trim() || null, phone: String(b.phone || '').trim() || null,
+      email: String(b.email || '').trim() || null,
+    };
+
     // Create the competitor (idempotent on a same-tenant id collision).
     let competitor;
     try {
       competitor = (await db.query(
-        `INSERT INTO competitors (id, tenant_id, name, description) VALUES ($1, $2, $3, $4) RETURNING *`,
-        [id, req.tenantId, name, description]
+        `INSERT INTO competitors (id, tenant_id, name, description, website, country, city, address, phone, email)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        [id, req.tenantId, name, description, website, ct.country, ct.city, ct.address, ct.phone, ct.email]
       )).rows[0];
     } catch (err) {
       if (err.code !== '23505') throw err;

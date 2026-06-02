@@ -143,6 +143,12 @@ async function eraseTenant(tenantId, { dryRun = false } = {}) {
   }
 
   // ---- Postgres cascade (the authoritative purge) ----
+  // Drop KB docs first: the kb_document_{products,personas,competitors} junctions
+  // reference products/personas/competitors with ON DELETE RESTRICT, so the
+  // tenant cascade would otherwise fail if any entity has tagged intel. Deleting
+  // kb_documents cascades those junction rows away (via document_id), clearing
+  // the RESTRICT references before the tenant cascade removes the entities.
+  await db.query('DELETE FROM kb_documents WHERE tenant_id = $1', [tenantId]);
   const del = await db.query('DELETE FROM tenants WHERE id = $1', [tenantId]);
   manifest.postgres.tenantRowsDeleted = del.rowCount;
   try { tenants.invalidate(tenantId); } catch { /* cache miss is fine */ }

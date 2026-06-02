@@ -37,7 +37,7 @@ async function assertNotOwnCompany(tenantId, domain) {
 
 async function list(tenantId) {
   const r = await db.query(
-    `SELECT id, name, domain, primary_contact, notes, created_at,
+    `SELECT id, name, domain, primary_contact, notes, country, city, address, phone, email, created_at,
             (SELECT COUNT(*)::int FROM scheduled_meetings
               WHERE company_id = c.id AND tenant_id = $1) AS meeting_count
        FROM companies c
@@ -56,19 +56,20 @@ async function get(tenantId, id) {
   return r.rows[0] || null;
 }
 
-async function create(tenantId, { name, domain, primaryContact, notes }) {
+async function create(tenantId, { name, domain, primaryContact, notes, country, city, address, phone, email }) {
   await assertNotOwnCompany(tenantId, domain);
   const r = await db.query(
-    `INSERT INTO companies (tenant_id, name, domain, primary_contact, notes)
-          VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [tenantId, name, domain || null, primaryContact || null, notes || null]
+    `INSERT INTO companies (tenant_id, name, domain, primary_contact, notes, country, city, address, phone, email)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+    [tenantId, name, domain || null, primaryContact || null, notes || null,
+     country || null, city || null, address || null, phone || null, email || null]
   );
   return r.rows[0];
 }
 
 // Find by case-insensitive name within the tenant, OR create. First-write-wins
 // on domain (fills it in if the existing row had none).
-async function findOrCreate(tenantId, { name, domain, primaryContact }) {
+async function findOrCreate(tenantId, { name, domain, primaryContact, country, city, address, phone, email }) {
   if (!tenantId) { const e = new Error('tenantId required'); e.status = 400; throw e; }
   if (!name || typeof name !== 'string') {
     const err = new Error('company name required'); err.status = 400; throw err;
@@ -88,7 +89,7 @@ async function findOrCreate(tenantId, { name, domain, primaryContact }) {
     }
     return row;
   }
-  return create(tenantId, { name: name.trim(), domain, primaryContact });
+  return create(tenantId, { name: name.trim(), domain, primaryContact, country, city, address, phone, email });
 }
 
 // Find a tenant's company by website domain (host part). Used by onboarding +
@@ -103,7 +104,7 @@ async function findByDomain(tenantId, domain) {
   return r.rows[0] || null;
 }
 
-async function update(tenantId, id, { name, domain, primaryContact, notes }) {
+async function update(tenantId, id, { name, domain, primaryContact, notes, country, city, address, phone, email }) {
   if (domain !== undefined) await assertNotOwnCompany(tenantId, domain);
   const sets = [];
   const params = [];
@@ -111,6 +112,11 @@ async function update(tenantId, id, { name, domain, primaryContact, notes }) {
   if (domain !== undefined)         { params.push(domain);         sets.push(`domain = $${params.length}`); }
   if (primaryContact !== undefined) { params.push(primaryContact); sets.push(`primary_contact = $${params.length}`); }
   if (notes !== undefined)          { params.push(notes);          sets.push(`notes = $${params.length}`); }
+  if (country !== undefined)        { params.push(country);        sets.push(`country = $${params.length}`); }
+  if (city !== undefined)           { params.push(city);           sets.push(`city = $${params.length}`); }
+  if (address !== undefined)        { params.push(address);        sets.push(`address = $${params.length}`); }
+  if (phone !== undefined)          { params.push(phone);          sets.push(`phone = $${params.length}`); }
+  if (email !== undefined)          { params.push(email);          sets.push(`email = $${params.length}`); }
   if (sets.length === 0) return get(tenantId, id);
   sets.push(`updated_at = now()`);
   params.push(id);
@@ -237,9 +243,14 @@ router.post('/discover/add', async (req, res, next) => {
     if (!name) return res.status(400).json({ error: 'name required' });
     const domain = String(b.domain || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '') || null;
 
+    const contact = {
+      country: String(b.country || '').trim() || null, city: String(b.city || '').trim() || null,
+      address: String(b.address || '').trim() || null, phone: String(b.phone || '').trim() || null,
+      email: String(b.email || '').trim() || null,
+    };
     let company;
     try {
-      company = await findOrCreate(req.tenantId, { name, domain });
+      company = await findOrCreate(req.tenantId, { name, domain, ...contact });
     } catch (err) {
       if (err.code === '23505') company = await findByDomain(req.tenantId, domain);
       if (!company) throw err;

@@ -967,6 +967,7 @@
         body: JSON.stringify({
           name: c.name, domain: c.domain || null, signal: c.signal || null, fitReason: c.fitReason || null,
           matchedProductNames: c.matchedProductNames || [], priority: c.priority || 3,
+          country: c.country || null, city: c.city || null, address: c.address || null, phone: c.phone || null, email: c.email || null,
         }),
       });
       btn.textContent = r.signalSaved ? '✓ Added · signal saved' : '✓ Added';
@@ -1044,6 +1045,11 @@
       <div class="prospect-detail-fields">
         <label>Domain<input id="prospect-domain" type="text" value="${escapeHtml(c.domain || '')}" placeholder="acme.com"></label>
         <label>Primary contact<input id="prospect-primary" type="text" value="${escapeHtml(c.primary_contact || '')}" placeholder="Jane Smith"></label>
+        <label>City<input id="prospect-city" type="text" value="${escapeHtml(c.city || '')}" placeholder="Houston"></label>
+        <label>Country<input id="prospect-country" type="text" value="${escapeHtml(c.country || '')}" placeholder="United States"></label>
+        <label>Address<input id="prospect-address" type="text" value="${escapeHtml(c.address || '')}" placeholder="123 Main St"></label>
+        <label>Phone<input id="prospect-phone" type="text" value="${escapeHtml(c.phone || '')}" placeholder="+1 …"></label>
+        <label>Email<input id="prospect-email" type="text" value="${escapeHtml(c.email || '')}" placeholder="contact@acme.com"></label>
         <label>Notes<textarea id="prospect-notes" rows="2" placeholder="Anything worth remembering across engagements">${escapeHtml(c.notes || '')}</textarea></label>
       </div>
 
@@ -1119,6 +1125,11 @@
             name:           $('prospect-name').value.trim(),
             domain:         $('prospect-domain').value.trim() || null,
             primaryContact: $('prospect-primary').value.trim() || null,
+            city:           $('prospect-city').value.trim() || null,
+            country:        $('prospect-country').value.trim() || null,
+            address:        $('prospect-address').value.trim() || null,
+            phone:          $('prospect-phone').value.trim() || null,
+            email:          $('prospect-email').value.trim() || null,
             notes:          $('prospect-notes').value.trim() || null,
           }),
         });
@@ -1647,7 +1658,12 @@
       </div>
       <div class="prospect-detail-fields">
         <label>ID <span class="kb-subtle">(immutable)</span><input type="text" value="${escapeHtml(c.id)}" disabled></label>
-        <label>Created<input type="text" value="${escapeHtml(c.created_at ? fmtDate(c.created_at) : '—')}" disabled></label>
+        <label>Website<input id="competitor-website" type="text" value="${escapeHtml(c.website || '')}" placeholder="acme.com"></label>
+        <label>City<input id="competitor-city" type="text" value="${escapeHtml(c.city || '')}" placeholder="Houston"></label>
+        <label>Country<input id="competitor-country" type="text" value="${escapeHtml(c.country || '')}" placeholder="United States"></label>
+        <label>Address<input id="competitor-address" type="text" value="${escapeHtml(c.address || '')}" placeholder="123 Main St"></label>
+        <label>Phone<input id="competitor-phone" type="text" value="${escapeHtml(c.phone || '')}" placeholder="+1 …"></label>
+        <label>Email<input id="competitor-email" type="text" value="${escapeHtml(c.email || '')}" placeholder="contact@acme.com"></label>
         <label>Description<textarea id="competitor-description" rows="3" placeholder="What's their pitch? Where do they win and where do they lose?">${escapeHtml(c.description || '')}</textarea></label>
       </div>
 
@@ -1827,6 +1843,7 @@
           website: c.website || null, region: c.region || null,
           whyRelevant: c.whyRelevant || null, theirStrength: c.theirStrength || null,
           threatToProductNames: c.threatToProductNames || [], threatLevel: c.threatLevel || 3,
+          country: c.country || null, city: c.city || null, address: c.address || null, phone: c.phone || null, email: c.email || null,
         }),
       });
       btn.textContent = r.intelFiled ? '✓ Added · unlocked' : '✓ Added';
@@ -1855,6 +1872,12 @@
           body: JSON.stringify({
             name:        $('competitor-name').value.trim(),
             description: $('competitor-description').value.trim() || null,
+            website:     $('competitor-website').value.trim() || null,
+            city:        $('competitor-city').value.trim() || null,
+            country:     $('competitor-country').value.trim() || null,
+            address:     $('competitor-address').value.trim() || null,
+            phone:       $('competitor-phone').value.trim() || null,
+            email:       $('competitor-email').value.trim() || null,
           }),
         });
         loaded.competitors = false;
