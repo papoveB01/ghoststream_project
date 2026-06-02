@@ -22,7 +22,7 @@
     "gpt-tokenizer": "^2.5.0",
     "ioredis": "^5.4.1",
     "jsonwebtoken": "^9.0.2",
-    "multer": "^1.4.5-lts.1",
+    "multer": "^2.1.1",
     "node-cron": "^3.0.3",
     "pdf-parse": "^1.1.1",
     "pg": "^8.13.0",
