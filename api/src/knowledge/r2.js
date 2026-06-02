@@ -7,7 +7,7 @@
 // Object key convention: `knowledge/{category}/{documentId}/{safeFilename}`.
 
 const crypto = require('crypto');
-const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } =
+const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command } =
   require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
@@ -67,6 +67,22 @@ async function deleteObject(key) {
   await client.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
 }
 
+// List all object keys under a prefix (paginated). Used by tenant erasure to
+// sweep `recordings/<botId>/` objects, which aren't referenced from Postgres.
+async function listObjects(prefix) {
+  const client = getClient();
+  const keys = [];
+  let token;
+  do {
+    const out = await client.send(new ListObjectsV2Command({
+      Bucket: BUCKET, Prefix: prefix, ContinuationToken: token,
+    }));
+    for (const o of out.Contents || []) keys.push(o.Key);
+    token = out.IsTruncated ? out.NextContinuationToken : undefined;
+  } while (token);
+  return keys;
+}
+
 async function presignGet(key, ttlSec = 300) {
   const client = getClient();
   return getSignedUrl(
@@ -85,6 +101,7 @@ module.exports = {
   buildKey,
   putObject,
   deleteObject,
+  listObjects,
   presignGet,
   sha256,
   safeFilename,

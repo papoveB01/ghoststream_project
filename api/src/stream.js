@@ -81,4 +81,17 @@ async function createClip({ videoUid, startSeconds, endSeconds, label }) {
   };
 }
 
-module.exports = { isConfigured, ingestFromUrl, createClip };
+// Delete a Stream video/clip by uid (tenant erasure). Best-effort; a 404 (already
+// gone) is treated as success.
+async function deleteVideo(uid) {
+  if (!uid || !isConfigured()) return false;
+  try {
+    await http('DELETE', `/stream/${encodeURIComponent(uid)}`);
+    return true;
+  } catch (err) {
+    if (/\b404\b/.test(err.message)) return true;
+    throw err;
+  }
+}
+
+module.exports = { isConfigured, ingestFromUrl, createClip, deleteVideo };

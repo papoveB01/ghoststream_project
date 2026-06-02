@@ -30,6 +30,7 @@ const devices = require('./devices');
 const loginGuard = require('./loginGuard');
 const sessions = require('./sessions');
 const audit = require('./audit');
+const erasure = require('./erasure');
 
 const app = express();
 
@@ -875,6 +876,28 @@ app.get('/admin/tenants', auth.authMiddleware, auth.requireSuperadmin, async (_r
   try {
     const r = await db.query('SELECT id, name FROM tenants ORDER BY name NULLS LAST, id');
     res.json({ tenants: r.rows });
+  } catch (err) { next(err); }
+});
+
+// Erase a tenant and ALL its data across every store (right-to-be-forgotten /
+// offboarding). Superadmin only; irreversible. ?dryRun=1 reports the manifest
+// without deleting. A real erase requires confirm=<tenantId> (body or query) to
+// guard against accidents. The Founders tenant is refused (in erasure.js).
+app.delete('/admin/tenants/:id', auth.authMiddleware, auth.requireSuperadmin, async (req, res, next) => {
+  try {
+    const tenantId = req.params.id;
+    const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
+    if (!dryRun) {
+      const confirm = (req.body && req.body.confirm) || req.query.confirm;
+      if (confirm !== tenantId) {
+        return res.status(400).json({ error: 'confirmation required', code: 'CONFIRM_REQUIRED', hint: 'pass confirm=<tenantId> (matching :id) in the body or query' });
+      }
+    }
+    const manifest = await erasure.eraseTenant(tenantId, { dryRun });
+    if (!dryRun) {
+      audit.log({ req, action: 'tenant.erased', result: 'success', actorUserId: req.user.sub, actorEmail: req.user.email, tenantId, target: tenantId, meta: manifest });
+    }
+    res.json({ ok: true, dryRun, manifest });
   } catch (err) { next(err); }
 });
 
