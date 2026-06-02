@@ -13,6 +13,7 @@ const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const db = require('./db');
+const audit = require('./audit');
 
 const TOKEN_VERSION = 'v1';
 const PREFIX_LEN = 8;
@@ -153,6 +154,7 @@ router.post('/', express.json(), async (req, res, next) => {
       expires_at: row.expires_at,
       ip: req.ip,
     }));
+    audit.log({ req, action: 'token.created', result: 'success', actorUserId: req.user.sub, actorEmail: req.user.email, tenantId: req.tenantId, target: row.id, meta: { label: label.trim(), expires_at: row.expires_at } });
 
     return res.status(201).json({
       id: row.id,
@@ -202,6 +204,7 @@ router.delete('/:id', async (req, res, next) => {
       user_id: req.user.sub,
       ip: req.ip,
     }));
+    audit.log({ req, action: 'token.revoked', result: 'success', actorUserId: req.user.sub, actorEmail: req.user.email, tenantId: req.tenantId, target: req.params.id });
     return res.status(204).end();
   } catch (err) { next(err); }
 });

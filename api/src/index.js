@@ -28,6 +28,8 @@ const billing = require('./billing');
 const entitlements = require('./entitlements');
 const devices = require('./devices');
 const loginGuard = require('./loginGuard');
+const sessions = require('./sessions');
+const audit = require('./audit');
 
 const app = express();
 
@@ -80,13 +82,15 @@ app.get('/email/status', auth.authMiddleware, async (req, res, next) => {
 // Gemini Context Caching
 // =========================================================================
 
-app.get('/gemini/caches', async (_req, res, next) => {
+// Gemini context-cache management is a platform-admin operation (the UI for it
+// was retired); require a superadmin session rather than leaving it open.
+app.get('/gemini/caches', auth.authMiddleware, auth.requireSuperadmin, async (_req, res, next) => {
   try {
     res.json({ caches: await gemini.listCachedRecords() });
   } catch (err) { next(err); }
 });
 
-app.post('/gemini/caches/persona/:slug', async (req, res, next) => {
+app.post('/gemini/caches/persona/:slug', auth.authMiddleware, auth.requireSuperadmin, async (req, res, next) => {
   try {
     const seed = personas[req.params.slug];
     if (!seed) return res.status(404).json({ error: 'unknown persona', slug: req.params.slug, available: Object.keys(personas) });
@@ -101,7 +105,7 @@ app.post('/gemini/caches/persona/:slug', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.post('/gemini/caches', async (req, res, next) => {
+app.post('/gemini/caches', auth.authMiddleware, auth.requireSuperadmin, async (req, res, next) => {
   try {
     const { name, model, systemInstruction, contents, ttlSec } = req.body || {};
     if (!name || !systemInstruction) return res.status(400).json({ error: 'name and systemInstruction required' });
@@ -116,7 +120,7 @@ app.post('/gemini/caches', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.delete('/gemini/caches/:name', async (req, res, next) => {
+app.delete('/gemini/caches/:name', auth.authMiddleware, auth.requireSuperadmin, async (req, res, next) => {
   try {
     res.json({ ok: await gemini.invalidate(req.params.name), name: req.params.name });
   } catch (err) { next(err); }
@@ -546,12 +550,14 @@ app.post('/auth/login', async (req, res, next) => {
     const gate = await loginGuard.check(req, email);
     if (gate.locked) {
       res.set('Retry-After', String(gate.retryAfter));
+      audit.log({ req, action: 'auth.login.locked', result: 'failure', actorEmail: email, meta: { scope: gate.scope } });
       return res.status(429).json({ error: 'Too many failed sign-in attempts. Try again later.' });
     }
 
     const user = await auth.verifyCredentials(email, password);
     if (!user) {
       await loginGuard.recordFailure(req, email);
+      audit.log({ req, action: 'auth.login.failure', result: 'failure', actorEmail: email });
       return res.status(401).json({ error: 'invalid credentials' });
     }
     await loginGuard.clear(email); // correct password — reset the account counter
@@ -562,6 +568,7 @@ app.post('/auth/login', async (req, res, next) => {
     const fp = devices.deviceFingerprint(req, user.id);
     if (await devices.isTrusted(user.id, fp.hash)) {
       await userModel.touchLogin(user.id);
+      audit.log({ req, action: 'auth.login.success', result: 'success', actorUserId: user.id, actorEmail: user.email, tenantId: user.tenantId, meta: { trustedDevice: true } });
       return grantSession(res, user);
     }
 
@@ -570,6 +577,7 @@ app.post('/auth/login', async (req, res, next) => {
       return res.status(429).json({ error: 'Too many codes requested. Wait a few minutes and try again.' });
     }
     const sent = await devices.sendOtpEmail(user.email, ch.code);
+    audit.log({ req, action: 'auth.login.otp_required', actorUserId: user.id, actorEmail: user.email, tenantId: user.tenantId });
     return res.status(202).json({
       code: 'OTP_REQUIRED',
       challengeId: ch.challengeId,
@@ -599,8 +607,12 @@ app.post('/auth/verify-device', async (req, res, next) => {
     // Re-load the user fresh (name/role may have changed; also confirms still exists).
     const u = await userModel.findById(result.userId);
     if (!u) return res.status(401).json({ error: 'account not found' });
-    if (trust) await devices.trustDevice(u.id, result.fp);
+    if (trust) {
+      await devices.trustDevice(u.id, result.fp);
+      audit.log({ req, action: 'auth.device.trusted', result: 'success', actorUserId: u.id, actorEmail: u.email, tenantId: u.tenantId });
+    }
     await userModel.touchLogin(u.id);
+    audit.log({ req, action: 'auth.login.success', result: 'success', actorUserId: u.id, actorEmail: u.email, tenantId: u.tenantId, meta: { viaOtp: true } });
     return grantSession(res, {
       id: u.id, tenantId: u.tenantId, email: u.email,
       name: u.name, role: u.role, isAdmin: u.isAdmin, emailVerified: u.emailVerified,
@@ -620,9 +632,36 @@ app.post('/auth/resend-otp', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.post('/auth/logout', (_req, res) => {
+app.post('/auth/logout', async (_req, res) => {
+  // Revoke this exact session server-side (a copied token can't outlive logout),
+  // not just clear the client cookie.
+  try {
+    const claims = auth.verifyToken(auth.tokenFromRequest(_req));
+    if (claims) {
+      await sessions.denyToken(claims);
+      audit.log({ req: _req, action: 'auth.logout', result: 'success', actorUserId: claims.sub, actorEmail: claims.email, tenantId: claims.tid });
+    }
+  } catch { /* best-effort */ }
   res.clearCookie(auth.COOKIE_NAME, { path: '/' });
   res.json({ ok: true });
+});
+
+// Sign out of every session everywhere (invalidates all of this user's tokens).
+app.post('/auth/sessions/revoke-all', auth.authMiddleware, async (req, res, next) => {
+  try {
+    await sessions.revokeAllForUser(req.user.sub);
+    audit.log({ req, action: 'auth.sessions.revoked_all', result: 'success', actorUserId: req.user.sub, actorEmail: req.user.email, tenantId: req.user.tid });
+    res.clearCookie(auth.COOKIE_NAME, { path: '/' });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// Security audit log (superadmin). ?tenant=<id> scopes to one tenant; omit for
+// the cross-tenant view. ?limit caps the page (default 100, max 500).
+app.get('/admin/audit', auth.authMiddleware, auth.requireSuperadmin, async (req, res, next) => {
+  try {
+    res.json({ events: await audit.recent({ tenantId: req.query.tenant || null, limit: req.query.limit }) });
+  } catch (err) { next(err); }
 });
 
 // Trusted devices — list + revoke (lost-laptop kill switch). Behind authMiddleware.
@@ -637,6 +676,7 @@ app.delete('/auth/devices/:id', auth.authMiddleware, async (req, res, next) => {
   try {
     const ok = await devices.revokeDevice(req.user.sub, req.params.id);
     if (!ok) return res.status(404).json({ error: 'device not found' });
+    audit.log({ req, action: 'auth.device.revoked', result: 'success', actorUserId: req.user.sub, actorEmail: req.user.email, tenantId: req.user.tid, target: req.params.id });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -709,6 +749,13 @@ app.post('/auth/change-password', auth.authMiddleware, async (req, res, next) =>
     if (!ok) return res.status(400).json({ error: 'Current password is incorrect.', code: 'BAD_CURRENT_PASSWORD' });
     const hash = await userModel.hashPassword(newPassword);
     await userModel.setPassword(me.id, hash);
+    // Invalidate all existing sessions (CC6.7), then re-issue a fresh cookie so
+    // the user changing their password isn't logged out of the current tab.
+    await sessions.revokeAllForUser(me.id);
+    res.cookie(auth.COOKIE_NAME, auth.signToken({
+      id: me.id, tenantId: me.tenantId, email: me.email, name: me.name, role: me.role, isAdmin: me.isAdmin,
+    }), auth.cookieOptions());
+    audit.log({ req, action: 'auth.password.changed', result: 'success', actorUserId: me.id, actorEmail: me.email, tenantId: me.tenantId });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });

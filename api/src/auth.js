@@ -7,8 +7,10 @@
 // stale `gs_admin` cookies will 401 and the user re-logs in once.
 
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const users = require('./users');
 const apiTokens = require('./auth-tokens');
+const sessions = require('./sessions');
 
 const JWT_SECRET = process.env.JWT_SECRET || '';
 const JWT_ALG = 'HS256';
@@ -35,7 +37,9 @@ if (!JWT_SECRET) {
 //   adm   — platform superadmin flag (Founders tenant only)
 function signToken(user) {
   return jwt.sign(
-    { sub: user.id, tid: user.tenantId, email: user.email, name: user.name || null, role: user.role, adm: !!user.isAdmin },
+    // jti gives each session a unique id so logout can revoke exactly it; iat
+    // (added automatically) lets a per-user cutoff invalidate older sessions.
+    { sub: user.id, tid: user.tenantId, email: user.email, name: user.name || null, role: user.role, adm: !!user.isAdmin, jti: crypto.randomBytes(16).toString('hex') },
     JWT_SECRET,
     { expiresIn: JWT_TTL_SEC, algorithm: JWT_ALG }
   );
@@ -124,6 +128,8 @@ async function authMiddleware(req, res, next) {
 
     const claims = verifyToken(token);
     if (claims) {
+      // Server-side revocation: reject logged-out / globally-invalidated sessions.
+      if (await sessions.isRevoked(claims)) return res.status(401).json({ error: 'session expired' });
       req.user = claims;
       req.tenantId = claims.tid;
       return next();
@@ -152,7 +158,7 @@ async function optionalAuth(req, _res, next) {
   try {
     const token = tokenFromRequest(req);
     const claims = verifyToken(token);
-    if (claims) {
+    if (claims && !(await sessions.isRevoked(claims))) {
       req.user = claims;
       req.tenantId = claims.tid;
     } else if (token && token.startsWith('gs_pat_')) {
