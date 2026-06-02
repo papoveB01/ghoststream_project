@@ -201,14 +201,18 @@ router.post('/discover', gating.requireCapacity('discovery'), async (req, res, n
     const industry = String((req.body && req.body.industry) || '').trim();
     const tenant = (await db.query(`SELECT name FROM tenants WHERE id = $1`, [req.tenantId])).rows[0];
     if (!tenant || !tenant.name) return res.status(422).json({ error: 'set your company name first (Company page) so we know who to prospect for' });
-    const prof = (await db.query(`SELECT positioning FROM tenant_profiles WHERE tenant_id = $1`, [req.tenantId])).rows[0] || {};
+    const prof = (await db.query(`SELECT positioning, objectives, ideal_customer_profile FROM tenant_profiles WHERE tenant_id = $1`, [req.tenantId])).rows[0] || {};
     const ourProducts = (await db.query(
       `SELECT id, name, description FROM products WHERE tenant_id = $1 ORDER BY lower(name)`,
       [req.tenantId]
     )).rows;
 
     const result = await discovery.discoverProspects({
-      companyName: tenant.name, ourProducts, positioning: prof.positioning || '', region, industry,
+      companyName: tenant.name, ourProducts,
+      positioning: prof.positioning || '',
+      objectives: prof.objectives || '',
+      idealCustomerProfile: prof.ideal_customer_profile || '',
+      region, industry,
     });
     if (!result) return res.status(502).json({ error: 'discovery could not find prospects right now — try again' });
 

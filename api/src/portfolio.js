@@ -124,10 +124,10 @@ for (const [resource, conf] of Object.entries(TABLES)) {
 router.get('/company-profile', async (req, res, next) => {
   try {
     const r = await db.query(
-      `SELECT positioning, objectives, updated_at FROM tenant_profiles WHERE tenant_id = $1`,
+      `SELECT positioning, objectives, ideal_customer_profile, updated_at FROM tenant_profiles WHERE tenant_id = $1`,
       [req.tenantId]
     );
-    res.json({ profile: r.rows[0] || { positioning: null, objectives: null, updated_at: null } });
+    res.json({ profile: r.rows[0] || { positioning: null, objectives: null, ideal_customer_profile: null, updated_at: null } });
   } catch (err) { next(err); }
 });
 
@@ -138,19 +138,21 @@ router.patch('/company-profile', auth.requireRole('owner'), async (req, res, nex
   try {
     const positioning = req.body && req.body.positioning !== undefined ? (String(req.body.positioning || '').trim() || null) : undefined;
     const objectives = req.body && req.body.objectives !== undefined ? (String(req.body.objectives || '').trim() || null) : undefined;
-    if (positioning === undefined && objectives === undefined) {
-      return res.status(400).json({ error: 'nothing to update; pass positioning and/or objectives' });
+    const icp = req.body && req.body.idealCustomerProfile !== undefined ? (String(req.body.idealCustomerProfile || '').trim() || null) : undefined;
+    if (positioning === undefined && objectives === undefined && icp === undefined) {
+      return res.status(400).json({ error: 'nothing to update; pass positioning, objectives and/or idealCustomerProfile' });
     }
     // Upsert: insert the row if missing, else update only the provided fields.
     const r = await db.query(
-      `INSERT INTO tenant_profiles (tenant_id, positioning, objectives, updated_at)
-            VALUES ($1, $2, $3, now())
+      `INSERT INTO tenant_profiles (tenant_id, positioning, objectives, ideal_customer_profile, updated_at)
+            VALUES ($1, $2, $3, $4, now())
        ON CONFLICT (tenant_id) DO UPDATE SET
-            positioning = CASE WHEN $4 THEN EXCLUDED.positioning ELSE tenant_profiles.positioning END,
-            objectives  = CASE WHEN $5 THEN EXCLUDED.objectives  ELSE tenant_profiles.objectives  END,
+            positioning = CASE WHEN $5 THEN EXCLUDED.positioning ELSE tenant_profiles.positioning END,
+            objectives  = CASE WHEN $6 THEN EXCLUDED.objectives  ELSE tenant_profiles.objectives  END,
+            ideal_customer_profile = CASE WHEN $7 THEN EXCLUDED.ideal_customer_profile ELSE tenant_profiles.ideal_customer_profile END,
             updated_at  = now()
-       RETURNING positioning, objectives, updated_at`,
-      [req.tenantId, positioning ?? null, objectives ?? null, positioning !== undefined, objectives !== undefined]
+       RETURNING positioning, objectives, ideal_customer_profile, updated_at`,
+      [req.tenantId, positioning ?? null, objectives ?? null, icp ?? null, positioning !== undefined, objectives !== undefined, icp !== undefined]
     );
     res.json({ profile: r.rows[0] });
   } catch (err) { next(err); }
@@ -177,10 +179,10 @@ router.post('/company-profile/draft', async (req, res, next) => {
     const posParts = [];
     if (a.executiveSummary) posParts.push(a.executiveSummary);
     if (a.marketPosition && a.marketPosition.differentiator) posParts.push(`Differentiator: ${a.marketPosition.differentiator}`);
-    if (a.idealCustomerProfile) posParts.push(`ICP: ${a.idealCustomerProfile}`);
     const objParts = [];
     if (Array.isArray(a.salesAngles) && a.salesAngles.length) objParts.push(...a.salesAngles.slice(0, 5).map((s) => `- ${s}`));
-    res.json({ draft: { positioning: posParts.join('\n') || null, objectives: objParts.join('\n') || null } });
+    // ICP is now its own first-class field (feeds discovery), not squashed into positioning.
+    res.json({ draft: { positioning: posParts.join('\n') || null, objectives: objParts.join('\n') || null, idealCustomerProfile: a.idealCustomerProfile || null } });
   } catch (err) { next(err); }
 });
 
@@ -289,15 +291,18 @@ router.post('/company-bootstrap/confirm', async (req, res, next) => {
 
     const positioning = body.positioning !== undefined ? (String(body.positioning || '').trim() || null) : undefined;
     const objectives = body.objectives !== undefined ? (String(body.objectives || '').trim() || null) : undefined;
-    if (positioning !== undefined || objectives !== undefined) {
+    // ICP ("who we sell to") — usually the scraped primaryAudience the client passes through; feeds discovery.
+    const icp = body.idealCustomerProfile !== undefined ? (String(body.idealCustomerProfile || '').trim() || null) : undefined;
+    if (positioning !== undefined || objectives !== undefined || icp !== undefined) {
       await db.query(
-        `INSERT INTO tenant_profiles (tenant_id, positioning, objectives, updated_at)
-              VALUES ($1, $2, $3, now())
+        `INSERT INTO tenant_profiles (tenant_id, positioning, objectives, ideal_customer_profile, updated_at)
+              VALUES ($1, $2, $3, $4, now())
          ON CONFLICT (tenant_id) DO UPDATE SET
-              positioning = CASE WHEN $4 THEN EXCLUDED.positioning ELSE tenant_profiles.positioning END,
-              objectives  = CASE WHEN $5 THEN EXCLUDED.objectives  ELSE tenant_profiles.objectives  END,
+              positioning = CASE WHEN $5 THEN EXCLUDED.positioning ELSE tenant_profiles.positioning END,
+              objectives  = CASE WHEN $6 THEN EXCLUDED.objectives  ELSE tenant_profiles.objectives  END,
+              ideal_customer_profile = CASE WHEN $7 THEN EXCLUDED.ideal_customer_profile ELSE tenant_profiles.ideal_customer_profile END,
               updated_at  = now()`,
-        [req.tenantId, positioning ?? null, objectives ?? null, positioning !== undefined, objectives !== undefined]
+        [req.tenantId, positioning ?? null, objectives ?? null, icp ?? null, positioning !== undefined, objectives !== undefined, icp !== undefined]
       );
     }
 
@@ -836,7 +841,7 @@ router.post('/competitors/discover', gating.requireCapacity('competitor_research
     const region = String((req.body && req.body.region) || '').trim();
     const tenant = (await db.query(`SELECT name FROM tenants WHERE id = $1`, [req.tenantId])).rows[0];
     if (!tenant || !tenant.name) return res.status(422).json({ error: 'set your company name first (Company page) so we know who to find rivals for' });
-    const prof = (await db.query(`SELECT positioning FROM tenant_profiles WHERE tenant_id = $1`, [req.tenantId])).rows[0] || {};
+    const prof = (await db.query(`SELECT positioning, objectives, ideal_customer_profile FROM tenant_profiles WHERE tenant_id = $1`, [req.tenantId])).rows[0] || {};
     const ourProducts = (await db.query(
       `SELECT id, name, description FROM products WHERE tenant_id = $1 ORDER BY lower(name)`,
       [req.tenantId]
@@ -846,6 +851,8 @@ router.post('/competitors/discover', gating.requireCapacity('competitor_research
       companyName: tenant.name,
       ourProducts,
       positioning: prof.positioning || '',
+      objectives: prof.objectives || '',
+      idealCustomerProfile: prof.ideal_customer_profile || '',
       region,
     });
     if (!result) return res.status(502).json({ error: 'discovery could not find competitors right now — try again' });

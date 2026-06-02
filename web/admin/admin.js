@@ -873,13 +873,13 @@
 
   async function renderProspectDiscoverMode(panel) {
     panel.innerHTML = `
-      <div class="prospect-quick-h"><strong>Discover prospects online</strong> — we scan the web for companies with a buying signal that fits your products, rank them by priority, and show why.</div>
+      <div class="prospect-quick-h"><strong>Discover prospects online</strong> — we find the businesses you sell to (your ideal customer profile) showing a buying signal, rank them, and show why. Set your "who you sell to" on the Company page for best results.</div>
       <div class="prospect-discover-form">
         <label class="comp-finder-field">Region
           <select id="pdisc-region">${COMPETITOR_REGIONS.map((r) => `<option>${escapeHtml(r)}</option>`).join('')}</select>
         </label>
-        <label class="comp-finder-field">Industry
-          <select id="pdisc-industry"><option value="">Any industry</option></select>
+        <label class="comp-finder-field">Target customer segment
+          <select id="pdisc-industry" title="The businesses you sell TO (e.g. bars, clubs, restaurants) — not your own industry"><option value="">Any segment</option></select>
         </label>
         <button type="button" class="primary-cta" id="pdisc-search">Search</button>
       </div>
@@ -5121,10 +5121,12 @@
 
   async function renderCompanyIntelTab(body) {
     body.innerHTML = `
+      <div id="company-profile-host"></div>
       <div class="company-bootstrap-block" id="company-bootstrap-host"></div>
       <div class="company-field-label" style="margin-top:18px">Intel library</div>
       <p class="kb-subtle">${INTEL_EXPLAINER} Optionally file a doc under a product line.</p>
       <div id="company-intel-host"></div>`;
+    renderCompanyProfileEditor($('company-profile-host'));
     renderCompanyBootstrap($('company-bootstrap-host'));
     await renderIntelLibrary({ container: $('company-intel-host'), scope: 'TENANT', products: _companyData.products, onChange: () => { loaded.company = false; } });
     // If we arrived here via a "Create intel" button, open the Add-intel pane
@@ -5141,6 +5143,61 @@
       }
       if (pane) pane.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
+  }
+
+  // Company foundation editor (positioning / ICP / objectives) — the grounding
+  // that drives discovery, briefs, and battlecards. ICP ("who we sell to") is
+  // the key field: discovery targets these buyers, not companies like us.
+  function renderCompanyProfileEditor(host) {
+    if (!host) return;
+    const p = (_companyData && _companyData.profile) || {};
+    host.innerHTML = `
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-h">Company foundation
+          <span class="pf-hint">Grounds every brief, battlecard, and prospect/competitor search. Be specific about who you sell to.</span>
+        </div>
+        <div class="card-b">
+          <label class="company-field-label">What you do (positioning)</label>
+          <textarea id="cf-positioning" rows="3" placeholder="What your product is + your differentiator">${escapeHtml(p.positioning || '')}</textarea>
+          <label class="company-field-label" style="display:block;margin-top:10px">Ideal customer profile — who you sell to</label>
+          <textarea id="cf-icp" rows="2" placeholder="The businesses that BUY from you — e.g. independent bars, nightclubs and late-night restaurants; buyers are owners / GMs / marketing managers">${escapeHtml(p.ideal_customer_profile || '')}</textarea>
+          <label class="company-field-label" style="display:block;margin-top:10px">Goals (objectives)</label>
+          <textarea id="cf-objectives" rows="2" placeholder="What you're trying to achieve">${escapeHtml(p.objectives || '')}</textarea>
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="primary-cta" id="cf-save">Save foundation</button>
+            <button class="kb-secondary-btn" id="cf-draft">✨ Draft with AI</button>
+            <span class="kb-subtle" id="cf-result"></span>
+          </div>
+        </div>
+      </div>`;
+    $('cf-save').addEventListener('click', saveCompanyFoundation);
+    $('cf-draft').addEventListener('click', draftCompanyFoundation);
+  }
+  async function saveCompanyFoundation() {
+    try {
+      await fetchJson('/api/portfolio/company-profile', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          positioning: $('cf-positioning').value.trim(),
+          objectives: $('cf-objectives').value.trim(),
+          idealCustomerProfile: $('cf-icp').value.trim(),
+        }),
+      });
+      toast('Company foundation saved');
+      await refreshCompany();
+    } catch (err) { toast(err.message || 'Save failed', 'warn'); }
+  }
+  async function draftCompanyFoundation() {
+    const r = $('cf-result'); if (r) r.textContent = 'Drafting from your intel…';
+    try {
+      const { draft } = await fetchJson('/api/portfolio/company-profile/draft', { method: 'POST' });
+      if (draft) {
+        if (draft.positioning) $('cf-positioning').value = draft.positioning;
+        if (draft.objectives) $('cf-objectives').value = draft.objectives;
+        if (draft.idealCustomerProfile) $('cf-icp').value = draft.idealCustomerProfile;
+      }
+      if (r) r.textContent = 'Drafted — review and Save.';
+    } catch (err) { if (r) r.textContent = err.message || 'Draft failed'; }
   }
 
   // Shared add/edit/delete for products + personas (generic /portfolio/:resource).

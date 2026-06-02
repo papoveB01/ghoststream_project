@@ -229,10 +229,58 @@ const COMPETITORS_SCHEMA = {
   required: ['competitors'],
 };
 
+// Shared grounding block for discovery prompts: separates WHAT WE DO
+// (positioning) from WHO WE SELL TO (ICP) so the model targets buyers, not peers.
+function buildContext({ name, positioning = '', objectives = '', idealCustomerProfile = '' }) {
+  return [
+    `Name: ${name}`,
+    positioning ? `What we do: ${String(positioning).slice(0, 800)}` : '',
+    objectives ? `Our goals: ${String(objectives).slice(0, 400)}` : '',
+    idealCustomerProfile ? `WHO WE SELL TO (our buyers / ICP): ${String(idealCustomerProfile).slice(0, 600)}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+const QUERIES_SCHEMA = {
+  type: 'object',
+  properties: { queries: { type: 'array', items: { type: 'string' }, description: '6-8 concise web-search queries (no quotes/operators).' } },
+  required: ['queries'],
+};
+
+// Turn the business context into targeted web-search queries. mode='prospect'
+// finds the tenant's BUYERS (per the ICP); mode='competitor' finds rival vendors
+// offering a similar solution to the SAME buyers. Returns [] on failure so
+// callers fall back to their hardcoded query builders (no hard dependency).
+async function generateSearchQueries({ mode, ctx, products = [], region = '', segment = '' }) {
+  try {
+    const portfolio = (products || []).map((p) => `- ${p.name}${p.description ? ': ' + p.description : ''}`).join('\n') || '(none)';
+    const regionLine = region && !/global|any|worldwide/i.test(region) ? `Region focus: ${region}.` : 'No region restriction.';
+    const task = mode === 'competitor'
+      ? 'Generate web-search queries to find COMPANIES THAT COMPETE WITH US — vendors offering a similar product/solution to the SAME kind of buyers we sell to. Do NOT target our own customers or our buyers\' industry at large.'
+      : 'Generate web-search queries to find OUR POTENTIAL CUSTOMERS — the businesses in WHO WE SELL TO that would BUY our product (target their type, location, recent openings/expansion/hiring). Do NOT target companies like us (peers/competitors) or our suppliers.';
+    const prompt =
+      'You are a B2B research assistant. ' + task + '\n' +
+      'Return 6-8 short, high-signal search queries (plain words, no quotes or operators). ' + regionLine + '\n' +
+      (segment ? `Target customer segment hint: ${segment}.\n` : '') +
+      `\n===OUR BUSINESS===\n${ctx}\n\n===OUR PRODUCTS===\n${portfolio}`;
+    const ai = gemini.getClient();
+    const resp = await withRetry(() => ai.models.generateContent({
+      model: MODEL,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: { temperature: 0.4, maxOutputTokens: 600, responseMimeType: 'application/json', responseSchema: QUERIES_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
+    }));
+    const parsed = JSON.parse(resp.text);
+    const qs = Array.isArray(parsed.queries) ? parsed.queries : [];
+    return [...new Set(qs.map((q) => String(q || '').replace(/\s+/g, ' ').trim()).filter((q) => q.length > 4))].slice(0, 8);
+  } catch (err) {
+    console.warn(`[discovery] generateSearchQueries(${mode}) failed: ${(err && err.message) || err}`);
+    return [];
+  }
+}
+
 // Find companies that compete with OUR company, optionally focused on a region.
 // Returns { competitors: [...] } (possibly empty) or null on hard failure.
 // Read-only research: no ingest, no storage (the rep adds the relevant ones).
-async function discoverCompetitors({ companyName, ourProducts = [], positioning = '', region = '' } = {}) {
+async function discoverCompetitors({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '' } = {}) {
   const name = String(companyName || '').trim();
   if (!name) return null;
 
@@ -240,17 +288,19 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
   const regionIsGlobal = !regionLabel || /global|any|worldwide/i.test(regionLabel);
   const regionTerm = regionIsGlobal ? '' : regionLabel.replace(/\s*\/\s*/g, ' ');
   const topProducts = (ourProducts || []).map((p) => p && p.name).filter(Boolean).slice(0, 3);
+  const ctx = buildContext({ name, positioning, objectives, idealCustomerProfile });
 
-  // Queries: rivals of the company + alternatives to our products, region-scoped.
-  const queries = [
+  // Name/product-anchored rivals + LLM-generated "same solution, same buyers"
+  // queries. (Dropped the old "companies like <name>" query — it invited
+  // industry-peer drift.) Falls back to the anchored set if generation fails.
+  const baseQueries = [
     `${name} competitors${regionTerm ? ' ' + regionTerm : ''}`,
     `${name} alternatives`,
     `top competitors of ${name}${regionTerm ? ' in ' + regionTerm : ''}`,
   ];
-  if (topProducts.length) {
-    queries.push(`${topProducts[0]} competitors${regionTerm ? ' ' + regionTerm : ''}`);
-  }
-  if (regionTerm) queries.push(`${regionTerm} companies like ${name}`);
+  if (topProducts.length) baseQueries.push(`${topProducts[0]} competitors${regionTerm ? ' ' + regionTerm : ''}`);
+  const genQueries = await generateSearchQueries({ mode: 'competitor', ctx, products: ourProducts, region: regionLabel });
+  const queries = [...new Set([...baseQueries, ...genQueries])];
 
   const findings = await gatherFromQueries(queries);
   if (!findings.text || findings.text.length < 40) return { competitors: [] };
@@ -261,14 +311,12 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
     ? (ourProducts || []).map((p) => `- id="${p.id}" · ${p.name}${p.description ? ` — ${p.description}` : ''}`).join('\n')
     : '(no products on file — leave threatToProductIds empty for all)';
 
-  const ctx = [
-    `Name: ${name}`,
-    positioning ? `Positioning: ${String(positioning).slice(0, 800)}` : '',
-  ].filter(Boolean).join('\n');
-
   const prompt =
     'You are a competitive-intelligence analyst. Using ONLY the web findings below, ' +
-    'list companies that DIRECTLY compete with OUR company (described under ===OUR COMPANY===). ' +
+    'list companies that DIRECTLY compete with OUR company (===OUR COMPANY===) — i.e. they offer a ' +
+    'SIMILAR product/solution to the SAME buyers we sell to (see WHO WE SELL TO). ' +
+    'Do NOT list our own customers, our suppliers, or unrelated companies that merely operate in our ' +
+    'buyers\' industry. ' +
     (regionIsGlobal
       ? 'Cover competitors broadly. '
       : `Focus on competitors operating in or serving the target region: ${regionLabel}. `) +
@@ -362,7 +410,7 @@ const PROSPECTS_SCHEMA = {
 
 // Find potential customers for OUR company, scoped by region + industry, ranked
 // by priority. Returns { prospects: [...] } (possibly empty) or null on failure.
-async function discoverProspects({ companyName, ourProducts = [], positioning = '', region = '', industry = '' } = {}) {
+async function discoverProspects({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', industry = '' } = {}) {
   const name = String(companyName || '').trim();
   if (!name) return null;
 
@@ -387,20 +435,26 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
   };
   const prodCaps = [...new Set((ourProducts || []).map(capabilityOf).filter((c) => c && c.length > 3))].slice(0, 6);
 
-  // Cast a wide, product-aligned net: many buying-signal angles + one query per
-  // product capability. gatherFromQueries dedupes by URL and stops at the cap.
-  const base = [indTerm, regionTerm].filter(Boolean).join(' ').trim();
-  const SIGNALS = [
-    'digital transformation initiative', 'recently implemented new technology',
-    'expanding into new markets', 'raised funding round', 'launching new product',
-    'modernization project', 'new strategic partnership', 'regulatory compliance upgrade',
-    'rapid growth scaling',
-  ];
-  const queries = [];
-  for (const s of SIGNALS) queries.push(`${base} companies ${s}`.trim());
-  for (const cap of prodCaps) queries.push(`${base} companies need ${cap}`.trim());
-  const queriesClean = [...new Set(queries.map((q) => q.replace(/\s+/g, ' ').trim()))].filter((q) => q.length > 6);
-  if (!queriesClean.length) queriesClean.push(`${name} ideal customers`);
+  const ctx = buildContext({ name, positioning, objectives, idealCustomerProfile });
+
+  // Primary: LLM-generated queries that target OUR BUYERS (per the ICP) — adapts
+  // to the actual business (local venues vs enterprise) instead of a fixed list.
+  // Fallback (generation failed): the legacy industry+buying-signal net.
+  let queriesClean = await generateSearchQueries({ mode: 'prospect', ctx, products: ourProducts, region: regionLabel, segment: indTerm });
+  if (!queriesClean.length) {
+    const base = [indTerm, regionTerm].filter(Boolean).join(' ').trim();
+    const SIGNALS = [
+      'digital transformation initiative', 'recently implemented new technology',
+      'expanding into new markets', 'raised funding round', 'launching new product',
+      'modernization project', 'new strategic partnership', 'regulatory compliance upgrade',
+      'rapid growth scaling',
+    ];
+    const queries = [];
+    for (const s of SIGNALS) queries.push(`${base} companies ${s}`.trim());
+    for (const cap of prodCaps) queries.push(`${base} companies need ${cap}`.trim());
+    queriesClean = [...new Set(queries.map((q) => q.replace(/\s+/g, ' ').trim()))].filter((q) => q.length > 6);
+    if (!queriesClean.length) queriesClean.push(`${name} ideal customers`);
+  }
 
   const findings = await gatherFromQueries(queriesClean, { maxHits: PROSPECT_MAX_HITS, scrapeTop: PROSPECT_SCRAPE_TOP, searchLimit: 6 });
   if (!findings.text || findings.text.length < 40) return { prospects: [] };
@@ -408,28 +462,26 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
   const portfolio = (ourProducts || []).length
     ? (ourProducts || []).map((p) => `- id="${p.id}" · ${p.name}${p.description ? ` — ${p.description}` : ''}`).join('\n')
     : '(no products on file — leave matchedProductIds empty for all)';
-  const ctx = [
-    `Name: ${name}`,
-    positioning ? `Positioning: ${String(positioning).slice(0, 800)}` : '',
-  ].filter(Boolean).join('\n');
 
   const prompt =
     'You are a B2B sales-prospecting analyst. Using ONLY the web findings below, identify COMPANIES ' +
-    'that are strong POTENTIAL CUSTOMERS for OUR company/products (===OUR COMPANY===) — especially ones ' +
-    'showing a RECENT BUYING SIGNAL (new tech adoption, expansion, funding, hiring, regulatory or ' +
-    'leadership change) that creates a need OUR products meet. ' +
-    (indIsAny ? '' : `Focus on the ${ind} industry. `) +
+    'that are strong POTENTIAL CUSTOMERS for OUR company — businesses that MATCH WHO WE SELL TO (our ICP, ' +
+    'in ===OUR COMPANY===) and would BUY our product. ' +
+    'CRITICAL: do NOT return companies that are like US (peers/competitors/other vendors of our kind of ' +
+    'product), and do NOT return our suppliers — only our BUYERS. Prefer ones showing a recent buying ' +
+    'signal relevant to that buyer type (new location/opening, expansion, hiring, funding, tech adoption, ' +
+    'leadership/regulatory change). ' +
+    (indIsAny ? '' : `Our target customer segment is "${ind}" — find buyers in/around it (not companies like us). `) +
     (regionIsGlobal ? '' : `Focus on companies in or serving ${regionLabel}. `) +
     'For each company: the signal (why now), which of OUR products fit (ids from the list) + a one-sentence ' +
-    'fit reason, and priority 1-5 (5 = critical: clear product fit AND a fresh relevant signal).\n' +
-    'Aim for BREADTH: list EVERY distinct company in the findings that plausibly fits our products ' +
-    `(up to ${PROSPECT_MAX}). Include lower-priority ones too (rank them 1-2) — do not drop a real ` +
-    'company just because the signal is mild. Rank strongest fit + freshest signal highest.\n' +
-    'Rules: only companies the findings actually support (don\'t invent); EXCLUDE our own company; ' +
-    'matchedProductIds MUST be from the provided ids (or empty); keep strings short; ignore boilerplate.\n\n' +
+    'fit reason, and priority 1-5 (5 = critical: clear ICP/product fit AND a fresh relevant signal).\n' +
+    'Aim for BREADTH: list EVERY distinct company in the findings that plausibly matches our ICP ' +
+    `(up to ${PROSPECT_MAX}). Include lower-priority ones too (rank them 1-2).\n` +
+    'Rules: only companies the findings actually support (don\'t invent); EXCLUDE our own company and our ' +
+    'competitors; matchedProductIds MUST be from the provided ids (or empty); keep strings short; ignore boilerplate.\n\n' +
     `===OUR COMPANY===\n${ctx}\n\n` +
     `===OUR PRODUCTS (choose matchedProductIds from these ids)===\n${portfolio}\n\n` +
-    (indIsAny ? '' : `===TARGET INDUSTRY===\n${ind}\n\n`) +
+    (indIsAny ? '' : `===TARGET CUSTOMER SEGMENT===\n${ind}\n\n`) +
     (regionIsGlobal ? '' : `===TARGET REGION===\n${regionLabel}\n\n`) +
     `===WEB FINDINGS===\n${findings.text}`;
 
@@ -482,4 +534,4 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
   }
 }
 
-module.exports = { discoverCompetitorProducts, discoverCompetitors, discoverProspects };
+module.exports = { discoverCompetitorProducts, discoverCompetitors, discoverProspects, generateSearchQueries, buildContext };
