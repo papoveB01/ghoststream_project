@@ -30,7 +30,7 @@ requires those controls **operating effectively over 3–12 months**, evidenced 
 |---|---|---|---|
 | 3rd-party OAuth/API tokens plaintext at rest | P0 | ✅ | `api/src/secretbox.js` (AES-256-GCM); wired into `microsoft.js`, `integrations.js`, `crm/index.js`. Live MS token re-encrypted. |
 | No security audit logging | P0 | ✅ | `api/src/audit.js` + migration `0026_audit_log`; events on login/logout/OTP/device/password/token/erasure |
-| No automated DB backups | P0 | 🟡 | `ops/backup-db.sh` + cron `30 2 * * *` (daily 02:30 UTC). **Off-site + encryption still TODO.** |
+| No automated DB backups | P0 | ✅ | `ops/backup-db.sh` + cron `30 2 * * *` (daily 02:30 UTC); **off-sited to Cloudflare R2** (`db-backups/`, AES-256 at rest + TLS), local+R2 14-day retention. |
 | No login brute-force protection | P1 | ✅ | `api/src/loginGuard.js` (per-account cap 8 / per-IP 30, 15-min window) |
 | No server-side session revocation | P1 | ✅ | `api/src/sessions.js` (jti denylist + per-user valid-after); logout/password-change/sign-out-everywhere |
 | In-tenant RBAC unenforced | P1 | ✅ | `auth.requireRole/requireRoleWrite`; owner/manager/rep enforced on billing/CRM/tokens/catalog-deletes |
@@ -53,7 +53,7 @@ requires those controls **operating effectively over 3–12 months**, evidenced 
 | **CC6 Logical access** | 🟢 | Auth, MFA, RBAC, hashed PATs, session revocation, RLS, encryption-at-rest, headers |
 | **CC7 Ops / vuln / monitoring** | 🟡 | Audit logging ✅, dependency scanning ✅; **monitoring/alerting/error-tracking missing** |
 | **CC8 Change management** | 🟡 | CI + tests authored ✅; not executing (billing); **Git remote divergent from prod** |
-| **A1 Availability** | 🟡 | Backups scheduled ✅; **no off-site/encryption, no HA/replication** (single node) |
+| **A1 Availability** | 🟡 | Backups scheduled ✅ + **off-sited to R2 (encrypted at rest) ✅**; remaining: tested restore drill + **no HA/replication** (single node) |
 | **C1 Confidentiality** | 🟢 | Encryption at rest + edge TLS, tenant isolation, erasure |
 | **CC1–CC5 Governance/risk/org** | 🔴 | Policies, risk assessment, org/roles, vendor mgmt — **not started; the bulk of Type 2** |
 | **CC9 Vendor/risk** | 🟡 | Subprocessor/DPA pages exist but **incomplete**; no executed vendor reviews |
@@ -64,7 +64,7 @@ requires those controls **operating effectively over 3–12 months**, evidenced 
 
 ### 4a. Technical (can be done in-code)
 - [ ] **Monitoring & alerting** — error tracking (e.g. Sentry), uptime check, basic metrics, on-call routing. *(Highest-value remaining technical gap — CC7.)*
-- [ ] **Off-site, encrypted backups** — restic/rclone (or `aws s3 cp`) from `ops/backup-db.sh` to R2/S3; verify a test restore; document RPO/RTO. *(A1)*
+- [x] **Off-site, encrypted backups** — `ops/backup-db.sh` off-sites each dump to Cloudflare R2 (`db-backups/`, reusing the app's R2 client; AES-256 at rest + TLS in transit; private bucket; 14-day R2 retention). Remaining: a periodic **tested restore drill** + documented RPO/RTO. *(A1)*
 - [ ] **PAT least-privilege** — token scopes / read-only PATs; disallow non-expiring tokens (`api/src/auth-tokens.js`). *(CC6.3)*
 - [ ] **DOM-XSS pass** — audit the ~186 `innerHTML` sinks in `web/admin/*`; rely less on the permissive CSP. *(CC6.8)*
 - [ ] **Password policy** — unify min length (signup 8 vs change 12) to ≥12 + breach check; **rotate the 8-char `ADMIN_PASSWORD`**. *(CC6.1)*
