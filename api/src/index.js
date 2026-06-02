@@ -1043,13 +1043,13 @@ app.post('/portals/:id/reanalyze', auth.authMiddleware, async (req, res, next) =
 // =========================================================================
 
 app.use('/portfolio', auth.authMiddleware, portfolio.router);
-app.use('/crm', auth.authMiddleware, gating.requireFeatureWrite(plans.FEATURES.CRM), require('./crm').router);
+app.use('/crm', auth.authMiddleware, gating.requireFeatureWrite(plans.FEATURES.CRM), auth.requireRoleWrite('manager'), require('./crm').router);
 app.use('/dashboard', auth.authMiddleware, require('./dashboard').router);
 
 // Billing — the Stripe webhook is PUBLIC (signature-verified) and must sit
 // before the authMiddleware'd billing router so Stripe (no cookie) can reach it.
 app.post('/billing/webhook', billing.webhook);
-app.use('/billing', auth.authMiddleware, billing.router);
+app.use('/billing', auth.authMiddleware, auth.requireRoleWrite('owner'), billing.router);
 
 // =========================================================================
 // Companies + Missions (sales scheduler).
@@ -1094,7 +1094,7 @@ app.use('/integrations', auth.authMiddleware, integrations.router);
 // scripts). See docs/rfcs/0001-lili-integration.md. Routes require an
 // authenticated session (cookie-JWT or another PAT); minting/listing/revoking
 // always acts on req.user.sub within req.tenantId.
-app.use('/auth/tokens', auth.authMiddleware, gating.requireFeatureWrite(plans.FEATURES.API_TOKENS), authTokens.router);
+app.use('/auth/tokens', auth.authMiddleware, gating.requireFeatureWrite(plans.FEATURES.API_TOKENS), auth.requireRoleWrite('manager'), authTokens.router);
 
 // PUBLIC (Calendly calls it) — signature-verified. Multi-tenant: each tenant's
 // subscription is registered at /webhooks/calendly/<routeToken>, which maps back

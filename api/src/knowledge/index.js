@@ -11,6 +11,7 @@ const social = require('./social');
 const parsers = require('./parsers');
 const preview = require('./preview');
 const research = require('./research');
+const auth = require('../auth');
 const db = require('../db');
 
 // Resolve the tenant a write should land in. Normal users → always their own
@@ -270,7 +271,7 @@ router.patch('/research/:companyId/opportunity', async (req, res, next) => {
   }
 });
 
-router.delete('/documents/:id', async (req, res, next) => {
+router.delete('/documents/:id', auth.requireRole('manager'), async (req, res, next) => {
   try {
     const ok = await service.deleteDocument(req.tenantId, req.params.id);
     if (!ok) return res.status(404).json({ error: 'not found' });

@@ -176,6 +176,29 @@ function requireSuperadmin(req, res, next) {
   next();
 }
 
+// In-tenant RBAC (CC6.3). Roles are ranked owner > manager > rep; a platform
+// superadmin (adm) bypasses the check. requireRole gates every method;
+// requireRoleWrite gates only mutating methods (reads stay open to all roles).
+const ROLE_RANK = { rep: 1, manager: 2, owner: 3 };
+function roleAllows(req, minRole) {
+  if (!req.user) return false;
+  if (req.user.adm) return true;                       // superadmin bypass
+  return (ROLE_RANK[req.user.role] || 0) >= (ROLE_RANK[minRole] || 99);
+}
+function requireRole(minRole) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'unauthorized' });
+    if (roleAllows(req, minRole)) return next();
+    return res.status(403).json({ error: `requires ${minRole} role`, code: 'INSUFFICIENT_ROLE', required: minRole });
+  };
+}
+function requireRoleWrite(minRole) {
+  return (req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+    return requireRole(minRole)(req, res, next);
+  };
+}
+
 function cookieOptions() {
   return {
     httpOnly: true,
@@ -194,6 +217,8 @@ module.exports = {
   authMiddleware,
   optionalAuth,
   requireSuperadmin,
+  requireRole,
+  requireRoleWrite,
   tokenFromRequest,
   cookieOptions,
   COOKIE_NAME,

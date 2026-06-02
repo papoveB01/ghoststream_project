@@ -10,6 +10,7 @@ const db = require('./db');
 const web = require('./knowledge/web');
 const discovery = require('./knowledge/discovery');
 const gating = require('./gating');
+const auth = require('./auth');
 
 // Strip protocol / www / path → bare host, for comparing a prospect domain
 // against the tenant's own domain.
@@ -279,7 +280,7 @@ router.patch('/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.delete('/:id', async (req, res, next) => {
+router.delete('/:id', auth.requireRole('manager'), async (req, res, next) => {
   try {
     const ok = await remove(req.tenantId, req.params.id);
     if (!ok) return res.status(404).json({ error: 'not found' });

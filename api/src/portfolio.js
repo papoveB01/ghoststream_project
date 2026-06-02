@@ -10,6 +10,7 @@
 
 const express = require('express');
 const db = require('./db');
+const auth = require('./auth');
 
 const TABLES = {
   products:    { table: 'products',    junction: 'kb_document_products',    column: 'product_id' },
@@ -87,8 +88,9 @@ for (const [resource, conf] of Object.entries(TABLES)) {
     } catch (err) { next(err); }
   });
 
-  // DELETE — RESTRICTed by FK if any document is still tagged.
-  router.delete(`/${resource}/:id`, async (req, res, next) => {
+  // DELETE — RESTRICTed by FK if any document is still tagged. Manager+ only:
+  // these are shared tenant catalog entities, not a rep's own working data.
+  router.delete(`/${resource}/:id`, auth.requireRole('manager'), async (req, res, next) => {
     try {
       const r = await db.query(
         `DELETE FROM ${conf.table} WHERE id = $1 AND tenant_id = $2`,
@@ -130,7 +132,9 @@ router.get('/company-profile', async (req, res, next) => {
 });
 
 // PATCH /portfolio/company-profile { positioning?, objectives? } — upsert.
-router.patch('/company-profile', async (req, res, next) => {
+// Owner-only: positioning/objectives are account-level identity that feed every
+// brief and battlecard.
+router.patch('/company-profile', auth.requireRole('owner'), async (req, res, next) => {
   try {
     const positioning = req.body && req.body.positioning !== undefined ? (String(req.body.positioning || '').trim() || null) : undefined;
     const objectives = req.body && req.body.objectives !== undefined ? (String(req.body.objectives || '').trim() || null) : undefined;
