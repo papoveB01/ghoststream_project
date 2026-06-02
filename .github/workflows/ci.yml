@@ -27,7 +27,7 @@ jobs:
       ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret
       NODE_ENV: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true   # informational for now — known aging deps (multer 1.x, pdf-parse); tighten later
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
