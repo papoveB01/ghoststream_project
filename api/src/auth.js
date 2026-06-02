@@ -11,11 +11,19 @@ const users = require('./users');
 const apiTokens = require('./auth-tokens');
 
 const JWT_SECRET = process.env.JWT_SECRET || '';
+const JWT_ALG = 'HS256';
 const COOKIE_NAME = 'gs_admin';
 const JWT_TTL_SEC = 60 * 60 * 8; // 8 hours
 
 function isConfigured() {
   return Boolean(JWT_SECRET);
+}
+
+// Surface weak/missing signing secrets at boot rather than failing silently.
+if (!JWT_SECRET) {
+  console.warn('[auth] JWT_SECRET is not set — authentication is disabled (logins will 500).');
+} else if (JWT_SECRET.length < 32) {
+  console.warn(`[auth] JWT_SECRET is weak (${JWT_SECRET.length} chars) — use >= 32 bytes of entropy.`);
 }
 
 // Token claims:
@@ -29,14 +37,15 @@ function signToken(user) {
   return jwt.sign(
     { sub: user.id, tid: user.tenantId, email: user.email, name: user.name || null, role: user.role, adm: !!user.isAdmin },
     JWT_SECRET,
-    { expiresIn: JWT_TTL_SEC }
+    { expiresIn: JWT_TTL_SEC, algorithm: JWT_ALG }
   );
 }
 
 function verifyToken(token) {
   if (!token) return null;
   try {
-    const claims = jwt.verify(token, JWT_SECRET);
+    // Pin the algorithm — never accept `alg:none` or a caller-chosen algorithm.
+    const claims = jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALG] });
     // Reject legacy tokens that predate multitenancy — they lack `tid`.
     if (!claims || !claims.tid || !claims.sub) return null;
     return claims;

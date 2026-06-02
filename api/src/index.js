@@ -27,6 +27,7 @@ const gating = require('./gating');
 const billing = require('./billing');
 const entitlements = require('./entitlements');
 const devices = require('./devices');
+const loginGuard = require('./loginGuard');
 
 const app = express();
 
@@ -539,8 +540,21 @@ function grantSession(res, publicUser) {
 app.post('/auth/login', async (req, res, next) => {
   try {
     const { email, password } = req.body || {};
+
+    // Brute-force guard: block (and don't even check the password) once the
+    // per-account or per-IP failure budget is spent.
+    const gate = await loginGuard.check(req, email);
+    if (gate.locked) {
+      res.set('Retry-After', String(gate.retryAfter));
+      return res.status(429).json({ error: 'Too many failed sign-in attempts. Try again later.' });
+    }
+
     const user = await auth.verifyCredentials(email, password);
-    if (!user) return res.status(401).json({ error: 'invalid credentials' });
+    if (!user) {
+      await loginGuard.recordFailure(req, email);
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
+    await loginGuard.clear(email); // correct password — reset the account counter
 
     // New-device check: trusted device → straight in; otherwise email a code and
     // hold the session until /auth/verify-device. (Password is already correct,

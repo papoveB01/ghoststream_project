@@ -20,6 +20,7 @@
 
 const crypto = require('crypto');
 const redis = require('./redis');
+const secretbox = require('./secretbox');
 
 const APP_BASE_URL =
   process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net';
@@ -91,11 +92,12 @@ async function consumeOAuthState(s) {
 }
 
 async function saveGrant(tenantId, userId, grant) {
-  await redis.set(grantKey(tenantId, userId), JSON.stringify(grant), 'EX', GRANT_TTL_SEC);
+  // Encrypted at rest — holds access/refresh tokens (see secretbox.js).
+  await redis.set(grantKey(tenantId, userId), secretbox.sealJson(grant), 'EX', GRANT_TTL_SEC);
 }
 async function loadGrant(tenantId, userId) {
   const raw = await redis.get(grantKey(tenantId, userId));
-  try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+  try { return raw ? secretbox.openJson(raw) : null; } catch { return null; }
 }
 async function deleteGrant(tenantId, userId) {
   await redis.del(grantKey(tenantId, userId));

@@ -18,6 +18,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const redis = require('./redis');
+const secretbox = require('./secretbox');
 const microsoft = require('./microsoft');
 const email     = require('./email');
 const ics       = require('./ics');
@@ -115,11 +116,12 @@ async function consumeOAuthState(s) {
   try { return raw ? JSON.parse(raw) : null; } catch { return null; }
 }
 async function saveGrant(tenantId, userId, grant) {
-  await redis.set(grantKey(tenantId, userId), JSON.stringify(grant), 'EX', GRANT_TTL_SEC);
+  // Encrypted at rest — holds the calendar OAuth access/refresh tokens.
+  await redis.set(grantKey(tenantId, userId), secretbox.sealJson(grant), 'EX', GRANT_TTL_SEC);
 }
 async function loadGrant(tenantId, userId) {
   const raw = await redis.get(grantKey(tenantId, userId));
-  try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+  try { return raw ? secretbox.openJson(raw) : null; } catch { return null; }
 }
 async function deleteGrant(tenantId, userId) {
   await redis.del(grantKey(tenantId, userId));
@@ -462,11 +464,12 @@ function missionFromCalendlyEvent(payload) {
 
 function calendlyTokenKey(tenantId, userId) { return `caly_token:${tenantId}:${userId}`; }
 async function saveCalendlyToken(tenantId, userId, t) {
-  await redis.set(calendlyTokenKey(tenantId, userId), JSON.stringify(t), 'EX', GRANT_TTL_SEC);
+  // Encrypted at rest — holds the Calendly OAuth access/refresh tokens.
+  await redis.set(calendlyTokenKey(tenantId, userId), secretbox.sealJson(t), 'EX', GRANT_TTL_SEC);
 }
 async function loadCalendlyToken(tenantId, userId) {
   const raw = await redis.get(calendlyTokenKey(tenantId, userId));
-  try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+  try { return raw ? secretbox.openJson(raw) : null; } catch { return null; }
 }
 async function deleteCalendlyToken(tenantId, userId) {
   await redis.del(calendlyTokenKey(tenantId, userId));

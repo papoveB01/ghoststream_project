@@ -5,6 +5,7 @@
 
 const express = require('express');
 const db = require('../db');
+const secretbox = require('../secretbox');
 const companies = require('../companies');
 const contacts = require('../contacts');
 const registry = require('./registry');
@@ -17,8 +18,21 @@ function getConnector(provider) { return CONNECTORS[provider] || null; }
 // ──────────────────────────────────────────────────────────── store helpers
 async function getConnection(tenantId, provider) {
   const r = await db.query(`SELECT * FROM crm_connections WHERE tenant_id = $1 AND provider = $2`, [tenantId, provider]);
-  return r.rows[0] || null;
+  const row = r.rows[0] || null;
+  if (row) row.credentials = decodeCredentials(row.credentials);
+  return row;
 }
+
+// crm_connections.credentials is jsonb. Encrypted form is { enc: <envelope> };
+// legacy plaintext { token, ... } passes through unchanged (re-encrypted on the
+// next write). See secretbox.js.
+function decodeCredentials(creds) {
+  if (creds && typeof creds.enc === 'string') {
+    try { return secretbox.openJson(creds.enc); } catch { return {}; }
+  }
+  return creds || {};
+}
+function encodeCredentials(creds) { return { enc: secretbox.sealJson(creds) }; }
 
 function maskToken(t) {
   const s = String(t || '');
@@ -161,7 +175,7 @@ router.post('/connections', async (req, res, next) => {
             VALUES ($1, $2, 'connected', $3)
        ON CONFLICT (tenant_id, provider)
        DO UPDATE SET credentials = EXCLUDED.credentials, status = 'connected', updated_at = now()`,
-      [req.tenantId, provider, { token }]
+      [req.tenantId, provider, encodeCredentials({ token })]
     );
     res.status(201).json({ connection: publicConnection(await getConnection(req.tenantId, provider)) });
   } catch (err) { next(err); }
