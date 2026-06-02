@@ -1,0 +1,59 @@
+name: CI
+
+# Change-management gate (SOC 2 CC8.1): every push / PR runs the test suite and
+# a dependency audit, giving a reviewable, reproducible build record.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  api-tests:
+    name: API tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      REDIS_HOST: localhost
+      REDIS_PORT: '6379'
+      JWT_SECRET: ci-test-jwt-secret-at-least-32-bytes-long-xx
+      ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      - name: Install (reproducible)
+        working-directory: api
+        run: npm ci
+      - name: Syntax check all source
+        working-directory: api
+        run: node -e "const fs=require('fs'),cp=require('child_process');function walk(d){for(const f of fs.readdirSync(d,{withFileTypes:true})){const p=d+'/'+f.name;if(f.isDirectory())walk(p);else if(f.name.endsWith('.js'))cp.execSync('node --check '+JSON.stringify(p));}}walk('src');console.log('syntax ok');"
+      - name: Run tests
+        working-directory: api
+        run: npm test
+
+  audit:
+    name: Dependency audit (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # informational for now — known aging deps (multer 1.x, pdf-parse); tighten later
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      - name: npm audit (high+)
+        working-directory: api
+        run: npm audit --audit-level=high
