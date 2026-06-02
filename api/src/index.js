@@ -1187,6 +1187,10 @@ async function boot() {
   // serving requests against a half-migrated schema is worse than downtime.
   try {
     await migrate.run();
+    // Provision the restricted RLS role (idempotent) AFTER the schema exists so
+    // the GRANT ON ALL TABLES covers everything. Migration 0027 enables the
+    // policies; enforcement is gated by RLS_ENFORCE.
+    await db.ensureAppRole();
     const ok = await db.ping();
     if (!ok) throw new Error('postgres ping returned non-1');
     console.log('[boot] postgres ready');

@@ -11,6 +11,15 @@ const crypto = require('crypto');
 const users = require('./users');
 const apiTokens = require('./auth-tokens');
 const sessions = require('./sessions');
+const db = require('./db');
+
+// Continue the request inside an RLS tenant context when this is a normal
+// tenant member (non-superadmin). Superadmin (adm) gets no context → queries run
+// on the system pool with full cross-tenant visibility. No-op unless RLS_ENFORCE.
+function proceedInTenantContext(req, next) {
+  if (req.user && !req.user.adm && req.tenantId) return db.runWithTenant(req.tenantId, next);
+  return next();
+}
 
 const JWT_SECRET = process.env.JWT_SECRET || '';
 const JWT_ALG = 'HS256';
@@ -132,7 +141,7 @@ async function authMiddleware(req, res, next) {
       if (await sessions.isRevoked(claims)) return res.status(401).json({ error: 'session expired' });
       req.user = claims;
       req.tenantId = claims.tid;
-      return next();
+      return proceedInTenantContext(req, next);
     }
 
     // Bearer-PAT path — only attempted when the token *looks* like a PAT,
@@ -142,7 +151,7 @@ async function authMiddleware(req, res, next) {
       if (ctx) {
         req.user = ctx.user;
         req.tenantId = ctx.tenantId;
-        return next();
+        return proceedInTenantContext(req, next);
       }
     }
 
@@ -165,7 +174,7 @@ async function optionalAuth(req, _res, next) {
       const ctx = await apiTokens.verifyApiToken(token);
       if (ctx) { req.user = ctx.user; req.tenantId = ctx.tenantId; }
     }
-    next();
+    return proceedInTenantContext(req, next);
   } catch (err) { next(err); }
 }
 

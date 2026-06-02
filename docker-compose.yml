@@ -61,6 +61,10 @@ services:
       DATABASE_NAME: ${POSTGRES_DB}
       DATABASE_USER: ${POSTGRES_USER}
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      # Row-Level Security: restricted role + enforcement flag (see db.js, migration 0027)
+      DATABASE_APP_USER: ${DATABASE_APP_USER:-ghoststream_app}
+      DATABASE_APP_PASSWORD: ${DATABASE_APP_PASSWORD:-}
+      RLS_ENFORCE: ${RLS_ENFORCE:-off}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}

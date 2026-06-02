@@ -19,12 +19,12 @@ const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 // Best-effort: find a personas row whose name matches the given role text
 // (case-insensitive). Returns the persona_id or null.
-async function inferPersonaIdForRole(role) {
+async function inferPersonaIdForRole(tenantId, role) {
   const r = String(role || '').trim();
   if (!r) return null;
   const res = await db.query(
-    `SELECT id FROM personas WHERE lower(name) = lower($1) LIMIT 1`,
-    [r]
+    `SELECT id FROM personas WHERE tenant_id = $1 AND lower(name) = lower($2) LIMIT 1`,
+    [tenantId, r]
   );
   return res.rows[0] ? res.rows[0].id : null;
 }
@@ -41,7 +41,7 @@ const SELECT_COLUMNS = `
 const FROM_JOIN = `
   FROM prospect_contacts pc
   LEFT JOIN companies c ON c.id = pc.company_id
-  LEFT JOIN personas  p ON p.id = pc.persona_id
+  LEFT JOIN personas  p ON p.id = pc.persona_id AND p.tenant_id = pc.tenant_id
 `;
 
 async function list(tenantId, { companyId, q } = {}) {
@@ -97,7 +97,7 @@ async function create(tenantId, userId, { companyId, name, email, role, personaI
   if (!finalName) { const e = new Error('name required'); e.status = 400; throw e; }
 
   const finalRole = (role && String(role).trim()) || 'Unknown';
-  const finalPersonaId = personaId !== undefined ? (personaId || null) : await inferPersonaIdForRole(finalRole);
+  const finalPersonaId = personaId !== undefined ? (personaId || null) : await inferPersonaIdForRole(tenantId, finalRole);
   try {
     const r = await db.query(
       `INSERT INTO prospect_contacts
@@ -170,7 +170,7 @@ async function update(tenantId, id, { name, email, role, personaId, title, notes
   if (personaId !== undefined) {
     nextPersonaId = personaId || null;
   } else if (role !== undefined && role !== existing.role) {
-    nextPersonaId = await inferPersonaIdForRole(next.role);
+    nextPersonaId = await inferPersonaIdForRole(tenantId, next.role);
   }
   try {
     await db.query(
