@@ -31,6 +31,7 @@ const loginGuard = require('./loginGuard');
 const sessions = require('./sessions');
 const audit = require('./audit');
 const erasure = require('./erasure');
+const platformAdmin = require('./platformAdmin');
 
 const app = express();
 
@@ -878,6 +879,9 @@ app.get('/admin/tenants', auth.authMiddleware, auth.requireSuperadmin, async (_r
     res.json({ tenants: r.rows });
   } catch (err) { next(err); }
 });
+
+// Platform Admin Console — read-only superadmin cross-tenant observability.
+app.use('/admin/platform', auth.authMiddleware, auth.requireSuperadmin, platformAdmin.router);
 
 // Erase a tenant and ALL its data across every store (right-to-be-forgotten /
 // offboarding). Superadmin only; irreversible. ?dryRun=1 reports the manifest

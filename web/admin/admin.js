@@ -3,7 +3,7 @@
   const show = (id) => $(id).classList.remove('hidden');
   const hide = (id) => $(id).classList.add('hidden');
 
-  const sections = ['overview', 'company', 'missions', 'prospects', 'competitors', 'calendar', 'calls', 'calls-ops', 'sessions', 'integrations', 'billing', 'settings', 'profile'];
+  const sections = ['overview', 'company', 'missions', 'prospects', 'competitors', 'calendar', 'calls', 'calls-ops', 'platform', 'instances', 'platform-audit', 'platform-keys', 'sessions', 'integrations', 'billing', 'settings', 'profile'];
   const loaders = {
     overview: loadOverview,
     company: loadCompany,
@@ -13,6 +13,10 @@
     calendar: loadCalendar,
     calls: loadCalls,
     'calls-ops': loadCallsOps,
+    platform: loadPlatform,
+    instances: loadInstances,
+    'platform-audit': loadPlatformAudit,
+    'platform-keys': loadPlatformKeys,
     sessions: loadSessions,
     integrations: loadIntegrations,
     billing: loadBilling,
@@ -261,6 +265,10 @@
       calendar: 'Calendar',
       calls: 'Calls',
       'calls-ops': 'Calls — Operations',
+      platform: 'Platform overview',
+      instances: 'Instances',
+      'platform-audit': 'Audit log',
+      'platform-keys': 'Keys & secrets',
       sessions: 'Arena Practice',
       integrations: 'Integrations',
       billing: 'Billing',
@@ -8076,5 +8084,169 @@
               <td>${fmtDate(c.createdAt)}</td>
             </tr>`).join('')}</tbody>
         </table>`;
+  }
+
+  // ===================== Platform Admin Console (superadmin, read-only) =====================
+  function _saGuard(hostId) {
+    if (isSuperadmin) return false;
+    $(hostId).innerHTML = '<div class="empty">Superadmin only.</div>';
+    return true;
+  }
+  function chip(label, ok) {
+    return `<span class="dash-found-item ${ok ? 'ok' : 'todo'}">${ok ? '✓' : '○'} ${escapeHtml(label)}</span>`;
+  }
+
+  async function loadPlatform() {
+    if (_saGuard('platform-body')) return;
+    let d;
+    try { d = await fetchJson('/api/admin/platform/overview'); }
+    catch (err) { $('platform-body').innerHTML = `<div class="empty">Couldn't load: ${escapeHtml(err.message)}</div>`; return; }
+    const chips = (obj) => Object.entries(obj || {}).map(([k, v]) => `<span class="pill">${escapeHtml(k)}: ${v}</span>`).join(' ') || '<span class="kb-subtle">none</span>';
+    $('platform-body').innerHTML = `
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+        ${kpiCell('Tenants', d.tenants, null, 'instances')}
+        ${kpiCell('Users', d.users, null, 'instances')}
+        ${kpiCell('Active (30d)', d.activeTenants30d, 'logged in ≤30d', 'instances')}
+        ${kpiCell('Signups (30d)', d.signups30d, null, 'instances')}
+      </div>
+      <div class="card"><div class="card-h">By subscription status</div><div class="card-b">${chips(d.tenantsByStatus)}</div></div>
+      <div class="card"><div class="card-h">By plan</div><div class="card-b">${chips(d.tenantsByPlan)}</div></div>
+      <div class="card"><div class="card-h">Usage this month (${escapeHtml(d.period || '')})</div><div class="card-b">${chips(d.usageThisMonth)}</div></div>`;
+    $('platform-body').querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => switchSection(b.dataset.goto)));
+  }
+
+  let _instancesState = { selectedId: null };
+  async function loadInstances() {
+    if (_saGuard('instances-body')) return;
+    let data;
+    try { data = await fetchJson('/api/admin/platform/tenants'); }
+    catch (err) { $('instances-body').innerHTML = `<div class="empty">Couldn't load: ${escapeHtml(err.message)}</div>`; return; }
+    const rows = data.tenants || [];
+    $('instances-body').innerHTML = `
+      <table class="dt">
+        <thead><tr><th>Tenant</th><th>Plan</th><th>Status</th><th>Users</th><th>Last active</th><th>Created</th></tr></thead>
+        <tbody>${rows.map((t) => `
+          <tr data-tenant-pick="${escapeHtml(t.id)}" role="button" tabindex="0" class="${t.id === _instancesState.selectedId ? 'active' : ''}">
+            <td class="dt-name"><strong>${escapeHtml(t.name || '—')}</strong>${t.domain ? `<div class="kb-subtle">${escapeHtml(t.domain)}</div>` : ''}</td>
+            <td>${escapeHtml(t.plan || '—')}</td>
+            <td><span class="pill">${escapeHtml(t.subscription_status || '—')}</span></td>
+            <td>${fmtNum(t.user_count || 0)}</td>
+            <td class="kb-subtle">${t.last_active ? fmtDate(t.last_active) : '—'}</td>
+            <td class="kb-subtle">${fmtDate(t.created_at)}</td>
+          </tr>`).join('')}</tbody>
+      </table>
+      <div id="instance-detail" style="margin-top:16px">${_instancesState.selectedId ? '<div class="kb-subtle">Loading…</div>' : '<div class="kb-subtle">Pick a tenant above to inspect it.</div>'}</div>`;
+    $('instances-body').querySelectorAll('[data-tenant-pick]').forEach((el) => el.addEventListener('click', () => selectInstance(el.dataset.tenantPick)));
+    if (_instancesState.selectedId) selectInstance(_instancesState.selectedId, true);
+  }
+  async function selectInstance(id, keep) {
+    _instancesState.selectedId = id;
+    if (!keep) document.querySelectorAll('#instances-body [data-tenant-pick]').forEach((el) => el.classList.toggle('active', el.dataset.tenantPick === id));
+    const host = $('instance-detail');
+    if (host) host.innerHTML = '<div class="kb-subtle">Loading…</div>';
+    let d;
+    try { d = await fetchJson(`/api/admin/platform/tenants/${encodeURIComponent(id)}`); }
+    catch (err) { if (host) host.innerHTML = `<div class="empty">Couldn't load tenant: ${escapeHtml(err.message)}</div>`; return; }
+    renderInstanceDetail(d);
+  }
+  function renderInstanceDetail(d) {
+    const host = $('instance-detail');
+    if (!host) return;
+    const t = d.tenant || {}, e = d.entitlements || {}, cnt = d.counts || {}, ig = d.integrations || {};
+    const usageRows = (d.usage || []).map((u) => `<span class="pill">${escapeHtml(u.meter)}: ${u.count}</span>`).join(' ') || '<span class="kb-subtle">no usage this month</span>';
+    const crmRows = (ig.crm || []).map((c) => `<span class="pill">${escapeHtml(c.provider)}: ${escapeHtml(c.status || '—')}</span>`).join(' ') || '';
+    const users = (d.users || []).map((u) => `
+      <tr><td>${escapeHtml(u.email)}${u.is_admin ? ' <span class="pill pill-ok">superadmin</span>' : ''}</td>
+          <td>${escapeHtml(u.name || '—')}</td><td>${escapeHtml(u.role || '—')}</td>
+          <td>${u.email_verified ? '✓' : '○'}</td><td class="kb-subtle">${u.last_login_at ? fmtDate(u.last_login_at) : 'never'}</td></tr>`).join('');
+    const tokens = (d.apiTokens || []).map((k) => `
+      <tr><td>${escapeHtml(k.label || '—')}</td><td class="mono">${escapeHtml(k.prefix || '')}…</td>
+          <td class="kb-subtle">${fmtDate(k.created_at)}</td><td class="kb-subtle">${k.last_used_at ? fmtDate(k.last_used_at) : '—'}</td>
+          <td>${k.revoked_at ? '<span class="pill pill-warn">revoked</span>' : (k.expires_at && new Date(k.expires_at) < new Date() ? '<span class="pill pill-warn">expired</span>' : '<span class="pill pill-ok">active</span>')}</td></tr>`).join('')
+      || '<tr><td colspan="5" class="kb-subtle">No API tokens.</td></tr>';
+    const activity = (d.recentActivity || []).map((a) => `
+      <tr><td class="kb-subtle">${fmtDate(a.at)}</td><td>${escapeHtml(a.action)}</td><td>${escapeHtml(a.actor_email || '—')}</td><td class="mono kb-subtle">${escapeHtml(a.ip || '')}</td></tr>`).join('')
+      || '<tr><td colspan="4" class="kb-subtle">No recent activity.</td></tr>';
+    host.innerHTML = `
+      <div class="card">
+        <div class="card-h">${escapeHtml(t.name || '—')} <span class="kb-subtle">${escapeHtml(t.domain || '')}</span></div>
+        <div class="card-b">
+          <p><span class="pill">${escapeHtml(e.planName || t.plan || '—')}</span>
+             <span class="pill">${escapeHtml(e.status || t.subscription_status || '—')}</span>
+             ${e.active ? '<span class="pill pill-ok">active</span>' : '<span class="pill pill-warn">inactive</span>'}
+             ${e.daysLeft != null ? `<span class="kb-subtle">· ${e.daysLeft} trial day(s) left</span>` : ''}
+             ${t.current_period_end ? `<span class="kb-subtle">· renews ${fmtDate(t.current_period_end)}</span>` : ''}</p>
+          <p><strong>Data:</strong>
+             <span class="pill">${cnt.companies || 0} companies</span>
+             <span class="pill">${cnt.contacts || 0} contacts</span>
+             <span class="pill">${cnt.kbDocuments || 0} KB docs</span>
+             <span class="pill">${cnt.engagements || 0} engagements</span>
+             <span class="pill">${cnt.arenaSessions || 0} arena</span></p>
+          <p><strong>Usage (${escapeHtml(d.tenant ? '' : '')}this month):</strong> ${usageRows}</p>
+          <p><strong>Integrations:</strong> ${chip('Microsoft', ig.microsoft)} ${chip('Calendly', ig.calendly)} ${chip('Calendar', ig.calendar)} ${crmRows}</p>
+        </div>
+      </div>
+      <div class="card"><div class="card-h">Users (${(d.users || []).length})</div>
+        <div class="card-b table-wrap"><table class="dt"><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Verified</th><th>Last login</th></tr></thead><tbody>${users}</tbody></table></div></div>
+      <div class="card"><div class="card-h">API tokens</div>
+        <div class="card-b table-wrap"><table class="dt"><thead><tr><th>Label</th><th>Prefix</th><th>Created</th><th>Last used</th><th>State</th></tr></thead><tbody>${tokens}</tbody></table></div></div>
+      <div class="card"><div class="card-h">Recent activity</div>
+        <div class="card-b table-wrap"><table class="dt"><thead><tr><th>When</th><th>Action</th><th>Actor</th><th>IP</th></tr></thead><tbody>${activity}</tbody></table></div></div>`;
+  }
+
+  async function loadPlatformAudit() {
+    if (_saGuard('platform-audit-body')) return;
+    $('platform-audit-body').innerHTML = `
+      <div class="prospect-discover-form" style="margin-bottom:12px">
+        <input id="pa-tenant" type="text" placeholder="Tenant id (optional)">
+        <input id="pa-action" type="text" placeholder="Action (e.g. auth.login.* )">
+        <input id="pa-actor" type="text" placeholder="Actor email">
+        <button type="button" class="primary-cta" id="pa-refresh">Filter</button>
+      </div>
+      <div id="pa-results"><div class="kb-subtle">Loading…</div></div>`;
+    $('pa-refresh').addEventListener('click', runPlatformAudit);
+    runPlatformAudit();
+  }
+  async function runPlatformAudit() {
+    const qs = new URLSearchParams();
+    const tenant = $('pa-tenant') && $('pa-tenant').value.trim();
+    const action = $('pa-action') && $('pa-action').value.trim();
+    const actor = $('pa-actor') && $('pa-actor').value.trim();
+    if (tenant) qs.set('tenant', tenant);
+    if (action) qs.set('action', action);
+    if (actor) qs.set('actor', actor);
+    qs.set('limit', '200');
+    let data;
+    try { data = await fetchJson('/api/admin/platform/audit?' + qs.toString()); }
+    catch (err) { $('pa-results').innerHTML = `<div class="empty">Couldn't load: ${escapeHtml(err.message)}</div>`; return; }
+    const ev = data.events || [];
+    $('pa-results').innerHTML = ev.length === 0 ? '<div class="empty">No events.</div>' : `
+      <table class="dt"><thead><tr><th>When</th><th>Action</th><th>Result</th><th>Actor</th><th>Tenant</th><th>IP</th></tr></thead>
+        <tbody>${ev.map((a) => `
+          <tr><td class="kb-subtle">${fmtDate(a.at)}</td><td>${escapeHtml(a.action)}</td>
+              <td>${a.result === 'failure' ? '<span class="pill pill-warn">failure</span>' : escapeHtml(a.result || '—')}</td>
+              <td>${escapeHtml(a.actor_email || '—')}</td><td class="mono kb-subtle">${escapeHtml((a.tenant_id || '').slice(0, 8))}</td>
+              <td class="mono kb-subtle">${escapeHtml(a.ip || '')}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  async function loadPlatformKeys() {
+    if (_saGuard('platform-keys-body')) return;
+    let sec, tok;
+    try { [sec, tok] = await Promise.all([fetchJson('/api/admin/platform/secrets'), fetchJson('/api/admin/platform/tokens')]); }
+    catch (err) { $('platform-keys-body').innerHTML = `<div class="empty">Couldn't load: ${escapeHtml(err.message)}</div>`; return; }
+    const groups = Object.entries(sec.groups || {}).map(([g, items]) => `
+      <div class="card"><div class="card-h">${escapeHtml(g)}</div><div class="card-b">${items.map((i) => chip(i.name, i.configured)).join(' ')}</div></div>`).join('');
+    const flags = Object.entries(sec.flags || {}).map(([k, v]) => `<span class="pill">${escapeHtml(k)}: ${escapeHtml(String(v))}</span>`).join(' ');
+    const tokens = (tok.tokens || []).map((k) => `
+      <tr><td>${escapeHtml(k.tenant_name || '—')}</td><td>${escapeHtml(k.owner_email || '—')}</td>
+          <td>${escapeHtml(k.label || '—')}</td><td class="mono">${escapeHtml(k.prefix || '')}…</td>
+          <td class="kb-subtle">${fmtDate(k.created_at)}</td><td class="kb-subtle">${k.last_used_at ? fmtDate(k.last_used_at) : '—'}</td>
+          <td>${k.revoked_at ? '<span class="pill pill-warn">revoked</span>' : '<span class="pill pill-ok">active</span>'}</td></tr>`).join('')
+      || '<tr><td colspan="7" class="kb-subtle">No tokens.</td></tr>';
+    $('platform-keys-body').innerHTML = `
+      <p class="kb-subtle">Secret presence only — values are never exposed. Flags: ${flags}</p>
+      ${groups}
+      <div class="card"><div class="card-h">API tokens (all tenants)</div>
+        <div class="card-b table-wrap"><table class="dt"><thead><tr><th>Tenant</th><th>Owner</th><th>Label</th><th>Prefix</th><th>Created</th><th>Last used</th><th>State</th></tr></thead><tbody>${tokens}</tbody></table></div></div>`;
   }
 })();

@@ -41,13 +41,30 @@ async function log(entry = {}) {
   }
 }
 
-// Recent events for a tenant (admin view). Superadmin may pass tenantId=null to
-// read across tenants — callers must enforce that authorization.
-async function recent({ tenantId, limit = 100 } = {}) {
+// Recent events, newest first, with optional filters (all AND-ed). Superadmin
+// may pass tenantId=null to read across tenants — callers must enforce that
+// authorization. `actor` matches actor_email (case-insensitive substring);
+// `from`/`to` bound `at`; `action` matches exactly or by prefix when it ends '*'.
+async function recent({ tenantId, action, actor, from, to, limit = 100, offset = 0 } = {}) {
   const lim = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
-  const r = tenantId
-    ? await db.query(`SELECT * FROM audit_log WHERE tenant_id = $1 ORDER BY at DESC LIMIT $2`, [tenantId, lim])
-    : await db.query(`SELECT * FROM audit_log ORDER BY at DESC LIMIT $1`, [lim]);
+  const off = Math.max(parseInt(offset, 10) || 0, 0);
+  const where = [];
+  const params = [];
+  if (tenantId) { params.push(tenantId); where.push(`tenant_id = $${params.length}`); }
+  if (action) {
+    if (String(action).endsWith('*')) { params.push(String(action).slice(0, -1) + '%'); where.push(`action LIKE $${params.length}`); }
+    else { params.push(action); where.push(`action = $${params.length}`); }
+  }
+  if (actor) { params.push(`%${String(actor).toLowerCase()}%`); where.push(`lower(actor_email) LIKE $${params.length}`); }
+  if (from) { params.push(from); where.push(`at >= $${params.length}`); }
+  if (to)   { params.push(to);   where.push(`at <= $${params.length}`); }
+  params.push(lim); const limIdx = params.length;
+  params.push(off); const offIdx = params.length;
+  const r = await db.query(
+    `SELECT * FROM audit_log ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       ORDER BY at DESC LIMIT $${limIdx} OFFSET $${offIdx}`,
+    params
+  );
   return r.rows;
 }
 

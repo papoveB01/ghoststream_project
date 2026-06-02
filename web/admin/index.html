@@ -31,6 +31,10 @@
         <a href="#missions" data-section="missions">Engagements</a>
         <a href="#calendar" data-section="calendar">Calendar</a>
         <a href="#calls-ops" data-section="calls-ops" class="superadmin-only hidden">Calls (operations)</a>
+        <a href="#platform" data-section="platform" class="superadmin-only hidden">Platform</a>
+        <a href="#instances" data-section="instances" class="superadmin-only hidden">Instances</a>
+        <a href="#platform-audit" data-section="platform-audit" class="superadmin-only hidden">Audit log</a>
+        <a href="#platform-keys" data-section="platform-keys" class="superadmin-only hidden">Keys &amp; secrets</a>
         <a href="#sessions" data-section="sessions">Arena Practice</a>
         <a href="#integrations" data-section="integrations">Integrations</a>
         <a href="#billing" data-section="billing">Billing</a>
@@ -493,6 +497,40 @@
           <div class="card">
             <div class="card-h">Operations — failed &amp; stuck</div>
             <div class="card-b table-wrap" id="calls-ops-table"></div>
+          </div>
+        </section>
+
+        <!-- PLATFORM ADMIN CONSOLE (superadmin only — read-only cross-tenant) -->
+        <section id="section-platform" class="section hidden">
+          <div class="card">
+            <div class="card-h">Platform overview
+              <span class="pf-hint">Cross-tenant snapshot of every instance. Read-only.</span>
+            </div>
+            <div class="card-b" id="platform-body"><div class="kb-subtle">Loading…</div></div>
+          </div>
+        </section>
+        <section id="section-instances" class="section hidden">
+          <div class="card">
+            <div class="card-h">Instances
+              <span class="pf-hint">Every tenant. Click one to inspect users, subscription, integrations, keys, and activity.</span>
+            </div>
+            <div class="card-b" id="instances-body"><div class="kb-subtle">Loading…</div></div>
+          </div>
+        </section>
+        <section id="section-platform-audit" class="section hidden">
+          <div class="card">
+            <div class="card-h">Audit log
+              <span class="pf-hint">Security &amp; admin events across all tenants. Filter by tenant, action, actor, or date.</span>
+            </div>
+            <div class="card-b" id="platform-audit-body"><div class="kb-subtle">Loading…</div></div>
+          </div>
+        </section>
+        <section id="section-platform-keys" class="section hidden">
+          <div class="card">
+            <div class="card-h">Keys &amp; secrets
+              <span class="pf-hint">Platform secret configuration (presence only — values never shown) and active API tokens across tenants.</span>
+            </div>
+            <div class="card-b" id="platform-keys-body"><div class="kb-subtle">Loading…</div></div>
           </div>
         </section>
 
