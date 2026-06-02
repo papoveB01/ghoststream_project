@@ -61,11 +61,14 @@ function ipPrefix(ip) {
 function deviceFingerprint(req, userId) {
   const ua = req.headers['user-agent'] || '';
   const prefix = ipPrefix(clientIp(req));
-  return {
-    hash: sha256(`${userId}|${ua}|${prefix}`),
-    userAgent: String(ua).slice(0, 500),
-    ipPrefix: prefix,
-  };
+  // When the browser supplies a client fingerprint (X-Device-FP), key the device
+  // on it instead of UA+IP — it's IP-independent (survives network changes) and
+  // harder to spoof than UA alone. Falls back to UA+IP/24 for non-browser callers.
+  const cfp = req.headers['x-device-fp'];
+  const hash = (cfp && /^[a-f0-9]{32,128}$/i.test(cfp))
+    ? sha256(`${userId}|cfp|${cfp}`)
+    : sha256(`${userId}|${ua}|${prefix}`);
+  return { hash, userAgent: String(ua).slice(0, 500), ipPrefix: prefix };
 }
 
 // ---- trusted_devices store -------------------------------------------------
