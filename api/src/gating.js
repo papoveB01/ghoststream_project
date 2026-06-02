@@ -38,6 +38,13 @@ async function billingGate(req, res, next) {
     if (!tenantId) return next();
 
     const tenant = await tenants.get(tenantId);
+
+    // Hard suspend (platform-admin kill switch) — block ALL authenticated
+    // requests for the tenant, ahead of any billing/read-only logic.
+    if (tenant && tenant.suspended_at) {
+      return res.status(403).json({ error: 'This organization has been suspended.', code: 'TENANT_SUSPENDED' });
+    }
+
     const ent = entitlements.entitlementsFor(tenant);
     req.entitlements = ent;
     req.tenantRecord = tenant;

@@ -8162,8 +8162,9 @@
     const tokens = (d.apiTokens || []).map((k) => `
       <tr><td>${escapeHtml(k.label || '—')}</td><td class="mono">${escapeHtml(k.prefix || '')}…</td>
           <td class="kb-subtle">${fmtDate(k.created_at)}</td><td class="kb-subtle">${k.last_used_at ? fmtDate(k.last_used_at) : '—'}</td>
-          <td>${k.revoked_at ? '<span class="pill pill-warn">revoked</span>' : (k.expires_at && new Date(k.expires_at) < new Date() ? '<span class="pill pill-warn">expired</span>' : '<span class="pill pill-ok">active</span>')}</td></tr>`).join('')
-      || '<tr><td colspan="5" class="kb-subtle">No API tokens.</td></tr>';
+          <td>${k.revoked_at ? '<span class="pill pill-warn">revoked</span>' : (k.expires_at && new Date(k.expires_at) < new Date() ? '<span class="pill pill-warn">expired</span>' : '<span class="pill pill-ok">active</span>')}</td>
+          <td>${k.revoked_at ? '' : `<button class="kb-link-btn danger" data-token-revoke="${escapeHtml(k.id)}">Revoke</button>`}</td></tr>`).join('')
+      || '<tr><td colspan="6" class="kb-subtle">No API tokens.</td></tr>';
     const activity = (d.recentActivity || []).map((a) => `
       <tr><td class="kb-subtle">${fmtDate(a.at)}</td><td>${escapeHtml(a.action)}</td><td>${escapeHtml(a.actor_email || '—')}</td><td class="mono kb-subtle">${escapeHtml(a.ip || '')}</td></tr>`).join('')
       || '<tr><td colspan="4" class="kb-subtle">No recent activity.</td></tr>';
@@ -8189,9 +8190,111 @@
       <div class="card"><div class="card-h">Users (${(d.users || []).length})</div>
         <div class="card-b table-wrap"><table class="dt"><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Verified</th><th>Last login</th></tr></thead><tbody>${users}</tbody></table></div></div>
       <div class="card"><div class="card-h">API tokens</div>
-        <div class="card-b table-wrap"><table class="dt"><thead><tr><th>Label</th><th>Prefix</th><th>Created</th><th>Last used</th><th>State</th></tr></thead><tbody>${tokens}</tbody></table></div></div>
+        <div class="card-b table-wrap"><table class="dt"><thead><tr><th>Label</th><th>Prefix</th><th>Created</th><th>Last used</th><th>State</th><th></th></tr></thead><tbody>${tokens}</tbody></table></div></div>
       <div class="card"><div class="card-h">Recent activity</div>
-        <div class="card-b table-wrap"><table class="dt"><thead><tr><th>When</th><th>Action</th><th>Actor</th><th>IP</th></tr></thead><tbody>${activity}</tbody></table></div></div>`;
+        <div class="card-b table-wrap"><table class="dt"><thead><tr><th>When</th><th>Action</th><th>Actor</th><th>IP</th></tr></thead><tbody>${activity}</tbody></table></div></div>
+      ${renderManageCard(t)}`;
+    wireManageCard(host, t);
+  }
+
+  // --- Phase 2: management actions (superadmin) ---
+  function renderManageCard(t) {
+    const planOpts = ['trial', 'starter', 'pro', 'enterprise', 'internal']
+      .map((p) => `<option value="${p}" ${p === t.plan ? 'selected' : ''}>${p}</option>`).join('');
+    const statusOpts = ['TRIAL', 'ACTIVE', 'PAST_DUE', 'CANCELLED', 'INTERNAL']
+      .map((s) => `<option value="${s}" ${s === t.subscription_status ? 'selected' : ''}>${s}</option>`).join('');
+    return `
+      <div class="card" data-manage>
+        <div class="card-h">Manage <span class="pf-hint">Superadmin actions — audited. Changing plan/status does not touch Stripe.</span></div>
+        <div class="card-b">
+          ${t.suspended_at ? `<div class="sub-banner danger" style="margin-bottom:12px">SUSPENDED since ${fmtDate(t.suspended_at)} — the org is fully locked out.</div>` : ''}
+          <div class="kb-inline-pair" style="align-items:flex-end;gap:10px;flex-wrap:wrap">
+            <label class="comp-finder-field">Plan<select data-mng="plan">${planOpts}</select></label>
+            <label class="comp-finder-field">Status<select data-mng="status">${statusOpts}</select></label>
+            <button class="kb-secondary-btn" data-mng-apply-plan>Apply plan</button>
+          </div>
+          <div class="kb-inline-pair" style="align-items:flex-end;gap:10px;margin-top:10px">
+            <label class="comp-finder-field">Trial days<input type="number" min="1" max="3650" value="14" data-mng="trial-days" style="width:90px"></label>
+            <button class="kb-secondary-btn" data-mng-trial>Set trial</button>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+            ${t.suspended_at
+              ? '<button class="primary-cta" data-mng-reactivate>Reactivate</button>'
+              : '<button class="kb-secondary-btn danger" data-mng-suspend>Suspend (lock out)</button>'}
+            <button class="kb-secondary-btn" data-mng-logout>Force-logout everyone</button>
+            <button class="kb-link-btn danger" data-mng-erase>Erase tenant…</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  async function _mngPost(path, body, okMsg) {
+    try {
+      await fetchJson('/api/admin/platform' + path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      toast(okMsg);
+      selectInstance(_instancesState.selectedId, true);
+    } catch (err) { toast(err.message || 'Action failed', 'warn'); }
+  }
+
+  function wireManageCard(host, t) {
+    const id = t.id;
+    const card = host.querySelector('[data-manage]');
+    if (!card) return;
+    card.querySelector('[data-mng-apply-plan]').addEventListener('click', () => {
+      const plan = card.querySelector('[data-mng="plan"]').value;
+      const subscription_status = card.querySelector('[data-mng="status"]').value;
+      if (!confirm(`Set ${t.name} to plan=${plan}, status=${subscription_status}?`)) return;
+      _mngPost(`/tenants/${encodeURIComponent(id)}/plan`, { plan, subscription_status }, 'Plan updated');
+    });
+    card.querySelector('[data-mng-trial]').addEventListener('click', () => {
+      const days = parseInt(card.querySelector('[data-mng="trial-days"]').value, 10);
+      _mngPost(`/tenants/${encodeURIComponent(id)}/trial`, { days }, `Trial set to ${days} days`);
+    });
+    const susBtn = card.querySelector('[data-mng-suspend]');
+    if (susBtn) susBtn.addEventListener('click', () => {
+      const typed = prompt(`SUSPEND will lock out ${t.name} entirely (kills all sessions, blocks login).\nType the tenant id to confirm:\n${id}`);
+      if (typed !== id) { if (typed != null) toast('Tenant id did not match — not suspended.', 'warn'); return; }
+      _mngPost(`/tenants/${encodeURIComponent(id)}/suspend`, { confirm: id }, 'Tenant suspended');
+    });
+    const reBtn = card.querySelector('[data-mng-reactivate]');
+    if (reBtn) reBtn.addEventListener('click', () => {
+      if (!confirm(`Reactivate ${t.name}?`)) return;
+      _mngPost(`/tenants/${encodeURIComponent(id)}/reactivate`, null, 'Tenant reactivated');
+    });
+    card.querySelector('[data-mng-logout]').addEventListener('click', () => {
+      if (!confirm(`Force-logout every user in ${t.name}?`)) return;
+      _mngPost(`/tenants/${encodeURIComponent(id)}/logout-all`, null, 'All sessions revoked');
+    });
+    card.querySelector('[data-mng-erase]').addEventListener('click', () => eraseTenantFlow(t));
+    // per-token revoke (in the API tokens table above)
+    host.querySelectorAll('[data-token-revoke]').forEach((b) => b.addEventListener('click', () => {
+      if (!confirm('Revoke this API token? It will stop working immediately.')) return;
+      _mngPost(`/tokens/${encodeURIComponent(b.dataset.tokenRevoke)}/revoke`, null, 'Token revoked');
+    }));
+  }
+
+  async function eraseTenantFlow(t) {
+    const id = t.id;
+    // Show the dry-run manifest first, then require typed confirmation.
+    let manifest;
+    try { manifest = (await fetchJson(`/api/admin/tenants/${encodeURIComponent(id)}?dryRun=1`, { method: 'DELETE' })).manifest; }
+    catch (err) { toast(err.message || 'Could not preview erase', 'warn'); return; }
+    const m = manifest || {};
+    const summary = `ERASE ${t.name} — irreversible. This will delete:\n` +
+      `• Postgres: ${(m.postgres && m.postgres.users) || 0} users + all tenant rows\n` +
+      `• R2 objects: ${(m.r2 && (m.r2.kbObjects + m.r2.recordingObjects)) || 0}\n` +
+      `• Redis keys: ${(m.redis && m.redis.total) || 0}\n\nType the tenant id to confirm:\n${id}`;
+    const typed = prompt(summary);
+    if (typed !== id) { if (typed != null) toast('Tenant id did not match — not erased.', 'warn'); return; }
+    try {
+      await fetchJson(`/api/admin/tenants/${encodeURIComponent(id)}?confirm=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      toast(`Tenant ${t.name} erased.`);
+      _instancesState.selectedId = null;
+      loadInstances();
+    } catch (err) { toast(err.message || 'Erase failed', 'warn'); }
   }
 
   async function loadPlatformAudit() {

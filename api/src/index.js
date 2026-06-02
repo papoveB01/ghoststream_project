@@ -32,6 +32,7 @@ const sessions = require('./sessions');
 const audit = require('./audit');
 const erasure = require('./erasure');
 const platformAdmin = require('./platformAdmin');
+const tenants = require('./tenants');
 
 const app = express();
 
@@ -564,6 +565,13 @@ app.post('/auth/login', async (req, res, next) => {
     }
     await loginGuard.clear(email); // correct password — reset the account counter
 
+    // Suspended org → refuse the session entirely (true lockout).
+    const loginTenant = await tenants.get(user.tenantId);
+    if (loginTenant && loginTenant.suspended_at) {
+      audit.log({ req, action: 'auth.login.suspended', result: 'failure', actorUserId: user.id, actorEmail: user.email, tenantId: user.tenantId });
+      return res.status(403).json({ error: 'This organization has been suspended.', code: 'TENANT_SUSPENDED' });
+    }
+
     // New-device check: trusted device → straight in; otherwise email a code and
     // hold the session until /auth/verify-device. (Password is already correct,
     // so a challenge is never created for an unknown/wrong account.)
@@ -609,6 +617,10 @@ app.post('/auth/verify-device', async (req, res, next) => {
     // Re-load the user fresh (name/role may have changed; also confirms still exists).
     const u = await userModel.findById(result.userId);
     if (!u) return res.status(401).json({ error: 'account not found' });
+    const vdTenant = await tenants.get(u.tenantId);
+    if (vdTenant && vdTenant.suspended_at) {
+      return res.status(403).json({ error: 'This organization has been suspended.', code: 'TENANT_SUSPENDED' });
+    }
     if (trust) {
       await devices.trustDevice(u.id, result.fp);
       audit.log({ req, action: 'auth.device.trusted', result: 'success', actorUserId: u.id, actorEmail: u.email, tenantId: u.tenantId });

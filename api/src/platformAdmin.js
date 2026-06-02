@@ -13,6 +13,9 @@ const redis = require('./redis');
 const audit = require('./audit');
 const usage = require('./usage');
 const entitlements = require('./entitlements');
+const tenants = require('./tenants');
+const sessions = require('./sessions');
+const erasure = require('./erasure');
 
 const router = express.Router();
 
@@ -90,7 +93,7 @@ router.get('/tenants/:id', async (req, res, next) => {
 
     const tRes = await db.query(
       `SELECT id, name, domain, plan, subscription_status, trial_ends_at, current_period_end,
-              stripe_customer_id, created_at, updated_at
+              stripe_customer_id, suspended_at, created_at, updated_at
          FROM tenants WHERE id = $1`,
       [id]
     );
@@ -100,7 +103,7 @@ router.get('/tenants/:id', async (req, res, next) => {
     const [usersR, tokensR, crmR, c1, c2, c3, c4, c5, ms, caly, cal, usageSummary] = await Promise.all([
       db.query(`SELECT id, email, name, role, is_admin, email_verified, last_login_at, created_at
                   FROM users WHERE tenant_id = $1 ORDER BY created_at`, [id]),
-      db.query(`SELECT label, prefix, created_at, last_used_at, expires_at, revoked_at
+      db.query(`SELECT id, label, prefix, created_at, last_used_at, expires_at, revoked_at
                   FROM api_tokens WHERE tenant_id = $1 ORDER BY created_at DESC`, [id]),
       db.query(`SELECT provider, status, last_sync_at FROM crm_connections WHERE tenant_id = $1`, [id]),
       db.query('SELECT count(*)::int AS n FROM companies WHERE tenant_id = $1', [id]),
@@ -190,6 +193,98 @@ router.get('/secrets', async (_req, res, next) => {
       groups[g] = names.map((name) => ({ name, configured: Boolean(process.env[name]) }));
     }
     res.json({ groups, flags: { RLS_ENFORCE: String(process.env.RLS_ENFORCE || 'off') } });
+  } catch (err) { next(err); }
+});
+
+// ===================== write / management actions (Phase 2) =====================
+const VALID_PLANS = new Set(['trial', 'starter', 'pro', 'enterprise', 'internal']);
+const VALID_STATUS = new Set(['TRIAL', 'ACTIVE', 'PAST_DUE', 'CANCELLED', 'INTERNAL']);
+const actor = (req) => ({ actorUserId: req.user.sub, actorEmail: req.user.email });
+
+async function revokeTenantSessions(tenantId) {
+  const ids = (await db.query('SELECT id FROM users WHERE tenant_id = $1', [tenantId])).rows.map((r) => r.id);
+  for (const uid of ids) await sessions.revokeAllForUser(uid);
+  return ids.length;
+}
+
+// Change / comp plan + subscription status (manual; does NOT touch Stripe).
+router.post('/tenants/:id/plan', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    const before = await tenants.get(id, { fresh: true });
+    if (!before) return res.status(404).json({ error: 'tenant not found' });
+    const patch = {};
+    const b = req.body || {};
+    if (b.plan !== undefined) { if (!VALID_PLANS.has(b.plan)) return res.status(400).json({ error: 'invalid plan' }); patch.plan = b.plan; }
+    if (b.subscription_status !== undefined) { if (!VALID_STATUS.has(b.subscription_status)) return res.status(400).json({ error: 'invalid subscription_status' }); patch.subscription_status = b.subscription_status; }
+    if (b.trial_ends_at !== undefined) patch.trial_ends_at = b.trial_ends_at || null;
+    if (b.current_period_end !== undefined) patch.current_period_end = b.current_period_end || null;
+    if (!Object.keys(patch).length) return res.status(400).json({ error: 'nothing to change' });
+    const after = await tenants.update(id, patch);
+    audit.log({ req, action: 'admin.tenant.plan_changed', result: 'success', ...actor(req), tenantId: id, target: id, meta: { from: { plan: before.plan, status: before.subscription_status }, to: patch } });
+    res.json({ ok: true, tenant: after });
+  } catch (err) { next(err); }
+});
+
+// Set / extend a trial.
+router.post('/tenants/:id/trial', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    const days = parseInt((req.body || {}).days, 10);
+    if (!Number.isFinite(days) || days < 1 || days > 3650) return res.status(400).json({ error: 'days must be 1..3650' });
+    if (!(await tenants.get(id, { fresh: true }))) return res.status(404).json({ error: 'tenant not found' });
+    const ends = new Date(Date.now() + days * 86400000).toISOString();
+    const after = await tenants.update(id, { subscription_status: 'TRIAL', trial_ends_at: ends });
+    audit.log({ req, action: 'admin.tenant.trial_set', result: 'success', ...actor(req), tenantId: id, target: id, meta: { days, trial_ends_at: ends } });
+    res.json({ ok: true, tenant: after });
+  } catch (err) { next(err); }
+});
+
+// Suspend (true lockout): set suspended_at + kill all sessions. confirm=<id>.
+router.post('/tenants/:id/suspend', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    if (id === erasure.FOUNDERS_TENANT_ID) return res.status(400).json({ error: 'cannot suspend the platform tenant' });
+    if (((req.body || {}).confirm) !== id) return res.status(400).json({ error: 'confirmation required', code: 'CONFIRM_REQUIRED', hint: 'pass confirm=<tenantId>' });
+    if (!(await tenants.get(id, { fresh: true }))) return res.status(404).json({ error: 'tenant not found' });
+    const after = await tenants.update(id, { suspended_at: new Date().toISOString() });
+    const n = await revokeTenantSessions(id);
+    audit.log({ req, action: 'admin.tenant.suspended', result: 'success', ...actor(req), tenantId: id, target: id, meta: { sessionsRevoked: n } });
+    res.json({ ok: true, tenant: after, sessionsRevoked: n });
+  } catch (err) { next(err); }
+});
+
+// Reactivate (clear suspension).
+router.post('/tenants/:id/reactivate', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    if (!(await tenants.get(id, { fresh: true }))) return res.status(404).json({ error: 'tenant not found' });
+    const after = await tenants.update(id, { suspended_at: null });
+    audit.log({ req, action: 'admin.tenant.reactivated', result: 'success', ...actor(req), tenantId: id, target: id });
+    res.json({ ok: true, tenant: after });
+  } catch (err) { next(err); }
+});
+
+// Force-logout every user in the tenant (no status change).
+router.post('/tenants/:id/logout-all', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    if (!(await tenants.get(id, { fresh: true }))) return res.status(404).json({ error: 'tenant not found' });
+    const n = await revokeTenantSessions(id);
+    audit.log({ req, action: 'admin.tenant.sessions_revoked', result: 'success', ...actor(req), tenantId: id, target: id, meta: { sessionsRevoked: n } });
+    res.json({ ok: true, sessionsRevoked: n });
+  } catch (err) { next(err); }
+});
+
+// Revoke any API token by id (cross-tenant).
+router.post('/tokens/:tokenId/revoke', async (req, res, next) => {
+  try {
+    const tid = req.params.tokenId;
+    if (!/^[0-9a-f-]{36}$/i.test(tid)) return res.status(404).json({ error: 'token not found' });
+    const r = await db.query('UPDATE api_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL RETURNING id, tenant_id', [tid]);
+    if (!r.rowCount) return res.status(404).json({ error: 'token not found or already revoked' });
+    audit.log({ req, action: 'admin.token.revoked', result: 'success', ...actor(req), tenantId: r.rows[0].tenant_id, target: tid });
+    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 
