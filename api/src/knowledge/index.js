@@ -83,6 +83,8 @@ router.post('/upload', uploadMiddleware, async (req, res, next) => {
       productIds:    normalizeIds(req.body.productIds),
       personaIds:    normalizeIds(req.body.personaIds),
       competitorIds: normalizeIds(req.body.competitorIds),
+      appliesToProductIds: normalizeIds(req.body.appliesToProductIds),
+      competitorProductId: (req.body.competitorProductId || '').trim() || null,
     });
     res.status(201).json({ ok: true, document: doc });
   } catch (err) { next(err); }
@@ -163,6 +165,16 @@ router.get('/documents/:id/download', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /knowledge/documents/:id/text — the full indexed text (chunks joined),
+// for the "View full document" collapse on intel cards.
+router.get('/documents/:id/text', async (req, res, next) => {
+  try {
+    const out = await service.getDocumentText(req.tenantId, req.params.id);
+    if (!out) return res.status(404).json({ error: 'not found' });
+    res.json(out);
+  } catch (err) { next(err); }
+});
+
 router.patch('/documents/:id/tags', express.json(), async (req, res, next) => {
   try {
     const { productIds, personaIds, competitorIds } = req.body || {};
@@ -181,6 +193,17 @@ router.patch('/documents/:id/tags', express.json(), async (req, res, next) => {
 router.post('/documents/:id/keypoints', async (req, res, next) => {
   try {
     const doc = await service.regenerateKeyPoints(req.tenantId, req.params.id);
+    res.json({ ok: true, document: doc });
+  } catch (err) { next(err); }
+});
+
+// POST /knowledge/documents/:id/confirm-relevance — lift a quarantine. The
+// relevance check flagged this doc as a possible mismatch; a rep has reviewed
+// it and confirms it belongs. Clears the flag so it re-enters the gate +
+// battlecard synthesis.
+router.post('/documents/:id/confirm-relevance', async (req, res, next) => {
+  try {
+    const doc = await service.confirmRelevance(req.tenantId, req.params.id);
     res.json({ ok: true, document: doc });
   } catch (err) { next(err); }
 });
@@ -207,6 +230,46 @@ router.post('/research/:companyId', async (req, res, next) => {
   catch (err) { next(err); }
 });
 
+// Manual addition of one source (URL or freeform note) to an existing
+// research run. The dossier accumulates; subsequent re-analyze sees it.
+// Body: { type: 'url'|'note', url?, title?, text? }
+router.post('/research/:companyId/sources', async (req, res, next) => {
+  try {
+    const out = await research.appendSource(req.tenantId, req.params.companyId, req.user.sub, req.body || {});
+    res.status(201).json(out);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+
+// Re-run Gemini analysis against the existing dossier (auto + manual
+// sources). Does NOT re-fetch the web — cheap, explicit, idempotent
+// per dossier state.
+router.post('/research/:companyId/reanalyze', async (req, res, next) => {
+  try {
+    const out = await research.reanalyze(req.tenantId, req.params.companyId);
+    res.json({ research: out });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+
+// PATCH /research/:companyId/opportunity { title, pinned } — pin/unpin one
+// opportunity so it sorts first and survives re-analysis (by title carry-over).
+router.patch('/research/:companyId/opportunity', async (req, res, next) => {
+  try {
+    const title = req.body && req.body.title;
+    if (!title || typeof title !== 'string') return res.status(400).json({ error: 'title (string) required' });
+    const out = await research.setOpportunityPin(req.tenantId, req.params.companyId, title, !!(req.body && req.body.pinned));
+    res.json({ research: out });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+
 router.delete('/documents/:id', async (req, res, next) => {
   try {
     const ok = await service.deleteDocument(req.tenantId, req.params.id);
@@ -221,7 +284,7 @@ router.delete('/documents/:id', async (req, res, next) => {
 // =========================================================================
 router.post('/web-sync', express.json(), async (req, res, next) => {
   try {
-    const { url, category, title, dryRun, scope, competitorName, productIds, personaIds, competitorIds, companyId } = req.body || {};
+    const { url, category, title, dryRun, scope, competitorName, productIds, personaIds, competitorIds, companyId, appliesToProductIds, competitorProductId } = req.body || {};
     if (!url || !category) {
       return res.status(400).json({ error: 'url and category required' });
     }
@@ -232,7 +295,8 @@ router.post('/web-sync', express.json(), async (req, res, next) => {
       scope: (scope || 'TENANT').toUpperCase(),
       competitorName: competitorName || null,
       companyId: companyId || null,
-      productIds, personaIds, competitorIds,
+      productIds, personaIds, competitorIds, appliesToProductIds,
+      competitorProductId: (competitorProductId || '').trim() || null,
     });
     res.status(dryRun ? 200 : 201).json({ ok: true, ...(dryRun ? { preview: result } : { document: result }) });
   } catch (err) { next(err); }
@@ -244,7 +308,7 @@ router.post('/web-sync', express.json(), async (req, res, next) => {
 // =========================================================================
 router.post('/social-sync', express.json(), async (req, res, next) => {
   try {
-    const { accountId, category, since, limit, dryRun, scope, productIds, personaIds, competitorIds, companyId } = req.body || {};
+    const { accountId, category, since, limit, dryRun, scope, productIds, personaIds, competitorIds, companyId, appliesToProductIds } = req.body || {};
     if (!accountId || !category) {
       return res.status(400).json({ error: 'accountId and category required' });
     }
@@ -256,7 +320,7 @@ router.post('/social-sync', express.json(), async (req, res, next) => {
       dryRun: !!dryRun,
       scope: (scope || 'TENANT').toUpperCase(),
       companyId: companyId || null,
-      productIds, personaIds, competitorIds,
+      productIds, personaIds, competitorIds, appliesToProductIds,
     });
     res.status(dryRun ? 200 : 201).json({ ok: true, ...(dryRun ? { preview: result } : { result }) });
   } catch (err) { next(err); }

@@ -5,6 +5,7 @@ const express = require('express');
 const service = require('./service');
 const brief = require('./brief');
 const dispatch = require('./dispatch');
+const gating = require('../gating');
 
 const router = express.Router();
 router.use(express.json());
@@ -16,9 +17,13 @@ router.use(express.json());
 //   scheduledAt (ISO string),
 //   meetingUrl?, prospectEmails: string[],
 //   productIds[], personaIds[], competitorIds[],
-//   notes?
+//   notes?,
+//   // Optional: set when the rep generated the Teams meeting from the
+//   // "🎥 Generate Teams meeting" modal. Lets us PATCH / cancel the Outlook
+//   // event later from the mission detail UI. See ADR-0002 §10/§11.
+//   msEventId?, msIcalUid?, msOrganizerEmail?,
 // }
-router.post('/', async (req, res, next) => {
+router.post('/', gating.requireFeature('engagements'), gating.requireCapacity('engagements'), async (req, res, next) => {
   try {
     const mission = await service.schedule(req.tenantId, req.body || {});
     res.status(201).json({ mission });

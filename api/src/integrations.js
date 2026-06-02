@@ -18,6 +18,10 @@
 const crypto = require('crypto');
 const express = require('express');
 const redis = require('./redis');
+const microsoft = require('./microsoft');
+const email     = require('./email');
+const ics       = require('./ics');
+const db        = require('./db');
 
 const APP_BASE_URL =
   process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net';
@@ -43,7 +47,7 @@ function calendlySigningKey()   { return process.env.CALENDLY_WEBHOOK_SIGNING_KE
 // CALENDLY_REDIRECT_URI if what you registered in the app differs from the
 // APP_BASE_URL-derived default (e.g. local testing).
 function calendlyCallbackUri()  { return (process.env.CALENDLY_REDIRECT_URI && process.env.CALENDLY_REDIRECT_URI.trim()) || `${APP_BASE_URL}${CALENDLY_CALLBACK_PATH}`; }
-function calendlyWebhookUri()   { return `${APP_BASE_URL}${CALENDLY_WEBHOOK_PATH}`; }
+function calendlyWebhookUri(routeToken) { return `${APP_BASE_URL}${CALENDLY_WEBHOOK_PATH}${routeToken ? '/' + routeToken : ''}`; }
 
 // ── Provider registry (for the admin Integrations page) ───────────────────
 
@@ -53,10 +57,20 @@ const PROVIDERS = [
     name: 'Calendar',
     icon: '📆',
     mode: 'read', // we read the rep's calendar
-    blurb: 'Connect a Google, Microsoft 365 / Outlook, or iCloud calendar (via Nylas). The schedule form can then pull an upcoming event — date, meeting link and attendees fill in automatically.',
+    blurb: 'Connect a Google or iCloud calendar (via Nylas). The schedule form then pulls an upcoming event — date, link and attendees fill in automatically.',
     requires: ['NYLAS_API_KEY', 'NYLAS_CLIENT_ID'],
     setup: 'Create a Nylas v3 application, add the callback URI below to its allowed callback URIs, then set NYLAS_API_KEY + NYLAS_CLIENT_ID (and NYLAS_API_URI if your data region is EU) and restart.',
     callbackPath: NYLAS_CALLBACK_PATH,
+  },
+  {
+    key: 'microsoft',
+    name: 'Microsoft 365 (direct)',
+    icon: '🪟',
+    mode: 'read', // per-user delegated calendar reads (Piece A in ADR-0002)
+    blurb: 'Connect a Microsoft 365 / Outlook calendar directly via Microsoft Graph. Outlook events + Teams join links prefill the schedule form, and you can generate Teams meetings from it.',
+    requires: ['MS_CLIENT_ID', 'MS_CLIENT_SECRET'],
+    setup: 'Register a multi-tenant Azure AD application (see .env.example for the exact registration steps), add the redirect URI below to the app, set MS_CLIENT_ID + MS_CLIENT_SECRET and restart. Authenticated Teams meeting joining is a separate one-time operator action on the Recall.ai dashboard — see ADR-0002 §8.',
+    callbackPath: microsoft.CALLBACK_PATH,
   },
   {
     key: 'calendly',
@@ -111,7 +125,7 @@ async function deleteGrant(tenantId, userId) {
   await redis.del(grantKey(tenantId, userId));
 }
 
-// ── Nylas API helpers ─────────────────────────────────────────────────────
+// ── Nylas API helpers ────────────────────────────────────────
 
 // Providers we let a rep connect (must have a matching connector in the Nylas
 // app). `outlook` is an alias for `microsoft`; `icloud` for `imap`.
@@ -216,7 +230,7 @@ async function calendarConnection(tenantId, userId) {
   };
 }
 
-// ── Event listing + normalization ─────────────────────────────────────────
+// ── Event listing + normalization ─────────────────────────────────
 
 const PUBLIC_EMAIL_DOMAINS = new Set([
   'gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.co.uk', 'outlook.com',
@@ -388,7 +402,7 @@ async function fetchUpcomingEvents(tenantId, userId, { days = 14, limit = 30 } =
     .sort((a, b) => new Date(a.start) - new Date(b.start));
 }
 
-// ── Calendly webhook (unchanged) ──────────────────────────────────────────
+// ── Calendly webhook (unchanged) ──────────────────────────────────
 
 function verifyCalendlyWebhook(rawBody, signatureHeader) {
   const key = process.env.CALENDLY_WEBHOOK_SIGNING_KEY || null;
@@ -438,7 +452,7 @@ function missionFromCalendlyEvent(payload) {
   };
 }
 
-// ── Calendly OAuth + webhook subscription ─────────────────────────────────
+// ── Calendly OAuth + webhook subscription ───────────────────────────
 // Connecting Calendly: OAuth code flow → access token (the token response also
 // carries `owner` (user URI) and `organization` (org URI)) → register an
 // `invitee.created` webhook subscription on /webhooks/calendly, signed with
@@ -456,6 +470,29 @@ async function loadCalendlyToken(tenantId, userId) {
 }
 async function deleteCalendlyToken(tenantId, userId) {
   await redis.del(calendlyTokenKey(tenantId, userId));
+}
+
+// ── Inbound routing: per-tenant webhook callback URL ──────────────────────
+// All Calendly orgs would otherwise POST to the same /webhooks/calendly and we
+// could not tell which tenant a booking belongs to (the invitee.created payload
+// carries the host user URI but not the organization, and resolving the org
+// needs that org's own token — chicken-and-egg). So each tenant's subscription
+// is registered at /webhooks/calendly/<routeToken>, and this opaque token maps
+// back to the tenant. The shared signing key still gates every delivery, so the
+// token need not be secret. The reverse index is persistent and idempotent.
+function calendlyRouteKey(routeToken) { return `caly_route:${routeToken}`; }
+
+async function ensureCalendlyRouteToken(tenantId, userId, existing) {
+  const routeToken = existing || ('cr_' + crypto.randomBytes(16).toString('hex'));
+  await redis.set(calendlyRouteKey(routeToken), JSON.stringify({ tenantId, userId }));
+  return routeToken;
+}
+
+// Resolve a routeToken from an inbound webhook URL → { tenantId, userId } | null.
+async function resolveCalendlyRoute(routeToken) {
+  if (!routeToken) return null;
+  const raw = await redis.get(calendlyRouteKey(routeToken));
+  try { return raw ? JSON.parse(raw) : null; } catch { return null; }
 }
 
 function calendlyAuthUrl(state) {
@@ -523,8 +560,8 @@ async function calendlyApi(accessToken, method, pathOrUrl, body) {
 
 // Find an existing invitee.created subscription pointing at our URL, or create
 // one. Returns the subscription URI.
-async function ensureWebhookSubscription(accessToken, orgUri) {
-  const want = calendlyWebhookUri();
+async function ensureWebhookSubscription(accessToken, orgUri, routeToken) {
+  const want = calendlyWebhookUri(routeToken);
   // List org-scoped subs (best-effort; if listing fails we just try to create).
   try {
     const list = await calendlyApi(accessToken, 'GET',
@@ -570,6 +607,159 @@ async function calendlyConnection(tenantId, userId) {
     connectedAt: t.connectedAt || null,
   };
 }
+
+// (Re)register the invitee.created webhook for an already-connected account and
+// persist the result. webhookActive is derived from the stored subscriptionUri,
+// which is captured once at connect time — so if registration failed back then
+// (e.g. the webhooks:write scope was added to the OAuth app afterwards) the
+// status stays frozen "inactive" with no way to recover short of disconnecting.
+// This lets the user retry registration in place. Throws Calendly's own error
+// (scope/plan/etc) so the UI can show the real reason.
+// NB: named registerCalendlyWebhook, NOT verifyCalendlyWebhook — the latter is
+// the HMAC signature verifier (above), exported and used by the receiver.
+async function registerCalendlyWebhook(tenantId, userId) {
+  const t = await loadCalendlyToken(tenantId, userId);
+  if (!t) { const e = new Error('Calendly not connected'); e.code = 'NOT_CONNECTED'; e.status = 409; throw e; }
+  if (!t.orgUri) {
+    const e = new Error('Stored Calendly token has no organization URI — disconnect and reconnect.');
+    e.status = 409; throw e;
+  }
+  const routeToken = await ensureCalendlyRouteToken(tenantId, userId, t.routeToken);
+  // Persist the routeToken up front so a retry after a failed registration
+  // (e.g. Calendly plan-tier rejection) reuses it instead of orphaning a new
+  // route-index entry on every attempt.
+  if (routeToken !== t.routeToken) await saveCalendlyToken(tenantId, userId, { ...t, routeToken });
+  const accessToken = await getValidCalendlyToken(tenantId, userId);
+  const subscriptionUri = await ensureWebhookSubscription(accessToken, t.orgUri, routeToken);
+  await saveCalendlyToken(tenantId, userId, { ...t, routeToken, subscriptionUri });
+  return subscriptionUri;
+}
+
+// ── Microsoft 365 (direct Graph) ──────────────────────────────────────────
+// Per-user delegated OAuth + calendar reads. Module-level Microsoft API
+// logic lives in api/src/microsoft.js; this file owns only the route surface.
+//
+// Authenticated Teams meeting joining (for meetings that disable
+// anonymous-join) is a SEPARATE concern, handled by configuring a Microsoft
+// user account in the Recall.ai dashboard — one-time operator action, not an
+// in-app flow. See ADR-0002 §8 for why that ended up dashboard-only.
+
+// microsoft.connection already returns { connected, email, name, msTenantId, connectedAt }.
+// We re-export through this name for symmetry with calendarConnection /
+// calendlyConnection, in case future shape additions need to wrap it.
+const microsoftConnection = (tenantId, userId) => microsoft.connection(tenantId, userId);
+
+// Public callback (mounted UN-authed in index.js) — MS's cookieless redirect
+// can't carry the session cookie, so the state token in Redis is the only
+// thing binding the response to (tenantId, userId).
+async function handleMicrosoftCallback(req, res) {
+  return microsoft.handleCalendarCallback(req, res);
+}
+
+// Send a branded GhostStream meeting invite via SendGrid with the .ics
+// attachment. The rep's M365 mailbox is intentionally NOT used for delivery
+// (ADR-0002 §10). Reply-To is the rep's email so prospects' "can we push by
+// 30?" lands in the rep's inbox, not in our no-reply.
+//
+// method = 'REQUEST' (create / update) | 'CANCEL' (event was cancelled).
+// sequence is the RFC 5545 SEQUENCE number — must monotonically increase
+// for the same UID so Outlook & co. treat updates as replacements rather
+// than duplicates.
+//
+// Returns { sent: [{ email, ok, messageId|reason }], totalAttempted, branding }
+// so the UI can surface per-attendee success/failure.
+async function sendBrandedInvite({ created, body, replyTo, sequence = 0, method = 'REQUEST' }) {
+  const attendees = Array.isArray(created.attendees) ? created.attendees : [];
+  const branding = {
+    fromEmail: process.env.MEETINGS_FROM_EMAIL || 'meetings@eel-global.com',
+    fromName:  process.env.MEETINGS_FROM_NAME  || 'GhostStream Meetings',
+    replyTo:   process.env.MEETINGS_REPLY_TO || replyTo || null,
+  };
+  // Refuse to silently swallow the invite step when SendGrid isn't set up;
+  // surface a clear partial-success to the UI so the rep knows to resend
+  // manually instead of assuming the prospect got the invite.
+  if (!email.isConfigured()) {
+    return {
+      sent: attendees.map((a) => ({ email: a.email, ok: false, reason: 'SendGrid not configured — set SENDGRID_API_KEY' })),
+      totalAttempted: attendees.length,
+      branding,
+    };
+  }
+  if (attendees.length === 0) {
+    return { sent: [], totalAttempted: 0, branding };
+  }
+
+  // Build the ICS once — same body for every recipient. UID is per-event
+  // (Microsoft's iCalUId is stable and unique).
+  const description = body && body.trim()
+    ? `${body.trim()}\n\nJoin the Teams meeting: ${created.joinUrl}`
+    : `Join the Teams meeting: ${created.joinUrl}`;
+  const icsBody = ics.buildInvite({
+    uid: created.iCalUId || `${created.eventId}@ghoststream`,
+    subject: method === 'CANCEL' ? `Cancelled: ${created.subject}` : created.subject,
+    description,
+    location: created.joinUrl,
+    start: created.startISO,
+    end:   created.endISO,
+    organizer: { email: branding.fromEmail, name: branding.fromName },
+    attendees: attendees.map((a) => ({ email: a.email, name: a.name || null })),
+    sequence,
+    method,
+  });
+  const attachment = ics.asAttachment(icsBody, 'invite.ics');
+
+  // HTML body — minimal, scannable. The .ics is what actually creates the
+  // calendar entry; this body is the "preview" surface in inbox lists.
+  const startLocal = new Date(created.startISO).toUTCString();
+  const htmlBody = `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.5">
+      <p>You're invited to <strong>${escapeHtmlEntity(created.subject)}</strong></p>
+      <p><strong>When:</strong> ${escapeHtmlEntity(startLocal)}</p>
+      <p><strong>Where:</strong> <a href="${escapeAttr(created.joinUrl)}">Microsoft Teams meeting</a></p>
+      ${body && body.trim() ? `<hr style="border:none;border-top:1px solid #e5e7eb;margin:14px 0"><div>${nl2br(escapeHtmlEntity(body.trim()))}</div>` : ''}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:14px 0">
+      <p style="font-size:12px;color:#6b7280">Sent via GhostStream. Reply to this email to reach the meeting organizer.</p>
+    </div>
+  `;
+  const textBody = [
+    `You're invited to ${created.subject}`,
+    `When: ${startLocal}`,
+    `Join the Teams meeting: ${created.joinUrl}`,
+    body && body.trim() ? `\n${body.trim()}` : '',
+  ].filter(Boolean).join('\n');
+
+  const sent = [];
+  // Send one message per attendee so SendGrid records per-recipient status
+  // and so each recipient sees themselves as the sole `to:` (cleaner inbox UX
+  // than a To: list of every prospect on every other call we run).
+  for (const a of attendees) {
+    try {
+      const r = await email.send({
+        to: a.email,
+        from: { email: branding.fromEmail, name: branding.fromName },
+        subject: method === 'CANCEL' ? `Cancelled: ${created.subject}` : created.subject,
+        html: htmlBody,
+        text: textBody,
+        replyTo: branding.replyTo || undefined,
+        categories: [method === 'CANCEL' ? 'meeting-cancel' : 'meeting-invite'],
+        customArgs: { eventId: created.eventId || '' },
+        attachments: [attachment],
+      });
+      sent.push({ email: a.email, ok: true, messageId: r.messageId || null });
+    } catch (err) {
+      sent.push({ email: a.email, ok: false, reason: err.message });
+    }
+  }
+  return { sent, totalAttempted: attendees.length, branding };
+}
+
+// Local HTML escapers — kept separate from web/ helpers since this is server
+// side only and we don't pull a templating dep just for two functions.
+function escapeHtmlEntity(s) {
+  return String(s || '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+function escapeAttr(s) { return escapeHtmlEntity(s); }
+function nl2br(s) { return String(s || '').replace(/\r?\n/g, '<br>'); }
 
 // Normalize one Calendly scheduled event (+ its first invitee) → the same
 // shape `/calendar/events` returns, so the schedule-form picker handles both.
@@ -660,10 +850,14 @@ async function handleCalendlyCallback(req, res) {
     if (!st) return finish('cal_error', 'state expired — please try connecting again');
     const tok = await calendlyExchangeCode(code);
     const orgUri = tok.organization || null;
+    // Per-tenant callback token so inbound bookings route back to THIS tenant
+    // (see ensureCalendlyRouteToken). Reuse the existing one if reconnecting.
+    const prior = await loadCalendlyToken(st.tenantId, st.userId);
+    const routeToken = await ensureCalendlyRouteToken(st.tenantId, st.userId, prior && prior.routeToken);
     let subscriptionUri = null;
     let subErr = null;
     if (orgUri) {
-      try { subscriptionUri = await ensureWebhookSubscription(tok.access_token, orgUri); }
+      try { subscriptionUri = await ensureWebhookSubscription(tok.access_token, orgUri, routeToken); }
       catch (e) { subErr = e; console.warn('[calendly] webhook subscription failed:', e.message); }
     } else {
       subErr = new Error('token response had no organization URI');
@@ -674,6 +868,7 @@ async function handleCalendlyCallback(req, res) {
       expiresAt: tok.expires_in ? Date.now() + tok.expires_in * 1000 : null,
       ownerUri: tok.owner || null,
       orgUri,
+      routeToken,
       subscriptionUri,
       connectedAt: new Date().toISOString(),
     });
@@ -697,12 +892,13 @@ async function handleCalendlyCallback(req, res) {
   }
 }
 
-// ── Status payload for the admin page ─────────────────────────────────────
+// ── Status payload for the admin page ────────────────────────────────
 
 async function statusPayload(tenantId, userId) {
-  const [calConn, calyConn] = await Promise.all([
+  const [calConn, calyConn, msConn] = await Promise.all([
     calendarConnection(tenantId, userId),
     calendlyConnection(tenantId, userId),
+    microsoftConnection(tenantId, userId),
   ]);
   return {
     providers: PROVIDERS.map((p) => ({
@@ -710,12 +906,18 @@ async function statusPayload(tenantId, userId) {
       configured: p.requires.every(envSet),
       requires: p.requires.map((name) => ({ name, set: envSet(name) })),
       // The effective redirect/callback URI to register in the provider's
-      // console (Calendly honours CALENDLY_REDIRECT_URI; Nylas uses APP_BASE_URL).
-      callbackUri: p.key === 'calendly' ? calendlyCallbackUri()
+      // console (Calendly honours CALENDLY_REDIRECT_URI; Nylas uses APP_BASE_URL;
+      // Microsoft honours MS_REDIRECT_URI via microsoft.redirectUri()).
+      callbackUri: p.key === 'calendly'  ? calendlyCallbackUri()
+                 : p.key === 'microsoft' ? microsoft.redirectUri()
                  : p.callbackPath ? `${APP_BASE_URL}${p.callbackPath}` : null,
       webhookUrl:  p.webhookPath  ? `${APP_BASE_URL}${p.webhookPath}`  : null,
-      // Per-user connection state (Nylas grant / Calendly OAuth token).
-      connection: p.key === 'nylas' ? calConn : (p.key === 'calendly' ? calyConn : null),
+      // Per-user connection state (Nylas grant / Calendly OAuth token /
+      // Microsoft delegated grant).
+      connection: p.key === 'nylas'     ? calConn
+                : p.key === 'calendly'  ? calyConn
+                : p.key === 'microsoft' ? msConn
+                : null,
     })),
   };
 }
@@ -802,6 +1004,9 @@ router.get('/calendar/events', async (req, res, next) => {
 });
 
 // GET /api/integrations/calendly/connect — start the Calendly OAuth flow.
+// Multi-tenant: each tenant's webhook is registered at a per-tenant callback
+// URL (/webhooks/calendly/<routeToken>) so inbound bookings route back to the
+// connecting tenant. No Founders-only restriction.
 router.get('/calendly/connect', async (req, res, next) => {
   try {
     if (!isConfigured('calendly')) {
@@ -831,6 +1036,30 @@ router.get('/calendly/events', async (req, res, next) => {
   }
 });
 
+// POST /api/integrations/calendly/verify — (re)register the invitee.created
+// webhook for an already-connected account and refresh the stored status.
+// Recovers the case where registration failed at connect time (most commonly:
+// the webhooks:write scope was granted to the OAuth app after connecting).
+router.post('/calendly/verify', async (req, res, next) => {
+  try {
+    if (!isConfigured('calendly')) {
+      return res.status(503).json({ error: 'Calendly not configured.', code: 'NOT_CONFIGURED' });
+    }
+    const uri = await registerCalendlyWebhook(req.tenantId, req.user.sub);
+    if (!uri) {
+      return res.status(502).json({ error: 'Calendly accepted the request but returned no subscription URI.' });
+    }
+    res.json({ ok: true, webhookActive: true });
+  } catch (err) {
+    if (err.code === 'NOT_CONNECTED') {
+      return res.status(409).json({ error: err.message, code: 'NOT_CONNECTED' });
+    }
+    // Surface Calendly's own error text (scope / plan tier / etc) to the UI.
+    const status = err.status && err.status >= 400 && err.status < 500 ? err.status : 502;
+    return res.status(status).json({ error: err.message || 'webhook registration failed' });
+  }
+});
+
 // DELETE /api/integrations/calendly/connection — delete the webhook
 // subscription (best-effort) and forget the stored token.
 router.delete('/calendly/connection', async (req, res, next) => {
@@ -842,18 +1071,318 @@ router.delete('/calendly/connection', async (req, res, next) => {
         if (tok) await calendlyApi(tok, 'DELETE', t.subscriptionUri);
       } catch (e) { /* best-effort */ }
     }
+    if (t && t.routeToken) {
+      try { await redis.del(calendlyRouteKey(t.routeToken)); } catch (e) { /* best-effort */ }
+    }
     await deleteCalendlyToken(req.tenantId, req.user.sub);
     res.json({ ok: true });
   } catch (err) { next(err); }
+});
+
+// ── Microsoft 365 (direct) routes ─────────────────────────────────────────
+
+// GET /api/integrations/microsoft/connect — start the per-user delegated
+// OAuth flow for the rep's calendar.
+router.get('/microsoft/connect', async (req, res, next) => {
+  try {
+    if (!microsoft.isConfigured()) {
+      return res.status(503).json({ error: 'Microsoft 365 (direct) not configured — set MS_CLIENT_ID + MS_CLIENT_SECRET.', code: 'NOT_CONFIGURED' });
+    }
+    const state = await microsoft.makeOAuthState(req.tenantId, req.user.sub, 'calendar');
+    res.redirect(microsoft.authUrl(state));
+  } catch (err) { next(err); }
+});
+
+// GET /api/integrations/microsoft/events?days=14 — upcoming events from the
+// rep's Microsoft 365 calendar. Same shape as /calendar/events so the picker
+// is provider-agnostic.
+router.get('/microsoft/events', async (req, res, next) => {
+  try {
+    if (!microsoft.isConfigured()) {
+      return res.status(503).json({ error: 'Microsoft 365 (direct) not configured.', code: 'NOT_CONFIGURED' });
+    }
+    const days = Math.max(1, Math.min(parseInt(req.query.days, 10) || 14, 60));
+    const events = await microsoft.fetchUpcomingEvents(req.tenantId, req.user.sub, { days });
+    res.json({ events });
+  } catch (err) {
+    if (err.code === 'NOT_CONNECTED' || err.status === 409) {
+      return res.status(409).json({ error: 'Microsoft 365 not connected — connect it on the Integrations page.', code: 'NOT_CONNECTED' });
+    }
+    next(err);
+  }
+});
+
+// DELETE /api/integrations/microsoft/connection — forget the per-user grant.
+router.delete('/microsoft/connection', async (req, res, next) => {
+  try {
+    await microsoft.deleteGrant(req.tenantId, req.user.sub);
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// POST /api/integrations/microsoft/meetings — create a Teams meeting + the
+// Outlook event that wraps it. The event's attendees get an invite from
+// Microsoft on our behalf. Returns the joinUrl the caller writes into the
+// mission's meeting_url.
+//
+// Body: { subject, startISO, endISO, attendees: [string|{email,name}], body }
+router.post('/microsoft/meetings', async (req, res, next) => {
+  try {
+    if (!microsoft.isConfigured()) {
+      return res.status(503).json({ error: 'Microsoft 365 (direct) not configured.', code: 'NOT_CONFIGURED' });
+    }
+    const { subject, startISO, endISO, attendees, body } = req.body || {};
+    const created = await microsoft.createTeamsMeeting(req.tenantId, req.user.sub, {
+      subject, startISO, endISO, attendees, body,
+    });
+    // Send the branded invite via SendGrid. Failure here doesn't unmake the
+    // meeting — the rep already has it on their calendar with a working
+    // joinUrl. We return per-attendee status so the UI can surface partial
+    // failures and the rep knows whether to resend manually.
+    const invite = await sendBrandedInvite({
+      created, body,
+      replyTo: created.organizerEmail,
+      replyToName: created.organizerName,
+    });
+    res.json({ ...created, invite });
+  } catch (err) {
+    if (err.code === 'NOT_CONNECTED' || err.status === 409) {
+      return res.status(409).json({ error: 'Microsoft 365 not connected — connect it on the Integrations page.', code: 'NOT_CONNECTED' });
+    }
+    // Consent-required: typically AADSTS65001 / AADSTS50079 from the token
+    // endpoint, OR Graph 403 with code Authorization_RequestDenied when the
+    // access token doesn't carry the new scopes. Both mean "disconnect +
+    // reconnect to grant the new permissions". Distinguishing them is fine
+    // for logs but the UI does the same thing in either case.
+    const msg = String(err.message || '');
+    if (/AADSTS6500\d|AADSTS50079|consent_required|interaction_required/i.test(msg)
+        || (err.status === 403 && /Authorization_RequestDenied|access_denied/i.test(msg))) {
+      return res.status(401).json({
+        error: 'Reconnect Microsoft 365 to grant the new permissions — your existing connection was made before meeting creation was enabled.',
+        code: 'CONSENT_REQUIRED',
+      });
+    }
+    if (err.status === 400) {
+      return res.status(400).json({ error: err.message });
+    }
+    // 403 from Graph for any other reason — typically the rep's tenant
+    // policy blocks creating external-attendee invites or Teams online
+    // meetings. Surface the message so the UI can guide the rep.
+    if (err.status === 403) {
+      return res.status(403).json({ error: `Microsoft Graph refused: ${err.message}`, code: 'GRAPH_FORBIDDEN' });
+    }
+    next(err);
+  }
+});
+
+// PATCH /api/integrations/microsoft/meetings/:eventId — edit a previously
+// created Teams meeting. Body shape mirrors POST (subject / startISO /
+// endISO / attendees / body). The mission row linked by ms_event_id is
+// updated (scheduled_at, meeting_url, prospect_emails, ms_sequence++) and
+// a SEQUENCE-bumped update .ics is sent via SendGrid to current attendees.
+// Removed attendees get a separate METHOD:CANCEL .ics so their calendar
+// drops the event. See ADR-0002 §10/§11.
+router.patch('/microsoft/meetings/:eventId', async (req, res, next) => {
+  try {
+    if (!microsoft.isConfigured()) {
+      return res.status(503).json({ error: 'Microsoft 365 (direct) not configured.', code: 'NOT_CONFIGURED' });
+    }
+    const eventId = String(req.params.eventId);
+    const { subject, startISO, endISO, attendees, body } = req.body || {};
+    const mission = await loadMissionByMsEvent(req.tenantId, eventId);
+    if (!mission) return res.status(404).json({ error: 'No mission found for this Graph event id.', code: 'NOT_FOUND' });
+
+    const updated = await microsoft.updateTeamsMeeting(req.tenantId, req.user.sub, eventId, {
+      subject, startISO, endISO, body,
+    });
+
+    const newAttendees = normalizeAttendees(attendees);
+    const newEmails = newAttendees.map((a) => a.email.toLowerCase());
+    const prevEmails = (mission.ms_attendee_emails || []).map((e) => String(e).toLowerCase());
+    const removed = prevEmails.filter((e) => !newEmails.includes(e));
+
+    const nextSequence = (mission.ms_sequence || 0) + 1;
+    await db.query(
+      `UPDATE scheduled_meetings
+          SET scheduled_at        = COALESCE($2, scheduled_at),
+              meeting_url         = COALESCE($3, meeting_url),
+              prospect_emails     = $4,
+              ms_attendee_emails  = $5,
+              ms_sequence         = $6,
+              updated_at          = now()
+        WHERE id = $1 AND tenant_id = $7`,
+      [
+        mission.id,
+        updated.startISO || null,
+        updated.joinUrl  || null,
+        newEmails,
+        newEmails,
+        nextSequence,
+        req.tenantId,
+      ]
+    );
+
+    // Send the update (bumped SEQUENCE) to everyone still on the invite.
+    const updateResult = await sendBrandedInvite({
+      created: {
+        ...updated,
+        attendees: newAttendees,
+        // Reuse the iCalUId so this is recognised as the same event, just
+        // updated. Outlook keys off UID + SEQUENCE to do the replace.
+        iCalUId: mission.ms_ical_uid || updated.iCalUId,
+      },
+      body,
+      replyTo: updated.organizerEmail || mission.ms_organizer_email,
+      sequence: nextSequence,
+      method: 'REQUEST',
+    });
+
+    // Send a CANCEL .ics to anyone we just dropped from the attendees list.
+    let cancelResult = { sent: [], totalAttempted: 0 };
+    if (removed.length > 0) {
+      cancelResult = await sendBrandedInvite({
+        created: {
+          ...updated,
+          attendees: removed.map((email) => ({ email, name: null })),
+          iCalUId: mission.ms_ical_uid || updated.iCalUId,
+        },
+        body,
+        replyTo: updated.organizerEmail || mission.ms_organizer_email,
+        sequence: nextSequence,
+        method: 'CANCEL',
+      });
+    }
+
+    res.json({
+      ...updated,
+      invite: updateResult,
+      cancelledForRemoved: cancelResult,
+    });
+  } catch (err) {
+    if (err.code === 'NOT_CONNECTED' || err.status === 409) {
+      return res.status(409).json({ error: 'Microsoft 365 not connected.', code: 'NOT_CONNECTED' });
+    }
+    if (err.status === 404) {
+      return res.status(404).json({ error: 'Outlook event no longer exists.', code: 'EVENT_GONE' });
+    }
+    next(err);
+  }
+});
+
+// DELETE /api/integrations/microsoft/meetings/:eventId — cancel the Outlook
+// event + send a METHOD:CANCEL .ics to the last-known attendee list. The
+// linked mission row is updated (ms_event_id cleared, status=CANCELLED) so
+// the detail UI stops offering Edit / Cancel.
+router.delete('/microsoft/meetings/:eventId', async (req, res, next) => {
+  try {
+    if (!microsoft.isConfigured()) {
+      return res.status(503).json({ error: 'Microsoft 365 (direct) not configured.', code: 'NOT_CONFIGURED' });
+    }
+    const eventId = String(req.params.eventId);
+    const mission = await loadMissionByMsEvent(req.tenantId, eventId);
+    if (!mission) return res.status(404).json({ error: 'No mission found for this Graph event id.', code: 'NOT_FOUND' });
+
+    let graphResult;
+    try {
+      graphResult = await microsoft.cancelTeamsMeeting(req.tenantId, req.user.sub, eventId);
+    } catch (err) {
+      // 404 = already gone; keep going to clean up our side.
+      if (err.status === 404) graphResult = { eventId, deleted: false, alreadyGone: true };
+      else throw err;
+    }
+
+    const nextSequence = (mission.ms_sequence || 0) + 1;
+    const lastAttendees = (mission.ms_attendee_emails || []).map((e) => ({ email: String(e), name: null }));
+
+    const cancelResult = await sendBrandedInvite({
+      created: {
+        eventId,
+        iCalUId: mission.ms_ical_uid || `${eventId}@ghoststream`,
+        joinUrl: mission.meeting_url || '',
+        subject: 'Meeting cancelled',
+        startISO: (mission.scheduled_at instanceof Date ? mission.scheduled_at : new Date(mission.scheduled_at)).toISOString(),
+        endISO:   new Date(new Date(mission.scheduled_at).getTime() + 30 * 60_000).toISOString(),
+        organizerEmail: mission.ms_organizer_email,
+        attendees: lastAttendees,
+      },
+      body: 'This meeting has been cancelled.',
+      replyTo: mission.ms_organizer_email,
+      sequence: nextSequence,
+      method: 'CANCEL',
+    });
+
+    await db.query(
+      `UPDATE scheduled_meetings
+          SET status              = 'CANCELLED',
+              ms_event_id         = NULL,
+              ms_sequence         = $2,
+              updated_at          = now()
+        WHERE id = $1 AND tenant_id = $3`,
+      [mission.id, nextSequence, req.tenantId]
+    );
+
+    res.json({
+      ...graphResult,
+      invite: cancelResult,
+      missionId: mission.id,
+    });
+  } catch (err) {
+    if (err.code === 'NOT_CONNECTED' || err.status === 409) {
+      return res.status(409).json({ error: 'Microsoft 365 not connected.', code: 'NOT_CONNECTED' });
+    }
+    next(err);
+  }
+});
+
+// Lookup helper: the only way the routes above know which mission row to
+// update is by the Graph event id. Scoped to the caller's tenant — we never
+// reach across tenants.
+async function loadMissionByMsEvent(tenantId, eventId) {
+  const r = await db.query(
+    `SELECT id, tenant_id, scheduled_at, meeting_url, prospect_emails,
+            ms_event_id, ms_ical_uid, ms_organizer_email, ms_attendee_emails, ms_sequence
+       FROM scheduled_meetings
+      WHERE ms_event_id = $1 AND tenant_id = $2
+      LIMIT 1`,
+    [eventId, tenantId]
+  );
+  return r.rows[0] || null;
+}
+
+function normalizeAttendees(attendees) {
+  return (Array.isArray(attendees) ? attendees : [])
+    .map((a) => (typeof a === 'string' ? { email: a } : a))
+    .filter((a) => a && typeof a.email === 'string' && /@/.test(a.email))
+    .map((a) => ({ email: a.email.trim(), name: (a.name || '').trim() || null }));
+}
+
+// GET /api/integrations/microsoft/contacts?q=... — relevance-ranked contacts
+// from /me/people. Used by the meeting-creation form's attendees autocomplete.
+router.get('/microsoft/contacts', async (req, res, next) => {
+  try {
+    if (!microsoft.isConfigured()) {
+      return res.status(503).json({ error: 'Microsoft 365 (direct) not configured.', code: 'NOT_CONFIGURED' });
+    }
+    const q = String(req.query.q || '').trim();
+    const contacts = await microsoft.searchPeople(req.tenantId, req.user.sub, q);
+    res.json({ contacts });
+  } catch (err) {
+    if (err.code === 'NOT_CONNECTED' || err.status === 409) {
+      return res.status(409).json({ error: 'Microsoft 365 not connected.', code: 'NOT_CONNECTED' });
+    }
+    next(err);
+  }
 });
 
 module.exports = {
   router,
   handleCalendarCallback,
   handleCalendlyCallback,
+  handleMicrosoftCallback,
   isConfigured,
   statusPayload,
   verifyCalendlyWebhook,
+  resolveCalendlyRoute,
   missionFromCalendlyEvent,
   resolveMeetingUrl,
 };

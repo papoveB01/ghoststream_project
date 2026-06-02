@@ -11,8 +11,8 @@ const chunker = require('./chunker');
 const gemini = require('../gemini');
 const db = require('../db');
 
-const SUMMARY_MODEL = process.env.GEMINI_PREVIEW_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-const COMPARE_MODEL = process.env.GEMINI_COMPARE_MODEL || process.env.GEMINI_ANALYSIS_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const SUMMARY_MODEL = require('../models').modelFor('preview');
+const COMPARE_MODEL = require('../models').modelFor('compare');
 const FULLTEXT_CAP = parseInt(process.env.KB_PREVIEW_FULLTEXT_CAP || '60000', 10);
 const SUMMARY_INPUT_CAP = parseInt(process.env.KB_PREVIEW_SUMMARY_INPUT_CAP || '24000', 10);
 const COMPARE_COMPETITOR_CAP = parseInt(process.env.KB_PREVIEW_COMPARE_COMPETITOR_CAP || '18000', 10);

@@ -7,9 +7,9 @@
   <meta name="theme-color" content="#ffffff">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/admin/admin.css">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234F46E5'/%3E%3Ctext x='16' y='22' font-family='Inter' font-size='18' font-weight='800' text-anchor='middle' fill='white'%3EG%3C/text%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233c7d13'/%3E%3Ctext x='16' y='22' font-family='Inter' font-size='18' font-weight='800' text-anchor='middle' fill='white'%3EG%3C/text%3E%3C/svg%3E">
 </head>
 <body class="login-page">
 
@@ -17,7 +17,7 @@
     <div class="login-card">
       <a class="brand" href="/">
         <span class="brand-mark">
-          <svg width="36" height="36" viewBox="0 0 28 28"><rect width="28" height="28" rx="7" fill="#4F46E5"/><path d="M9 14a5 5 0 0110 0v3l2 2H7l2-2v-3z" fill="white"/></svg>
+          <svg width="36" height="36" viewBox="0 0 28 28"><rect width="28" height="28" rx="7" fill="#3c7d13"/><path d="M9 14a5 5 0 0110 0v3l2 2H7l2-2v-3z" fill="white"/></svg>
         </span>
         <span class="brand-name">GhostStream</span>
       </a>
@@ -37,7 +37,29 @@
         <button type="submit" class="primary-cta" id="submit-btn">Sign in</button>
       </form>
 
-      <div class="login-foot">
+      <!-- New-device verification: shown after a correct password on an
+           unrecognized device, while #login-form is hidden. -->
+      <form id="otp-form" class="hidden">
+        <p class="lede" id="otp-lede">We emailed you a 6-digit code.</p>
+        <div class="field">
+          <label for="otp-code">Verification code</label>
+          <input type="text" id="otp-code" name="code" inputmode="numeric" autocomplete="one-time-code"
+                 pattern="[0-9]*" maxlength="6" required placeholder="123456">
+        </div>
+        <label class="otp-trust">
+          <input type="checkbox" id="otp-trust" checked>
+          <span>Trust this device for 30 days</span>
+        </label>
+        <div class="error hidden" id="otp-error"></div>
+        <button type="submit" class="primary-cta" id="otp-submit-btn">Verify &amp; sign in</button>
+        <div class="login-foot">
+          <a href="#" id="otp-resend">Resend code</a>
+          <span aria-hidden="true"> · </span>
+          <a href="#" id="otp-back">Use a different account</a>
+        </div>
+      </form>
+
+      <div class="login-foot" id="login-foot">
         <a href="/">← Back to site</a>
       </div>
     </div>

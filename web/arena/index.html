@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/arena/arena.css">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234F46E5'/%3E%3Ctext x='16' y='22' font-family='Inter' font-size='18' font-weight='800' text-anchor='middle' fill='white'%3EG%3C/text%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233c7d13'/%3E%3Ctext x='16' y='22' font-family='Inter' font-size='18' font-weight='800' text-anchor='middle' fill='white'%3EG%3C/text%3E%3C/svg%3E">
 </head>
 <body>
 
@@ -61,10 +61,13 @@
           <div class="composer-row">
             <span class="counter" id="counter">0 / 4000</span>
             <span class="turn-counter" id="turn-counter">—</span>
+            <button type="button" class="ghost-cta" id="end-btn">End &amp; score</button>
             <button type="submit" class="primary-cta" id="send-btn">Send</button>
           </div>
         </form>
       </div>
+
+      <section class="scorecard hidden" id="scorecard"></section>
     </section>
   </main>
 

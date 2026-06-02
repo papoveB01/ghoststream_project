@@ -5,7 +5,7 @@
 // token threshold (gemini-2.5-pro ≈ 2,048 tokens; gemini-1.5-pro = 32,768).
 // Below that threshold, caches.create returns 400.
 
-const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-pro';
+const DEFAULT_MODEL = require('./models').modelFor('personas');
 
 const SKEPTICAL_CFO_CHARACTER = `
 # CHARACTER BRIEF

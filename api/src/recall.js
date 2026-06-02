@@ -40,6 +40,11 @@ async function http(method, path, body) {
 // `real_time_transcription`, and `recording_mode` fields. Everything now
 // lives under `recording_config`. See:
 //   https://docs.recall.ai/reference/bot_create
+//
+// 2026-05-29: a draft `teamsBotCredentialId` parameter was added here and
+// then removed when we discovered Recall has no programmatic Teams bot
+// credential API — authenticated Teams joining is configured once on Recall's
+// dashboard (one Microsoft user account per Recall org). See ADR-0002 §8.
 async function createBot({ meetingUrl, botName = 'GhostStream Notetaker', webhookUrl, metadata = {} }) {
   if (!meetingUrl) throw new Error('createBot: meetingUrl required');
   const recordingConfig = {

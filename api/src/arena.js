@@ -12,6 +12,10 @@ const gemini = require('./gemini');
 const personas = require('./personas');
 const store = require('./store');
 const globalCache = require('./knowledge/globalCache');
+const history = require('./arenaHistory');
+const userModel = require('./users');
+const tenants = require('./tenants');
+const entitlements = require('./entitlements');
 
 const MAX_TURNS = 24;            // 12 rep ↔ prospect rounds
 const MAX_MESSAGE_LEN = 4000;
@@ -134,7 +138,7 @@ async function callGemini({ cacheRecord, turns, newRepMessage, temperature = 0.8
 
 // --- public API ----------------------------------------------------------
 
-async function startSession({ portalId, persona = DEFAULT_PERSONA }) {
+async function startSession({ portalId, persona = DEFAULT_PERSONA, repUserId = null }) {
   const portal = await store.getPortal(portalId);
   if (!portal) {
     const err = new Error('portal not found'); err.status = 404; throw err;
@@ -142,6 +146,27 @@ async function startSession({ portalId, persona = DEFAULT_PERSONA }) {
   const objection = portal.moments && portal.moments.objection;
   if (!objection) {
     const err = new Error('portal has no objection to roleplay'); err.status = 400; throw err;
+  }
+
+  // Attribution for the durable history record. tenant_id flows from the
+  // portal's parent meeting (meeting.meta.tenantId); rep_name is the call's
+  // rep participant. Both are derived server-side — never trusted from the
+  // client — so the anonymous portal practice flow needs no auth.
+  const meeting = portal.meetingId ? await store.getMeeting(portal.meetingId) : null;
+  const tenantId = (meeting && meeting.meta && meeting.meta.tenantId) ||
+    userModel.FOUNDERS_TENANT_ID;
+  const repParticipant = (portal.participants || []).find((p) => p.role === 'rep') || {};
+  const repName = repParticipant.name || null;
+
+  // Subscription gate — Arena is a Pro feature and requires an active plan. The
+  // session is anonymous (portal link), so we gate by the owning tenant.
+  const tenant = await tenants.get(tenantId);
+  const ent = entitlements.entitlementsFor(tenant);
+  if (!ent.active) {
+    const err = new Error('This workspace’s subscription is inactive — practice is unavailable.'); err.status = 402; throw err;
+  }
+  if (!entitlements.hasFeature(ent, 'arena')) {
+    const err = new Error('Arena practice is a Pro feature. Ask your admin to upgrade.'); err.status = 402; throw err;
   }
 
   const cacheRecord = await ensurePersonaCache(persona);
@@ -177,7 +202,17 @@ async function startSession({ portalId, persona = DEFAULT_PERSONA }) {
     cacheName: cacheRecord.cacheName || null,
     model: cacheRecord.model,
     turns,
+    // Carried on the session so takeTurn can mirror to history without
+    // re-deriving tenant/rep on every turn.
+    tenantId,
+    repName,
+    repUserId,
   });
+
+  // Mirror to the durable store. Best-effort: a Postgres hiccup must not break
+  // the live practice loop, which runs entirely off Redis.
+  try { await history.upsertActive(session); }
+  catch (err) { console.warn('[arena] history upsert (start) failed:', err.message); }
 
   return session;
 }
@@ -215,6 +250,12 @@ async function takeTurn({ sessionId, message }) {
     { role: 'prospect', content: result.text, usage: result.usage, at: new Date().toISOString() },
   ]);
 
+  // Mirror the fresh transcript to the durable store so it survives the 1h TTL
+  // even if the rep never explicitly ends the session.
+  try { await history.upsertActive(updated); }
+  catch (err) { console.warn('[arena] history upsert (turn) failed:', err.message); }
+
+  const userTurns = (updated.turns || []).filter((t) => t.role === 'rep').length;
   return {
     sessionId,
     reply: result.text,
@@ -222,7 +263,28 @@ async function takeTurn({ sessionId, message }) {
     mode: cacheRecord.mode,
     turnCount: updated.turns.length,
     maxTurns: MAX_TURNS,
+    // True once the rep has used their last allowed exchange — the UI uses
+    // this to auto-finalize and surface the scorecard.
+    complete: updated.turns.length >= MAX_TURNS,
+    repTurns: userTurns,
   };
 }
 
-module.exports = { startSession, takeTurn, MAX_TURNS };
+// End a session and produce its coaching scorecard. Idempotent — finalize()
+// returns the stored scorecard if the session was already completed. Reads the
+// live session from Redis (still present unless the 1h TTL lapsed); falls back
+// to whatever transcript was last mirrored to history.
+async function endSession({ sessionId }) {
+  const session = await store.getSession(sessionId);
+  if (!session) {
+    const err = new Error('session not found or expired'); err.status = 404; throw err;
+  }
+  const scorecard = await history.finalize(session, { maxTurns: MAX_TURNS });
+  return {
+    sessionId,
+    status: 'completed',
+    scorecard,
+  };
+}
+
+module.exports = { startSession, takeTurn, endSession, MAX_TURNS };

@@ -1,25 +1,25 @@
-// Free-trial onboarding — the "Intelligence Hook".
+// Free-trial onboarding — verification-gated signup.
 //
 // Public (no-auth) flow that turns a website + a corporate email into a new
-// tenant. The "magic moment": while the user finishes signing up, Firecrawl
-// scrapes their homepage and Gemini Flash summarises it into a 3-bullet
-// Company Intelligence Brief — proof that GhostStream already understands
-// their business before they've even set a password.
+// tenant — but only after the email is confirmed. Nothing (tenant, user, or
+// scrape) comes into existence until the link is clicked.
 //
-//   POST /onboarding/start            → validate, create an onboarding
-//                                        session (Redis, 30-min TTL), kick
-//                                        off the scrape in the background
-//   GET  /onboarding/:id/status       → poll the scrape + brief
-//   POST /onboarding/:id/finalize     → set password → create tenant + owner
-//                                        user → ingest the scrape as the
-//                                        Tier-1 "Basis" doc → send the
-//                                        SendGrid verification email → log in
-//   GET  /onboarding/verify?token=…   → mark the owner's email verified
-//   GET  /onboarding/industries       → the curated vertical list for the
-//                                        signup dropdown
+//   POST /onboarding/start            → validate (corporate email matching the
+//                                        website domain) + password → store a
+//                                        PENDING_VERIFY session (Redis, 24h,
+//                                        bcrypt hash only) → email a verify link.
+//                                        NOTHING is created or scraped yet.
+//   GET  /onboarding/:id/status       → poll PENDING_VERIFY → FINALIZED so the
+//                                        original tab can redirect once confirmed
+//   GET  /onboarding/verify?token=…   → confirm interstitial (button POSTs)
+//   POST /onboarding/verify { token } → on confirm: create tenant + owner
+//                                        (email-verified) → log in → land on the
+//                                        Company → Intel tab (welcome mode), where
+//                                        the company data is pulled from their
+//                                        website and confirmed before being filed.
+//   GET  /onboarding/industries       → the curated vertical list for the dropdown
 //
-// Tenant + user are created at finalize, not at start — an abandoned signup
-// leaves only a Redis key that expires on its own, never an orphan tenant.
+// An abandoned signup leaves only a Redis key that expires.
 
 const crypto = require('crypto');
 const express = require('express');
@@ -28,16 +28,22 @@ const db = require('./db');
 const users = require('./users');
 const auth = require('./auth');
 const email = require('./email');
-const gemini = require('./gemini');
-const web = require('./knowledge/web');
-const kbService = require('./knowledge/service');
+const billing = require('./billing');
+const plans = require('./plans');
+
+// Plans a new signup can pick from the public funnel. Starter carries the free
+// trial; Pro is paid immediately. (Enterprise = contact sales, not here.)
+const SIGNUP_PLANS = new Set(['starter', 'pro']);
 
 const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net').replace(/\/+$/, '');
 const SESSION_TTL_SEC = parseInt(process.env.ONBOARDING_SESSION_TTL_SEC || '1800', 10); // 30 min
-const SCRAPE_STALE_SEC = parseInt(process.env.ONBOARDING_SCRAPE_STALE_SEC || '120', 10); // PENDING→FAILED after this
+const VERIFY_TTL_SEC = parseInt(process.env.ONBOARDING_VERIFY_TTL_SEC || '86400', 10); // 24h to click the email link
 const TRIAL_DAYS = parseInt(process.env.ONBOARDING_TRIAL_DAYS || '14', 10);
 const MIN_PASSWORD_LEN = parseInt(process.env.ONBOARDING_MIN_PASSWORD_LEN || '12', 10);
-const BRIEF_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+
+// Where a freshly-verified owner lands: the Company → Intel tab in "welcome"
+// mode, which auto-runs the pull-from-website + confirm bootstrap.
+const WELCOME_REDIRECT = '/admin/#company?tab=intel&welcome=1';
 
 // Public email providers — corporate-email gate. Not exhaustive but covers
 // the long tail of consumer mailboxes that show up in B2B signups.
@@ -52,34 +58,39 @@ const PUBLIC_EMAIL_DOMAINS = new Set([
   'web.de', 'aol.co.uk', 'comcast.net', 'verizon.net', 'att.net', 'sbcglobal.net',
 ]);
 
-// Curated verticals for the signup dropdown. Order = how they appear.
+// Curated verticals for the signup dropdown. Alphabetical, with the "Other"
+// catch-all pinned last.
 const INDUSTRIES = [
-  'Financial Services / FinTech',
-  'Banking',
-  'Insurance',
-  'SaaS / Software',
-  'IT Services & Consulting',
-  'Cybersecurity',
-  'Healthcare & Life Sciences',
-  'Pharmaceuticals & Biotech',
-  'Manufacturing',
-  'Industrial & Engineering',
-  'Mining & Metals',
-  'Energy & Utilities',
-  'Telecommunications',
-  'Media & Entertainment',
-  'Retail & E-commerce',
-  'Consumer Goods',
-  'Logistics & Supply Chain',
-  'Real Estate & PropTech',
-  'Construction',
-  'Education & EdTech',
-  'Government & Public Sector',
-  'Professional Services',
-  'Travel & Hospitality',
-  'Automotive',
   'Agriculture & AgTech',
+  'AI & ML',
+  'AI Applications and Services',
+  'AI Business and Consulting',
+  'AI Infrastructure',
+  'Automotive',
+  'Banking',
+  'Construction',
+  'Consumer Goods',
+  'Cybersecurity',
+  'Education & EdTech',
+  'Energy & Utilities',
+  'Financial Services / FinTech',
+  'Government & Public Sector',
+  'Healthcare & Life Sciences',
+  'Industrial & Engineering',
+  'Insurance',
+  'IT Services & Consulting',
+  'Logistics & Supply Chain',
+  'Manufacturing',
+  'Media & Entertainment',
+  'Mining & Metals',
   'Non-profit',
+  'Pharmaceuticals & Biotech',
+  'Professional Services',
+  'Real Estate & PropTech',
+  'Retail & E-commerce',
+  'SaaS / Software',
+  'Telecommunications',
+  'Travel & Hospitality',
   'Other',
 ];
 
@@ -87,6 +98,7 @@ const INDUSTRIES = [
 
 function sessionKey(id)       { return `onboarding:${id}`; }
 function emailIndexKey(email) { return `onboarding:email:${email.toLowerCase()}`; }
+function verifyIndexKey(tok)  { return `onboarding:verify:${tok}`; }
 
 async function loadSession(id) {
   const raw = await redis.get(sessionKey(id));
@@ -127,111 +139,6 @@ function normalizeWebsiteUrl(website) {
   catch { return null; }
 }
 
-// ---------------------------------------------------------------- the scrape + brief job
-
-const BRIEF_SCHEMA = {
-  type: 'object',
-  properties: {
-    missionStatement: { type: 'string', description: 'One sentence describing what the company does and for whom.' },
-    keyProducts:      { type: 'array', items: { type: 'string' }, description: 'Named product lines or core offerings.' },
-    primaryAudience:  { type: 'string', description: 'Who buys from / uses this company.' },
-    valuePropCount:   { type: 'integer', description: 'Roughly how many distinct value propositions / benefit claims the site makes.' },
-  },
-  required: ['missionStatement', 'keyProducts', 'primaryAudience', 'valuePropCount'],
-};
-
-const BRIEF_PROMPT =
-  "You are GhostStream's onboarding assistant. You're given the markdown of a " +
-  "company's website. Summarize it for the user to CONFIRM we indexed their " +
-  "business correctly. Be concrete — quote real product names from the page. " +
-  "Return: missionStatement (1 sentence), keyProducts (array of named offerings " +
-  "found on the page), primaryAudience (who they sell to), valuePropCount " +
-  "(rough count of distinct benefit/value claims on the page).";
-
-// Generate the 3-bullet brief from scraped markdown. Falls back to a minimal
-// brief built from the page metadata if Gemini is unavailable or errors.
-async function generateBrief(markdown, meta) {
-  const fallback = () => ({
-    missionStatement: (meta && (meta.description || meta.title)) || 'We indexed your homepage.',
-    keyProducts: [],
-    primaryAudience: '',
-    valuePropCount: 0,
-    headline: meta && meta.title ? `Indexed: ${meta.title}` : 'We scanned your homepage.',
-    source: 'metadata',
-  });
-  try {
-    const ai = gemini.getClient();
-    const resp = await ai.models.generateContent({
-      model: BRIEF_MODEL,
-      contents: [{ role: 'user', parts: [{ text: `${BRIEF_PROMPT}\n\n---WEBSITE CONTENT---\n${String(markdown).slice(0, 20000)}` }] }],
-      config: {
-        temperature: 0.3,
-        maxOutputTokens: 700,
-        responseMimeType: 'application/json',
-        responseSchema: BRIEF_SCHEMA,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
-    });
-    const parsed = JSON.parse(resp.text);
-    const productCount = Array.isArray(parsed.keyProducts) ? parsed.keyProducts.length : 0;
-    const vpCount = Number.isFinite(parsed.valuePropCount) ? parsed.valuePropCount : 0;
-    const headline = productCount || vpCount
-      ? `We've identified ${productCount} product line${productCount === 1 ? '' : 's'} and ${vpCount} core value proposition${vpCount === 1 ? '' : 's'} from your site.`
-      : `We've indexed your site. Does this look right?`;
-    return { ...parsed, keyProducts: parsed.keyProducts || [], headline, source: 'gemini' };
-  } catch (err) {
-    console.warn('[onboarding] brief generation failed, using metadata fallback:', err.message);
-    return fallback();
-  }
-}
-
-// Background job: scrape the company website, build the brief, write both back
-// onto the session. Never throws — failures land as status SCRAPE_FAILED.
-async function runScrapeJob(sessionId) {
-  let s;
-  try {
-    s = await loadSession(sessionId);
-    if (!s || s.status !== 'PENDING_SCRAPE') return;
-
-    if (!web.isConfigured()) {
-      s.status = 'SCRAPE_FAILED';
-      s.error = 'website research is temporarily unavailable — you can continue and add details later';
-      await saveSession(s);
-      return;
-    }
-
-    const data = await web.scrape(s.website);
-    const markdown = String(data.markdown || '').trim();
-    if (markdown.length < 50) {
-      s.status = 'SCRAPE_FAILED';
-      s.error = "we couldn't read your website (it may block crawlers or be JS-only) — you can continue and add details later";
-      await saveSession(s);
-      return;
-    }
-    const meta = data.metadata || {};
-    s.scrape = {
-      markdown,
-      title: meta.title || null,
-      description: meta.description || null,
-      sourceUrl: meta.sourceURL || meta.url || s.website,
-      publishedTime: meta.publishedTime || meta.modifiedTime || null,
-    };
-    s.brief = await generateBrief(markdown, meta);
-    s.status = 'SCRAPE_READY';
-    s.error = null;
-    await saveSession(s);
-  } catch (err) {
-    console.warn(`[onboarding] scrape job failed for ${sessionId}: ${err.message}`);
-    try {
-      if (s) {
-        s.status = 'SCRAPE_FAILED';
-        s.error = "we couldn't research your website right now — you can continue and add details later";
-        await saveSession(s);
-      }
-    } catch { /* swallow */ }
-  }
-}
-
 // ---------------------------------------------------------------- router
 
 const router = express.Router();
@@ -245,7 +152,16 @@ router.get('/industries', (_req, res) => {
 // Body: { companyName, industry, website, email }
 router.post('/start', async (req, res, next) => {
   try {
-    const { companyName, industry, website, email: rawEmail } = req.body || {};
+    const { firstName: rawFirst, lastName: rawLast, companyName, industry, website, email: rawEmail, password } = req.body || {};
+    const plan = SIGNUP_PLANS.has(String((req.body && req.body.plan) || '')) ? req.body.plan : 'starter';
+    const firstName = String(rawFirst || '').trim();
+    const lastName = String(rawLast || '').trim();
+    if (!firstName || firstName.length > 100) {
+      return res.status(400).json({ error: 'first name required' });
+    }
+    if (!lastName || lastName.length > 100) {
+      return res.status(400).json({ error: 'last name required' });
+    }
     if (!companyName || typeof companyName !== 'string' || companyName.trim().length < 2) {
       return res.status(400).json({ error: 'companyName required' });
     }
@@ -274,6 +190,9 @@ router.post('/start', async (req, res, next) => {
         code: 'EMAIL_DOMAIN_MISMATCH',
       });
     }
+    if (typeof password !== 'string' || password.length < MIN_PASSWORD_LEN) {
+      return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LEN} characters.`, code: 'WEAK_PASSWORD' });
+    }
 
     // Already-registered email → tell them, don't create a duplicate.
     const existingUser = await users.findByEmail(emailAddr);
@@ -296,84 +215,125 @@ router.post('/start', async (req, res, next) => {
       });
     }
 
-    // Re-use an in-flight session for the same email (page refresh, retry).
+    const passwordHash = await users.hashPassword(password);
+
+    // Re-use an in-flight (unverified) session for the same email — refresh the
+    // details + re-send the link rather than erroring (covers retries/resends).
+    let session = null;
     const existingSessionId = await redis.get(emailIndexKey(emailAddr));
     if (existingSessionId) {
       const existing = await loadSession(existingSessionId);
-      if (existing && existing.status !== 'FINALIZED') {
-        return res.status(200).json({ sessionId: existing.id, status: existing.status });
+      if (existing && existing.status === 'PENDING_VERIFY') session = existing;
+    }
+    if (session) {
+      session.firstName = firstName;
+      session.lastName = lastName;
+      session.plan = plan;
+      session.companyName = companyName.trim();
+      session.industry = industry;
+      session.website = websiteUrl;
+      session.websiteDomain = websiteDomain;
+      session.passwordHash = passwordHash; // they may have re-typed a new one
+    } else {
+      session = {
+        id: crypto.randomUUID(),
+        firstName,
+        lastName,
+        plan,
+        companyName: companyName.trim(),
+        industry,
+        website: websiteUrl,
+        websiteDomain,
+        email: emailAddr,
+        emailDomain,
+        passwordHash,
+        verifyToken: crypto.randomBytes(24).toString('hex'),
+        status: 'PENDING_VERIFY',
+        createdAt: new Date().toISOString(),
+      };
+    }
+    await saveSession(session, VERIFY_TTL_SEC);
+    await redis.set(emailIndexKey(emailAddr), session.id, 'EX', VERIFY_TTL_SEC);
+    await redis.set(verifyIndexKey(session.verifyToken), session.id, 'EX', VERIFY_TTL_SEC);
+
+    // Send the verification link. The account + the company-data pull come into
+    // being ONLY when this link is confirmed — nothing is created here.
+    const verifyUrl = `${APP_BASE_URL}/api/onboarding/verify?token=${encodeURIComponent(session.verifyToken)}`;
+    let emailSent = false;
+    if (email.isConfigured()) {
+      try {
+        await email.send({
+          to: emailAddr,
+          subject: 'Confirm your email to set up GhostStream',
+          categories: ['onboarding-verify'],
+          html:
+            `<p>You're almost there — confirm this email to create your <strong>${escapeHtml(session.companyName)}</strong> workspace.</p>` +
+            `<p><a href="${verifyUrl}" style="display:inline-block;padding:10px 18px;background:#4f46e5;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">Confirm &amp; set up workspace</a></p>` +
+            `<p style="color:#6b7280;font-size:13px">Or paste this link into your browser:<br>${verifyUrl}</p>` +
+            `<p style="color:#6b7280;font-size:13px">This link expires in 24 hours. If you didn't request this, you can ignore this email.</p>`,
+          text: `Confirm your email to set up GhostStream: ${verifyUrl}`,
+        });
+        emailSent = true;
+      } catch (err) {
+        console.warn('[onboarding] verification email failed:', err.message);
       }
     }
 
-    const session = {
-      id: crypto.randomUUID(),
-      companyName: companyName.trim(),
-      industry,
-      website: websiteUrl,
-      websiteDomain,
+    res.status(201).json({
+      sessionId: session.id,
+      status: 'PENDING_VERIFY',
       email: emailAddr,
-      emailDomain,
-      status: 'PENDING_SCRAPE',
-      createdAt: new Date().toISOString(),
-      scrape: null,
-      brief: null,
-      error: null,
-    };
-    await saveSession(session);
-    await redis.set(emailIndexKey(emailAddr), session.id, 'EX', SESSION_TTL_SEC);
-
-    // Fire the scrape in the background — don't block the response.
-    runScrapeJob(session.id);
-
-    res.status(201).json({ sessionId: session.id, status: session.status });
-  } catch (err) { next(err); }
-});
-
-// GET /onboarding/:id/status
-router.get('/:id/status', async (req, res, next) => {
-  try {
-    let s = await loadSession(req.params.id);
-    if (!s) return res.status(404).json({ error: 'onboarding session not found or expired' });
-
-    // Watchdog: a PENDING scrape that's been running too long is dead (process
-    // restart, hung fetch). Flip it so the UI stops spinning.
-    if (s.status === 'PENDING_SCRAPE') {
-      const ageSec = (Date.now() - new Date(s.createdAt).getTime()) / 1000;
-      if (ageSec > SCRAPE_STALE_SEC) {
-        s.status = 'SCRAPE_FAILED';
-        s.error = "researching your website is taking too long — you can continue and add details later";
-        await saveSession(s);
-      }
-    }
-
-    res.json({
-      sessionId: s.id,
-      status: s.status,
-      companyName: s.companyName,
-      industry: s.industry,
-      website: s.website,
-      email: s.email,
-      brief: s.brief || null,
-      scrapeTitle: s.scrape ? s.scrape.title : null,
-      error: s.error || null,
+      emailSent,
+      // Dev fallback (no SendGrid): surface the link so signup is testable.
+      ...(email.isConfigured() ? {} : { verifyUrl }),
     });
   } catch (err) { next(err); }
 });
 
-// POST /onboarding/:id/finalize
-// Body: { password }
-router.post('/:id/finalize', async (req, res, next) => {
+// GET /onboarding/:id/status
+// Polled by the "check your email" screen so the original tab can redirect once
+// the link has been confirmed in this browser (PENDING_VERIFY → FINALIZED).
+router.get('/:id/status', async (req, res, next) => {
   try {
     const s = await loadSession(req.params.id);
     if (!s) return res.status(404).json({ error: 'onboarding session not found or expired' });
-    if (s.status === 'FINALIZED') return res.status(409).json({ error: 'this onboarding has already been completed' });
+    res.json({
+      sessionId: s.id,
+      status: s.status, // PENDING_VERIFY | FINALIZED
+      companyName: s.companyName,
+      email: s.email,
+      redirectTo: s.status === 'FINALIZED' ? (s.checkoutUrl || WELCOME_REDIRECT) : null,
+    });
+  } catch (err) { next(err); }
+});
 
-    const password = (req.body && req.body.password) || '';
-    if (typeof password !== 'string' || password.length < MIN_PASSWORD_LEN) {
-      return res.status(400).json({ error: `password must be at least ${MIN_PASSWORD_LEN} characters` });
-    }
+// GET /onboarding/verify?token=… — the email link lands here. It renders a
+// confirm page whose button POSTs to /verify. Side effects live on the POST so
+// that email-scanner / prefetch GETs never create an account.
+router.get('/verify', async (req, res, next) => {
+  try {
+    const token = String(req.query.token || '');
+    if (!token) return res.status(400).type('html').send(verifyPage('Missing verification token.', false));
+    const sid = await redis.get(verifyIndexKey(token));
+    const s = sid ? await loadSession(sid) : null;
+    if (!s) return res.status(404).type('html').send(verifyPage('This link is invalid or has expired. Please sign up again.', false));
+    if (s.status === 'FINALIZED') return res.redirect('/admin/');
+    res.type('html').send(confirmPage(token, s.companyName));
+  } catch (err) { next(err); }
+});
 
-    // Re-check the email/domain race (someone could have signed up in the gap).
+// POST /onboarding/verify { token } — the actual provisioning, only after the
+// user confirms. Creates the tenant + owner (verified) and logs in; the
+// company-data pull happens on the Company → Intel tab they land on.
+router.post('/verify', async (req, res, next) => {
+  try {
+    const token = String((req.body && req.body.token) || '');
+    const sid = token ? await redis.get(verifyIndexKey(token)) : null;
+    const s = sid ? await loadSession(sid) : null;
+    if (!s) return res.status(404).json({ error: 'This verification link is invalid or has expired.' });
+    if (s.status === 'FINALIZED') return res.json({ ok: true, redirectTo: s.checkoutUrl || WELCOME_REDIRECT });
+
+    // Race gate: someone may have claimed the email/domain since /start.
     if (await users.findByEmail(s.email)) {
       return res.status(409).json({ error: 'An account with this email already exists. Sign in instead.', code: 'EMAIL_EXISTS' });
     }
@@ -382,108 +342,84 @@ router.post('/:id/finalize', async (req, res, next) => {
       return res.status(409).json({ error: 'A workspace for this company domain already exists. Ask a teammate to invite you.', code: 'TENANT_EXISTS' });
     }
 
-    // Create the tenant + owner user.
-    const tenantRow = (await db.query(
-      `INSERT INTO tenants (name, domain, subscription_status, trial_ends_at)
-       VALUES ($1, $2, 'TRIAL', now() + ($3 || ' days')::interval)
-       RETURNING id, name, domain, subscription_status, trial_ends_at`,
-      [s.companyName, s.websiteDomain, String(TRIAL_DAYS)]
-    )).rows[0];
+    // When Stripe is live, the subscription drives the trial: create the tenant
+    // INACTIVE (TRIAL with no end date) + on the chosen plan, then send them to
+    // Checkout. The webhook/confirm flips it active. Without Stripe configured,
+    // fall back to the legacy in-app 14-day DB trial so dev still works.
+    const plan = SIGNUP_PLANS.has(s.plan) ? s.plan : 'starter';
+    const useStripe = billing.isConfigured();
+    const initialPlan = useStripe ? plan : 'starter';
+    const trialEndsAt = useStripe ? null : new Date(Date.now() + TRIAL_DAYS * 86400000).toISOString();
 
-    const passwordHash = await users.hashPassword(password);
+    const tenantRow = (await db.query(
+      `INSERT INTO tenants (name, domain, subscription_status, plan, trial_ends_at)
+       VALUES ($1, $2, 'TRIAL', $3, $4::timestamptz)
+       RETURNING id, name, domain, subscription_status, plan, trial_ends_at`,
+      [s.companyName, s.websiteDomain, initialPlan, trialEndsAt]
+    )).rows[0];
     const owner = await users.create({
       tenantId: tenantRow.id,
       email: s.email,
-      passwordHash,
-      name: null,
+      passwordHash: s.passwordHash,
+      firstName: s.firstName || null,
+      lastName: s.lastName || null,
       role: 'owner',
       isAdmin: false,
-      emailVerified: false,
+      emailVerified: true,
     });
 
-    // Best-effort: ingest the scraped homepage as the Tier-1 "Basis" doc for
-    // the new tenant. A failure here must not block the signup.
-    let basisDocId = null;
-    if (s.scrape && s.scrape.markdown) {
+    // Decide where to send them: Stripe Checkout (trial for Starter, paid for
+    // Pro) → on success lands in the in-app welcome setup; or straight to the
+    // welcome setup on the legacy path.
+    let redirectTo = WELCOME_REDIRECT;
+    if (useStripe) {
       try {
-        const doc = await kbService.ingest({
+        const checkout = await billing.createCheckout({
           tenantId: tenantRow.id,
-          file: {
-            buffer: Buffer.from(s.scrape.markdown, 'utf8'),
-            mimetype: 'text/markdown',
-            originalname: 'company-homepage.md',
-          },
-          category: 'PRODUCT_INTEL',
-          title: `${s.companyName} — homepage`,
-          streamType: 'WEB',
-          scope: 'TENANT', // the customer's own company → Basis
-          sourceUrl: s.scrape.sourceUrl || s.website,
-          effectiveDate: s.scrape.publishedTime || null,
-          metadata: { onboarding: true, industry: s.industry, scrapedTitle: s.scrape.title || null },
+          email: s.email,
+          plan,
+          trial: plan === 'starter',
+          successUrl: `${APP_BASE_URL}/admin/?cs={CHECKOUT_SESSION_ID}#company?tab=intel&welcome=1`,
+          cancelUrl: `${APP_BASE_URL}/admin/#billing?checkout=cancel`,
         });
-        basisDocId = doc && doc.id;
-      } catch (err) {
-        console.warn('[onboarding] basis ingest failed (non-fatal):', err.message);
+        redirectTo = checkout.url;
+      } catch (e) {
+        console.warn('[onboarding] checkout creation failed:', e.message);
+        redirectTo = '/admin/#billing'; // land on Billing so they can start the plan manually
       }
     }
 
-    // Best-effort: send the email-verification link.
-    let emailSent = false;
-    const verifyUrl = `${APP_BASE_URL}/api/onboarding/verify?token=${encodeURIComponent(owner.emailVerificationToken)}`;
-    if (email.isConfigured()) {
-      try {
-        await email.send({
-          to: s.email,
-          subject: 'Verify your GhostStream email',
-          categories: ['onboarding-verify'],
-          html:
-            `<p>Welcome to GhostStream — your <strong>${escapeHtml(s.companyName)}</strong> workspace is live.</p>` +
-            `<p>Confirm this email address to finish setting up your account:</p>` +
-            `<p><a href="${verifyUrl}" style="display:inline-block;padding:10px 18px;background:#4f46e5;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">Verify email</a></p>` +
-            `<p style="color:#6b7280;font-size:13px">Or paste this link into your browser:<br>${verifyUrl}</p>`,
-          text: `Welcome to GhostStream. Verify your email: ${verifyUrl}`,
-        });
-        emailSent = true;
-      } catch (err) {
-        console.warn('[onboarding] verification email failed (non-fatal):', err.message);
-      }
-    }
-
-    // Mark the session done (short grace TTL so a double-submit gets the 409).
+    // Close out the session + lookup indexes (short grace TTL for double-clicks).
+    // Stash the redirect so the original (polling) tab also lands on Checkout.
     s.status = 'FINALIZED';
     s.tenantId = tenantRow.id;
+    s.checkoutUrl = redirectTo;
     await saveSession(s, 300);
     await redis.del(emailIndexKey(s.email));
+    if (s.verifyToken) await redis.del(verifyIndexKey(s.verifyToken));
 
-    // Auto-login: issue the session cookie.
-    const publicUser = {
+    // Auto-login (so the post-checkout return is authenticated and /billing/confirm works).
+    res.cookie(auth.COOKIE_NAME, auth.signToken({
       id: owner.id, tenantId: owner.tenantId, email: owner.email,
       name: owner.name, role: owner.role, isAdmin: owner.isAdmin,
-    };
-    res.cookie(auth.COOKIE_NAME, auth.signToken(publicUser), auth.cookieOptions());
+    }), auth.cookieOptions());
 
-    res.status(201).json({
-      ok: true,
-      tenant: { id: tenantRow.id, name: tenantRow.name, domain: tenantRow.domain, trialEndsAt: tenantRow.trial_ends_at },
-      user: { id: owner.id, email: owner.email, role: owner.role, emailVerified: false },
-      basisIndexed: !!basisDocId,
-      emailSent,
-      redirectTo: '/admin/',
-    });
+    res.status(201).json({ ok: true, redirectTo });
   } catch (err) { next(err); }
 });
 
-// GET /onboarding/verify?token=…  — tiny HTML page, linked from the email.
-router.get('/verify', async (req, res, next) => {
-  try {
-    const token = req.query.token;
-    if (!token) return res.status(400).type('html').send(verifyPage('Missing verification token.', false));
-    const user = await users.findByVerificationToken(String(token));
-    if (!user) return res.status(404).type('html').send(verifyPage('This verification link is invalid or has already been used.', false));
-    await users.markEmailVerified(user.id);
-    res.type('html').send(verifyPage('Your email is verified. You can close this tab and head back to GhostStream.', true));
-  } catch (err) { next(err); }
-});
+// The confirm interstitial: a button that POSTs the token (so prefetch GETs of
+// the email link are inert).
+function confirmPage(token, companyName) {
+  const t = escapeHtml(token);
+  return `<!doctype html><meta charset="utf-8"><title>GhostStream — Confirm your email</title>` +
+    `<body style="font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;text-align:center;color:#111">` +
+    `<h1 style="font-size:20px">Confirm your email</h1>` +
+    `<p style="color:#374151">Finish setting up your <strong>${escapeHtml(companyName)}</strong> workspace.</p>` +
+    `<button id="go" style="padding:11px 22px;background:#4f46e5;color:#fff;border:0;border-radius:6px;font-weight:600;font-size:15px;cursor:pointer">Confirm &amp; open my workspace</button>` +
+    `<p id="msg" style="color:#6b7280;margin-top:14px"></p>` +
+    `<script>(function(){var b=document.getElementById('go'),m=document.getElementById('msg');b.addEventListener('click',function(){b.disabled=true;b.textContent='Setting up…';fetch('/api/onboarding/verify',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({token:'${t}'})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(x){if(x.ok&&x.j.redirectTo){location.href=x.j.redirectTo;}else{b.disabled=false;b.textContent='Confirm & open my workspace';m.textContent=(x.j&&x.j.error)||'Something went wrong — please try again.';}}).catch(function(){b.disabled=false;b.textContent='Confirm & open my workspace';m.textContent='Network error — please try again.';});});})();</script></body>`;
+}
 
 function verifyPage(message, ok) {
   return `<!doctype html><meta charset="utf-8"><title>GhostStream — Email verification</title>` +

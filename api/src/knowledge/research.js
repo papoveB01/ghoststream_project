@@ -14,19 +14,54 @@ const db = require('../db');
 const gemini = require('../gemini');
 const web = require('./web');
 const keypoints = require('./keypoints');
+const apollo = require('./apollo');
 
-const MODEL =
-  process.env.GEMINI_RESEARCH_MODEL ||
-  process.env.GEMINI_ANALYSIS_MODEL ||
-  process.env.GEMINI_MODEL ||
-  'gemini-2.5-flash';
+const MODEL = require('../models').modelFor('research');
 const SITE_MAP_LIMIT    = parseInt(process.env.RESEARCH_SITE_MAP_LIMIT || '40', 10);
 const SITE_SCRAPE_LIMIT = parseInt(process.env.RESEARCH_SITE_SCRAPE_LIMIT || '5', 10);
 const SEARCH_PER_QUERY  = parseInt(process.env.RESEARCH_SEARCH_PER_QUERY || '4', 10);
 const SEARCH_SCRAPE_TOP = parseInt(process.env.RESEARCH_SEARCH_SCRAPE_TOP || '2', 10);
+const NEWS_LIMIT        = parseInt(process.env.RESEARCH_NEWS_LIMIT || '8', 10);
+const NEWS_DAYS         = parseInt(process.env.RESEARCH_NEWS_DAYS  || '30', 10);
 const SOURCE_TEXT_CAP   = parseInt(process.env.RESEARCH_SOURCE_TEXT_CAP || '3500', 10);
 const DOSSIER_CAP       = parseInt(process.env.RESEARCH_DOSSIER_CAP || '40000', 10);
 const STALE_RUNNING_MS  = parseInt(process.env.RESEARCH_STALE_MS || '600000', 10); // 10 min
+
+const NEWSAPI_BASE = (process.env.NEWSAPI_BASE_URL || 'https://newsapi.org/v2').replace(/\/+$/, '');
+function isNewsApiConfigured() { return Boolean(process.env.NEWSAPI_KEY); }
+
+// NewsAPI /everything — dated articles for "<name>" in the last NEWS_DAYS days.
+// Free tier returns 100 req/day; one prospect research = one request here.
+// Returns the standard source row shape so gatherSources can dedupe + push.
+async function fetchNewsApi(name) {
+  if (!isNewsApiConfigured() || !name) return [];
+  const from = new Date(Date.now() - NEWS_DAYS * 86400000).toISOString().slice(0, 10);
+  const params = new URLSearchParams({
+    q: `"${name}"`,
+    from,
+    language: 'en',
+    sortBy: 'relevancy',
+    pageSize: String(Math.min(100, NEWS_LIMIT)),
+  });
+  try {
+    const res = await fetch(`${NEWSAPI_BASE}/everything?${params}`, {
+      headers: { 'X-Api-Key': process.env.NEWSAPI_KEY, Accept: 'application/json' },
+    });
+    if (!res.ok) return [];
+    const json = await res.json().catch(() => ({}));
+    const rows = Array.isArray(json.articles) ? json.articles : [];
+    return rows.map((a) => ({
+      url: a.url || null,
+      title: a.title || null,
+      description: a.description || null,
+      markdown: null,
+      publishedTime: a.publishedAt || null,
+      author: a.author || (a.source && a.source.name) || null,
+    })).filter((r) => r.url);
+  } catch {
+    return [];
+  }
+}
 
 // High-value path patterns on a prospect's own site, in priority order.
 const PRIORITY_PATHS = [
@@ -68,7 +103,7 @@ function dedupeKey(url) {
 
 // ── source gathering ──────────────────────────────────────────────────────
 // → { sources: [{n,url,title,date,snippet,scraped,text}], queryCount }
-async function gatherSources(name, origin) {
+async function gatherSources(name, origin, { tenantId, domain } = {}) {
   const seen = new Set();
   const sources = [];
   let n = 0;
@@ -126,7 +161,91 @@ async function gatherSources(name, origin) {
     }
   }
 
-  return { sources, queryCount: queries.length };
+  // 3. NewsAPI — dated news for the last NEWS_DAYS days. These come with
+  //    proper publishedAt dates which improves the dossier's chronological
+  //    signal (Gemini ranks recent material higher). Snippet-only by
+  //    default; scrape the top 2 for richer text.
+  const newsRows = await fetchNewsApi(name);
+  let newsScraped = 0;
+  for (const r of newsRows) {
+    if (!r.url || seen.has(dedupeKey(r.url))) continue;
+    let text = null;
+    if (newsScraped < SEARCH_SCRAPE_TOP) {
+      const md = await web.scrapeMarkdown(r.url);
+      if (md && md.markdown) {
+        const t = keypoints.stripBoilerplate(md.markdown).slice(0, SOURCE_TEXT_CAP);
+        if (t.length > 80) { text = t; newsScraped++; }
+      }
+    }
+    add({ url: r.url, title: r.title, date: r.publishedTime, snippet: r.description, text });
+  }
+
+  // 4. Apollo — structured B2B data (company snapshot + leadership team).
+  //    Two sources only, both authored by Apollo's API, so the dossier picks
+  //    up named decision makers + verified counts that Gemini can cite. Both
+  //    are no-ops when APOLLO_API_KEY is unset or the daily cap is tripped.
+  if (apollo.isConfigured() && domain) {
+    let apolloAdded = 0;
+    try {
+      const org = await apollo.enrichOrganization(tenantId, domain);
+      if (org) {
+        add({
+          url: org.linkedinUrl || null,
+          title: `Company snapshot (Apollo) — ${org.name || name}`,
+          date: null,
+          text: formatApolloOrgBlock(org).slice(0, SOURCE_TEXT_CAP),
+        });
+        apolloAdded++;
+      }
+    } catch (e) { console.warn('[research] Apollo org enrich failed:', e.message); }
+    try {
+      const people = await apollo.searchPeople(tenantId, domain, { limit: 10 });
+      if (Array.isArray(people) && people.length) {
+        add({
+          url: null,
+          title: `Leadership team (Apollo) — ${name}`,
+          date: null,
+          text: formatApolloPeopleBlock(people).slice(0, SOURCE_TEXT_CAP),
+        });
+        apolloAdded++;
+      }
+    } catch (e) { console.warn('[research] Apollo people search failed:', e.message); }
+    if (apolloAdded > 0) console.log(`[research] Apollo added ${apolloAdded} source(s) for ${domain}`);
+  }
+
+  return { sources, queryCount: queries.length + (newsRows.length ? 1 : 0) };
+}
+
+// Render Apollo's enrichment payload as a human + Gemini-readable block.
+// Anything missing is skipped — we don't render "Industry: null" lines.
+function formatApolloOrgBlock(org) {
+  const lines = [];
+  if (org.name)             lines.push(`Name: ${org.name}`);
+  if (org.domain)           lines.push(`Domain: ${org.domain}`);
+  if (org.industry)         lines.push(`Industry: ${org.industry}`);
+  if (org.employeeCount != null) lines.push(`Employees (Apollo estimate): ${org.employeeCount}`);
+  if (org.revenueRange)     lines.push(`Revenue: ${org.revenueRange}`);
+  if (org.foundedYear)      lines.push(`Founded: ${org.foundedYear}`);
+  if (org.location)         lines.push(`HQ: ${org.location}`);
+  if (org.fundingTotal)     lines.push(`Total funding: ${org.fundingTotal}${org.latestFundingRound ? ` (latest round: ${org.latestFundingRound}${org.latestFundingAt ? ` ${org.latestFundingAt}` : ''})` : ''}`);
+  if (org.technologies && org.technologies.length) lines.push(`Tech stack signals: ${org.technologies.join(', ')}`);
+  if (org.keywords && org.keywords.length) lines.push(`Keywords: ${org.keywords.join(', ')}`);
+  if (org.linkedinUrl)      lines.push(`LinkedIn: ${org.linkedinUrl}`);
+  if (org.description)      lines.push('', org.description);
+  return lines.join('\n');
+}
+
+function formatApolloPeopleBlock(people) {
+  const lines = ['Top decision-makers + senior leaders matched at this org (verified emails marked ✓):'];
+  for (const p of people) {
+    const head = `- ${p.name || 'Unknown'} — ${p.title || 'Unknown role'}`;
+    const meta = [];
+    if (p.email) meta.push(`${p.email}${p.emailStatus === 'verified' ? ' ✓' : ''}`);
+    if (p.linkedinUrl) meta.push(p.linkedinUrl);
+    if (p.location) meta.push(p.location);
+    lines.push(head + (meta.length ? '\n    ' + meta.join(' · ') : ''));
+  }
+  return lines.join('\n');
 }
 
 function buildDossier(name, sources) {
@@ -240,12 +359,17 @@ async function run(researchId, tenantId, companyId) {
     const name = c.rows[0].name;
     const origin = normalizeOrigin(c.rows[0].domain);
 
-    const { sources, queryCount } = await gatherSources(name, origin);
+    const { sources, queryCount } = await gatherSources(name, origin, { tenantId, domain: c.rows[0].domain });
     if (sources.length === 0) throw new Error('no public sources found for this prospect');
     const dossier = buildDossier(name, sources);
     const slimSources = sources.map((s) => ({ n: s.n, url: s.url, title: s.title, date: s.date, snippet: s.snippet, scraped: s.scraped }));
 
-    const { summary, opportunities, hadPortfolio, usage } = await analyze(tenantId, name, dossier);
+    // Synthesize against the auto-gathered dossier PLUS any filed prospect intel
+    // (so the intel library feeds research). dossier_md keeps the auto sources
+    // only — effectiveDossier re-merges current filed intel on each (re)analyze.
+    const fullDossier = await effectiveDossier(tenantId, companyId, dossier);
+    const { summary, opportunities, hadPortfolio, usage } = await analyze(tenantId, name, fullDossier);
+    const opps = applyPins(opportunities, await pinnedTitlesForCompany(tenantId, companyId));
 
     await db.query(
       `UPDATE prospect_research
@@ -254,8 +378,9 @@ async function run(researchId, tenantId, companyId) {
               models = $7, error = NULL, updated_at = now()
         WHERE id = $8`,
       [queryCount, slimSources.length, JSON.stringify(slimSources), dossier, summary,
-       JSON.stringify(opportunities), JSON.stringify({ analysis: MODEL, hadPortfolio, usage }), researchId]
+       JSON.stringify(opps), JSON.stringify({ analysis: MODEL, hadPortfolio, usage }), researchId]
     );
+    await persistSynthesisDoc(tenantId, companyId, name, summary, opps, researchId);
   } catch (err) {
     console.warn(`[research] run ${researchId} failed:`, err.message);
     await db.query(`UPDATE prospect_research SET status = 'FAILED', error = $1, updated_at = now() WHERE id = $2`,
@@ -283,6 +408,138 @@ async function start(tenantId, companyId) {
   return row;
 }
 
+// ── Manual additions: append a source (URL or freeform note) to an existing
+// research row, and an explicit re-analyze that re-runs Gemini against the
+// current dossier (auto sources + any manual additions). Keeps re-analysis
+// cheap and explicit so the rep can stack several adds and click once.
+
+async function findRunForCompany(tenantId, companyId) {
+  const r = await db.query(
+    `SELECT id, sources, dossier_md, source_count
+       FROM prospect_research
+      WHERE tenant_id = $1 AND company_id = $2
+      ORDER BY created_at DESC LIMIT 1`,
+    [tenantId, companyId]
+  );
+  return r.rows[0] || null;
+}
+
+function nextSourceN(existingSources) {
+  const arr = Array.isArray(existingSources) ? existingSources : [];
+  let max = 0;
+  for (const s of arr) if (Number.isInteger(s.n) && s.n > max) max = s.n;
+  return max + 1;
+}
+
+// Append one source. type: 'url' | 'note'. For 'url' we scrape via Firecrawl
+// (best-effort — if scrape fails we still record the URL + title as a
+// snippet-only source). For 'note' we just store the text.
+//
+// Persistence: append to sources jsonb AND to dossier_md so the next
+// re-analyze sees it without needing to re-fetch anything.
+async function appendSource(tenantId, companyId, addedBy, { type, url, title, text }) {
+  if (!type || !['url', 'note'].includes(type)) {
+    const e = new Error("type must be 'url' or 'note'"); e.status = 400; throw e;
+  }
+  const run = await findRunForCompany(tenantId, companyId);
+  if (!run) {
+    const e = new Error('no research run exists for this prospect — start one first'); e.status = 404; throw e;
+  }
+
+  let block = '';
+  let slimSource;
+
+  if (type === 'url') {
+    if (!url || !/^https?:\/\//i.test(url)) {
+      const e = new Error('valid URL required'); e.status = 400; throw e;
+    }
+    let scrapedTitle = title || null, body = null, date = null;
+    try {
+      const md = await web.scrapeMarkdown(url);
+      if (md) {
+        scrapedTitle = scrapedTitle || md.title || url;
+        date = md.publishedTime || null;
+        if (md.markdown) body = keypoints.stripBoilerplate(md.markdown).slice(0, SOURCE_TEXT_CAP);
+      }
+    } catch (e) { /* swallow — non-fatal */ }
+    if (!scrapedTitle) scrapedTitle = url;
+    const n = nextSourceN(run.sources);
+    slimSource = {
+      n, url, title: scrapedTitle, date,
+      snippet: (text && String(text).trim()) || null,
+      scraped: !!(body && body.length > 80),
+      addedManually: true,
+      addedBy: addedBy || null,
+      addedAt: new Date().toISOString(),
+    };
+    block = `## [${n}] ${scrapedTitle}\nURL: ${url}` +
+            (date ? `\nDate: ${date}` : '') +
+            '\n\n' +
+            (body && body.length > 40 ? body : (text && text.trim()) || '(no extractable content — title + URL only)');
+  } else {
+    if (!text || !String(text).trim()) {
+      const e = new Error('text required for a note source'); e.status = 400; throw e;
+    }
+    const n = nextSourceN(run.sources);
+    const noteTitle = (title && title.trim()) || 'Manual note';
+    slimSource = {
+      n, url: null, title: noteTitle, date: null,
+      snippet: null, scraped: false,
+      addedManually: true,
+      addedBy: addedBy || null,
+      addedAt: new Date().toISOString(),
+    };
+    block = `## [${n}] ${noteTitle}\n\n${String(text).trim().slice(0, SOURCE_TEXT_CAP)}`;
+  }
+
+  // jsonb || jsonb appends; '\n\n---\n\n' separator matches buildDossier's.
+  const separator = '\n\n---\n\n';
+  await db.query(
+    `UPDATE prospect_research
+        SET sources       = sources || $2::jsonb,
+            dossier_md    = COALESCE(dossier_md, '') || $3,
+            source_count  = source_count + 1,
+            updated_at    = now()
+      WHERE id = $1`,
+    [run.id, JSON.stringify([slimSource]), separator + block]
+  );
+  return { source: slimSource, researchId: run.id };
+}
+
+// Re-run analysis only — does NOT re-fetch any sources. Uses the current
+// dossier_md (which the rep may have augmented via appendSource).
+async function reanalyze(tenantId, companyId) {
+  const c = await db.query(
+    `SELECT id AS company_id, name FROM companies WHERE id = $1 AND tenant_id = $2`,
+    [companyId, tenantId]
+  );
+  if (!c.rows[0]) { const e = new Error('prospect not found'); e.status = 404; throw e; }
+  const run = await findRunForCompany(tenantId, companyId);
+  if (!run) { const e = new Error('no research run to re-analyze — start one first'); e.status = 404; throw e; }
+  const r = await db.query(`SELECT dossier_md, opportunities FROM prospect_research WHERE id = $1`, [run.id]);
+  const dossier = r.rows[0] && r.rows[0].dossier_md;
+  if (!dossier || dossier.length < 100) {
+    const e = new Error('dossier is empty — re-run a full research first'); e.status = 422; throw e;
+  }
+  // Re-analyze picks up newly filed intel (no web refetch) by re-merging it.
+  const fullDossier = await effectiveDossier(tenantId, companyId, dossier);
+  const { summary, opportunities, hadPortfolio, usage } = await analyze(tenantId, c.rows[0].name, fullDossier);
+  const prevPinned = new Set((((r.rows[0] && r.rows[0].opportunities) || []).filter((o) => o && o.pinned)).map((o) => o.title));
+  const opps = applyPins(opportunities, prevPinned);
+  await db.query(
+    `UPDATE prospect_research
+        SET summary       = $2,
+            opportunities = $3,
+            models        = $4,
+            updated_at    = now()
+      WHERE id = $1`,
+    [run.id, summary, JSON.stringify(opps),
+     JSON.stringify({ analysis: MODEL, hadPortfolio, usage, reanalyzed: true })]
+  );
+  await persistSynthesisDoc(tenantId, companyId, c.rows[0].name, summary, opps, run.id);
+  return latest(tenantId, companyId);
+}
+
 async function reapStale(tenantId) {
   await db.query(
     `UPDATE prospect_research SET status = 'FAILED', error = 'timed out — try again', updated_at = now()
@@ -307,4 +564,88 @@ async function listForTenant(tenantId) {
   return r.rows;
 }
 
-module.exports = { start, latest, listForTenant };
+// ── Unified inputs + retrievable synthesis ────────────────────────────────
+// service is required lazily to avoid the service↔web↔research import cycle.
+
+// The dossier the model analyzes = auto-gathered sources + the text of any filed
+// prospect intel (kb_documents scope=PROSPECT), EXCLUDING prior synthesis docs so
+// the synthesis never feeds itself. Best-effort: falls back to the plain dossier.
+async function effectiveDossier(tenantId, companyId, dossierMd) {
+  try {
+    const service = require('./service');
+    const docs = await service.listDocuments({ tenantId, scope: 'PROSPECT', companyId, status: 'READY', limit: 20 });
+    const usable = (docs || []).filter((d) => !((d.metadata || {}).isResearchSynthesis));
+    const blocks = [];
+    for (const d of usable) {
+      try {
+        const t = await service.getDocumentText(tenantId, d.id);
+        const text = t && (typeof t === 'string' ? t : t.text);
+        if (text && String(text).length > 40) blocks.push(`## (Filed intel) ${d.title}\n${String(text).slice(0, 3500)}`);
+      } catch { /* skip a bad doc */ }
+    }
+    if (!blocks.length) return dossierMd;
+    return `${dossierMd}\n\n# Filed prospect intel\n\n${blocks.join('\n\n---\n\n')}`;
+  } catch {
+    return dossierMd;
+  }
+}
+
+// Persist the synthesis (summary + opportunities) as a retrievable prospect KB
+// doc so it flows into the pre-call brief retrieval loop. Stable title → ingest
+// replaces the prior synthesis on each run. Best-effort (never fails the run).
+async function persistSynthesisDoc(tenantId, companyId, name, summary, opportunities, researchId) {
+  try {
+    const service = require('./service');
+    const L = [`# Research synthesis: ${name}`, ''];
+    if (summary) L.push(`**Summary:** ${summary}`, '');
+    (opportunities || []).forEach((o, i) => {
+      L.push(`## ${i + 1}. ${o.title || 'Opportunity'}${o.strength ? ` (${o.strength})` : ''}`);
+      if (o.analysis) L.push(o.analysis);
+      if (Array.isArray(o.products) && o.products.length) L.push(`Fit: ${o.products.join(', ')}`);
+      L.push('');
+    });
+    await service.ingest({
+      tenantId,
+      file: { buffer: Buffer.from(L.join('\n'), 'utf8'), mimetype: 'text/markdown', originalname: 'research-synthesis.md' },
+      category: 'ORG_INTELLIGENCE',
+      title: `Research synthesis: ${name}`,
+      metadata: { isResearchSynthesis: true, researchId },
+      streamType: 'WEB',
+      scope: 'PROSPECT',
+      companyId,
+    });
+  } catch (err) {
+    console.warn(`[research] synthesis ingest failed for ${companyId}:`, (err && err.message) || err);
+  }
+}
+
+// Pinned opportunities survive (re)analysis by exact-title carry-over.
+function applyPins(opps, pinnedTitles) {
+  if (!pinnedTitles || !pinnedTitles.size) return opps || [];
+  return (opps || []).map((o) => (o && pinnedTitles.has(o.title) ? { ...o, pinned: true } : o));
+}
+async function pinnedTitlesForCompany(tenantId, companyId) {
+  const r = await db.query(
+    `SELECT opportunities FROM prospect_research
+      WHERE tenant_id = $1 AND company_id = $2 AND status = 'DONE'
+      ORDER BY created_at DESC LIMIT 1`,
+    [tenantId, companyId]
+  );
+  const opps = (r.rows[0] && r.rows[0].opportunities) || [];
+  return new Set(opps.filter((o) => o && o.pinned).map((o) => o.title));
+}
+
+// Toggle a single opportunity's pin on the latest run.
+async function setOpportunityPin(tenantId, companyId, title, pinned) {
+  const run = await findRunForCompany(tenantId, companyId);
+  if (!run) { const e = new Error('no research run for this prospect'); e.status = 404; throw e; }
+  const r = await db.query(`SELECT opportunities FROM prospect_research WHERE id = $1`, [run.id]);
+  const opps = (r.rows[0] && r.rows[0].opportunities) || [];
+  let found = false;
+  const next = opps.map((o) => { if (o && o.title === title) { found = true; return { ...o, pinned: !!pinned }; } return o; });
+  if (!found) { const e = new Error('opportunity not found'); e.status = 404; throw e; }
+  await db.query(`UPDATE prospect_research SET opportunities = $2, updated_at = now() WHERE id = $1`, [run.id, JSON.stringify(next)]);
+  return latest(tenantId, companyId);
+}
+
+module.exports = { start, latest, listForTenant, appendSource, reanalyze, setOpportunityPin };

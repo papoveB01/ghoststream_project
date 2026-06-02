@@ -7,9 +7,10 @@
   <meta name="theme-color" content="#ffffff">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/admin/admin.css">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234F46E5'/%3E%3Ctext x='16' y='22' font-family='Inter' font-size='18' font-weight='800' text-anchor='middle' fill='white'%3EG%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/admin/vendor/driver.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233c7d13'/%3E%3Ctext x='16' y='22' font-family='Inter' font-size='18' font-weight='800' text-anchor='middle' fill='white'%3EG%3C/text%3E%3C/svg%3E">
 </head>
 <body class="admin-page">
 
@@ -17,7 +18,7 @@
     <aside class="sidebar">
       <a class="brand" href="/">
         <span class="brand-mark">
-          <svg width="28" height="28" viewBox="0 0 28 28"><rect width="28" height="28" rx="7" fill="#4F46E5"/><path d="M9 14a5 5 0 0110 0v3l2 2H7l2-2v-3z" fill="white"/></svg>
+          <svg width="28" height="28" viewBox="0 0 28 28"><rect width="28" height="28" rx="7" fill="#3c7d13"/><path d="M9 14a5 5 0 0110 0v3l2 2H7l2-2v-3z" fill="white"/></svg>
         </span>
         <span class="brand-name">GhostStream</span>
       </a>
@@ -25,20 +26,24 @@
       <nav class="sidebar-nav" id="nav">
         <a href="#overview" data-section="overview" class="active">Overview</a>
         <a href="#company" data-section="company">Company</a>
-        <a href="#knowledge" data-section="knowledge">Knowledge Base</a>
-        <a href="#missions" data-section="missions">Missions</a>
-        <a href="#portals" data-section="portals">Portals</a>
-        <a href="#sessions" data-section="sessions">Arena Sessions</a>
-        <a href="#meetings" data-section="meetings">Meetings</a>
+        <a href="#prospects" data-section="prospects">Prospects</a>
+        <a href="#competitors" data-section="competitors">Competitors</a>
+        <a href="#missions" data-section="missions">Engagements</a>
+        <a href="#calendar" data-section="calendar">Calendar</a>
+        <a href="#calls-ops" data-section="calls-ops" class="superadmin-only hidden">Calls (operations)</a>
+        <a href="#sessions" data-section="sessions">Arena Practice</a>
         <a href="#integrations" data-section="integrations">Integrations</a>
-        <a href="#caches" data-section="caches">Gemini Caches</a>
+        <a href="#billing" data-section="billing">Billing</a>
+        <a href="#settings" data-section="settings">Settings</a>
       </nav>
       <div class="sidebar-foot">
-        <div class="user-block">
+        <div class="user-block" title="Profile &amp; account settings">
           <div class="user-avatar" id="user-avatar">A</div>
           <div>
+            <div class="user-name hidden" id="user-name"></div>
             <div class="user-email" id="user-email">—</div>
             <div class="user-role">admin</div>
+            <div class="user-plan hidden" id="user-plan"></div>
           </div>
         </div>
         <button class="logout-btn" id="logout-btn">Sign out</button>
@@ -53,53 +58,32 @@
       <div class="content-body hidden" id="content-body">
         <header class="content-head">
           <h1 id="page-title">Overview</h1>
-          <button class="refresh-btn" id="refresh-btn">↻ Refresh</button>
+          <div class="head-actions">
+            <button class="refresh-btn" id="tour-btn" title="Take the product tour">？ Guide</button>
+            <button class="refresh-btn" id="refresh-btn">↻ Refresh</button>
+          </div>
         </header>
+
+        <!-- Subscription banner (trial countdown / paywall) — populated in init() -->
+        <div class="sub-banner hidden" id="sub-banner"></div>
 
         <!-- OVERVIEW -->
         <section id="section-overview" class="section">
-          <div class="stat-cards" id="stat-cards"></div>
-          <div class="grid-2">
-            <div class="card">
-              <div class="card-h">Gemini Context Caching</div>
-              <div class="card-b" id="cache-stats"></div>
-            </div>
-            <div class="card">
-              <div class="card-h">Environment</div>
-              <div class="card-b" id="env-stats"></div>
-            </div>
-          </div>
+          <div id="dashboard-body"></div>
         </section>
 
-        <!-- COMPANY PROFILE -->
+        <!-- COMPANY FOUNDATION -->
         <section id="section-company" class="section hidden">
           <div class="card">
             <div class="card-b" id="company-header"></div>
           </div>
-          <div class="stat-cards" id="company-stat-cards"></div>
           <div class="card">
-            <div class="card-h">Product lines
-              <span class="pf-hint">File a piece of company intel under one product line, or leave it company-wide. Tagging happens on the Knowledge → Intel tab; you can also add lines here.</span>
-            </div>
-            <div class="card-b">
-              <form id="company-product-form" class="pf-form">
-                <input id="company-product-name" type="text" placeholder="New product line — e.g. Fraud Solution" required>
-                <input id="company-product-desc" type="text" placeholder="Description (optional)">
-                <button type="submit" class="primary-cta">Add product line</button>
-              </form>
-              <div class="table-wrap" id="company-product-list"></div>
-            </div>
-          </div>
-          <div class="card">
-            <div class="card-h">Company intel
-              <span class="pf-hint">Everything the AI knows about your own company — file uploads, web pages, social posts — grouped by product line. Add more from the Knowledge → Intel tab ("Our company").</span>
-            </div>
-            <div class="card-b" id="company-intel"></div>
+            <div class="card-b" id="company-workspace"></div>
           </div>
         </section>
 
         <!-- KNOWLEDGE BASE -->
-        <section id="section-knowledge" class="section hidden">
+        <section id="section-knowledge" class="section hidden" hidden>
           <div class="kb-tabs" id="kb-tabs">
             <button class="kb-tab active" data-kb-tab="status">Status</button>
             <button class="kb-tab" data-kb-tab="library">Library</button>
@@ -159,7 +143,7 @@
 
           <!-- LIBRARY -->
           <div id="kb-pane-library" class="kb-pane hidden">
-            <div class="kb-subtle" style="margin:2px 0 14px">Intel about your <strong>competitors</strong> and <strong>prospects</strong>, grouped by who it's about. Your own company's intel lives on the <strong>Company</strong> page.</div>
+            <div class="kb-subtle" style="margin:2px 0 14px">Everything you've filed about your <strong>competitors</strong> and <strong>prospects</strong>, grouped by who it's about. Intel about your own company lives on the <strong>Company</strong> page.</div>
             <div id="kb-library-body"></div>
           </div>
 
@@ -175,11 +159,6 @@
                 <span class="kb-source-icon">🌐</span>
                 <span class="kb-source-name">Web page</span>
                 <span class="kb-source-desc">Pull a page via Firecrawl — pricing pages, product docs, competitor sites.</span>
-              </button>
-              <button type="button" class="kb-source-card stream-social" data-kb-source="social">
-                <span class="kb-source-icon">📱</span>
-                <span class="kb-source-name">Social posts</span>
-                <span class="kb-source-desc">Fetch posts from a connected X / LinkedIn / TikTok handle via Phyllo.</span>
               </button>
             </div>
 
@@ -218,7 +197,7 @@
                         <button type="button" class="kb-entity-opt" data-lane="file" data-entity="COMPETITOR">A competitor</button>
                       </div>
                       <div class="kb-entity-detail" data-lane="file" data-entity-detail="TENANT">
-                        <div class="kb-entity-tenant" id="kb-file-tenant-label">Workspace intel (Basis — available to every mission)</div>
+                        <div class="kb-entity-tenant" id="kb-file-tenant-label">Workspace intel (Basis — available to every engagement)</div>
                         <select id="kb-file-tenant-select" class="kb-filter-select hidden"></select>
                         <div class="field" style="margin-top:10px">
                           <label for="kb-file-product">Product line <span class="field-hint-inline">(optional — empty = company-wide intel)</span></label>
@@ -230,7 +209,7 @@
                       <div class="kb-entity-detail hidden" data-lane="file" data-entity-detail="PROSPECT">
                         <input id="kb-file-prospect" type="text" list="kb-file-prospect-list" placeholder="Pick an existing prospect, or type a new company name">
                         <datalist id="kb-file-prospect-list"></datalist>
-                        <div class="field-hint">Stored as Tier 2 "Prospect Memory" — surfaces in briefs for missions against this company.</div>
+                        <div class="field-hint">Stored as Tier 2 "Prospect Memory" — surfaces in briefs for engagements against this company.</div>
                         <div class="field" style="margin-top:10px">
                           <label for="kb-file-persona">Buyer persona <span class="field-hint-inline">(optional)</span></label>
                           <input id="kb-file-persona" type="text" list="kb-file-persona-list" placeholder="Pick a buyer persona, or type a new one — e.g. CFO, Head of Fraud">
@@ -242,6 +221,15 @@
                         <input id="kb-file-competitor" type="text" list="kb-file-competitor-list" placeholder="Pick an existing competitor, or type a new one">
                         <datalist id="kb-file-competitor-list"></datalist>
                         <div class="field-hint">Stored as competitor / battlecard intel.</div>
+                        <div class="kb-applies-block" data-lane="file" style="margin-top:10px">
+                          <label>Which of our products does this battlecard cover?</label>
+                          <label class="kb-checkbox kb-applies-all">
+                            <input type="checkbox" data-lane="file" data-applies-all checked>
+                            <span><strong>All products</strong> — score the whole portfolio against this competitor</span>
+                          </label>
+                          <div class="kb-applies-list" data-lane="file" data-applies-list hidden></div>
+                          <div class="field-hint">Untick "All products" to scope this battlecard to specific product lines. The AI scoreboard will be scoped accordingly.</div>
+                        </div>
                       </div>
                     </div>
                     <div class="kb-btn-row">
@@ -285,7 +273,7 @@
                         <button type="button" class="kb-entity-opt" data-lane="web" data-entity="COMPETITOR">A competitor</button>
                       </div>
                       <div class="kb-entity-detail" data-lane="web" data-entity-detail="TENANT">
-                        <div class="kb-entity-tenant" id="kb-web-tenant-label">Workspace intel (Basis — available to every mission)</div>
+                        <div class="kb-entity-tenant" id="kb-web-tenant-label">Workspace intel (Basis — available to every engagement)</div>
                         <select id="kb-web-tenant-select" class="kb-filter-select hidden"></select>
                         <div class="field" style="margin-top:10px">
                           <label for="kb-web-product">Product line <span class="field-hint-inline">(optional — empty = company-wide intel)</span></label>
@@ -297,7 +285,7 @@
                       <div class="kb-entity-detail hidden" data-lane="web" data-entity-detail="PROSPECT">
                         <input id="kb-web-prospect" type="text" list="kb-web-prospect-list" placeholder="Pick an existing prospect, or type a new company name">
                         <datalist id="kb-web-prospect-list"></datalist>
-                        <div class="field-hint">Stored as Tier 2 "Prospect Memory" — surfaces in briefs for missions against this company.</div>
+                        <div class="field-hint">Stored as Tier 2 "Prospect Memory" — surfaces in briefs for engagements against this company.</div>
                         <div class="field" style="margin-top:10px">
                           <label for="kb-web-persona">Buyer persona <span class="field-hint-inline">(optional)</span></label>
                           <input id="kb-web-persona" type="text" list="kb-web-persona-list" placeholder="Pick a buyer persona, or type a new one — e.g. CFO, Head of Fraud">
@@ -309,6 +297,15 @@
                         <input id="kb-web-competitor" type="text" list="kb-web-competitor-list" placeholder="Pick an existing competitor, or type a new one">
                         <datalist id="kb-web-competitor-list"></datalist>
                         <div class="field-hint">Stored as competitor / battlecard intel.</div>
+                        <div class="kb-applies-block" data-lane="web" style="margin-top:10px">
+                          <label>Which of our products does this battlecard cover?</label>
+                          <label class="kb-checkbox kb-applies-all">
+                            <input type="checkbox" data-lane="web" data-applies-all checked>
+                            <span><strong>All products</strong> — score the whole portfolio against this competitor</span>
+                          </label>
+                          <div class="kb-applies-list" data-lane="web" data-applies-list hidden></div>
+                          <div class="field-hint">Untick "All products" to scope this battlecard to specific product lines.</div>
+                        </div>
                       </div>
                     </div>
                     <div class="field kb-inline-field">
@@ -324,118 +321,45 @@
               </div>
             </div>
 
-            <!-- SOCIAL SUB-FORM (Phyllo) -->
-            <div id="kb-subpane-social" class="kb-subpane hidden">
-              <div class="card">
-                <div class="card-h">📱 Add social posts (Phyllo)</div>
-                <div class="card-b">
-                  <form id="kb-social-form" class="kb-form">
-                    <div class="field">
-                      <label for="kb-social-account">Phyllo account ID</label>
-                      <input id="kb-social-account" name="accountId" type="text" placeholder="e.g. e8a4f2b1-..." required>
-                      <div class="field-hint">Created via Phyllo Connect when a user links their X / LinkedIn / TikTok handle. Find it on dashboard.getphyllo.com → Accounts.</div>
-                    </div>
-                    <div class="field">
-                      <label for="kb-social-category">Category</label>
-                      <select id="kb-social-category" name="category" required>
-                        <option value="BATTLECARDS">Battlecards</option>
-                        <option value="PRODUCT_INTEL">Product Intel</option>
-                        <option value="ORG_INTELLIGENCE">Org Intelligence</option>
-                      </select>
-                    </div>
-                    <div class="field kb-inline-pair">
-                      <div>
-                        <label for="kb-social-since">From date</label>
-                        <input id="kb-social-since" name="since" type="date">
-                      </div>
-                      <div>
-                        <label for="kb-social-limit">Limit</label>
-                        <input id="kb-social-limit" name="limit" type="number" min="1" max="100" value="25">
-                      </div>
-                    </div>
-                    <div class="field kb-entity-block" data-lane="social">
-                      <label>What are these posts about?</label>
-                      <div class="kb-entity-seg">
-                        <button type="button" class="kb-entity-opt active" data-lane="social" data-entity="TENANT">Our company</button>
-                        <button type="button" class="kb-entity-opt" data-lane="social" data-entity="PROSPECT">A prospect</button>
-                        <button type="button" class="kb-entity-opt" data-lane="social" data-entity="COMPETITOR">A competitor</button>
-                      </div>
-                      <div class="kb-entity-detail" data-lane="social" data-entity-detail="TENANT">
-                        <div class="kb-entity-tenant" id="kb-social-tenant-label">Workspace intel (Basis — available to every mission)</div>
-                        <select id="kb-social-tenant-select" class="kb-filter-select hidden"></select>
-                        <div class="field" style="margin-top:10px">
-                          <label for="kb-social-product">Product line <span class="field-hint-inline">(optional — applies to every post; empty = company-wide)</span></label>
-                          <input id="kb-social-product" type="text" list="kb-social-product-list" placeholder="Pick a product line, or type a new one — e.g. Fraud Solution, Payment Gateway">
-                          <datalist id="kb-social-product-list"></datalist>
-                          <div class="field-hint">Files every post in this sync under one product line. Leave empty for company-wide intel.</div>
-                        </div>
-                      </div>
-                      <div class="kb-entity-detail hidden" data-lane="social" data-entity-detail="PROSPECT">
-                        <input id="kb-social-prospect" type="text" list="kb-social-prospect-list" placeholder="Pick an existing prospect, or type a new company name">
-                        <datalist id="kb-social-prospect-list"></datalist>
-                        <div class="field-hint">Every post in this sync is stored as Tier 2 "Prospect Memory" for this company.</div>
-                        <div class="field" style="margin-top:10px">
-                          <label for="kb-social-persona">Buyer persona <span class="field-hint-inline">(optional — applies to every post)</span></label>
-                          <input id="kb-social-persona" type="text" list="kb-social-persona-list" placeholder="Pick a buyer persona, or type a new one — e.g. CFO, Head of Fraud">
-                          <datalist id="kb-social-persona-list"></datalist>
-                          <div class="field-hint">The buyer these posts speak to inside the prospect's org. Leave empty if not persona-specific.</div>
-                        </div>
-                      </div>
-                      <div class="kb-entity-detail hidden" data-lane="social" data-entity-detail="COMPETITOR">
-                        <input id="kb-social-competitor" type="text" list="kb-social-competitor-list" placeholder="Pick an existing competitor, or type a new one">
-                        <datalist id="kb-social-competitor-list"></datalist>
-                        <div class="field-hint">Every post in this sync is stored as competitor / battlecard intel.</div>
-                      </div>
-                    </div>
-                    <div class="field kb-inline-field">
-                      <label class="kb-checkbox">
-                        <input id="kb-social-dryrun" type="checkbox" checked>
-                        <span>Preview only (dry run — fetches but doesn't ingest)</span>
-                      </label>
-                    </div>
-                    <button type="submit" class="primary-cta" id="kb-social-btn">Fetch &amp; index</button>
-                    <div id="kb-social-result" class="kb-result hidden"></div>
-                  </form>
-                </div>
-              </div>
-            </div>
           </div>
         </section>
 
         <!-- MISSIONS -->
         <section id="section-missions" class="section hidden">
           <div class="kb-tabs" id="missions-tabs">
-            <button class="kb-tab active" data-missions-tab="upcoming">Upcoming</button>
+            <button class="kb-tab active" data-missions-tab="schedule">Schedule</button>
+            <button class="kb-tab" data-missions-tab="upcoming">Upcoming</button>
             <button class="kb-tab" data-missions-tab="past">Past</button>
-            <button class="kb-tab" data-missions-tab="schedule">Schedule</button>
           </div>
 
           <!-- UPCOMING + PAST share the same list rendering -->
-          <div id="missions-pane-upcoming" class="kb-pane">
+          <div id="missions-pane-upcoming" class="kb-pane hidden">
             <div class="card">
-              <div class="card-h">Upcoming missions
-                <span class="pf-hint">T-24h before the call, the brief auto-generates. Click any row for the full brief.</span>
+              <div class="card-h">Upcoming engagements
+                <span class="pf-hint">Your scheduled calls. A prep brief is written automatically 24 hours before each one — click any row to read it.</span>
               </div>
               <div class="card-b table-wrap" id="missions-upcoming-table"></div>
             </div>
           </div>
           <div id="missions-pane-past" class="kb-pane hidden">
             <div class="card">
-              <div class="card-h">Past missions</div>
+              <div class="card-h">Past engagements
+                <span class="pf-hint">Calls you've already had. Completed ones show a ▶ recording — click a row for the brief and the AI's analysis of how it went.</span>
+              </div>
               <div class="card-b table-wrap" id="missions-past-table"></div>
             </div>
+            <div id="missions-unlinked-recordings"></div>
           </div>
 
           <!-- SCHEDULE form -->
-          <div id="missions-pane-schedule" class="kb-pane hidden">
+          <div id="missions-pane-schedule" class="kb-pane">
             <div class="card">
-              <div class="card-h">Schedule a mission
-                <span class="pf-hint">Three fields and you're done. Coming soon: pick straight from your Google / Outlook calendar.</span>
+              <div class="card-h">Schedule an engagement
+                <span class="pf-hint">Set up a call in three fields. (Coming soon: pull one straight from your Google or Outlook calendar.)</span>
               </div>
               <div class="card-b">
                 <div class="schedule-import-row" id="missions-import-row">
-                  <button type="button" class="kb-secondary-btn" id="missions-import-btn" disabled title="Connect a calendar in Integrations first">📅 Import from calendar</button>
-                  <button type="button" class="kb-secondary-btn" id="missions-calendly-btn" disabled title="Connect Calendly in Integrations first">🗓️ From Calendly</button>
+                  <button type="button" class="kb-secondary-btn" id="missions-import-btn" disabled title="Connect a calendar in Integrations first">📅 Check upcoming meetings</button>
                   <span class="schedule-import-hint" id="missions-import-hint">Connect a calendar in <a href="#integrations">Integrations</a> to skip the typing — or point Calendly at us to skip the form entirely.</span>
                 </div>
                 <form id="missions-form" class="kb-form">
@@ -454,7 +378,10 @@
                     </div>
                     <div>
                       <label for="missions-url">Meeting URL <span class="field-hint-inline">(Zoom / Meet / Teams)</span></label>
-                      <input id="missions-url" name="meetingUrl" type="url" placeholder="https://zoom.us/j/…">
+                      <div class="kb-input-with-action">
+                        <input id="missions-url" name="meetingUrl" type="url" placeholder="https://zoom.us/j/…">
+                        <button type="button" class="kb-secondary-btn" id="missions-generate-teams-btn" disabled title="Connect Microsoft 365 in Integrations first">🎥 Generate Teams meeting</button>
+                      </div>
                     </div>
                   </div>
 
@@ -478,8 +405,22 @@
                         </div>
                       </div>
                       <div class="field">
-                        <label for="missions-emails">Attendee emails <span class="field-hint-inline">(one per line)</span></label>
-                        <textarea id="missions-emails" name="prospectEmails" rows="2" placeholder="bill@acme.com&#10;sara@acme.com"></textarea>
+                        <label>Buyer-side attendees <span class="field-hint-inline">(pick from contacts on file — or type a new name + email)</span></label>
+                        <div class="ma-host" id="missions-attendees-host">
+                          <div class="ma-chips" id="missions-attendees-chips"></div>
+                          <div class="ma-autocomplete-wrap">
+                            <input id="missions-attendees-input" type="text" placeholder="Start typing a name, email or role…">
+                            <div class="ma-autocomplete-results hidden" id="missions-attendees-results"></div>
+                          </div>
+                          <div class="ma-quickadd hidden" id="missions-attendees-quickadd">
+                            <input id="missions-qa-name"  type="text"  placeholder="Name" maxlength="200">
+                            <input id="missions-qa-email" type="email" placeholder="Email">
+                            <input id="missions-qa-role"  type="text"  placeholder="Role (e.g. CFO)" maxlength="100">
+                            <button type="button" class="kb-secondary-btn" id="missions-qa-save-btn">Add &amp; pick</button>
+                            <button type="button" class="kb-link-btn"      id="missions-qa-cancel-btn">Cancel</button>
+                          </div>
+                        </div>
+                        <textarea id="missions-emails" name="prospectEmails" class="hidden" rows="1"></textarea>
                       </div>
                       <div class="field">
                         <label>Tags <span class="field-hint-inline">(products · personas · competitors — auto-filled from your last meeting with this prospect)</span></label>
@@ -496,7 +437,7 @@
                     </div>
                   </details>
 
-                  <button type="submit" class="primary-cta" id="missions-submit-btn">Schedule mission</button>
+                  <button type="submit" class="primary-cta" id="missions-submit-btn">Schedule engagement</button>
                   <div id="missions-form-result" class="kb-result hidden"></div>
                 </form>
               </div>
@@ -508,42 +449,114 @@
             <div class="card">
               <div class="card-h">
                 <button type="button" class="kb-secondary-btn" id="missions-detail-back">← Back</button>
-                <span id="missions-detail-title">Mission</span>
+                <span id="missions-detail-title">Engagement</span>
               </div>
               <div class="card-b" id="missions-detail-body"></div>
             </div>
           </div>
         </section>
 
-        <!-- PORTALS -->
-        <section id="section-portals" class="section hidden">
-          <div class="card">
-            <div class="card-h">Recent portals</div>
-            <div class="card-b table-wrap" id="portals-table"></div>
+        <!-- CALLS (unified portals + meetings per ADR-003) -->
+        <section id="section-calls" class="section hidden">
+          <div class="calls-controls">
+            <div class="calls-tenant-row hidden" id="calls-tenant-row">
+              <label for="calls-tenant-select">Tenant</label>
+              <select id="calls-tenant-select"></select>
+            </div>
+            <div class="calls-tabs" id="calls-tabs" role="tablist">
+              <button type="button" class="calls-tab active" data-status="" role="tab">All <span class="calls-tab-count" data-count="all"></span></button>
+              <button type="button" class="calls-tab" data-status="pending" role="tab">Pending <span class="calls-tab-count" data-count="pending"></span></button>
+              <button type="button" class="calls-tab" data-status="analysing" role="tab">Analysing <span class="calls-tab-count" data-count="analysing"></span></button>
+              <button type="button" class="calls-tab" data-status="ready" role="tab">Ready <span class="calls-tab-count" data-count="ready"></span></button>
+              <button type="button" class="calls-tab" data-status="failed" role="tab">Failed <span class="calls-tab-count" data-count="failed"></span></button>
+            </div>
+            <div class="calls-tools">
+              <input id="calls-search" type="search" class="calls-search" placeholder="Search title, participants, company…" autocomplete="off">
+              <label class="calls-samples-toggle">
+                <input id="calls-samples-toggle" type="checkbox"> Show samples
+              </label>
+            </div>
+            <div class="calls-chips" id="calls-chips"></div>
+          </div>
+          <div class="calls-layout">
+            <div class="card calls-table-card">
+              <div class="card-h">Calls</div>
+              <div class="card-b table-wrap" id="calls-table"></div>
+              <div class="calls-pagination" id="calls-pagination"></div>
+            </div>
+            <aside class="calls-facets" id="calls-facets"></aside>
           </div>
         </section>
 
-        <!-- SESSIONS -->
+        <!-- CALLS OPERATIONS (superadmin only — replay / reanalyze queues) -->
+        <section id="section-calls-ops" class="section hidden">
+          <div class="card">
+            <div class="card-h">Operations — failed &amp; stuck</div>
+            <div class="card-b table-wrap" id="calls-ops-table"></div>
+          </div>
+        </section>
+
+        <!-- SESSIONS (Arena practice history + coaching) -->
         <section id="section-sessions" class="section hidden">
           <div class="card">
-            <div class="card-h">Recent Arena sessions</div>
-            <div class="card-b table-wrap" id="sessions-table"></div>
+            <div class="card-h">Arena practice history
+              <span class="pf-hint">Your past practice runs against the AI, each scored with coaching feedback. Click a row for the full transcript and breakdown.</span>
+            </div>
+            <div class="card-b">
+              <div class="sessions-filters" id="sessions-filters"></div>
+              <div class="table-wrap" id="sessions-table"></div>
+            </div>
+          </div>
+          <div class="card hidden" id="session-detail-card">
+            <div class="card-h">
+              <a href="#" id="session-detail-back" class="link-back">← Back to history</a>
+            </div>
+            <div class="card-b" id="session-detail-body"></div>
           </div>
         </section>
 
-        <!-- MEETINGS -->
-        <section id="section-meetings" class="section hidden">
+        <!-- PROSPECTS -->
+        <section id="section-prospects" class="section hidden">
           <div class="card">
-            <div class="card-h">Recent meetings</div>
-            <div class="card-b table-wrap" id="meetings-table"></div>
+            <div class="card-h">Prospects
+              <span class="pf-hint">The companies you're selling to, and the people you deal with there. Add each contact's name, email, and role, and your meetings, Teams invites, and briefs fill themselves in.</span>
+            </div>
+            <div class="card-b">
+              <div id="prospects-body"><div class="kb-subtle">Loading…</div></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- COMPETITORS -->
+        <section id="section-competitors" class="section hidden">
+          <div class="card">
+            <div class="card-h">Competitors
+              <span class="pf-hint">The rivals you sell against. Each one gets a battlecard — their strengths, their weaknesses, and how you win against them — that you can lean on in any brief.</span>
+            </div>
+            <div class="card-b">
+              <div id="competitors-body"><div class="kb-subtle">Loading…</div></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- CALENDAR -->
+        <section id="section-calendar" class="section hidden">
+          <div class="card">
+            <div class="card-h">Upcoming meetings
+              <span class="pf-hint">Your next 14 days of meetings, pulled from Microsoft 365 and Calendly. Click "Schedule engagement" on any meeting to send an AI notetaker.</span>
+              <span class="card-h-actions"><button type="button" class="kb-link-btn" id="calendar-refresh-btn" title="Reload">↻ Refresh</button></span>
+            </div>
+            <div class="card-b">
+              <div id="calendar-body"><div class="kb-subtle">Loading…</div></div>
+            </div>
           </div>
         </section>
 
         <!-- INTEGRATIONS -->
         <section id="section-integrations" class="section hidden">
           <div class="card">
-            <div class="card-h">Calendar integrations
-              <span class="pf-hint">Stop re-typing meeting details. Connect a calendar to import events, or point Calendly at us to auto-create missions when prospects book.</span>
+            <div class="card-h">Calendar &amp; booking integrations
+              <span class="pf-hint">Connect your calendar so meetings flow straight into the scheduler — or link Calendly so new bookings turn into engagements on their own.</span>
             </div>
             <div class="card-b">
               <div id="integrations-body"><div class="kb-subtle">Loading…</div></div>
@@ -551,17 +564,214 @@
           </div>
         </section>
 
-        <!-- CACHES -->
-        <section id="section-caches" class="section hidden">
+        <!-- BILLING — subscription, usage, and plan management -->
+        <section id="section-billing" class="section hidden">
           <div class="card">
-            <div class="card-h">Active Gemini caches</div>
-            <div class="card-b table-wrap" id="caches-table"></div>
+            <div class="card-h">Your subscription</div>
+            <div class="card-b" id="bill-summary"><div class="kb-subtle">Loading…</div></div>
+          </div>
+          <div class="card">
+            <div class="card-h">Usage this month</div>
+            <div class="card-b" id="bill-usage"></div>
+          </div>
+          <div class="card">
+            <div class="card-h">Plans</div>
+            <div class="card-b"><div class="plan-grid" id="bill-plans"></div></div>
+          </div>
+        </section>
+
+        <!-- SETTINGS — API tokens for non-browser clients (MCP clients, AI agents, scripts) -->
+        <section id="section-settings" class="section hidden">
+          <div class="card">
+            <div class="card-h">KB system
+              <span class="pf-hint">The health of your AI's knowledge base, plus admin tools to test what it retrieves and rebuild its memory. For power users — you rarely need to touch this.</span>
+            </div>
+            <div class="card-b">
+              <div id="settings-kb-status"><div class="kb-subtle">Loading…</div></div>
+              <div style="margin-top:14px">
+                <h4 style="font-size:13px;margin:0 0 6px 0">Retrieval probe</h4>
+                <span class="kb-subtle">Tests what chunks would surface for a query. Useful when debugging "why isn't this doc being used in briefs?".</span>
+                <div class="prospect-quick-row" style="grid-template-columns: 1fr 100px auto; margin-top:6px">
+                  <input id="settings-kb-search-q" type="text" placeholder="e.g. enterprise pricing 30-day exit clause">
+                  <input id="settings-kb-search-k" type="number" min="1" max="50" value="8">
+                  <button class="kb-secondary-btn" id="settings-kb-search-btn">Probe</button>
+                </div>
+                <div id="settings-kb-search-results" style="margin-top:8px"></div>
+              </div>
+              <div style="margin-top:14px">
+                <h4 style="font-size:13px;margin:0 0 6px 0">AI context cache</h4>
+                <span class="kb-subtle">When KB docs are added or removed, the workspace's AI context cache rebuilds on its own. Use this only if you suspect drift.</span>
+                <button class="kb-secondary-btn" id="settings-kb-cache-rebuild-btn" style="margin-top:6px">Rebuild context cache</button>
+                <div id="settings-kb-cache-result" class="kb-result hidden" style="margin-top:8px"></div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-h">API tokens</div>
+            <div class="card-b">
+              <p>Keys that let outside tools — AI agents, assistants, and scripts — connect to your workspace. Treat one like a password: anyone who has it can act as you.</p>
+              <form id="api-tokens-create-form" class="kb-form">
+                <div class="field">
+                  <label for="api-token-label">Label</label>
+                  <input id="api-token-label" name="label" type="text" required maxlength="100" placeholder="e.g. MCP client on Win desktop">
+                </div>
+                <div class="field">
+                  <label for="api-token-expiry">Expires in</label>
+                  <select id="api-token-expiry" name="expiry">
+                    <option value="30">30 days</option>
+                    <option value="90" selected>90 days</option>
+                    <option value="365">1 year</option>
+                    <option value="">Never</option>
+                  </select>
+                </div>
+                <button type="submit" class="primary-cta" id="api-token-create-btn">Create token</button>
+              </form>
+            </div>
+          </div>
+
+          <div class="card hidden" id="api-token-reveal-card">
+            <div class="card-h">Copy your new token now — you won't see it again</div>
+            <div class="card-b">
+              <div class="api-token-plaintext-row">
+                <code id="api-token-plaintext" class="api-token-plaintext"></code>
+                <button type="button" id="api-token-copy" class="primary-cta">Copy</button>
+              </div>
+              <p class="field-hint">Treat it like a password. If it leaks, revoke it below and mint a new one.</p>
+              <button type="button" id="api-token-reveal-done">Done</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h">Your tokens</div>
+            <div class="card-b table-wrap" id="api-tokens-table"></div>
+          </div>
+        </section>
+
+        <!-- PROFILE — the signed-in user's own account management -->
+        <section id="section-profile" class="section hidden">
+          <!-- Identity header -->
+          <div class="card">
+            <div class="card-b">
+              <div class="profile-hero">
+                <div class="profile-hero-avatar" id="profile-avatar">—</div>
+                <div class="profile-hero-meta">
+                  <div class="profile-hero-name" id="profile-hero-name">—</div>
+                  <div class="profile-hero-email" id="profile-hero-email">—</div>
+                </div>
+                <span class="pill profile-role-pill" id="profile-hero-role"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Account details — read view with inline edit -->
+          <div class="card">
+            <div class="card-h">Account details</div>
+            <div class="card-b">
+              <div class="profile-rows">
+                <!-- Name (editable) -->
+                <div class="profile-row" id="row-name">
+                  <div class="profile-row-label">Full name</div>
+                  <div class="profile-row-value">
+                    <span class="profile-row-display" id="name-display">—</span>
+                    <div class="profile-row-edit hidden" id="name-edit">
+                      <input id="profile-first-name" type="text" placeholder="First name" maxlength="100" autocomplete="given-name">
+                      <input id="profile-last-name" type="text" placeholder="Last name" maxlength="100" autocomplete="family-name">
+                    </div>
+                    <div class="profile-msg hidden" id="profile-msg"></div>
+                  </div>
+                  <div class="profile-row-actions">
+                    <button type="button" class="kb-secondary-btn" id="name-edit-btn">Edit</button>
+                    <span class="profile-row-editing hidden" id="name-editing-actions">
+                      <button type="button" class="primary-cta" id="name-save-btn">Save</button>
+                      <button type="button" class="kb-secondary-btn" id="name-cancel-btn">Cancel</button>
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Email (locked) -->
+                <div class="profile-row">
+                  <div class="profile-row-label">Email</div>
+                  <div class="profile-row-value">
+                    <span class="profile-row-display" id="email-display">—</span>
+                    <div class="profile-row-hint">Tied to your workspace — can't be changed.</div>
+                  </div>
+                  <div class="profile-row-actions">
+                    <span class="profile-locked" title="Your sign-in email is tied to your workspace and can't be changed.">🔒&nbsp;Locked</span>
+                  </div>
+                </div>
+
+                <!-- Role -->
+                <div class="profile-row">
+                  <div class="profile-row-label">Role</div>
+                  <div class="profile-row-value"><span class="pill profile-role-pill" id="role-display"></span></div>
+                  <div class="profile-row-actions"></div>
+                </div>
+
+                <!-- Member since -->
+                <div class="profile-row">
+                  <div class="profile-row-label">Member since</div>
+                  <div class="profile-row-value"><span class="profile-row-display" id="created-display">—</span></div>
+                  <div class="profile-row-actions"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Subscription (summary + manage billing; full controls on the Billing page) -->
+          <div class="card">
+            <div class="card-h">Subscription</div>
+            <div class="card-b" id="profile-sub-body"><div class="kb-subtle">Loading…</div></div>
+          </div>
+
+          <!-- Password -->
+          <div class="card">
+            <div class="card-h">Password</div>
+            <div class="card-b">
+              <div class="profile-row" id="row-password">
+                <div class="profile-row-label">Password</div>
+                <div class="profile-row-value"><span class="profile-row-display profile-dots">••••••••••••</span></div>
+                <div class="profile-row-actions">
+                  <button type="button" class="kb-secondary-btn" id="pw-edit-btn">Change</button>
+                </div>
+              </div>
+              <form id="password-form" class="kb-form profile-pw-form hidden">
+                <div class="field">
+                  <label for="pw-current">Current password</label>
+                  <input id="pw-current" name="currentPassword" type="password" autocomplete="current-password">
+                </div>
+                <div class="kb-inline-pair">
+                  <div class="field">
+                    <label for="pw-new">New password</label>
+                    <input id="pw-new" name="newPassword" type="password" autocomplete="new-password" minlength="12">
+                    <p class="field-hint">At least 12 characters.</p>
+                  </div>
+                  <div class="field">
+                    <label for="pw-new2">Confirm new password</label>
+                    <input id="pw-new2" name="newPassword2" type="password" autocomplete="new-password" minlength="12">
+                  </div>
+                </div>
+                <div class="profile-msg hidden" id="password-msg"></div>
+                <div class="profile-form-actions">
+                  <button type="submit" class="primary-cta" id="password-save-btn">Update password</button>
+                  <button type="button" class="kb-secondary-btn" id="pw-cancel-btn">Cancel</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Trusted devices — new-device email-OTP kill switch -->
+          <div class="card">
+            <div class="card-h">Trusted devices
+              <span class="pf-hint">Devices that have passed email verification and can sign in without a code. Revoke any you don't recognize — it'll need a fresh code next time.</span>
+            </div>
+            <div class="card-b" id="profile-devices-body"><div class="kb-subtle">Loading…</div></div>
           </div>
         </section>
       </div>
     </main>
   </div>
 
+  <script src="/admin/vendor/driver.js.iife.js"></script>
   <script src="/admin/admin.js"></script>
 </body>
 </html>

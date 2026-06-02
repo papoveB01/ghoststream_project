@@ -20,6 +20,8 @@ const parsers = require('./parsers');
 const chunker = require('./chunker');
 const embeddings = require('./embeddings');
 const keypoints = require('./keypoints');
+const assessment = require('./assessment');
+const relevance = require('./relevance');
 const globalCache = require('./globalCache');
 const web = require('./web');
 const social = require('./social');
@@ -27,6 +29,30 @@ const { FOUNDERS_TENANT_ID } = require('../users');
 
 const VALID_CATEGORIES = new Set(['PRODUCT_INTEL', 'ORG_INTELLIGENCE', 'BATTLECARDS']);
 const VALID_STREAM_TYPES = new Set(['FILE', 'WEB', 'SOCIAL']);
+
+// Product-level competitor intel is gated behind the competitor first having at
+// least one main-company (competitor-wide) doc. Shared 409 message so the API
+// and the per-route guards in portfolio.js speak with one voice.
+const MAIN_INTEL_REQUIRED_MSG =
+  'Add main-company intel for this competitor before filing intel on one of their products.';
+
+// True once the competitor has ≥1 READY, competitor-wide doc (one tagged to the
+// competitor with no metadata.competitorProductId). Drives the "establish the
+// competitor first" gate on all their-product work.
+async function competitorHasMainIntel(tenantId, competitorId) {
+  if (!tenantId || !competitorId) return false;
+  const r = await db.query(
+    `SELECT 1 FROM kb_documents d
+       JOIN kb_document_competitors j ON j.document_id = d.id
+      WHERE d.tenant_id = $1 AND j.competitor_id = $2 AND d.status = 'READY'
+        AND COALESCE(d.metadata->>'competitorProductId', '') = ''
+        AND COALESCE(d.metadata->>'relevanceVerified', 'true') <> 'false'
+        AND COALESCE(d.metadata->>'isBattlecardSnapshot', '') <> 'true'
+      LIMIT 1`,
+    [tenantId, competitorId]
+  );
+  return r.rows.length > 0;
+}
 // What the document is ABOUT — the hard entity distinction:
 //   TENANT     = the customer's own company (Basis / Home-Team intel)
 //   PROSPECT   = a specific prospect company (Prospect Memory)
@@ -139,6 +165,15 @@ async function ingest({
   scope = 'TENANT',
   // For scope=PROSPECT: the companies row this doc belongs to (same tenant).
   companyId = null,
+  // For BATTLECARDS / scope=COMPETITOR: which of OUR products this battlecard
+  // applies to. Stored on metadata.appliesToProductIds (NOT the kb_document_products
+  // junction — that's deliberately 0-or-1 per migration 0009). Empty / null /
+  // missing = applies to all products (the default).
+  appliesToProductIds = null,
+  // For scope=COMPETITOR: which of THEIR products (competitor_offerings.id) this
+  // doc is filed under. Attribution only — stored on metadata.competitorProductId;
+  // battlecard synthesis stays competitor-wide. null = the competitor generally.
+  competitorProductId = null,
 }) {
   if (!tenantId) { const e = new Error('tenantId required'); e.status = 400; throw e; }
   assertValidCategory(category);
@@ -160,6 +195,7 @@ async function ingest({
 
   // ----- scope-specific validation + normalization -----
   const compIds = Array.isArray(competitorIds) ? competitorIds.filter(Boolean) : [];
+  let competitorName = null;
   if (scope === 'TENANT') {
     companyId = null; // a doc about our own company never carries a prospect link
   } else if (scope === 'PROSPECT') {
@@ -176,12 +212,42 @@ async function ingest({
       const e = new Error('scope=COMPETITOR requires at least one competitorId'); e.status = 400; throw e;
     }
     const found = await db.query(
-      `SELECT id FROM competitors WHERE tenant_id = $1 AND id = ANY($2)`,
+      `SELECT id, name FROM competitors WHERE tenant_id = $1 AND id = ANY($2)`,
       [tenantId, compIds]
     );
     if (found.rows.length !== compIds.length) {
       const e = new Error('one or more competitors not found in this workspace'); e.status = 404; throw e;
     }
+    competitorName = found.rows.map((r) => r.name).join(' / ');
+  }
+
+  // THEIR-product attribution: only honoured for competitor docs, and only when
+  // the offering actually belongs to one of the tagged competitors. Resolved
+  // (and gated) up here — before the slow parse/embed steps — so a blocked
+  // product upload rejects cheaply without burning an embedding call.
+  let cleanCompetitorProductId = null;
+  let competitorProductOwnerId = null;
+  let competitorProductName = null;
+  if (competitorProductId && typeof competitorProductId === 'string' && compIds.length) {
+    const off = await db.query(
+      `SELECT competitor_id, name FROM competitor_offerings
+        WHERE tenant_id = $1 AND id = $2 AND competitor_id = ANY($3)`,
+      [tenantId, competitorProductId, compIds]
+    );
+    if (off.rows.length) {
+      cleanCompetitorProductId = competitorProductId;
+      competitorProductOwnerId = off.rows[0].competitor_id;
+      competitorProductName = off.rows[0].name;
+    }
+  }
+  // Gate: don't accept product-level intel until the competitor has main-company
+  // intel on file. This is the single chokepoint for every product-doc path —
+  // the per-offering Deck/URL tabs and the web-search research/ingest flow all
+  // land here via ingest().
+  if (cleanCompetitorProductId && !(await competitorHasMainIntel(tenantId, competitorProductOwnerId))) {
+    const e = new Error(MAIN_INTEL_REQUIRED_MSG);
+    e.status = 409;
+    throw e;
   }
 
   // 1. Parse
@@ -210,8 +276,67 @@ async function ingest({
   // every page load. Best-effort (never blocks ingest), and skipped for
   // transient mission-prep docs and individual social posts (too thin).
   let keyPoints = { kind: keypoints.kindFor(scope), points: [] };
+  let companyAnalysis = null;
+  let productAnalysis = null;
+  let scoreboard = null;
   if ((scope === 'COMPETITOR' || scope === 'PROSPECT') && streamType !== 'SOCIAL' && !transientForMissionId) {
     keyPoints = await keypoints.extractKeyPoints({ scope, text: parsed.text, tenantId, title });
+  }
+  // TENANT scope branches by category:
+  //   - PRODUCT_INTEL (a product line was picked at upload)
+  //       → product-perspective analysis: capabilities, competing products,
+  //         pitch angles for THIS product.
+  //   - ORG_INTELLIGENCE (no product line)
+  //       → company-wide analysis: services portfolio, market position,
+  //         similar competitors at the company level, ICP.
+  //
+  // Both produce a structured payload the UI renders as a briefing.
+  if (scope === 'TENANT' && streamType !== 'SOCIAL' && !transientForMissionId) {
+    const firstProductId = Array.isArray(productIds)
+      ? productIds.find((p) => typeof p === 'string' && p.length > 0) || null
+      : null;
+    if (category === 'PRODUCT_INTEL' && firstProductId) {
+      productAnalysis = await keypoints.extractProductAnalysis({
+        text: parsed.text, tenantId, productId: firstProductId, title,
+      });
+    } else {
+      companyAnalysis = await keypoints.extractCompanyAnalysis({ text: parsed.text, tenantId, title });
+    }
+  }
+  // Competitive scoreboard — runs on COMPETITOR-scoped docs and any
+  // BATTLECARDS-category doc. Stored on metadata.assessment; never blocks
+  // ingest if the model call fails (returns null).
+  const cleanAppliesTo = Array.isArray(appliesToProductIds)
+    ? [...new Set(appliesToProductIds.filter((v) => typeof v === 'string' && v.length > 0))]
+    : [];
+
+  // Semantic relevance guard — quarantine docs whose CONTENT doesn't actually
+  // concern this competitor/product. Fail-open: a null verdict (model error)
+  // leaves the doc unflagged → treated as verified.
+  let relevanceVerified = null;
+  let relevanceReason = null;
+
+  if ((scope === 'COMPETITOR' || category === 'BATTLECARDS') && streamType !== 'SOCIAL' && !transientForMissionId) {
+    let appliesProductNames = [];
+    if (cleanAppliesTo.length) {
+      const pr = await db.query(
+        `SELECT name FROM products WHERE tenant_id = $1 AND id = ANY($2)`,
+        [tenantId, cleanAppliesTo]
+      );
+      appliesProductNames = pr.rows.map((r) => r.name);
+    }
+    scoreboard = await assessment.extractCompetitiveAssessment({
+      text: parsed.text, tenantId, title, competitorName, appliesProductNames,
+    });
+    if (scope === 'COMPETITOR' && competitorName) {
+      const verdict = await relevance.checkDocRelevance({
+        text: parsed.text, title, competitorName, competitorProductName,
+      });
+      if (relevance.shouldQuarantine(verdict)) {
+        relevanceVerified = false;
+        relevanceReason = (verdict && verdict.reason) || 'Content may not match this competitor.';
+      }
+    }
   }
 
   // 5. R2 archive — best-effort. If R2 isn't configured, we still ingest but
@@ -276,6 +401,12 @@ async function ingest({
           originalFilename: file.originalname,
           supersedes: archived.rows.map((r) => r.id),
           ...(keyPoints.points.length ? { keyPoints: keyPoints.points, keyPointsKind: keyPoints.kind } : {}),
+          ...(companyAnalysis ? { companyAnalysis } : {}),
+          ...(productAnalysis ? { productAnalysis } : {}),
+          ...(scoreboard ? { assessment: scoreboard } : {}),
+          ...(cleanAppliesTo.length ? { appliesToProductIds: cleanAppliesTo } : {}),
+          ...(cleanCompetitorProductId ? { competitorProductId: cleanCompetitorProductId } : {}),
+          ...(relevanceVerified === false ? { relevanceVerified: false, relevanceReason } : {}),
         }),
         streamType,
         resolvedEffectiveDate.toISOString(),
@@ -489,10 +620,80 @@ async function regenerateKeyPoints(tenantId, documentId) {
   const md = { ...(doc.metadata || {}) };
   if (points.length) { md.keyPoints = points; md.keyPointsKind = kind; }
   else { delete md.keyPoints; delete md.keyPointsKind; }
+
+  // TENANT-scope docs get a parallel refresh, branched by category:
+  // PRODUCT_INTEL → productAnalysis; ORG_INTELLIGENCE → companyAnalysis.
+  // The opposite key is cleared to handle re-tagging from product-scope to
+  // company-wide or vice versa.
+  if (doc.scope === 'TENANT') {
+    const firstProductId = Array.isArray(doc.product_ids)
+      ? doc.product_ids.find((p) => typeof p === 'string' && p.length > 0) || null
+      : null;
+    if (doc.category === 'PRODUCT_INTEL' && firstProductId) {
+      const analysis = await keypoints.extractProductAnalysis({ text, tenantId, productId: firstProductId, title: doc.title });
+      if (analysis) md.productAnalysis = analysis;
+      else delete md.productAnalysis;
+      delete md.companyAnalysis;
+    } else {
+      const analysis = await keypoints.extractCompanyAnalysis({ text, tenantId, title: doc.title });
+      if (analysis) md.companyAnalysis = analysis;
+      else delete md.companyAnalysis;
+      delete md.productAnalysis;
+    }
+  } else {
+    delete md.companyAnalysis;
+    delete md.productAnalysis;
+  }
+
+  // Refresh the competitive scoreboard alongside key points whenever it
+  // applies (COMPETITOR scope or BATTLECARDS category). Cleared on null
+  // so a doc that's been re-scoped away from competitive doesn't keep a
+  // stale scoreboard.
+  if (doc.scope === 'COMPETITOR' || doc.category === 'BATTLECARDS') {
+    const competitorName = Array.isArray(doc.competitor_ids) && doc.competitor_ids.length
+      ? (await db.query(
+          `SELECT name FROM competitors WHERE tenant_id = $1 AND id = ANY($2)`,
+          [tenantId, doc.competitor_ids]
+        )).rows.map((r) => r.name).join(' / ')
+      : null;
+    const scoreboard = await assessment.extractCompetitiveAssessment({
+      text, tenantId, title: doc.title, competitorName,
+    });
+    if (scoreboard) md.assessment = scoreboard;
+    else delete md.assessment;
+  } else {
+    delete md.assessment;
+  }
   await db.query(
     `UPDATE kb_documents SET metadata = $1, updated_at = now() WHERE id = $2 AND tenant_id = $3`,
     [JSON.stringify(md), documentId, tenantId]
   );
+
+  // BATTLECARDS docs feed the Arena's global cache. Refreshing the
+  // scoreboard changes what the persona sees, so rebuild.
+  if (doc.category === 'BATTLECARDS') {
+    await maybeRebuildGlobalCache(doc.category, tenantId);
+  }
+  return getDocument(tenantId, documentId);
+}
+
+// Lift a quarantine: a rep has reviewed a doc the relevance check flagged and
+// confirms it really is about this competitor. Clears metadata.relevanceVerified
+// so the doc re-enters the main-intel gate + battlecard synthesis.
+async function confirmRelevance(tenantId, documentId) {
+  const doc = await getDocument(tenantId, documentId);
+  if (!doc) { const err = new Error('document not found'); err.status = 404; throw err; }
+  const md = { ...(doc.metadata || {}) };
+  md.relevanceVerified = true;
+  delete md.relevanceReason;
+  await db.query(
+    `UPDATE kb_documents SET metadata = $1, updated_at = now() WHERE id = $2 AND tenant_id = $3`,
+    [JSON.stringify(md), documentId, tenantId]
+  );
+  // The doc now feeds synthesis again — refresh the Arena cache for battlecards.
+  if (doc.category === 'BATTLECARDS') {
+    await maybeRebuildGlobalCache(doc.category, tenantId);
+  }
   return getDocument(tenantId, documentId);
 }
 
@@ -501,6 +702,33 @@ async function getDownloadUrl(tenantId, id) {
   if (!doc) return null;
   if (!doc.r2_key) return null;
   return r2.presignGet(doc.r2_key, 300);
+}
+
+// Full indexed text of a document — the chunks concatenated in ordinal order.
+// Powers the "View full document" collapse on intel cards. Soft-capped so a
+// pathologically large doc can't blow up the response; `truncated` tells the
+// UI to show a notice. Returns null when the doc isn't in this tenant.
+const DOC_TEXT_CAP = parseInt(process.env.KB_DOC_TEXT_CAP || '600000', 10);
+async function getDocumentText(tenantId, id) {
+  const doc = await getDocument(tenantId, id);
+  if (!doc) return null;
+  const r = await db.query(
+    `SELECT string_agg(text, E'\n\n' ORDER BY ordinal) AS body,
+            COUNT(*)::int AS n
+       FROM kb_chunks WHERE document_id = $1`,
+    [id]
+  );
+  let text = (r.rows[0] && r.rows[0].body) || '';
+  const truncated = text.length > DOC_TEXT_CAP;
+  if (truncated) text = text.slice(0, DOC_TEXT_CAP);
+  return {
+    id: doc.id,
+    title: doc.title,
+    sourceUrl: doc.source_url || null,
+    chunkCount: (r.rows[0] && r.rows[0].n) || 0,
+    text,
+    truncated,
+  };
 }
 
 // Status payload — drives the Admin "Knowledge Status" page. Scoped to one
@@ -584,6 +812,7 @@ async function getStatus(tenantId) {
     storage: { r2Configured: r2.isConfigured() },
     providers: {
       firecrawl: web.isConfigured(),
+      brave: web.isBraveConfigured(),
       phyllo: social.isConfigured(),
     },
   };
@@ -597,9 +826,13 @@ module.exports = {
   listDocuments,
   deleteDocument,
   getDownloadUrl,
+  getDocumentText,
   updateTags,
   regenerateKeyPoints,
+  confirmRelevance,
   getStatus,
+  competitorHasMainIntel,
+  MAIN_INTEL_REQUIRED_MSG,
   VALID_CATEGORIES,
   VALID_STREAM_TYPES,
   VALID_SCOPES,

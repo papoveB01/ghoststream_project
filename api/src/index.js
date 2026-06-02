@@ -6,6 +6,7 @@ const recall = require('./recall');
 const stream = require('./stream');
 const store = require('./store');
 const arena = require('./arena');
+const arenaHistory = require('./arenaHistory');
 const auth = require('./auth');
 const sampleTranscript = require('./sample-transcript');
 const db = require('./db');
@@ -20,11 +21,33 @@ const email = require('./email');
 const userModel = require('./users');
 const onboarding = require('./onboarding');
 const integrations = require('./integrations');
+const authTokens = require('./auth-tokens');
+const plans = require('./plans');
+const gating = require('./gating');
+const billing = require('./billing');
+const entitlements = require('./entitlements');
+const devices = require('./devices');
 
 const app = express();
+
+// This service serves ONLY dynamic, per-user JSON (static assets are served by
+// the nginx proxy). Express's default ETag makes these responses conditionally
+// cacheable, so a browser reload revalidates and the server answers
+// `304 Not Modified` with an EMPTY body — which the SPA's fetch() then renders
+// as blank, e.g. a battlecard that "appears once then loses its content on
+// refresh". Disable ETag and mark every response no-store so each load gets a
+// fresh 200 with a body.
+app.set('etag', false);
+app.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+
 // Capture the raw request body alongside JSON parsing so webhook receivers
 // (e.g. Calendly) can verify HMAC signatures over the exact bytes sent.
 app.use(express.json({ limit: '2mb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
+
+// Subscription gate (global): attaches req.entitlements for authenticated
+// callers and enforces read-only when the subscription is inactive. Public and
+// PAT-authenticated requests pass through (see gating.js).
+app.use(gating.billingGate);
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const APP_BASE_URL =
@@ -218,13 +241,34 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
     // queried the Founders KB instead of the meeting owner's KB → no
     // grounding chunks ever matched. (H4 in the review.)
     const tenantId = (m.meta && m.meta.tenantId) || userModel.FOUNDERS_TENANT_ID;
+    const missionId = (m.meta && m.meta.missionId) || null;
 
     let engagementProfile = null;
     let missionCompanyId = (m.meta && m.meta.missionCompanyId) || null;
-    if (m.meta && m.meta.missionId) {
+    if (missionId) {
       try {
-        const mission = await missionsService.get(tenantId, m.meta.missionId);
+        let mission = await missionsService.get(tenantId, missionId);
         if (mission) {
+          // Last-chance brief generation: if the mission still PENDING by the
+          // time the call has finished, the pre-call pipeline never ran (cron
+          // missed it / same-day booking outside the (now+23h, now+25h] window
+          // / Gemini outage at brief time). Generate synchronously now so the
+          // Stage-1 analysis prompt has the predictions to compare against
+          // (the brief→analysis pass-through in analysis.js#runPipeline will
+          // pick up the freshly-written pre_call_briefs row).
+          if (mission.status === 'PENDING') {
+            try {
+              const brief = require('./missions/brief');
+              console.log(`[process] mission ${missionId} still PENDING at bot.done — generating brief synchronously`);
+              await brief.generate(missionId, tenantId);
+              mission = await missionsService.get(tenantId, missionId) || mission;
+            } catch (err) {
+              // brief.generate already records setBriefError. Proceed without
+              // the brief — analysis still runs (KB-only), and the operator
+              // sees the failure on the mission detail panel.
+              console.warn(`[process] last-chance brief generation failed for mission ${missionId}: ${err.message}`);
+            }
+          }
           engagementProfile = missionsService.profileFromMission(mission);
           // H9: dispatch.js used to omit missionCompanyId from meta. Pull
           // it from the mission row so PROSPECT_MEMORY tier retrieval lights
@@ -232,6 +276,12 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
           if (!missionCompanyId && mission.company_id) missionCompanyId = mission.company_id;
         }
       } catch { /* no mission found / db hiccup → run unfiltered */ }
+    } else {
+      // Manual `POST /meetings` (e.g. paste-a-Zoom-link) creates a meeting
+      // with no mission link, so no brief is ever generated and analysis
+      // runs against the tenant's KB without engagement scope. Intentional,
+      // but worth flagging so operators can audit how often this path fires.
+      console.warn(`[process] orphan-meeting: meeting ${m.id} has no missionId — running analysis without a brief or engagement profile`);
     }
 
     // STEP 2 — Gemini analysis. If this throws the transcript is still safe.
@@ -240,7 +290,7 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
       pipeline = await analysis.runPipeline(transcript, {
         tenantId,
         engagementProfile,
-        currentMissionId: (m.meta && m.meta.missionId) || null,
+        currentMissionId: missionId,
         missionCompanyId,
       });
     } catch (err) {
@@ -287,6 +337,13 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
       analysis: pipeline,
       analysisError: null,
     });
+    // Close the loop: a linked engagement becomes COMPLETED and learns its
+    // portal_id, so the Engagements → Past tab can surface this recording.
+    // Best-effort — must never fail the webhook pipeline.
+    if (missionId) {
+      try { await missionsService.markCompleted(tenantId, missionId, portal.id); }
+      catch (e) { console.warn('[process] markCompleted failed:', (e && e.message) || e); }
+    }
     res.json({ ok: true, portalId: portal.id, portalUrl: `${APP_BASE_URL}/portal/?id=${portal.id}` });
   } catch (err) { next(err); }
 });
@@ -424,17 +481,28 @@ app.get('/portals/:id', async (req, res, next) => {
 // =========================================================================
 
 // POST /arena/start  { portalId, persona? }
-app.post('/arena/start', async (req, res, next) => {
+// optionalAuth: the portal practice flow is usually anonymous, but when a
+// logged-in user launches a session we capture their id for per-rep coaching.
+app.post('/arena/start', auth.optionalAuth, async (req, res, next) => {
   try {
     const { portalId, persona } = req.body || {};
     if (!portalId) return res.status(400).json({ error: 'portalId required' });
-    const session = await arena.startSession({ portalId, persona });
+    const repUserId = (req.user && req.user.sub) || null;
+    const session = await arena.startSession({ portalId, persona, repUserId });
     res.json({
       ok: true,
       sessionId: session.id,
       session,
       arenaUrl: `${APP_BASE_URL}/arena/?id=${session.id}`,
     });
+  } catch (err) { next(err); }
+});
+
+// POST /arena/:id/end — finalize the session and return its coaching scorecard.
+app.post('/arena/:id/end', async (req, res, next) => {
+  try {
+    const result = await arena.endSession({ sessionId: req.params.id });
+    res.json(result);
   } catch (err) { next(err); }
 });
 
@@ -462,13 +530,79 @@ app.get('/arena/:id', async (req, res, next) => {
 // Admin auth + dashboard
 // =========================================================================
 
+// Issue the session cookie + standard login response for a verified user.
+function grantSession(res, publicUser) {
+  res.cookie(auth.COOKIE_NAME, auth.signToken(publicUser), auth.cookieOptions());
+  res.json({ ok: true, user: publicUser });
+}
+
 app.post('/auth/login', async (req, res, next) => {
   try {
     const { email, password } = req.body || {};
-    const result = await auth.attemptLogin(email, password);
-    if (!result) return res.status(401).json({ error: 'invalid credentials' });
-    res.cookie(auth.COOKIE_NAME, result.token, auth.cookieOptions());
-    res.json({ ok: true, user: result.user });
+    const user = await auth.verifyCredentials(email, password);
+    if (!user) return res.status(401).json({ error: 'invalid credentials' });
+
+    // New-device check: trusted device → straight in; otherwise email a code and
+    // hold the session until /auth/verify-device. (Password is already correct,
+    // so a challenge is never created for an unknown/wrong account.)
+    const fp = devices.deviceFingerprint(req, user.id);
+    if (await devices.isTrusted(user.id, fp.hash)) {
+      await userModel.touchLogin(user.id);
+      return grantSession(res, user);
+    }
+
+    const ch = await devices.createChallenge({ userId: user.id, email: user.email, fp });
+    if (ch.throttled) {
+      return res.status(429).json({ error: 'Too many codes requested. Wait a few minutes and try again.' });
+    }
+    const sent = await devices.sendOtpEmail(user.email, ch.code);
+    return res.status(202).json({
+      code: 'OTP_REQUIRED',
+      challengeId: ch.challengeId,
+      emailHint: devices.emailHint(user.email),
+      ...(sent ? {} : { devCode: ch.code }), // dev fallback when email unconfigured
+    });
+  } catch (err) { next(err); }
+});
+
+// Complete a new-device login by submitting the emailed code.
+app.post('/auth/verify-device', async (req, res, next) => {
+  try {
+    const { challengeId, code, trust } = req.body || {};
+    const result = await devices.verifyChallenge(challengeId, code, req);
+    if (!result.ok) {
+      if (result.reason === 'bad_code') {
+        return res.status(401).json({ error: 'Incorrect code.', attemptsLeft: result.attemptsLeft });
+      }
+      if (result.reason === 'too_many') {
+        return res.status(429).json({ error: 'Too many attempts. Start over and request a new code.' });
+      }
+      if (result.reason === 'wrong_device') {
+        return res.status(400).json({ error: 'This code was issued for a different device or network.' });
+      }
+      return res.status(410).json({ error: 'This code has expired. Request a new one.' });
+    }
+    // Re-load the user fresh (name/role may have changed; also confirms still exists).
+    const u = await userModel.findById(result.userId);
+    if (!u) return res.status(401).json({ error: 'account not found' });
+    if (trust) await devices.trustDevice(u.id, result.fp);
+    await userModel.touchLogin(u.id);
+    return grantSession(res, {
+      id: u.id, tenantId: u.tenantId, email: u.email,
+      name: u.name, role: u.role, isAdmin: u.isAdmin, emailVerified: u.emailVerified,
+    });
+  } catch (err) { next(err); }
+});
+
+// Re-send the code for an in-flight challenge.
+app.post('/auth/resend-otp', async (req, res, next) => {
+  try {
+    const { challengeId } = req.body || {};
+    const r = await devices.refreshChallenge(challengeId);
+    if (r.throttled) return res.status(429).json({ error: 'Too many codes requested. Wait a few minutes.' });
+    if (!r.ok) return res.status(410).json({ error: 'This sign-in attempt has expired. Start over.' });
+    await devices.sendOtpEmail(r.email, r.code);
+    return res.json({ ok: true });
   } catch (err) { next(err); }
 });
 
@@ -477,16 +611,92 @@ app.post('/auth/logout', (_req, res) => {
   res.json({ ok: true });
 });
 
+// Trusted devices — list + revoke (lost-laptop kill switch). Behind authMiddleware.
+app.get('/auth/devices', auth.authMiddleware, async (req, res, next) => {
+  try {
+    const fp = devices.deviceFingerprint(req, req.user.sub);
+    res.json({ devices: await devices.listDevices(req.user.sub, fp.hash) });
+  } catch (err) { next(err); }
+});
+
+app.delete('/auth/devices/:id', auth.authMiddleware, async (req, res, next) => {
+  try {
+    const ok = await devices.revokeDevice(req.user.sub, req.params.id);
+    if (!ok) return res.status(404).json({ error: 'device not found' });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
 app.get('/auth/me', auth.authMiddleware, (req, res) => {
   res.json({
     user: {
       id: req.user.sub,
       email: req.user.email,
+      name: req.user.name || null,
       role: req.user.role,
       tenantId: req.user.tid,
       isAdmin: !!req.user.adm,
     },
+    // Set by the global billingGate — lets the SPA render the trial banner and
+    // gate UI affordances without an extra round-trip.
+    entitlements: req.entitlements ? entitlements.toJson(req.entitlements) : null,
   });
+});
+
+// GET /auth/profile — the full profile record (from the DB, so it includes the
+// structured first/last name the JWT doesn't carry). Backs the Profile page.
+app.get('/auth/profile', auth.authMiddleware, async (req, res, next) => {
+  try {
+    const u = await userModel.findById(req.user.sub);
+    if (!u) return res.status(404).json({ error: 'user not found' });
+    res.json({
+      profile: {
+        firstName: u.firstName || null,
+        lastName: u.lastName || null,
+        name: u.name || null,
+        email: u.email,
+        role: u.role,
+        emailVerified: u.emailVerified,
+        createdAt: u.createdAt,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+// PATCH /auth/me — update the signed-in user's own name. Re-issues the auth
+// cookie so the JWT-baked display name refreshes without a re-login.
+app.patch('/auth/me', auth.authMiddleware, async (req, res, next) => {
+  try {
+    const firstName = String((req.body && req.body.firstName) || '').trim();
+    const lastName = String((req.body && req.body.lastName) || '').trim();
+    if (!firstName || firstName.length > 100) return res.status(400).json({ error: 'first name required' });
+    if (!lastName || lastName.length > 100) return res.status(400).json({ error: 'last name required' });
+    const u = await userModel.updateProfile(req.user.sub, { firstName, lastName });
+    res.cookie(auth.COOKIE_NAME, auth.signToken({
+      id: u.id, tenantId: u.tenantId, email: u.email, name: u.name, role: u.role, isAdmin: u.isAdmin,
+    }), auth.cookieOptions());
+    res.json({ ok: true, profile: { firstName: u.firstName, lastName: u.lastName, name: u.name } });
+  } catch (err) { next(err); }
+});
+
+// POST /auth/change-password — change the signed-in user's own password.
+// Requires the current password. The session stays valid afterwards.
+app.post('/auth/change-password', auth.authMiddleware, async (req, res, next) => {
+  try {
+    const currentPassword = (req.body && req.body.currentPassword) || '';
+    const newPassword = (req.body && req.body.newPassword) || '';
+    if (typeof newPassword !== 'string' || newPassword.length < 12) {
+      return res.status(400).json({ error: 'New password must be at least 12 characters.', code: 'WEAK_PASSWORD' });
+    }
+    // findByEmail returns the (internal) password hash; findById does not.
+    const me = await userModel.findByEmail(req.user.email);
+    if (!me || !me.passwordHash) return res.status(404).json({ error: 'user not found' });
+    const ok = await userModel.verifyPassword(currentPassword, me.passwordHash);
+    if (!ok) return res.status(400).json({ error: 'Current password is incorrect.', code: 'BAD_CURRENT_PASSWORD' });
+    const hash = await userModel.hashPassword(newPassword);
+    await userModel.setPassword(me.id, hash);
+    res.json({ ok: true });
+  } catch (err) { next(err); }
 });
 
 // The caller's own tenant — name / domain / subscription. Drives the
@@ -548,8 +758,13 @@ function meetingRefFromRecord(m) {
   };
 }
 
+// /admin/portals — DEPRECATED per ADR-003 Phase 3 step 5. Use /admin/calls.
+// Endpoint stays functional for one release so any consumers (none known
+// outside the admin UI, which has been migrated to /admin/calls in this PR)
+// have time to migrate. Slated for removal in a follow-up.
 app.get('/admin/portals', auth.authMiddleware, async (_req, res, next) => {
   try {
+    res.set('X-Deprecated', 'use /admin/calls — see docs/architecture/assessment-003-portals-meetings-consolidation.md');
     const portals = await store.listPortals(100);
     // Batched MGET avoids N+1 — one Redis call for all parent meetings.
     const meetings = await store.getMeetingsByIds(portals.map((p) => p.meetingId));
@@ -561,14 +776,83 @@ app.get('/admin/portals', auth.authMiddleware, async (_req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.get('/admin/sessions', auth.authMiddleware, async (_req, res, next) => {
-  try { res.json({ sessions: await store.listSessions(100) }); }
-  catch (err) { next(err); }
+// Arena practice history — durable, tenant-scoped (data firewall). Replaces the
+// old Redis live-session scan; rows now persist past the 1h TTL with an AI
+// coaching scorecard. Optional ?rep= and ?status= filters.
+app.get('/admin/sessions', auth.authMiddleware, async (req, res, next) => {
+  try {
+    const sessions = await arenaHistory.listForTenant(req.tenantId, {
+      limit: req.query.limit,
+      rep: req.query.rep,
+      status: req.query.status,
+    });
+    res.json({ sessions });
+  } catch (err) { next(err); }
 });
 
+// Arena practice detail — full transcript + scorecard for one session.
+app.get('/admin/sessions/:id', auth.authMiddleware, async (req, res, next) => {
+  try {
+    const session = await arenaHistory.getOne(req.tenantId, req.params.id);
+    if (!session) return res.status(404).json({ error: 'session not found' });
+    res.json({ session });
+  } catch (err) { next(err); }
+});
+
+// /admin/meetings — DEPRECATED per ADR-003 Phase 3 step 5. Use /admin/calls.
+// Same migration timeline as /admin/portals above.
 app.get('/admin/meetings', auth.authMiddleware, async (_req, res, next) => {
-  try { res.json({ meetings: await store.listMeetings(100) }); }
-  catch (err) { next(err); }
+  try {
+    res.set('X-Deprecated', 'use /admin/calls — see docs/architecture/assessment-003-portals-meetings-consolidation.md');
+    res.json({ meetings: await store.listMeetings(100) });
+  } catch (err) { next(err); }
+});
+
+// /admin/tenants — superadmin-only tenant list for the Calls page tenant
+// selector (ADR-003 §6 Decision #5). Minimal { id, name } projection.
+app.get('/admin/tenants', auth.authMiddleware, auth.requireSuperadmin, async (_req, res, next) => {
+  try {
+    const r = await db.query('SELECT id, name FROM tenants ORDER BY name NULLS LAST, id');
+    res.json({ tenants: r.rows });
+  } catch (err) { next(err); }
+});
+
+// Unified Calls view — assessment-003 Phase 1 (additive; /admin/portals and
+// /admin/meetings remain untouched). Joins all meeting records with their
+// portal (if any), buckets lifecycle status, and returns filtered +
+// faceted + paginated results.
+//
+// Auth:
+//   superadmin    → may pass tenant=<uuid> (CSV) to scope across tenants
+//   non-superadmin → force-scoped to req.tenantId; tenant= param ignored
+app.get('/admin/calls', auth.authMiddleware, async (req, res, next) => {
+  try {
+    const isSuperadmin = !!(req.user && req.user.adm);
+    // req.tenantId is guaranteed non-null here: authMiddleware calls
+    // verifyToken() (auth.js), which explicitly rejects any JWT where
+    // !claims.tid — including legacy pre-multitenancy tokens — returning
+    // null → 401 before next() fires. So the non-superadmin branch below
+    // can never silently drop the tenant filter due to an absent tid claim.
+    const result = await store.buildCallsList({
+      status:     req.query.status,
+      source:     req.query.source,
+      // Superadmin passes tenant= freely; non-superadmin is hard-scoped.
+      tenant:     isSuperadmin ? (req.query.tenant || null) : req.tenantId,
+      mission_id: req.query.mission_id,
+      company_id: req.query.company_id,
+      has_gaps:   req.query.has_gaps,
+      has_portal: req.query.has_portal,
+      from:       req.query.from,
+      to:         req.query.to,
+      q:          req.query.q,
+      cursor:     req.query.cursor,
+      limit:      req.query.limit,
+      // Decision #6 — samples are hidden by default unless explicitly
+      // requested. Forwarded as-is; store.js does the truthy check.
+      include_samples: req.query.include_samples,
+    });
+    res.json(result);
+  } catch (err) { next(err); }
 });
 
 // Platform-superadmin only — list of all tenants. Used by the KB upload
@@ -698,12 +982,20 @@ app.post('/portals/:id/reanalyze', auth.authMiddleware, async (req, res, next) =
 // =========================================================================
 
 app.use('/portfolio', auth.authMiddleware, portfolio.router);
+app.use('/crm', auth.authMiddleware, gating.requireFeatureWrite(plans.FEATURES.CRM), require('./crm').router);
+app.use('/dashboard', auth.authMiddleware, require('./dashboard').router);
+
+// Billing — the Stripe webhook is PUBLIC (signature-verified) and must sit
+// before the authMiddleware'd billing router so Stripe (no cookie) can reach it.
+app.post('/billing/webhook', billing.webhook);
+app.use('/billing', auth.authMiddleware, billing.router);
 
 // =========================================================================
 // Companies + Missions (sales scheduler).
 // =========================================================================
 
 app.use('/companies', auth.authMiddleware, companies.router);
+app.use('/contacts',  auth.authMiddleware, require('./contacts').router);
 app.use('/missions',  auth.authMiddleware, missions.router);
 
 // =========================================================================
@@ -730,13 +1022,25 @@ app.use('/onboarding', onboarding.router);
 // router below.
 app.get('/integrations/calendar/callback', integrations.handleCalendarCallback);
 app.get('/integrations/calendly/callback', integrations.handleCalendlyCallback);
+// Microsoft 365 (direct) — per-user calendar callback. Cookieless return from
+// login.microsoftonline.com, so it sits before the authMiddleware'd
+// integrations router. State binds (tenantId, userId) server-side.
+// See ADR-0002 §4.2 (and §8 for why the admin-consent callback was dropped).
+app.get('/integrations/microsoft/callback', integrations.handleMicrosoftCallback);
 app.use('/integrations', auth.authMiddleware, integrations.router);
 
-// PUBLIC (Calendly calls it) — signature-verified. "Internal use" booking
-// links land on the Founders tenant for now, consistent with the recall.ai
-// Phase-1 scoping. Multi-tenant routing of inbound bookings is a follow-on
-// (would key off which Calendly org/account the webhook came from).
-app.post('/webhooks/calendly', async (req, res) => {
+// API tokens — long-lived PATs for non-browser clients (Lili MCP server,
+// scripts). See docs/rfcs/0001-lili-integration.md. Routes require an
+// authenticated session (cookie-JWT or another PAT); minting/listing/revoking
+// always acts on req.user.sub within req.tenantId.
+app.use('/auth/tokens', auth.authMiddleware, gating.requireFeatureWrite(plans.FEATURES.API_TOKENS), authTokens.router);
+
+// PUBLIC (Calendly calls it) — signature-verified. Multi-tenant: each tenant's
+// subscription is registered at /webhooks/calendly/<routeToken>, which maps back
+// to the connecting tenant (see integrations.resolveCalendlyRoute). The legacy
+// tokenless /webhooks/calendly is kept for any pre-existing subscription and
+// falls back to the Founders tenant.
+async function handleCalendlyBooking(req, res, tenantId) {
   try {
     if (!integrations.isConfigured('calendly')) {
       return res.status(503).json({ error: 'Calendly not configured (set CALENDLY_WEBHOOK_SIGNING_KEY)' });
@@ -761,13 +1065,27 @@ app.post('/webhooks/calendly', async (req, res) => {
       try { fields.meetingUrl = await integrations.resolveMeetingUrl(fields.meetingUrl); }
       catch (e) { console.warn('[calendly-webhook] resolveMeetingUrl failed:', e.message); }
     }
-    const mission = await missionsService.schedule(userModel.FOUNDERS_TENANT_ID, fields);
+    const mission = await missionsService.schedule(tenantId, fields);
     res.json({ ok: true, missionId: mission.id });
   } catch (err) {
     console.error('[calendly-webhook]', err.stack || err.message);
     res.status(500).json({ error: err.message });
   }
+}
+
+// Per-tenant callback (the URL every new subscription is registered with).
+app.post('/webhooks/calendly/:routeToken', async (req, res) => {
+  const route = await integrations.resolveCalendlyRoute(req.params.routeToken);
+  if (!route || !route.tenantId) {
+    return res.status(404).json({ error: 'unknown webhook route' });
+  }
+  return handleCalendlyBooking(req, res, route.tenantId);
 });
+
+// Legacy tokenless path — Founders fallback for any subscription created before
+// per-tenant routing existed.
+app.post('/webhooks/calendly', (req, res) =>
+  handleCalendlyBooking(req, res, userModel.FOUNDERS_TENANT_ID));
 
 // =========================================================================
 // Error handler
@@ -804,12 +1122,11 @@ async function boot() {
   try { scheduler.start(); }
   catch (err) { console.error('[boot] scheduler start failed:', err.message); }
 
+  const { TIERS } = require('./models');
   app.listen(PORT, () => {
     console.log(
       `ghost-api listening on :${PORT} ` +
-      `(roleplay=${process.env.GEMINI_MODEL || 'gemini-2.5-flash'}, ` +
-      `analysis=${process.env.GEMINI_ANALYSIS_MODEL || 'gemini-2.5-pro'}, ` +
-      `content=${process.env.GEMINI_CONTENT_MODEL || 'gemini-2.5-flash'}, ` +
+      `(model tiers — lite=${TIERS.lite}, flash=${TIERS.flash}, pro=${TIERS.pro}, content=${TIERS.content}, ` +
       `embedding=${process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004'}, ` +
       `recall=${recall.region}, ` +
       `stream=${stream.isConfigured() ? 'live' : 'mock'})`

@@ -263,6 +263,57 @@ body {
   cursor: not-allowed;
 }
 
+.ghost-cta {
+  background: white;
+  color: var(--text-2);
+  border: 1px solid var(--border-2);
+  padding: 10px 18px;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color .15s, color .15s;
+}
+.ghost-cta:hover { border-color: var(--accent); color: var(--accent); }
+.ghost-cta:disabled { color: var(--muted); cursor: not-allowed; border-color: var(--border); }
+
+/* Scorecard */
+.scorecard {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 28px;
+  margin-top: 20px;
+  animation: fadeIn 0.3s ease;
+}
+.sc-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.sc-title { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; margin: 0; }
+.sc-overall {
+  display: flex; flex-direction: column; align-items: center;
+  background: var(--accent-light);
+  border: 1px solid var(--accent-soft);
+  border-radius: var(--radius);
+  padding: 10px 18px;
+  min-width: 88px;
+}
+.sc-overall .num { font-size: 28px; font-weight: 800; color: var(--accent); line-height: 1; font-variant-numeric: tabular-nums; }
+.sc-overall .lbl { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; color: var(--muted); text-transform: uppercase; margin-top: 4px; }
+.sc-dim { margin-bottom: 16px; }
+.sc-dim-top { display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.sc-dim-top .pts { color: var(--muted); font-variant-numeric: tabular-nums; }
+.sc-bar { height: 7px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+.sc-bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.sc-dim-note { font-size: 12px; color: var(--muted); margin-top: 5px; }
+.sc-feedback { font-size: 14px; color: var(--text-2); line-height: 1.6; margin: 18px 0 0; padding-top: 18px; border-top: 1px solid var(--border); }
+.sc-lists { display: flex; flex-wrap: wrap; gap: 24px; margin-top: 16px; }
+.sc-lists > div { flex: 1; min-width: 220px; }
+.sc-lists h4 { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+.sc-lists ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2); }
+.sc-lists li { margin-bottom: 4px; }
+.sc-empty { font-size: 14px; color: var(--muted); }
+
 /* Responsive */
 @media (max-width: 720px) {
   .arena { padding: 28px 18px; }

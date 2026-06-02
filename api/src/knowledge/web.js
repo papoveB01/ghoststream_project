@@ -19,8 +19,15 @@
 const API_BASE = process.env.FIRECRAWL_BASE_URL || 'https://api.firecrawl.dev/v1';
 const SCRAPE_TIMEOUT_MS = parseInt(process.env.FIRECRAWL_TIMEOUT_MS || '60000', 10);
 
+const BRAVE_BASE = process.env.BRAVE_BASE_URL || 'https://api.search.brave.com/res/v1';
+const BRAVE_TIMEOUT_MS = parseInt(process.env.BRAVE_TIMEOUT_MS || '15000', 10);
+
 function isConfigured() {
   return Boolean(process.env.FIRECRAWL_API_KEY);
+}
+
+function isBraveConfigured() {
+  return Boolean(process.env.BRAVE_API_KEY);
 }
 
 async function scrape(url) {
@@ -73,11 +80,47 @@ async function scrape(url) {
   }
 }
 
+// Brave Search /web/search — discovery only (no inline scrape support).
+// Returns the same row shape as the Firecrawl path so callers don't care
+// which provider served them. `page_age` is Brave's ISO timestamp for when
+// the page was last seen with new content; we map it to publishedTime so the
+// dossier date field still populates.
+async function searchBrave(query, { limit = 5 } = {}) {
+  if (!isBraveConfigured() || !query) return [];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BRAVE_TIMEOUT_MS);
+  try {
+    const params = new URLSearchParams({ q: query, count: String(Math.max(1, Math.min(20, limit))) });
+    const res = await fetch(`${BRAVE_BASE}/web/search?${params}`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'Accept-Encoding': 'gzip',
+        'X-Subscription-Token': process.env.BRAVE_API_KEY,
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) return [];
+    const json = await res.json().catch(() => ({}));
+    const rows = (json && json.web && Array.isArray(json.web.results)) ? json.web.results : [];
+    return rows.map((r) => ({
+      url: r.url || null,
+      title: r.title || null,
+      description: r.description || null,
+      markdown: null,
+      publishedTime: r.page_age || (r.age && /^\d{4}-\d{2}-\d{2}/.test(r.age) ? r.age : null) || null,
+    })).filter((r) => r.url);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Firecrawl /v1/search — web search with optional inline scraping of results.
-// Returns [{ url, title, description, markdown? }]. Best-effort: on any failure
-// returns []. `scrape` (bool) toggles inline content scraping (one scrape per
-// result — costs credits). `limit` caps results.
-async function search(query, { limit = 5, scrape: doScrape = false } = {}) {
+// Kept as a fallback when Brave isn't configured. `scrape` (bool) toggles
+// Firecrawl's inline content scraping (one scrape per result — costs credits).
+async function searchFirecrawl(query, { limit = 5, scrape: doScrape = false } = {}) {
   if (!isConfigured() || !query) return [];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SCRAPE_TIMEOUT_MS);
@@ -105,6 +148,15 @@ async function search(query, { limit = 5, scrape: doScrape = false } = {}) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Discovery — Brave when BRAVE_API_KEY is set (cheap, returns URL/title/snippet
+// only), else Firecrawl /search (more expensive, can inline-scrape). Callers
+// always get the same row shape; scrape() / scrapeMarkdown() handles full text
+// downstream regardless of which provider served discovery.
+async function search(query, opts = {}) {
+  if (isBraveConfigured()) return searchBrave(query, opts);
+  return searchFirecrawl(query, opts);
 }
 
 // Firecrawl /v1/map — discover URLs on a site (cheap). Returns string[] of URLs.
@@ -160,7 +212,7 @@ function deriveTitle(explicit, metadata, url) {
   catch { return url; }
 }
 
-async function syncUrl({ tenantId = null, url, category, title, dryRun = false, productIds = null, personaIds = null, competitorIds = null, transientForMissionId = null, companyId = null, scope = 'TENANT', competitorName = null }) {
+async function syncUrl({ tenantId = null, url, category, title, dryRun = false, productIds = null, personaIds = null, competitorIds = null, transientForMissionId = null, companyId = null, scope = 'TENANT', competitorName = null, appliesToProductIds = null, competitorProductId = null }) {
   if (!url || typeof url !== 'string') {
     const err = new Error('url (string) required'); err.status = 400; throw err;
   }
@@ -227,10 +279,12 @@ async function syncUrl({ tenantId = null, url, category, title, dryRun = false, 
     productIds,
     personaIds,
     competitorIds,
+    appliesToProductIds,
+    competitorProductId,
     transientForMissionId,
     companyId,
     scope,
   });
 }
 
-module.exports = { isConfigured, scrape, scrapeMarkdown, search, mapSite, syncUrl };
+module.exports = { isConfigured, isBraveConfigured, scrape, scrapeMarkdown, search, mapSite, syncUrl };

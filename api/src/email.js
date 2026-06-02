@@ -81,7 +81,7 @@ async function verifyKey() {
 // single address string or an array. `replyTo` falls back to env. Templates
 // are NOT used yet — that's a Phase 2 concern once we have a brief-email and
 // a follow-up-email shape stable enough to lock as a SendGrid Dynamic Template.
-async function send({ to, subject, html, text, replyTo: replyToOverride, categories, customArgs } = {}) {
+async function send({ to, subject, html, text, replyTo: replyToOverride, from: fromOverride, categories, customArgs, attachments } = {}) {
   if (!isConfigured()) {
     const err = new Error('SendGrid not configured — set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL');
     err.status = 503;
@@ -97,7 +97,12 @@ async function send({ to, subject, html, text, replyTo: replyToOverride, categor
 
   const msg = {
     to: Array.isArray(to) ? to : [to],
-    from: fromAddress(),
+    // Per-call From override (eg. branded meeting-invite sender — see
+    // ics.js / ADR-0002 §10). Must remain on an authenticated sender domain
+    // or SendGrid will reject; we leave validation of that to SendGrid.
+    from: fromOverride && fromOverride.email
+      ? { email: fromOverride.email, name: fromOverride.name || fromAddress().name }
+      : fromAddress(),
     subject,
   };
   if (html) msg.html = html;
@@ -106,6 +111,9 @@ async function send({ to, subject, html, text, replyTo: replyToOverride, categor
   if (rt) msg.replyTo = rt;
   if (Array.isArray(categories) && categories.length) msg.categories = categories;
   if (customArgs && typeof customArgs === 'object') msg.customArgs = customArgs;
+  // Attachments: pass through unchanged. SendGrid SDK expects
+  // [{ filename, content (base64), type, disposition, contentId }].
+  if (Array.isArray(attachments) && attachments.length) msg.attachments = attachments;
 
   try {
     const [response] = await sg.send(msg);

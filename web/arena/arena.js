@@ -98,15 +98,20 @@
     $('turn-counter').textContent = `${userTurns} response${userTurns === 1 ? '' : 's'} sent`;
   }
 
+  let ended = false;
+
   function wireComposer() {
     const form = $('composer-form');
     const input = $('composer-input');
     const sendBtn = $('send-btn');
+    const endBtn = $('end-btn');
     const counter = $('counter');
 
     input.addEventListener('input', () => {
       counter.textContent = `${input.value.length} / 4000`;
     });
+
+    endBtn.addEventListener('click', () => endSession('rep'));
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -135,22 +140,100 @@
           chat.appendChild(makeBubble('prospect', `[Error: ${payload.error || res.status}]`));
         } else {
           chat.appendChild(makeBubble('prospect', payload.reply || '(no reply)'));
-          // Refresh turn counter
-          const sessRes = await fetch(`/api/arena/${encodeURIComponent(sessionId)}`);
-          if (sessRes.ok) {
-            const sess = (await sessRes.json()).session;
-            updateTurnCounter(sess.turns);
+          $('turn-counter').textContent =
+            `${payload.repTurns} response${payload.repTurns === 1 ? '' : 's'} sent`;
+          // Turn limit reached — auto-finalize into a scorecard.
+          if (payload.complete) {
+            sendBtn.disabled = false;
+            await endSession('limit');
+            return;
           }
         }
       } catch (err) {
         thinking.remove();
         chat.appendChild(makeBubble('prospect', `[Network error: ${err.message}]`));
       } finally {
-        sendBtn.disabled = false;
-        sendBtn.textContent = 'Send';
-        scrollToBottom();
-        input.focus();
+        if (!ended) {
+          sendBtn.disabled = false;
+          sendBtn.textContent = 'Send';
+          scrollToBottom();
+          input.focus();
+        }
       }
     });
+  }
+
+  // Finalize the session and render the coaching scorecard. `cause` is 'rep'
+  // (clicked End) or 'limit' (hit the turn cap). Locks the composer either way.
+  async function endSession(cause) {
+    if (ended) return;
+    ended = true;
+    lockComposer(cause === 'limit'
+      ? 'Turn limit reached — scoring your session…'
+      : 'Scoring your session…');
+
+    try {
+      const res = await fetch(`/api/arena/${encodeURIComponent(sessionId)}/end`, {
+        method: 'POST',
+      });
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+      renderScorecard(payload.scorecard);
+    } catch (err) {
+      const sc = $('scorecard');
+      sc.innerHTML = `<p class="sc-empty">Could not generate scorecard: ${err.message}</p>`;
+      show('scorecard');
+    }
+    scrollToBottom();
+  }
+
+  function lockComposer(infoMsg) {
+    $('send-btn').disabled = true;
+    $('end-btn').disabled = true;
+    $('composer-input').disabled = true;
+    $('composer-info').textContent = infoMsg;
+  }
+
+  function renderScorecard(sc) {
+    const host = $('scorecard');
+    if (!sc) { host.innerHTML = '<p class="sc-empty">No scorecard available.</p>'; show('scorecard'); return; }
+    if (sc.incomplete) {
+      host.innerHTML = '<div class="sc-head"><h3 class="sc-title">Session ended</h3></div>'
+        + `<p class="sc-empty">${escapeHtml(sc.feedback || 'Not enough responses to score.')}</p>`;
+      show('scorecard'); return;
+    }
+
+    const dims = (sc.dimensions || []).map((d) => {
+      const pct = d.max ? Math.round((d.score / d.max) * 100) : 0;
+      return `
+        <div class="sc-dim">
+          <div class="sc-dim-top"><span>${escapeHtml(d.name)}</span><span class="pts">${d.score} / ${d.max}</span></div>
+          <div class="sc-bar"><i style="width:${pct}%"></i></div>
+          ${d.note ? `<div class="sc-dim-note">${escapeHtml(d.note)}</div>` : ''}
+        </div>`;
+    }).join('');
+
+    const list = (title, items) => (items && items.length)
+      ? `<div><h4>${title}</h4><ul>${items.map((x) => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>`
+      : '';
+    const lists = list('Strengths', sc.strengths) + list('To improve', sc.improvements);
+
+    host.innerHTML = `
+      <div class="sc-head">
+        <h3 class="sc-title">Coaching scorecard</h3>
+        ${typeof sc.overall === 'number'
+          ? `<div class="sc-overall"><span class="num">${sc.overall}</span><span class="lbl">/ 100</span></div>`
+          : ''}
+      </div>
+      ${dims}
+      ${sc.feedback ? `<p class="sc-feedback">${escapeHtml(sc.feedback)}</p>` : ''}
+      ${lists ? `<div class="sc-lists">${lists}</div>` : ''}`;
+    show('scorecard');
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 })();

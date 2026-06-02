@@ -7,6 +7,9 @@
 
 const express = require('express');
 const db = require('./db');
+const web = require('./knowledge/web');
+const discovery = require('./knowledge/discovery');
+const gating = require('./gating');
 
 // Strip protocol / www / path → bare host, for comparing a prospect domain
 // against the tenant's own domain.
@@ -183,6 +186,89 @@ router.post('/', async (req, res, next) => {
     if (err.code === '23505') return res.status(409).json({ error: 'company with this name already exists' });
     next(err);
   }
+});
+
+// POST /companies/discover { region, industry } — web-search for potential
+// prospects (companies showing a buying signal that fits OUR products), ranked by
+// priority. Read-only research (no creation); the rep adds the relevant ones.
+router.post('/discover', gating.requireCapacity('discovery'), async (req, res, next) => {
+  try {
+    if (!web.isConfigured() && !web.isBraveConfigured()) {
+      return res.status(503).json({ error: 'web search is not configured on this workspace' });
+    }
+    const region = String((req.body && req.body.region) || '').trim();
+    const industry = String((req.body && req.body.industry) || '').trim();
+    const tenant = (await db.query(`SELECT name FROM tenants WHERE id = $1`, [req.tenantId])).rows[0];
+    if (!tenant || !tenant.name) return res.status(422).json({ error: 'set your company name first (Company page) so we know who to prospect for' });
+    const prof = (await db.query(`SELECT positioning FROM tenant_profiles WHERE tenant_id = $1`, [req.tenantId])).rows[0] || {};
+    const ourProducts = (await db.query(
+      `SELECT id, name, description FROM products WHERE tenant_id = $1 ORDER BY lower(name)`,
+      [req.tenantId]
+    )).rows;
+
+    const result = await discovery.discoverProspects({
+      companyName: tenant.name, ourProducts, positioning: prof.positioning || '', region, industry,
+    });
+    if (!result) return res.status(502).json({ error: 'discovery could not find prospects right now — try again' });
+
+    const existing = await db.query(`SELECT lower(name) AS n FROM companies WHERE tenant_id = $1`, [req.tenantId]);
+    const have = new Set(existing.rows.map((r) => r.n));
+    const prospects = result.prospects.map((p) => ({ ...p, exists: have.has(p.name.toLowerCase()) }));
+    res.json({ prospects, region, industry });
+  } catch (err) { next(err); }
+});
+
+// POST /companies/discover/add — create the prospect AND persist its signal as an
+// opportunity on a DONE prospect_research row (shows on the Signals tab).
+router.post('/discover/add', async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const name = String(b.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'name required' });
+    const domain = String(b.domain || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '') || null;
+
+    let company;
+    try {
+      company = await findOrCreate(req.tenantId, { name, domain });
+    } catch (err) {
+      if (err.code === '23505') company = await findByDomain(req.tenantId, domain);
+      if (!company) throw err;
+    }
+
+    // Build the opportunity (Signals-tab shape) from the discovery signal.
+    const prio = Math.max(1, Math.min(5, Math.round(Number(b.priority) || 3)));
+    const strength = prio >= 4 ? 'strong' : prio === 3 ? 'tie' : 'weak';
+    const productNames = Array.isArray(b.matchedProductNames) ? b.matchedProductNames.filter(Boolean) : [];
+    const PRIO = { 5: 'Critical', 4: 'High', 3: 'Medium', 2: 'Low', 1: 'Watch' };
+    const title = `${PRIO[prio]} priority — ${String(b.signal || 'Opportunity').slice(0, 90)}`;
+    const analysisParts = [];
+    if (b.signal) analysisParts.push(`Signal: ${String(b.signal).trim()}`);
+    if (b.fitReason) analysisParts.push(String(b.fitReason).trim());
+    if (productNames.length) analysisParts.push(`Fits: ${productNames.join(', ')}.`);
+    const opportunity = {
+      title,
+      analysis: analysisParts.join(' '),
+      strength,
+      products: productNames,
+      sources: [],
+      discovered: true,
+    };
+    const summary = b.signal ? `Discovered prospect — ${String(b.signal).trim()}` : 'Discovered prospect.';
+
+    let signalSaved = false;
+    try {
+      await db.query(
+        `INSERT INTO prospect_research (tenant_id, company_id, status, summary, opportunities)
+              VALUES ($1, $2, 'DONE', $3, $4::jsonb)`,
+        [req.tenantId, company.id, summary, JSON.stringify([opportunity])]
+      );
+      signalSaved = true;
+    } catch (err) {
+      console.warn(`[companies] discover/add signal persist failed for ${company.id}: ${err.message}`);
+    }
+
+    res.status(201).json({ company, signalSaved });
+  } catch (err) { next(err); }
 });
 
 router.patch('/:id', async (req, res, next) => {

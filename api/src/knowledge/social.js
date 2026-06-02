@@ -96,7 +96,7 @@ function buildTitle(post) {
   return `${platform} · ${handle} · ${dateStr}${snippet ? ' — ' + snippet : ''}`;
 }
 
-async function syncAccount({ tenantId = null, accountId, category, since, limit = DEFAULT_LIMIT, dryRun = false, productIds = null, personaIds = null, competitorIds = null, companyId = null, scope = 'TENANT' }) {
+async function syncAccount({ tenantId = null, accountId, category, since, limit = DEFAULT_LIMIT, dryRun = false, productIds = null, personaIds = null, competitorIds = null, companyId = null, scope = 'TENANT', appliesToProductIds = null }) {
   const fromDate = since || new Date(Date.now() - DEFAULT_LOOKBACK_DAYS * 86400_000).toISOString();
   const payload = await listContents({ accountId, fromDate, limit });
   const posts = Array.isArray(payload.data) ? payload.data : [];
@@ -165,6 +165,7 @@ async function syncAccount({ tenantId = null, accountId, category, since, limit 
         productIds,
         personaIds,
         competitorIds,
+        appliesToProductIds,
         companyId,
         scope,
       });

@@ -16,12 +16,10 @@
 const gemini = require('./gemini');
 const retrieval = require('./knowledge/retrieval');
 
-const ANALYSIS_MODEL =
-  process.env.GEMINI_ANALYSIS_MODEL || 'gemini-2.5-pro';
-const CONTENT_MODEL =
-  process.env.GEMINI_CONTENT_MODEL || 'gemini-2.5-flash';
-const ENTITY_MODEL =
-  process.env.GEMINI_CONTENT_MODEL || 'gemini-2.5-flash';
+const { modelFor } = require('./models');
+const ANALYSIS_MODEL = modelFor('callAnalysis');   // flagship moment-of-truth → PRO (gated)
+const CONTENT_MODEL = modelFor('content');          // SOW / portal writing
+const ENTITY_MODEL = modelFor('callEntities');      // cheap entity extraction → LITE
 
 // ---------------------------------------------------------------- STAGE 0
 //
@@ -119,14 +117,16 @@ const MOMENTS_SCHEMA = {
     knowledgeGaps: {
       type: 'array',
       description:
-        'Claims the rep made that CONTRADICT the [Grounded Knowledge] section. ' +
-        'Empty array if there are no contradictions or no grounded knowledge was provided.',
+        'Claims the rep made that CONTRADICT the [Grounded Knowledge] section ' +
+        'OR contradict the [Pre-Call Brief] section (the predictions GhostStream ' +
+        "made about objections / competitive edge before the call). Empty array " +
+        'if there are no contradictions or no grounded knowledge / brief was provided.',
       items: {
         type: 'object',
         properties: {
           repQuote:      { type: 'string', description: "Exact quote of the rep's incorrect claim." },
-          kbCitation:    { type: 'string', description: 'Citation token from [Grounded Knowledge], format: doc-id:c-N.' },
-          contradiction: { type: 'string', description: 'One sentence: what the KB says vs. what the rep said.' },
+          kbCitation:    { type: 'string', description: 'Citation token: either a chunk token from [Grounded Knowledge] in the form doc-id:c-N, or the literal "[BRIEF]" when the contradiction is against the [Pre-Call Brief] section.' },
+          contradiction: { type: 'string', description: 'One sentence: what the KB / brief says vs. what the rep said.' },
           severity:      { type: 'string', description: 'HIGH (pricing/contract terms), MEDIUM (feature/spec), LOW (positioning).' },
         },
         required: ['repQuote', 'kbCitation', 'contradiction', 'severity'],
@@ -147,23 +147,61 @@ function formatTranscript(transcript) {
     .join('\n');
 }
 
-async function findMoments(transcript, { groundedKnowledge } = {}) {
+// Truncate the pre-call brief's content_md before threading it into the
+// Stage-1 prompt. The brief is full-page markdown (strategy section + KB
+// appendix). The appendix duplicates what `retrieval.retrieveContext`
+// already pulls for analysis, so we just need the strategy header — first
+// ~2000 chars covers the predictions section comfortably.
+const BRIEF_PROMPT_TRUNCATE_CHARS = 2000;
+
+async function findMoments(transcript, { groundedKnowledge, preCallBrief } = {}) {
   const formatted = formatTranscript(transcript);
   const ai = gemini.getClient();
+
+  // Pre-call brief: the predictions GhostStream made BEFORE the meeting,
+  // grounded in the same KB. Including this in the Stage-1 prompt lets the
+  // analysis flag "rep contradicted the predicted competitive edge" or
+  // "rep accepted an objection the brief told them to push back on" —
+  // structurally answerable only when the brief and the analysis share state.
+  const briefClause = preCallBrief && preCallBrief.contentMd
+    ? (
+      '\n\n## Pre-Call Brief (what GhostStream predicted before the call)\n' +
+      'This is the briefing GhostStream prepared for the rep ahead of time, ' +
+      "grounded in the same KB. When flagging a rep claim that contradicts " +
+      'the brief (e.g. predicted objection went unhandled, predicted ' +
+      'competitive edge was misstated), add a `knowledgeGaps` entry with ' +
+      'the literal token `[BRIEF]` in `kbCitation`.\n\n' +
+      preCallBrief.contentMd.slice(0, BRIEF_PROMPT_TRUNCATE_CHARS) +
+      (preCallBrief.contentMd.length > BRIEF_PROMPT_TRUNCATE_CHARS
+        ? '\n\n[... brief truncated for prompt budget ...]'
+        : '')
+    )
+    : '';
 
   const factCheckClause = groundedKnowledge && groundedKnowledge.chunks?.length
     ? (
       '\n\n## Grounded Knowledge (cite by token in [brackets])\n' +
       retrieval.formatForPrompt(groundedKnowledge.chunks) +
       '\n\n## Fact-Check Instruction\n' +
-      'Compare the rep\'s claims in the transcript against the [Grounded Knowledge]. ' +
-      'If the rep quotes a price, feature, timeline, contract term, or capability ' +
-      'that CONTRADICTS the KB, add an entry to `knowledgeGaps` citing the offending ' +
-      'chunk by its [doc-id:c-N] token. Be conservative — only flag clear ' +
-      'contradictions, not tonal mismatches. If no contradictions exist, return ' +
-      'an empty `knowledgeGaps` array.'
+      'Compare the rep\'s claims in the transcript against the [Grounded Knowledge] ' +
+      (preCallBrief ? 'AND the [Pre-Call Brief] ' : '') +
+      'sections. If the rep quotes a price, feature, timeline, contract term, or ' +
+      'capability that CONTRADICTS the KB, add an entry to `knowledgeGaps` citing ' +
+      'the offending chunk by its [doc-id:c-N] token. ' +
+      (preCallBrief
+        ? "If the rep's behavior contradicts the brief's predictions (e.g. didn't " +
+          'handle a predicted objection, mis-stated a predicted competitive edge), ' +
+          'add a `knowledgeGaps` entry with `kbCitation` set to the literal `[BRIEF]`. '
+        : '') +
+      'Be conservative — only flag clear contradictions, not tonal mismatches. If ' +
+      'no contradictions exist, return an empty `knowledgeGaps` array.'
     )
-    : '\n\nNo Knowledge Base entries available — return an empty `knowledgeGaps` array.';
+    : (preCallBrief
+      ? '\n\n## Fact-Check Instruction\nNo Knowledge Base entries available. If the rep ' +
+        'clearly contradicts a prediction in the [Pre-Call Brief] (predicted objection ' +
+        'unhandled, predicted competitive edge misstated), add a `knowledgeGaps` entry ' +
+        'with `kbCitation` set to the literal `[BRIEF]`. Otherwise return an empty array.'
+      : '\n\nNo Knowledge Base entries available — return an empty `knowledgeGaps` array.');
 
   const response = await ai.models.generateContent({
     model: ANALYSIS_MODEL,
@@ -183,6 +221,7 @@ async function findMoments(transcript, { groundedKnowledge } = {}) {
               `Participants:\n${transcript.participants.map((p) => `- ${p.name} (${p.role}${p.title ? ', ' + p.title : ''}${p.company ? ', ' + p.company : ''})`).join('\n')}\n\n` +
               '## Transcript\n' +
               formatted +
+              briefClause +
               factCheckClause,
           },
         ],
@@ -331,7 +370,30 @@ async function runPipeline(transcript, {
     }
   }
 
-  const stage1 = await findMoments(transcript, { groundedKnowledge });
+  // Pre-call brief: when the portal belongs to a mission, pull the latest
+  // brief that GhostStream generated BEFORE the meeting and thread it into
+  // Stage 1. Without this, "did the rep handle the objections we predicted?"
+  // is structurally unanswerable — the analysis pipeline would re-derive
+  // everything from the transcript + KB without seeing the predictions.
+  // Best-effort: a missing or unreadable brief doesn't fail the pipeline.
+  let preCallBrief = null;
+  if (currentMissionId) {
+    try {
+      const brief = require('./missions/brief');
+      const latest = await brief.getLatest(tenantId, currentMissionId);
+      if (latest && latest.content_md) {
+        preCallBrief = {
+          briefId: latest.id,
+          generatedAt: latest.generated_at,
+          contentMd: latest.content_md,
+        };
+      }
+    } catch (err) {
+      console.warn(`[analysis] pre-call brief lookup failed for mission ${currentMissionId}: ${err.message}`);
+    }
+  }
+
+  const stage1 = await findMoments(transcript, { groundedKnowledge, preCallBrief });
   const stage2 = await draftFollowups({ transcript, moments: stage1.moments });
 
   return {
@@ -342,6 +404,13 @@ async function runPipeline(transcript, {
       kbReady,
       entities: entities ? entities.entities : [],
       retrievedChunkCount: kbHits,
+      // Pre-call brief consulted? When true, Stage 1 saw GhostStream's
+      // pre-meeting predictions and may have flagged contradictions with
+      // `kbCitation: "[BRIEF]"` in knowledgeGaps. The portal can render
+      // "Compared against pre-call brief" when this is true.
+      preCallBrief: preCallBrief
+        ? { briefId: preCallBrief.briefId, generatedAt: preCallBrief.generatedAt }
+        : null,
       // Persist what filter was applied so manager-triage can re-run with a
       // different profile and the portal can show "audited against {product}".
       engagementProfile: engagementProfile || null,

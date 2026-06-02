@@ -28,7 +28,7 @@ async function verifyPassword(plain, hash) {
 }
 
 const PUBLIC_COLUMNS = `
-  id, tenant_id, email, name, role, is_admin, email_verified,
+  id, tenant_id, email, name, first_name, last_name, role, is_admin, email_verified,
   email_verified_at, last_login_at, created_at, updated_at
 `;
 
@@ -39,6 +39,8 @@ function rowToUser(row) {
     tenantId: row.tenant_id,
     email: row.email,
     name: row.name,
+    firstName: row.first_name,
+    lastName: row.last_name,
     role: row.role,
     isAdmin: row.is_admin,
     emailVerified: row.email_verified,
@@ -79,18 +81,24 @@ async function findByVerificationToken(token) {
 // Create a user. `passwordHash` must already be bcrypt-hashed (callers go
 // through hashPassword first). Generates an email-verification token unless
 // emailVerified is explicitly true.
-async function create({ tenantId, email, passwordHash, name = null, role = 'owner', isAdmin = false, emailVerified = false }) {
+async function create({ tenantId, email, passwordHash, name = null, firstName = null, lastName = null, role = 'owner', isAdmin = false, emailVerified = false }) {
   if (!tenantId) { const e = new Error('tenantId required'); e.status = 400; throw e; }
   if (!email)    { const e = new Error('email required');    e.status = 400; throw e; }
   if (!passwordHash) { const e = new Error('passwordHash required'); e.status = 400; throw e; }
 
+  // Derive the display `name` from the parts when not given explicitly, so
+  // existing consumers (sidebar, JWT) keep working off a single field.
+  const first = firstName ? String(firstName).trim() : null;
+  const last = lastName ? String(lastName).trim() : null;
+  const displayName = name || [first, last].filter(Boolean).join(' ') || null;
+
   const token = emailVerified ? null : crypto.randomBytes(24).toString('hex');
   const r = await db.query(
     `INSERT INTO users
-       (tenant_id, email, password_hash, name, role, is_admin, email_verified, email_verification_token, email_verified_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8, CASE WHEN $7 THEN now() ELSE NULL END)
+       (tenant_id, email, password_hash, name, first_name, last_name, role, is_admin, email_verified, email_verification_token, email_verified_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, CASE WHEN $9 THEN now() ELSE NULL END)
      RETURNING ${PUBLIC_COLUMNS}, email_verification_token`,
-    [tenantId, String(email).trim(), passwordHash, name, role, isAdmin, emailVerified, token]
+    [tenantId, String(email).trim(), passwordHash, displayName, first, last, role, isAdmin, emailVerified, token]
   );
   const u = rowToUser(r.rows[0]);
   u.emailVerificationToken = r.rows[0].email_verification_token; // returned to caller for the email link
@@ -115,6 +123,21 @@ async function markEmailVerified(id) {
 
 async function setPassword(id, passwordHash) {
   await db.query(`UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, [passwordHash, id]);
+}
+
+// Update a user's name. Keeps the derived display `name` ("First Last") in sync
+// with the structured parts. Returns the updated public user.
+async function updateProfile(id, { firstName, lastName }) {
+  const first = firstName != null ? String(firstName).trim() : null;
+  const last = lastName != null ? String(lastName).trim() : null;
+  const name = [first, last].filter(Boolean).join(' ') || null;
+  const r = await db.query(
+    `UPDATE users SET first_name = $1, last_name = $2, name = $3, updated_at = now()
+      WHERE id = $4
+      RETURNING ${PUBLIC_COLUMNS}`,
+    [first, last, name, id]
+  );
+  return rowToUser(r.rows[0]);
 }
 
 // Idempotent boot step: ensure the Founders tenant has an admin user matching
@@ -162,5 +185,6 @@ module.exports = {
   touchLogin,
   markEmailVerified,
   setPassword,
+  updateProfile,
   bootstrapFoundersAdmin,
 };

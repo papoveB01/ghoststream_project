@@ -67,6 +67,8 @@ services:
       APP_BASE_URL: ${APP_BASE_URL:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_MODEL_LITE: ${GEMINI_MODEL_LITE:-gemini-2.5-flash-lite}
+      GEMINI_MODEL_PRO: ${GEMINI_MODEL_PRO:-}
       GEMINI_ANALYSIS_MODEL: ${GEMINI_ANALYSIS_MODEL:-gemini-2.5-pro}
       GEMINI_CONTENT_MODEL: ${GEMINI_CONTENT_MODEL:-gemini-2.5-flash}
       GEMINI_RESEARCH_MODEL: ${GEMINI_RESEARCH_MODEL:-}
@@ -82,6 +84,8 @@ services:
       # error message until these are populated; no API calls are attempted.
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
       FIRECRAWL_BASE_URL: ${FIRECRAWL_BASE_URL:-}
+      BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      BRAVE_BASE_URL: ${BRAVE_BASE_URL:-}
       PHYLLO_CLIENT_ID: ${PHYLLO_CLIENT_ID:-}
       PHYLLO_CLIENT_SECRET: ${PHYLLO_CLIENT_SECRET:-}
       PHYLLO_BASE_URL: ${PHYLLO_BASE_URL:-}
@@ -131,6 +135,44 @@ services:
       CALENDLY_API_BASE: ${CALENDLY_API_BASE:-https://api.calendly.com}
       CALENDLY_AUTH_BASE: ${CALENDLY_AUTH_BASE:-https://auth.calendly.com}
       CALENDLY_API_TOKEN: ${CALENDLY_API_TOKEN:-}
+      # Stripe — subscriptions/billing. Self-serve checkout + portal + webhook.
+      # Endpoints return 503 until STRIPE_SECRET_KEY is set; checkout needs the
+      # per-plan price ids; the webhook needs the signing secret.
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_STARTER: ${STRIPE_PRICE_STARTER:-}
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      STRIPE_PORTAL_CONFIG_ID: ${STRIPE_PORTAL_CONFIG_ID:-}
+      # Microsoft Graph (direct) — per-user calendar reads only. One multi-
+      # tenant Azure AD app, registered in our Azure tenant. The originally
+      # planned admin-consent + Recall Teams bot registration was dropped:
+      # Recall has no programmatic Teams credential endpoint, so signed-in
+      # Teams bots are configured on Recall's dashboard instead. See
+      # docs/adr/0002-microsoft-graph-direct.md §8.
+      MS_CLIENT_ID: ${MS_CLIENT_ID:-}
+      MS_CLIENT_SECRET: ${MS_CLIENT_SECRET:-}
+      MS_TENANT_ID: ${MS_TENANT_ID:-common}
+      MS_REDIRECT_URI: ${MS_REDIRECT_URI:-}
+      MS_AUTHORITY_HOST: ${MS_AUTHORITY_HOST:-https://login.microsoftonline.com}
+      MS_GRAPH_BASE: ${MS_GRAPH_BASE:-https://graph.microsoft.com/v1.0}
+      # Branded sender for meeting invites — decoupled from the rep's M365
+      # outbound (which is fragile, see ADR-0002 §10 + 5.7.708 incident).
+      MEETINGS_FROM_EMAIL: ${MEETINGS_FROM_EMAIL:-meetings@eel-global.com}
+      MEETINGS_FROM_NAME: ${MEETINGS_FROM_NAME:-GhostStream Meetings}
+      MEETINGS_REPLY_TO: ${MEETINGS_REPLY_TO:-}
+      # NewsAPI — adds dated news articles to Deep Research dossiers.
+      # Free tier (100 req/day) is enough for prospect research; sign up at
+      # https://newsapi.org/. When unset, research falls back to Brave/
+      # Firecrawl web search only.
+      NEWSAPI_KEY: ${NEWSAPI_KEY:-}
+      NEWSAPI_BASE_URL: ${NEWSAPI_BASE_URL:-https://newsapi.org/v2}
+      # Apollo.io — B2B company + contact enrichment for Deep Research,
+      # Prospect Contacts and Teams meeting attendee autocomplete.
+      APOLLO_API_KEY: ${APOLLO_API_KEY:-}
+      APOLLO_BASE_URL: ${APOLLO_BASE_URL:-https://api.apollo.io}
+      APOLLO_DAILY_CAP_PER_TENANT: ${APOLLO_DAILY_CAP_PER_TENANT:-50}
+      APOLLO_CACHE_TTL_DAYS: ${APOLLO_CACHE_TTL_DAYS:-7}
     depends_on:
       db:
         condition: service_healthy

@@ -21,11 +21,7 @@
 const gemini = require('../gemini');
 const db = require('../db');
 
-const MODEL =
-  process.env.GEMINI_KEYPOINTS_MODEL ||
-  process.env.GEMINI_ANALYSIS_MODEL ||
-  process.env.GEMINI_MODEL ||
-  'gemini-2.5-flash';
+const MODEL = require('../models').modelFor('keypoints');
 const INPUT_CAP   = parseInt(process.env.KB_KEYPOINTS_INPUT_CAP || '16000', 10);
 const CONTEXT_CAP = parseInt(process.env.KB_KEYPOINTS_CONTEXT_CAP || '5000', 10);
 
@@ -147,7 +143,20 @@ async function tenantContextText(tenantId) {
     const productBlock = prod.rows.length
       ? 'Our product lines:\n' + prod.rows.map((r) => `- ${r.name}${r.description ? ': ' + r.description : ''}`).join('\n')
       : '';
-    let budget = CONTEXT_CAP - productBlock.length - 64;
+    // Editable company positioning/objectives (tenant_profiles) — the rep-controlled
+    // foundation. Prepended first so it leads the context for every synthesis.
+    let profileBlock = '';
+    const prof = await db.query(
+      `SELECT positioning, objectives FROM tenant_profiles WHERE tenant_id = $1`,
+      [tenantId]
+    );
+    if (prof.rows[0]) {
+      const pp = [];
+      if (prof.rows[0].positioning) pp.push(`Positioning: ${prof.rows[0].positioning}`);
+      if (prof.rows[0].objectives) pp.push(`Objectives: ${prof.rows[0].objectives}`);
+      if (pp.length) profileBlock = 'Our positioning & objectives:\n' + pp.join('\n');
+    }
+    let budget = CONTEXT_CAP - productBlock.length - profileBlock.length - 64;
     let docBlock = '';
     if (budget > 400) {
       const basis = await db.query(
@@ -167,7 +176,7 @@ async function tenantContextText(tenantId) {
       }
       if (parts.length) docBlock = 'About our company (from our knowledge base):\n' + parts.join('\n\n');
     }
-    return [productBlock, docBlock].filter(Boolean).join('\n\n').slice(0, CONTEXT_CAP).trim();
+    return [profileBlock, productBlock, docBlock].filter(Boolean).join('\n\n').slice(0, CONTEXT_CAP).trim();
   } catch {
     return '';
   }
@@ -213,4 +222,279 @@ async function extractKeyPoints({ scope, text, tenantId = null, title = null } =
   }
 }
 
-module.exports = { extractKeyPoints, kindFor, stripBoilerplate, tenantContextText };
+// ── Company analysis (TENANT-scoped docs) ────────────────────────────────
+//
+// When a doc is filed against the rep's own company (scope=TENANT) the
+// generic key-point extractor is too thin — sales reps want a sales-ready
+// briefing: what we sell, where we win, who we look like in the market.
+// extractCompanyAnalysis returns a structured payload that the UI renders
+// as a richer view than a bullet list.
+//
+// Fields:
+//   executiveSummary       1-2 sentences: what this company sells + to whom
+//   services[]             distinct offerings called out in the doc
+//                            { name, description, audience }
+//   strengths[]            differentiators with a short evidence quote
+//                            { claim, evidence }
+//   marketPosition         category we play in + the angle we sell on +
+//                          honest weaknesses or unaddressed gaps
+//                            { category, differentiator, weaknesses[] }
+//   competitors[]          named adjacent vendors we'd come up against
+//                            { name, reason, overlap: 'high'|'medium'|'low' }
+//   idealCustomerProfile   ICP description: industry / size / signals
+//   salesAngles[]          where this doc is most useful in the funnel
+//                          (e.g. "Lead with this in a CFO discovery call to
+//                          counter the 'AI tools don't move the number' objection")
+//
+// All fields are optional inside the schema — Gemini drops what's not in
+// the doc rather than inventing. Empty arrays / null are acceptable.
+
+const COMPANY_ANALYSIS_SCHEMA = {
+  type: 'object',
+  properties: {
+    executiveSummary: { type: 'string', description: '1-2 sentences IN FIRST PERSON PLURAL ("WE …"): what OUR company does, what WE sell, and the kind of customer WE serve. The kind of sentence a new salesperson on OUR team would write on day one. NEVER frame this as "this document covers X" — always as "We do X".' },
+    services: {
+      type: 'array',
+      description: 'Distinct services or product offerings WE provide that are described in this doc (not the whole portfolio — only what THIS doc covers).',
+      items: {
+        type: 'object',
+        properties: {
+          name:        { type: 'string', description: 'Exact name of OUR offering as it appears in the doc.' },
+          description: { type: 'string', description: '1 sentence written from OUR side: "We do X for buyers who Y" or "It does X for our customers". Not a buyer-side description.' },
+          audience:    { type: 'string', description: 'WHO BUYS THIS FROM US — role, industry, scale. Empty if not stated.' },
+        },
+        required: ['name', 'description'],
+      },
+    },
+    strengths: {
+      type: 'array',
+      description: 'Up to 5 of OUR differentiators that this doc credibly establishes. First-person: "We are the only…", "We provide…". Each gets a one-sentence claim PLUS a short verbatim quote from the doc as evidence so a rep can re-use the line on a call.',
+      items: {
+        type: 'object',
+        properties: {
+          claim:    { type: 'string', description: 'The differentiator stated plainly, in first person ("We …").' },
+          evidence: { type: 'string', description: 'A short verbatim quote from this doc. Keep under 30 words. Use exact numbers/names if any.' },
+        },
+        required: ['claim', 'evidence'],
+      },
+    },
+    marketPosition: {
+      type: 'object',
+      description: 'Where WE sit in the market.',
+      properties: {
+        category:       { type: 'string', description: 'The category WE compete in — buyers\' words, not marketing words.' },
+        differentiator: { type: 'string', description: '1 sentence in first person: "WE win because…". The honest defensible reason a buyer picks US over the obvious alternative.' },
+        weaknesses: {
+          type: 'array',
+          description: 'Up to 3 things WE don\'t address in this doc — gaps a buyer would push back on. Each in first person ("We don\'t cover X", "Our pricing isn\'t addressed here"). Empty array if the doc is itself thin.',
+          items: { type: 'string' },
+        },
+      },
+    },
+    competitors: {
+      type: 'array',
+      description: 'Up to 6 named vendors / products WE compete with in the same buying conversation. Use real, current company names a buyer would recognise (Gong, Outreach, Salesforce, Chorus, Apollo, …). For each, name the closest overlap with US.',
+      items: {
+        type: 'object',
+        properties: {
+          name:    { type: 'string', description: 'Company / product name.' },
+          reason:  { type: 'string', description: '1 sentence: "They overlap with us on X" or "We beat them on Y".' },
+          overlap: { type: 'string', enum: ['high', 'medium', 'low'], description: 'high = same primary use case as us; medium = adjacent; low = occasional shoot-out.' },
+        },
+        required: ['name', 'reason', 'overlap'],
+      },
+    },
+    idealCustomerProfile: { type: 'string', description: '1-2 sentences DESCRIBING OUR BUYER (the customer WE sell to): "Our buyer is X in Y kind of company. They typically have Z signal." Always third-person about the buyer + first-person about us — never "this document targets" framing.' },
+    salesAngles: {
+      type: 'array',
+      description: 'Up to 4 concrete plays for HOW A REP ON OUR TEAM should use this doc: "Lead with X in a discovery call against the Y objection". Each is an instruction TO THE REP.',
+      items: { type: 'string' },
+    },
+  },
+  required: ['executiveSummary'],
+};
+
+const COMPANY_ANALYSIS_PROMPT =
+  'You are a senior GTM strategist working FOR a B2B SaaS company. The document below is THEIR own intel about THEMSELVES — their own positioning, their own product, their own about-page. ' +
+  'Your audience is a sales rep ON THIS COMPANY\'S TEAM who is about to walk into a discovery call. They are reading this briefing about THEIR OWN COMPANY. ' +
+  'Therefore write everything in FIRST PERSON PLURAL: "WE do X", "OUR product", "OUR buyer". ' +
+  'Never use third-person framing like "this document targets buyers" or "the company sells X" — that\'s a journalist describing a company from outside. We are the company. ' +
+  'The "idealCustomerProfile" specifically describes WHO BUYS FROM US — written like a sales rep would describe their own ICP, not like an analyst reviewing a market. ' +
+  'Be honest — name actual differentiators not marketing fluff, real gaps in this doc, real competitors a buyer would name. Quote evidence verbatim for strengths. Skip fields when the doc doesn\'t cover them. ' +
+  IGNORE_CLAUSE;
+
+async function extractCompanyAnalysis({ text, tenantId = null, title = null } = {}) {
+  const body = stripBoilerplate(text);
+  if (body.length < 200) return null; // not enough to analyse
+  try {
+    const ai = gemini.getClient();
+    const context = await tenantContextText(tenantId);
+    const prompt =
+      `${COMPANY_ANALYSIS_PROMPT}\n\n` +
+      (context ? `===OUR COMPANY (portfolio & existing intel)===\n${context}\n\n` : '') +
+      `===NEW DOCUMENT${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
+    const resp = await ai.models.generateContent({
+      model: MODEL,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: {
+        temperature: 0.3,
+        maxOutputTokens: 2200,
+        responseMimeType: 'application/json',
+        responseSchema: COMPANY_ANALYSIS_SCHEMA,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
+    });
+    const parsed = JSON.parse(resp.text);
+    // Light defensive normalisation — drop empty strings, cap arrays.
+    return {
+      executiveSummary: String(parsed.executiveSummary || '').trim() || null,
+      services:         normaliseArray(parsed.services, 8),
+      strengths:        normaliseArray(parsed.strengths, 5),
+      marketPosition:   parsed.marketPosition ? {
+        category:       String(parsed.marketPosition.category || '').trim() || null,
+        differentiator: String(parsed.marketPosition.differentiator || '').trim() || null,
+        weaknesses:     normaliseArray(parsed.marketPosition.weaknesses, 3),
+      } : null,
+      competitors:           normaliseArray(parsed.competitors, 6),
+      idealCustomerProfile:  String(parsed.idealCustomerProfile || '').trim() || null,
+      salesAngles:           normaliseArray(parsed.salesAngles, 4),
+      generatedAt:           new Date().toISOString(),
+      model:                 MODEL,
+    };
+  } catch (err) {
+    console.warn('[company-analysis] extraction failed:', err.message);
+    return null;
+  }
+}
+
+function normaliseArray(v, max) {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x) => x !== null && x !== undefined && (typeof x !== 'string' || x.trim())).slice(0, max);
+}
+
+// ── Product analysis (TENANT-scope docs filed under a product line) ──────
+//
+// When a doc is filed under a specific product line (category=PRODUCT_INTEL,
+// productIds[0] set), the analysis lens is narrower than the company-wide
+// view: this doc is about ONE OF OUR PRODUCTS, named [X]. The output gives
+// the rep a product-specific cheat sheet — what it does, who buys it, the
+// competing products it goes up against, and how to pitch IT (not the
+// broader company).
+
+const PRODUCT_ANALYSIS_SCHEMA = {
+  type: 'object',
+  properties: {
+    executiveSummary: { type: 'string', description: '1-2 sentences in first person plural: "OUR product [NAME] does X for Y kind of buyer." Specific to this product, not the broader company.' },
+    capabilities: {
+      type: 'array',
+      description: 'Up to 8 concrete capabilities OUR product has, as described in this doc. Each is one short noun-phrase + a one-line buyer-benefit, written from OUR side.',
+      items: {
+        type: 'object',
+        properties: {
+          capability: { type: 'string', description: 'The capability, named concretely. E.g. "Real-time transaction scoring", not "AI-powered insights".' },
+          benefit:    { type: 'string', description: 'In first person: "Lets our customers do X without Y". The buyer-impact in plain language.' },
+        },
+        required: ['capability', 'benefit'],
+      },
+    },
+    problemsSolved: {
+      type: 'array',
+      description: 'Up to 5 specific buyer problems OUR product addresses. Frame as the BUYER\'S problem, not our marketing.',
+      items: { type: 'string' },
+    },
+    whoBuysIt: { type: 'string', description: '1-2 sentences: WHO ON THE BUYER SIDE buys OUR product — title, function, scale, signals. First-person about us, third-person about the buyer.' },
+    integrations: {
+      type: 'array',
+      description: 'Up to 8 specific tools, platforms or systems OUR product integrates with as named in this doc. Tech stack signals only — drop if not stated.',
+      items: { type: 'string' },
+    },
+    pricingPosture: { type: 'string', description: '1 sentence on how OUR product is priced/packaged if the doc says — usage-based / per-seat / tier / not stated. Empty string if absent.' },
+    competingProducts: {
+      type: 'array',
+      description: 'Up to 6 SPECIFIC PRODUCTS (not just company names) that a buyer would shortlist alongside OURS for the same job. Use real, current product names (e.g. "Splunk SOAR" not just "Splunk"; "Salesforce Einstein Conversation Insights" not just "Salesforce").',
+      items: {
+        type: 'object',
+        properties: {
+          name:    { type: 'string', description: 'Product (and vendor if needed for disambiguation) — e.g. "Gong Engage" or "Outreach Kaia".' },
+          reason:  { type: 'string', description: '1 sentence: "Buyers compare us on X" or "We beat them on Y".' },
+          overlap: { type: 'string', enum: ['high', 'medium', 'low'], description: 'high = same use case as ours; medium = adjacent; low = occasional shoot-out.' },
+        },
+        required: ['name', 'reason', 'overlap'],
+      },
+    },
+    pitchAngles: {
+      type: 'array',
+      description: 'Up to 4 concrete plays for selling OUR product: which buyer moment, which objection, which question. Each is an instruction to the rep.',
+      items: { type: 'string' },
+    },
+  },
+  required: ['executiveSummary'],
+};
+
+const PRODUCT_ANALYSIS_PROMPT_HEADER =
+  'You are a senior product marketer working FOR a B2B SaaS company. The document below describes ONE of THEIR products — the rep on their team needs a product cheat sheet for pitching IT specifically (not the broader company). ' +
+  'Write everything in FIRST PERSON PLURAL about us ("WE", "OUR product"), third person about the buyer ("our buyers do X"). ' +
+  'Never use third-person framing like "this document describes the product" or "the product solves" — we own this product. ' +
+  'Focus tightly on THIS PRODUCT — its capabilities, who buys it, what it integrates with, and the products it competes with at the shortlist stage. Don\'t describe the broader company. ' +
+  'Be honest: name real competing products by name (not "legacy vendors"), name actual integrations, name the actual buyer role. Skip fields if the doc is silent on them. ' +
+  IGNORE_CLAUSE;
+
+async function extractProductAnalysis({ text, tenantId = null, productId = null, title = null } = {}) {
+  const body = stripBoilerplate(text);
+  if (body.length < 200) return null;
+  try {
+    const ai = gemini.getClient();
+    const context = await tenantContextText(tenantId);
+    // Look up the named product so the prompt can refer to it explicitly.
+    let productHeader = '';
+    if (productId) {
+      try {
+        const r = await db.query(
+          `SELECT name, description FROM products WHERE tenant_id = $1 AND id = $2 LIMIT 1`,
+          [tenantId, productId]
+        );
+        if (r.rows[0]) {
+          productHeader = `===THE PRODUCT THIS DOC IS ABOUT===\n` +
+            `Name: ${r.rows[0].name}` +
+            (r.rows[0].description ? `\nWhat we know about it already: ${r.rows[0].description}` : '') +
+            `\n`;
+        }
+      } catch { /* non-fatal */ }
+    }
+    const prompt =
+      `${PRODUCT_ANALYSIS_PROMPT_HEADER}\n\n` +
+      (context ? `===OUR COMPANY (portfolio & existing intel)===\n${context}\n\n` : '') +
+      (productHeader ? `${productHeader}\n` : '') +
+      `===NEW DOCUMENT${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
+    const resp = await ai.models.generateContent({
+      model: MODEL,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: {
+        temperature: 0.3,
+        maxOutputTokens: 2200,
+        responseMimeType: 'application/json',
+        responseSchema: PRODUCT_ANALYSIS_SCHEMA,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
+    });
+    const parsed = JSON.parse(resp.text);
+    return {
+      executiveSummary:  String(parsed.executiveSummary || '').trim() || null,
+      capabilities:      normaliseArray(parsed.capabilities, 8),
+      problemsSolved:    normaliseArray(parsed.problemsSolved, 5),
+      whoBuysIt:         String(parsed.whoBuysIt || '').trim() || null,
+      integrations:      normaliseArray(parsed.integrations, 8),
+      pricingPosture:    String(parsed.pricingPosture || '').trim() || null,
+      competingProducts: normaliseArray(parsed.competingProducts, 6),
+      pitchAngles:       normaliseArray(parsed.pitchAngles, 4),
+      productId,
+      generatedAt:       new Date().toISOString(),
+      model:             MODEL,
+    };
+  } catch (err) {
+    console.warn('[product-analysis] extraction failed:', err.message);
+    return null;
+  }
+}
+
+module.exports = { extractKeyPoints, extractCompanyAnalysis, extractProductAnalysis, kindFor, stripBoilerplate, tenantContextText };

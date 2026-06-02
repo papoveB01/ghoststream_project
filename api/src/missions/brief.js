@@ -24,8 +24,7 @@ const retrieval = require('../knowledge/retrieval');
 const web = require('../knowledge/web');
 const service = require('./service');
 
-const BRIEF_MODEL =
-  process.env.GEMINI_BRIEF_MODEL || process.env.GEMINI_ANALYSIS_MODEL || 'gemini-2.5-pro';
+const BRIEF_MODEL = require('../models').modelFor('brief');
 const BRIEF_RETRIEVAL_K = parseInt(process.env.BRIEF_RETRIEVAL_K || '8', 10);
 const APPENDIX_CHUNK_COUNT = parseInt(process.env.BRIEF_APPENDIX_CHUNKS || '4', 10);
 

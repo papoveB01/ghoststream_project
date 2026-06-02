@@ -1,0 +1,19 @@
+{
+  "name": "@ghoststream/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Model Context Protocol server exposing GhostStream tools (kb_search, …) to MCP-aware clients like Lili.",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "src/index.js",
+  "bin": {
+    "ghoststream-mcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

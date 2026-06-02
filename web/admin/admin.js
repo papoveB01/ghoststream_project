@@ -3,17 +3,21 @@
   const show = (id) => $(id).classList.remove('hidden');
   const hide = (id) => $(id).classList.add('hidden');
 
-  const sections = ['overview', 'company', 'knowledge', 'missions', 'portals', 'sessions', 'meetings', 'integrations', 'caches'];
+  const sections = ['overview', 'company', 'missions', 'prospects', 'competitors', 'calendar', 'calls', 'calls-ops', 'sessions', 'integrations', 'billing', 'settings', 'profile'];
   const loaders = {
     overview: loadOverview,
     company: loadCompany,
-    knowledge: loadKnowledge,
     missions: loadMissions,
-    portals: loadPortals,
+    prospects: loadProspects,
+    competitors: loadCompetitors,
+    calendar: loadCalendar,
+    calls: loadCalls,
+    'calls-ops': loadCallsOps,
     sessions: loadSessions,
-    meetings: loadMeetings,
     integrations: loadIntegrations,
-    caches: loadCaches,
+    billing: loadBilling,
+    settings: loadSettings,
+    profile: loadProfile,
   };
   const loaded = {};
   let currentSection = 'overview';
@@ -29,25 +33,129 @@
     try {
       const r = await fetch('/api/auth/me', { credentials: 'include' });
       if (!r.ok) throw new Error('unauthorized');
-      me = (await r.json()).user;
+      // /auth/me returns { user, entitlements } as siblings — flatten entitlements
+      // onto `me` so the sidebar plan chip and trial banner have their data.
+      const payload = await r.json();
+      me = payload.user;
+      if (me && payload.entitlements) me.entitlements = payload.entitlements;
     } catch {
       window.location.href = '/admin/login.html';
       return;
     }
 
     $('user-email').textContent = me.email;
-    $('user-avatar').textContent = (me.email || '?')[0].toUpperCase();
+    if (me.name) {
+      const nameEl = $('user-name');
+      nameEl.textContent = me.name;
+      nameEl.classList.remove('hidden');
+      // Avatar = initials from the name (e.g. "Jordan Rivera" → "JR").
+      const initials = me.name.trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join('').toUpperCase();
+      $('user-avatar').textContent = initials || (me.email || '?')[0].toUpperCase();
+    } else {
+      $('user-avatar').textContent = (me.email || '?')[0].toUpperCase();
+    }
     isSuperadmin = !!me.isAdmin;
+
+    // Returning from Stripe Checkout (?cs=<session>) — confirm the subscription
+    // synchronously so the plan is live before the welcome flow (and gate) run.
+    const _cs = new URLSearchParams(window.location.search).get('cs');
+    if (_cs) {
+      try {
+        const r = await fetch('/api/billing/confirm', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: _cs }),
+        });
+        if (r.ok) { const b = await r.json(); if (b.entitlements) me.entitlements = b.entitlements; }
+      } catch { /* the webhook will reconcile */ }
+      const u = new URL(window.location.href);
+      u.searchParams.delete('cs');
+      history.replaceState(null, '', u.pathname + u.search + u.hash);
+    }
+
+    renderSubBanner(me.entitlements);
+
+    // Reveal superadmin-only nav entries before rendering the initial section
+    // so deep-linking to e.g. #calls-ops on a fresh load works.
+    if (isSuperadmin) {
+      document.querySelectorAll('.superadmin-only').forEach((el) => el.classList.remove('hidden'));
+    }
 
     wireNav();
     wireLogout();
     wireRefresh();
 
-    const initial = (window.location.hash.replace('#', '') || 'overview');
-    await switchSection(sections.includes(initial) ? initial : 'overview');
+    const initialRaw = window.location.hash.replace('#', '') || 'overview';
+    const { section: initialSection, query: initialQuery } = parseHash(initialRaw);
+    const redirected = legacyHashRedirect(initialSection, initialQuery);
+    if (redirected) {
+      history.replaceState(null, '', redirected.href);
+      await switchSection(redirected.section, redirected.query);
+    } else {
+      await switchSection(sections.includes(initialSection) ? initialSection : 'overview', initialQuery);
+    }
 
     hide('content-loading');
     show('content-body');
+
+    // Product tour: wire the "？ Guide" replay button + auto-run once for new users.
+    const tourBtn = $('tour-btn');
+    if (tourBtn) tourBtn.addEventListener('click', startTour);
+    try {
+      if (!localStorage.getItem('gs_tour_seen')) setTimeout(startTour, 900);
+    } catch { /* localStorage blocked — skip auto-tour */ }
+  }
+
+  // Guided product tour (Driver.js, vendored). Anchored on the persistent sidebar
+  // nav so it never breaks on section switches; replayable from the Guide button.
+  function startTour() {
+    if (!window.driver || !window.driver.js) return;
+    const { driver } = window.driver.js;
+    const nav = (s) => `#nav a[data-section="${s}"]`;
+    driver({
+      showProgress: true,
+      allowClose: true,
+      overlayOpacity: 0.6,
+      nextBtnText: 'Next →',
+      prevBtnText: '← Back',
+      doneBtnText: 'Got it',
+      popoverClass: 'gs-tour',
+      onDestroyed: () => { try { localStorage.setItem('gs_tour_seen', '1'); } catch { /* ignore */ } },
+      steps: [
+        { popover: { title: 'Welcome to GhostStream 👋', description: 'A 30-second tour of how to go from a cold list to a closed call. You can replay it any time from <b>？ Guide</b> in the top bar.' } },
+        { element: nav('overview'),     popover: { title: '1 · Your cockpit', description: 'Priority opportunities, upcoming engagements, and your foundation health — what to do next, at a glance.', side: 'right', align: 'start' } },
+        { element: nav('company'),      popover: { title: '2 · Company foundation', description: 'Built automatically from your website on day one — your products, positioning and personas. Every AI output is grounded here.', side: 'right', align: 'start' } },
+        { element: nav('prospects'),    popover: { title: '3 · Find prospects', description: 'Add them manually, pull from your CRM, or let AI <b>discover</b> companies showing a buying signal — ranked by priority and matched to your products (≈ 3 credits a run).', side: 'right', align: 'start' } },
+        { element: nav('competitors'),  popover: { title: '4 · Know your competitors', description: 'Auto-discover rivals by region, pull their real product lineup, and generate battlecards — so you walk in knowing how to win.', side: 'right', align: 'start' } },
+        { element: nav('missions'),     popover: { title: '5 · Run the call', description: 'Schedule an engagement; the AI joins, records, and turns the meeting into a Sales Portal + SOW — with a pre-call brief ready beforehand.', side: 'right', align: 'start' } },
+        { element: nav('integrations'), popover: { title: '6 · Connect your stack', description: 'Link your calendar and CRM (HubSpot is live) to pull prospects and auto-schedule. Optional — but it supercharges everything.', side: 'right', align: 'start' } },
+        { element: '#tour-btn',         popover: { title: 'You\'re all set 🚀', description: 'Start by reviewing your <b>Company</b> foundation, then <b>Discover</b> your first prospects. Replay this tour any time from here.', side: 'bottom', align: 'end' } },
+      ],
+    }).drive();
+  }
+
+  // Parse a hash like "calls?status=ready&q=foo" → { section, query }.
+  function parseHash(raw) {
+    if (!raw) return { section: 'overview', query: {} };
+    const [section, qs] = raw.split('?');
+    const query = {};
+    if (qs) {
+      const sp = new URLSearchParams(qs);
+      sp.forEach((v, k) => { query[k] = v; });
+    }
+    return { section, query };
+  }
+
+  // #portals → #calls?status=ready (Decision #1 cascade — Portals were always
+  // ready-only). #meetings → #calls (no filter). Returns null when no redirect.
+  function legacyHashRedirect(section, query) {
+    if (section === 'portals') {
+      return { section: 'calls', query: { ...query, status: 'ready' }, href: '#calls?status=ready' };
+    }
+    if (section === 'meetings') {
+      return { section: 'calls', query, href: '#calls' };
+    }
+    return null;
   }
 
   function wireNav() {
@@ -55,7 +163,7 @@
       a.addEventListener('click', (e) => {
         e.preventDefault();
         const sec = a.dataset.section;
-        switchSection(sec);
+        switchSection(sec, {});
         history.replaceState(null, '', `#${sec}`);
       });
     });
@@ -63,8 +171,17 @@
     // (the sidebar handler uses replaceState, which doesn't fire hashchange) —
     // honour them so cross-section deep links work everywhere.
     window.addEventListener('hashchange', () => {
-      const sec = window.location.hash.replace('#', '');
-      if (sections.includes(sec) && sec !== currentSection) switchSection(sec);
+      const raw = window.location.hash.replace('#', '');
+      const { section, query } = parseHash(raw);
+      const redirected = legacyHashRedirect(section, query);
+      if (redirected) {
+        history.replaceState(null, '', redirected.href);
+        switchSection(redirected.section, redirected.query);
+        return;
+      }
+      if (sections.includes(section) && (section !== currentSection || Object.keys(query).length > 0)) {
+        switchSection(section, query);
+      }
     });
   }
 
@@ -73,6 +190,14 @@
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
       window.location.href = '/admin/login.html';
     });
+    // The sidebar user block is the entry point to profile management.
+    const block = document.querySelector('.user-block');
+    if (block) {
+      block.addEventListener('click', () => {
+        switchSection('profile', {});
+        history.replaceState(null, '', '#profile');
+      });
+    }
   }
 
   function wireRefresh() {
@@ -82,88 +207,212 @@
     });
   }
 
-  async function switchSection(sec) {
+  async function switchSection(sec, query) {
     currentSection = sec;
     document.querySelectorAll('#nav a').forEach((a) => {
       a.classList.toggle('active', a.dataset.section === sec);
     });
     sections.forEach((s) => {
       const el = $(`section-${s}`);
+      if (!el) return;
       if (s === sec) el.classList.remove('hidden'); else el.classList.add('hidden');
     });
     $('page-title').textContent = titleFor(sec);
-    if (!loaded[sec]) {
-      try { await loaders[sec](); loaded[sec] = true; }
-      catch (err) { console.error(err); }
+    // Company deep-links: ?tab=<intel|products|personas> selects a tab; ?welcome=1
+    // (the post-onboarding landing) arms the one-time pull-from-website bootstrap.
+    // Set these BEFORE the loader so the first render lands on the right tab.
+    if (sec === 'company' && query) {
+      if (query.tab) _companyTab = query.tab;
+      if (query.welcome) _companyWelcome = true;
     }
+    if (!loaded[sec]) {
+      try { await loaders[sec](query || {}); loaded[sec] = true; }
+      catch (err) { console.error(err); }
+    } else if (sec === 'calls' && query) {
+      // Already-loaded Calls page — re-apply the query so deep-linked filter
+      // changes (e.g. clicking a chip or external link) take effect.
+      applyCallsQuery(query);
+    } else if (sec === 'company' && query && (query.tab || query.welcome)) {
+      // Already-loaded Company page navigated with a new tab/welcome → re-render.
+      renderCompanyWorkspace();
+    }
+    // Deep link to a specific product line (e.g. from a competitor's pinned
+    // product chip): scroll the Company product table to it and flash it.
+    if (sec === 'company' && query && query.product) {
+      highlightCompanyProduct(query.product);
+    }
+  }
+
+  function highlightCompanyProduct(productId) {
+    const row = document.querySelector(`[data-product-row="${CSS.escape(productId)}"]`);
+    if (!row) return;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.classList.add('row-highlight');
+    setTimeout(() => row.classList.remove('row-highlight'), 2000);
   }
 
   function titleFor(sec) {
     return {
       overview: 'Overview',
-      company: 'Company Profile',
-      knowledge: 'Knowledge Base',
-      missions: 'Missions',
-      portals: 'Portals',
-      sessions: 'Arena Sessions',
-      meetings: 'Meetings',
+      company: 'Company',
+      missions: 'Engagements',
+      prospects: 'Prospects',
+      competitors: 'Competitors',
+      calendar: 'Calendar',
+      calls: 'Calls',
+      'calls-ops': 'Calls — Operations',
+      sessions: 'Arena Practice',
       integrations: 'Integrations',
-      caches: 'Gemini Caches',
+      billing: 'Billing',
+      settings: 'Settings',
+      profile: 'Your profile',
     }[sec];
   }
 
-  async function fetchJson(url) {
-    const r = await fetch(url, { credentials: 'include' });
+  // Tiny JSON fetch wrapper. Accepts a standard fetch options bag — any
+  // method/body/headers passed through. (Originally this only took `url`,
+  // which silently turned every POST/PATCH/DELETE call into a GET — a long
+  // tail of "HTTP 404" bugs on routes that only existed for the non-GET
+  // verb. Fixed 2026-05-29.)
+  async function fetchJson(url, opts = {}) {
+    const r = await fetch(url, { credentials: 'include', ...opts });
     if (r.status === 401) {
       window.location.href = '/admin/login.html';
       throw new Error('unauthorized');
     }
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (r.status === 402) {
+      // Subscription/feature/usage gate — surface an upgrade prompt.
+      const body = await r.json().catch(() => ({}));
+      handlePaywall(body);
+      throw new Error((body && body.error) || 'Upgrade required');
+    }
+    if (!r.ok) {
+      // Surface the server's `error` field when present — gives reps a
+      // useful message instead of "HTTP 404".
+      const body = await r.json().catch(() => null);
+      throw new Error((body && body.error) || `HTTP ${r.status}`);
+    }
     return r.json();
   }
 
+  // ── Dashboard (sales cockpit) ─────────────────────────────────────────────
   async function loadOverview() {
-    const o = await fetchJson('/api/admin/overview');
+    const host = $('dashboard-body');
+    if (!host) return;
+    host.innerHTML = '<div class="kb-subtle">Loading your dashboard…</div>';
+    let d;
+    try { d = await fetchJson('/api/dashboard'); }
+    catch (err) { host.innerHTML = `<div class="empty">Couldn't load dashboard: ${escapeHtml(err.message)}</div>`; return; }
 
-    $('stat-cards').innerHTML = [
-      statCard('Portals', o.counts.portals),
-      statCard('Arena Sessions', o.counts.sessions),
-      statCard('Meetings', o.counts.meetings),
-      statCard('Active Caches', o.counts.caches),
-    ].join('');
+    const t = d.tenant || {}, k = d.kpis || {}, f = d.foundation || {};
+    const planUpper = String(t.plan || 'TRIAL').toUpperCase();
+    const planOk = planUpper === 'ACTIVE' || planUpper === 'INTERNAL';
+    const trialPill = planOk
+      ? `<span class="pill pill-ok">${escapeHtml(planUpper)}</span>`
+      : `<span class="pill pill-warn">${escapeHtml(planUpper)}${t.daysLeft != null ? ` · ${t.daysLeft} day${t.daysLeft === 1 ? '' : 's'} left` : ''}</span>`;
 
-    $('cache-stats').innerHTML = `
-      <dl class="kv-list">
-        <div class="k">Total registered</div><div class="v">${o.caches.total}</div>
-        <div class="k">Cached (paid tier)</div><div class="v">${o.caches.cached} ${o.caches.cached ? '<span class="pill pill-cached">live</span>' : ''}</div>
-        <div class="k">Inline fallback (free tier)</div><div class="v">${o.caches.inline} ${o.caches.inline ? '<span class="pill pill-inline">inline</span>' : ''}</div>
-      </dl>
-    `;
+    // Activation nudge — only while the foundation is incomplete.
+    const need = [];
+    if (!f.profileSet) need.push(['Set your company positioning', 'company']);
+    if (!f.products) need.push(['Add your products', 'company']);
+    if (!f.competitors) need.push(['Add a competitor', 'competitors']);
+    if (!k.prospects) need.push(['Find your first prospects', 'prospects']);
+    const activation = need.length ? `
+      <div class="dash-activation">
+        <div class="dash-activation-h">⚡ Finish setting up GhostStream</div>
+        <div class="dash-activation-steps">${need.map(([label, sec]) => `<button class="dash-chip" data-goto="${sec}">○ ${escapeHtml(label)} →</button>`).join('')}</div>
+      </div>` : '';
 
-    $('env-stats').innerHTML = `
-      <dl class="kv-list">
-        <div class="k">Roleplay model</div><div class="v mono">${o.env.roleplayModel || '—'}</div>
-        <div class="k">Analysis model</div><div class="v mono">${o.env.analysisModel || '—'}</div>
-        <div class="k">Content model</div><div class="v mono">${o.env.contentModel || '—'}</div>
-        <div class="k">Recall.ai region</div><div class="v mono">${o.env.recallRegion || '—'}</div>
-        <div class="k">Cloudflare Stream</div><div class="v">${o.env.streamConfigured ? '<span class="pill pill-ok">configured</span>' : '<span class="pill pill-warn">mock</span>'}</div>
-        <div class="k">App base URL</div><div class="v mono">${escapeHtml(o.env.appBaseUrl || '')}</div>
-      </dl>
-    `;
+    const opps = d.opportunities || [];
+    const engs = d.engagements || [];
+
+    host.innerHTML = `
+      <div class="dash-header">
+        <div>
+          <div class="dash-hello kb-subtle">Welcome back</div>
+          <div class="dash-company">${escapeHtml(t.name || 'your company')} ${trialPill}</div>
+        </div>
+        <div class="dash-actions">
+          <button class="primary-cta" data-goto="prospects" data-pmode="discover">🔎 Discover prospects</button>
+          <button class="kb-secondary-btn" data-goto="competitors">⚔ Add competitor</button>
+          <button class="kb-secondary-btn" data-goto="missions">📅 Schedule</button>
+        </div>
+      </div>
+      ${activation}
+      <div class="dash-kpis">
+        ${kpiCell('Prospects', fmtNum(k.prospects || 0), k.prospectsNewWeek ? `+${k.prospectsNewWeek} this week` : 'in your pipeline', 'prospects')}
+        ${kpiCell('Open signals', fmtNum(k.openSignals || 0), 'priority opportunities', 'prospects')}
+        ${kpiCell('Competitors', fmtNum(k.competitors || 0), `${fmtNum(f.competitorsWithIntel || 0)} with intel`, 'competitors')}
+        ${kpiCell('Next 7 days', fmtNum(k.engagementsNext7d || 0), 'engagements', 'missions')}
+      </div>
+      <div class="dash-grid">
+        <div class="dash-col">
+          <div class="dash-card-h">🎯 Priority opportunities</div>
+          <div class="dash-opps">${opps.length ? opps.map(dashOppRow).join('') : dashEmpty('No opportunities yet — Discover prospects or run research to surface buying signals.')}</div>
+        </div>
+        <div class="dash-col">
+          <div class="dash-card-h">📅 Upcoming engagements</div>
+          <div class="dash-engs">${engs.length ? engs.map(dashEngRow).join('') : dashEmpty('No upcoming engagements — schedule one from a prospect or the Engagements page.')}</div>
+        </div>
+      </div>
+      <div class="dash-foundation">
+        <span class="dash-found-h">🧱 Foundation</span>
+        ${dashFound(f.profileSet, 'Positioning')}
+        ${dashFound(f.products > 0, `${fmtNum(f.products)} Products`)}
+        ${dashFound(f.personas > 0, `${fmtNum(f.personas)} Personas`)}
+        ${dashFound(f.competitorsWithIntel > 0, `${fmtNum(f.competitorsWithIntel)}/${fmtNum(f.competitors)} competitors w/ intel`)}
+        ${dashFound(!!f.crm, f.crm ? `CRM ${f.crm}` : 'CRM not connected')}
+        <span class="dash-found-spacer"></span>
+        <button class="kb-link-btn" data-goto="company">Company →</button>
+        <button class="kb-link-btn" data-goto="integrations">Integrations →</button>
+      </div>`;
+
+    host.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => {
+      const sec = b.dataset.goto;
+      if (sec === 'prospects' && b.dataset.pmode) _prospectMode = b.dataset.pmode;
+      window.location.hash = '#' + sec;
+    }));
+    host.querySelectorAll('[data-opp-company]').forEach((el) => el.addEventListener('click', () => {
+      _prospectsState.selectedCompanyId = el.dataset.oppCompany;
+      window.location.hash = '#prospects';
+    }));
+    host.querySelectorAll('[data-opp-brief]').forEach((b) => b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const o = opps[Number(b.dataset.oppBrief)] || {};
+      window._prefillMission = { companyName: o.companyName || '', companyDomain: '', productIds: [], note: o.title ? `Angle: ${o.title}` : '' };
+      window.location.hash = '#missions';
+    }));
+    host.querySelectorAll('[data-eng-company]').forEach((el) => el.addEventListener('click', () => {
+      const cid = el.dataset.engCompany;
+      if (cid) { _prospectsState.selectedCompanyId = cid; window.location.hash = '#prospects'; }
+      else window.location.hash = '#missions';
+    }));
   }
 
-  async function loadPortals() {
-    const { portals } = await fetchJson('/api/admin/portals');
-    $('portals-table').innerHTML = portals.length === 0
-      ? '<div class="empty">No portals yet. Run <code>POST /api/first-loop</code> to generate one.</div>'
-      : `
-        <table class="dt">
-          <thead><tr>
-            <th>ID</th><th>Title</th><th>Meeting</th><th>Duration</th>
-            <th>Objection</th><th>Created</th><th></th>
-          </tr></thead>
-          <tbody>${portals.map(portalRow).join('')}</tbody>
-        </table>`;
+  function kpiCell(label, value, sub, sec) {
+    return `<button class="dash-kpi" data-goto="${sec}"><div class="dash-kpi-v">${value}</div><div class="dash-kpi-l">${escapeHtml(label)}</div>${sub ? `<div class="dash-kpi-s kb-subtle">${escapeHtml(sub)}</div>` : ''}</button>`;
+  }
+  function dashEmpty(msg) { return `<div class="dash-empty kb-subtle">${escapeHtml(msg)}</div>`; }
+  function dashFound(ok, label) { return `<span class="dash-found-item ${ok ? 'ok' : 'todo'}">${ok ? '✓' : '○'} ${escapeHtml(label)}</span>`; }
+  function dashStrengthClass(s) { return s === 'strong' ? 'win' : s === 'weak' ? 'lose' : 'tie'; }
+  function dashOppRow(o, i) {
+    const fits = (o.products || []).slice(0, 4).map((p) => `<span class="kb-stream-pill stream-file">${escapeHtml(p)}</span>`).join(' ');
+    return `<div class="dash-opp">
+      <div class="dash-opp-top">
+        <span class="bc-verdict bc-verdict-${dashStrengthClass(o.strength)}">${escapeHtml(o.strength || '—')}</span>
+        <span class="dash-opp-title">${escapeHtml(o.title || 'Opportunity')}</span>
+      </div>
+      <div class="dash-opp-meta"><a class="dash-opp-company" data-opp-company="${escapeHtml(o.companyId)}">${escapeHtml(o.companyName || '')}</a>${fits ? ` · ${fits}` : ''}</div>
+      <div class="dash-opp-actions"><button class="kb-link-btn" data-opp-brief="${i}">📅 Brief an engagement →</button></div>
+    </div>`;
+  }
+  function dashEngRow(e) {
+    const statusCls = e.status === 'BRIEFED' ? 'pill-ok' : 'pill-info';
+    return `<div class="dash-eng" data-eng-company="${escapeHtml(e.companyId || '')}">
+      <div class="dash-eng-when">${escapeHtml(fmtDate(e.scheduledAt))}</div>
+      <div class="dash-eng-co">${escapeHtml(e.companyName || 'Prospect')}</div>
+      <span class="pill ${statusCls}">${escapeHtml(e.status || '')}</span>
+    </div>`;
   }
 
   // mm:ss for short calls, h:mm:ss for >= 1h. Returns '—' when missing.
@@ -197,7 +446,7 @@
       ? `<a href="${escapeHtml(meeting.meetingUrl)}" target="_blank" rel="noopener" title="${escapeHtml(meeting.meetingUrl)}">${escapeHtml(shortMeetingUrl(meeting.meetingUrl))} ↗</a>`
       : '';
     const missionLink = meeting.missionId
-      ? `<div class="mono muted" title="mission ${escapeHtml(meeting.missionId)}">mission · ${escapeHtml(meeting.missionId.slice(0, 8))}…</div>`
+      ? `<div class="mono muted" title="engagement ${escapeHtml(meeting.missionId)}">engagement · ${escapeHtml(meeting.missionId.slice(0, 8))}…</div>`
       : '';
     const botLink = meeting.botId
       ? `<div class="mono muted" title="Recall.ai bot ${escapeHtml(meeting.botId)}">bot · ${escapeHtml(meeting.botId.slice(0, 8))}…</div>`
@@ -211,90 +460,2182 @@
       </div>`;
   }
 
-  function portalRow(p) {
-    const o = (p.moments && p.moments.objection) || {};
-    const duration = p.meeting && p.meeting.durationSeconds;
-    return `
-      <tr>
-        <td class="mono">${escapeHtml(p.id)}</td>
-        <td class="truncate">${escapeHtml(p.title || '—')}</td>
-        <td>${meetingRefCell(p.meeting)}</td>
-        <td class="mono">${fmtDuration(duration)}</td>
-        <td class="truncate"><em>${escapeHtml((o.quote || '').slice(0, 90))}${o.quote && o.quote.length > 90 ? '…' : ''}</em></td>
-        <td>${fmtDate(p.createdAt)}</td>
-        <td><a href="/portal/?id=${encodeURIComponent(p.id)}" target="_blank">Open ↗</a></td>
-      </tr>`;
-  }
+  // ── Arena practice history + coaching ────────────────────────────────────
+  // Durable list of completed practice runs, each with an AI scorecard. Row
+  // click → transcript + breakdown detail. A rep filter narrows to one person.
+  let _sessionsFilter = { rep: '', status: '' };
 
   async function loadSessions() {
-    const { sessions } = await fetchJson('/api/admin/sessions');
+    showSessionsList();
+    const qs = new URLSearchParams();
+    if (_sessionsFilter.rep) qs.set('rep', _sessionsFilter.rep);
+    if (_sessionsFilter.status) qs.set('status', _sessionsFilter.status);
+    const { sessions } = await fetchJson('/api/admin/sessions' + (qs.toString() ? `?${qs}` : ''));
+    renderSessionsFilters(sessions);
     $('sessions-table').innerHTML = sessions.length === 0
-      ? '<div class="empty">No active sessions. Sessions expire after 1 hour.</div>'
+      ? '<div class="empty">No practice sessions yet. Reps start them from a call portal’s “Practice” button.</div>'
       : `
         <table class="dt">
-          <thead><tr><th>ID</th><th>Persona</th><th>Mode</th><th>Turns</th><th>Created</th><th></th></tr></thead>
+          <thead><tr><th>Rep</th><th>Persona</th><th>Objection</th><th>Score</th><th>Turns</th><th>Duration</th><th>Status</th><th>Date</th></tr></thead>
           <tbody>${sessions.map(sessionRow).join('')}</tbody>
         </table>`;
+    $('sessions-table').querySelectorAll('tr[data-sid]').forEach((tr) => {
+      tr.addEventListener('click', () => loadSessionDetail(tr.getAttribute('data-sid')));
+    });
+  }
+
+  function renderSessionsFilters(sessions) {
+    // Build the rep dropdown from whatever reps appear in the current result
+    // set, plus the active filter (so it survives a zero-result filter).
+    const reps = new Set(sessions.map((s) => s.repName).filter(Boolean));
+    if (_sessionsFilter.rep) reps.add(_sessionsFilter.rep);
+    const repOpts = ['<option value="">All reps</option>']
+      .concat([...reps].sort().map((r) =>
+        `<option value="${escapeHtml(r)}"${r === _sessionsFilter.rep ? ' selected' : ''}>${escapeHtml(r)}</option>`));
+    const statuses = [['', 'All statuses'], ['completed', 'Completed'], ['active', 'In progress'], ['abandoned', 'Abandoned']];
+    const statusOpts = statuses.map(([v, l]) =>
+      `<option value="${v}"${v === _sessionsFilter.status ? ' selected' : ''}>${l}</option>`);
+    $('sessions-filters').innerHTML = `
+      <select id="sessions-rep-filter">${repOpts.join('')}</select>
+      <select id="sessions-status-filter">${statusOpts.join('')}</select>`;
+    $('sessions-rep-filter').addEventListener('change', (e) => {
+      _sessionsFilter.rep = e.target.value; loadSessions();
+    });
+    $('sessions-status-filter').addEventListener('change', (e) => {
+      _sessionsFilter.status = e.target.value; loadSessions();
+    });
+  }
+
+  function scorePill(score) {
+    if (score == null) return '<span class="muted">—</span>';
+    const cls = score >= 75 ? 'pill-good' : score >= 50 ? 'pill-mid' : 'pill-low';
+    return `<span class="pill ${cls}">${score}</span>`;
+  }
+
+  function fmtDuration(sec) {
+    if (sec == null) return '—';
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return m ? `${m}m ${s}s` : `${s}s`;
   }
 
   function sessionRow(s) {
-    const userTurns = (s.turns || []).filter((t) => t.role === 'rep').length;
     return `
-      <tr>
-        <td class="mono">${escapeHtml(s.id)}</td>
+      <tr data-sid="${escapeHtml(s.id)}" class="row-clickable">
+        <td>${escapeHtml(s.repName || '—')}</td>
         <td>${escapeHtml((s.persona || '').replace(/-/g, ' '))}</td>
-        <td><span class="pill pill-${s.cacheMode || 'inline'}">${s.cacheMode || 'inline'}</span></td>
-        <td>${userTurns}</td>
-        <td>${fmtDate(s.createdAt)}</td>
-        <td><a href="/arena/?id=${encodeURIComponent(s.id)}" target="_blank">Open ↗</a></td>
+        <td>${escapeHtml(s.objectionCategory || '—')}</td>
+        <td>${scorePill(s.score)}</td>
+        <td>${s.turnCount}</td>
+        <td>${fmtDuration(s.durationSeconds)}</td>
+        <td><span class="pill pill-${s.status}">${s.status}</span></td>
+        <td>${fmtDate(s.startedAt)}</td>
       </tr>`;
   }
 
-  async function loadMeetings() {
-    const { meetings } = await fetchJson('/api/admin/meetings');
-    $('meetings-table').innerHTML = meetings.length === 0
-      ? '<div class="empty">No meetings yet.</div>'
-      : `
-        <table class="dt">
-          <thead><tr><th>ID</th><th>Source</th><th>Status</th><th>Portal</th><th>Created</th></tr></thead>
-          <tbody>${meetings.map(meetingRow).join('')}</tbody>
-        </table>`;
+  function showSessionsList() {
+    hide('session-detail-card');
+    show('sessions-filters');
+    show('sessions-table');
   }
 
-  function meetingRow(m) {
-    const portalLink = m.portalId
-      ? `<a href="/portal/?id=${encodeURIComponent(m.portalId)}" target="_blank">${escapeHtml(m.portalId)} ↗</a>`
-      : '—';
+  async function loadSessionDetail(id) {
+    const { session } = await fetchJson(`/api/admin/sessions/${encodeURIComponent(id)}`);
+    hide('sessions-filters');
+    hide('sessions-table');
+    show('session-detail-card');
+    $('session-detail-body').innerHTML = renderSessionDetail(session);
+    // onclick (not addEventListener) so repeated opens don't stack handlers.
+    $('session-detail-back').onclick = (e) => { e.preventDefault(); showSessionsList(); };
+    $('session-detail-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function renderSessionDetail(s) {
+    const o = s.objection || {};
+    const meta = `
+      <div class="sd-meta">
+        <span><span class="label">Rep</span>${escapeHtml(s.repName || '—')}</span>
+        <span><span class="label">Persona</span>${escapeHtml((s.persona || '').replace(/-/g, ' '))}</span>
+        <span><span class="label">Objection</span>${escapeHtml(o.category || '—')}</span>
+        <span><span class="label">Status</span>${escapeHtml(s.status)}</span>
+        <span><span class="label">Started</span>${fmtDate(s.startedAt)}</span>
+        <span><span class="label">Portal</span><a href="/portal/?id=${encodeURIComponent(s.portalId)}" target="_blank">open ↗</a></span>
+      </div>`;
+    const scorecard = renderAdminScorecard(s.scorecard);
+    const transcript = (s.turns || []).map((t) => `
+      <div class="sd-turn sd-turn-${t.role === 'rep' ? 'rep' : 'prospect'}">
+        <div class="sd-turn-who">${t.role === 'rep' ? 'Rep' : 'Prospect'}</div>
+        <div class="sd-turn-text">${escapeHtml(t.content)}</div>
+      </div>`).join('');
+    return `${meta}${scorecard}
+      <h4 class="sd-section-h">Transcript</h4>
+      <div class="sd-transcript">${transcript || '<div class="muted">No turns recorded.</div>'}</div>`;
+  }
+
+  function renderAdminScorecard(sc) {
+    if (!sc) return '<div class="sd-noscore">No scorecard — session was not completed.</div>';
+    if (sc.incomplete || sc.error) {
+      return `<div class="sd-noscore">${escapeHtml(sc.feedback || 'Scorecard unavailable.')}</div>`;
+    }
+    const dims = (sc.dimensions || []).map((d) => {
+      const pct = d.max ? Math.round((d.score / d.max) * 100) : 0;
+      return `
+        <div class="sd-dim">
+          <div class="sd-dim-top"><span>${escapeHtml(d.name)}</span><span>${d.score}/${d.max}</span></div>
+          <div class="sd-bar"><i style="width:${pct}%"></i></div>
+          ${d.note ? `<div class="sd-dim-note">${escapeHtml(d.note)}</div>` : ''}
+        </div>`;
+    }).join('');
+    const list = (title, items) => (items && items.length)
+      ? `<div><h5>${title}</h5><ul>${items.map((x) => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>`
+      : '';
     return `
-      <tr>
-        <td class="mono">${escapeHtml(m.id)}</td>
-        <td>${escapeHtml(m.source || '—')}</td>
-        <td>${escapeHtml(m.status || '—')}</td>
-        <td class="mono">${portalLink}</td>
-        <td>${fmtDate(m.createdAt)}</td>
+      <div class="sd-scorecard">
+        <div class="sd-score-head">
+          <h4 class="sd-section-h" style="margin:0">Coaching scorecard</h4>
+          ${typeof sc.overall === 'number' ? `<div class="sd-overall">${sc.overall}<small>/100</small></div>` : ''}
+        </div>
+        ${dims}
+        ${sc.feedback ? `<p class="sd-feedback">${escapeHtml(sc.feedback)}</p>` : ''}
+        <div class="sd-lists">${list('Strengths', sc.strengths)}${list('To improve', sc.improvements)}</div>
+      </div>`;
+  }
+
+  // ── Prospects (companies + buyer-persona contacts) ───────────────────────
+  // Two-pane view. Left: list of prospect companies (with mission + contact
+  // counts). Right: selected company detail + contacts table. The contacts
+  // table is what fulfils the "Name + Email + Role" buyer-persona record;
+  // the persona auto-linking happens server-side (contacts.js).
+
+  let _prospectsState = { companies: [], selectedCompanyId: null, contacts: [] };
+  let _prospectResearch = null; // latest research run for the open prospect (Signals tab)
+  let _prospectMode = 'manual'; // creation mode: manual | crm | discover
+
+  async function loadProspects() {
+    const host = $('prospects-body');
+    if (!host) return;
+    host.innerHTML = '<div class="kb-subtle">Loading…</div>';
+    try {
+      const data = await fetchJson('/api/companies');
+      _prospectsState.companies = data.companies || data || [];
+    } catch (err) {
+      host.innerHTML = `<div class="empty">Couldn't load prospects: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    // Pick previously-selected or first.
+    if (!_prospectsState.selectedCompanyId && _prospectsState.companies.length > 0) {
+      _prospectsState.selectedCompanyId = _prospectsState.companies[0].id;
+    }
+    await renderProspects(host);
+  }
+
+  async function renderProspects(host) {
+    const companies = _prospectsState.companies;
+    const selectedId = _prospectsState.selectedCompanyId;
+    // Creation banner with 3 modes: Manual · From CRM · Discover online. The
+    // active mode's panel renders into #prospect-mode-panel (renderProspectModePanel).
+    const modeSection = `
+      <div class="prospect-quick-banner">
+        <div class="prospect-modes">
+          <button type="button" class="kb-tab${_prospectMode === 'manual' ? ' active' : ''}" data-pmode="manual">✍️ Manual</button>
+          <button type="button" class="kb-tab${_prospectMode === 'crm' ? ' active' : ''}" data-pmode="crm">🔗 From CRM</button>
+          <button type="button" class="kb-tab${_prospectMode === 'discover' ? ' active' : ''}" data-pmode="discover">🔎 Discover online</button>
+        </div>
+        <div id="prospect-mode-panel"></div>
+      </div>`;
+
+    if (companies.length === 0) {
+      host.innerHTML = `
+        ${modeSection}
+        <div class="empty">
+          <p>No prospects yet.</p>
+          <p class="kb-subtle">Add one above (manual, from your CRM, or by discovering them online), or schedule an engagement on the <a href="#missions">Engagements tab</a>.</p>
+        </div>`;
+      wireProspectModes(host);
+      return;
+    }
+    let contacts = [];
+    if (selectedId) {
+      try {
+        const r = await fetchJson(`/api/contacts?companyId=${encodeURIComponent(selectedId)}`);
+        contacts = r.contacts || [];
+      } catch { /* render empty contacts */ }
+    }
+    _prospectsState.contacts = contacts;
+    const selected = companies.find((c) => c.id === selectedId);
+
+    host.innerHTML = `
+      ${modeSection}
+      <div class="prospects-grid">
+        <div class="prospects-list">
+          <div class="prospects-list-h">${companies.length} prospect${companies.length === 1 ? '' : 's'}</div>
+          <div class="prospects-list-rows">
+            ${companies.map((c) => `
+              <div class="prospect-row ${c.id === selectedId ? 'active' : ''}" data-prospect-pick="${escapeHtml(c.id)}" role="button" tabindex="0">
+                <div class="prospect-row-name">${escapeHtml(c.name)}</div>
+                <div class="prospect-row-meta kb-subtle">${escapeHtml(c.domain || '—')} · ${fmtNum(c.meeting_count || 0)} engagement${(c.meeting_count || 0) === 1 ? '' : 's'}</div>
+              </div>`).join('')}
+          </div>
+        </div>
+        <div class="prospects-detail">
+          ${selected ? renderProspectDetail(selected, contacts) : '<div class="kb-subtle">Pick a prospect on the left.</div>'}
+        </div>
+      </div>
+    `;
+    host.querySelectorAll('[data-prospect-pick]').forEach((el) => {
+      el.addEventListener('click', () => {
+        _prospectsState.selectedCompanyId = el.dataset.prospectPick;
+        renderProspects(host);
+      });
+    });
+    if (selected) wireProspectDetail(host, selected);
+    wireProspectModes(host);
+  }
+
+  async function refreshProspectIntelStatus(companyId) {
+    const el = $('prospect-intel-status');
+    if (!el) return;
+    let r;
+    try {
+      const data = await fetchJson(`/api/knowledge/research/${encodeURIComponent(companyId)}`);
+      r = data.research;
+    } catch (err) {
+      el.innerHTML = `<span class="kb-subtle">Couldn't load research status: ${escapeHtml(err.message)}</span>`;
+      return;
+    }
+    if (!r) {
+      el.innerHTML = `<span class="kb-subtle">No research yet — click "Run / refresh research" to start.</span>`;
+      return;
+    }
+    _prospectResearch = r;
+    const auto   = (r.sources || []).filter((s) => !s.addedManually).length;
+    const statusBadge = r.status === 'RUNNING' ? '<span class="lib-badge lib-badge-running">🔄 researching</span>'
+                     : r.status === 'FAILED'  ? `<span class="lib-badge lib-badge-failed">⚠︎ failed</span>`
+                     : `<span class="lib-badge lib-badge-done">🔎 ${escapeHtml(fmtDate(r.updated_at || r.created_at))}</span>`;
+    el.innerHTML = `
+      ${statusBadge}
+      &nbsp;·&nbsp; ${auto} web source${auto === 1 ? '' : 's'} scanned
+      ${r.summary ? `<div class="prospect-summary"><strong>Summary:</strong> ${escapeHtml(r.summary)}</div>` : ''}
+      ${r.error  ? `<div style="margin-top:8px" class="kb-result error">${escapeHtml(r.error)}</div>` : ''}
+    `;
+    const oppsHost = $('prospect-opps');
+    if (oppsHost) renderOpportunities(companyId, oppsHost, r);
+    // If RUNNING, poll gently.
+    if (r.status === 'RUNNING') setTimeout(() => refreshProspectIntelStatus(companyId), 6000);
+  }
+
+  // Render the opportunity cards (the "why call them" plays) — pinned first.
+  function renderOpportunities(companyId, host, r) {
+    const opps = (r.opportunities || []).slice().sort((a, b) => (b && b.pinned ? 1 : 0) - (a && a.pinned ? 1 : 0));
+    if (!opps.length) {
+      host.innerHTML = r.status === 'RUNNING'
+        ? '<div class="kb-subtle" style="padding:10px 0">Researching… opportunities will appear here.</div>'
+        : r.status === 'DONE'
+          ? '<div class="kb-subtle" style="padding:10px 0">No opportunities surfaced. Add intel on the Intel tab, then Re-analyze.</div>'
+          : '';
+      return;
+    }
+    const strengthCls = (s) => s === 'strong' ? 'win' : s === 'weak' ? 'lose' : 'tie';
+    host.innerHTML = opps.map((o, i) => `
+      <div class="opp-card${o.pinned ? ' pinned' : ''}">
+        <div class="opp-h">
+          <span class="opp-title">${o.pinned ? '★ ' : ''}${escapeHtml(o.title || 'Opportunity')}</span>
+          <span class="bc-verdict bc-verdict-${strengthCls(o.strength)} opp-strength">${escapeHtml(o.strength || '—')}</span>
+        </div>
+        ${o.analysis ? `<div class="opp-analysis">${escapeHtml(o.analysis)}</div>` : ''}
+        ${Array.isArray(o.products) && o.products.length ? `<div class="opp-fits"><span class="kb-subtle">Fits:</span> ${o.products.map((p) => `<span class="kb-stream-pill stream-file">${escapeHtml(p)}</span>`).join(' ')}</div>` : ''}
+        ${Array.isArray(o.sources) && o.sources.length ? `<div class="opp-src kb-subtle">Sources: ${o.sources.map((n) => `[${escapeHtml(String(n))}]`).join(' ')}</div>` : ''}
+        <div class="opp-actions">
+          <button type="button" class="kb-secondary-btn opp-brief" data-i="${i}">📅 Brief an engagement</button>
+          <button type="button" class="kb-link-btn opp-pin" data-i="${i}">${o.pinned ? '★ Unpin' : '☆ Pin'}</button>
+        </div>
+      </div>`).join('');
+    host.querySelectorAll('.opp-brief').forEach((b) => b.addEventListener('click', () => briefMissionFromOpportunity(companyId, opps[Number(b.dataset.i)])));
+    host.querySelectorAll('.opp-pin').forEach((b) => b.addEventListener('click', async () => {
+      const o = opps[Number(b.dataset.i)];
+      b.disabled = true;
+      try {
+        await fetchJson(`/api/knowledge/research/${encodeURIComponent(companyId)}/opportunity`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: o.title, pinned: !o.pinned }),
+        });
+        await refreshProspectIntelStatus(companyId);
+      } catch (err) { alert(`Couldn't pin: ${err.message}`); b.disabled = false; }
+    }));
+  }
+
+  // "Brief a mission" — prefill the missions scheduler with this prospect + the
+  // opportunity's mapped products, then jump to the missions page.
+  async function briefMissionFromOpportunity(companyId, opp) {
+    const company = (_prospectsState.companies || []).find((c) => c.id === companyId) || {};
+    let productIds = [];
+    try {
+      const r = await fetchJson('/api/portfolio/products');
+      const byName = new Map((r.products || []).map((p) => [String(p.name).toLowerCase(), p.id]));
+      productIds = (opp.products || []).map((nm) => byName.get(String(nm).toLowerCase())).filter(Boolean);
+    } catch { /* best-effort */ }
+    window._prefillMission = {
+      companyName: company.name || '',
+      companyDomain: company.domain || '',
+      productIds,
+      note: opp.title ? `Angle: ${opp.title}` : '',
+    };
+    window.location.hash = '#missions';
+  }
+
+  // Download the current research (summary + opportunities) as markdown.
+  function downloadProspectResearch(company) {
+    const r = _prospectResearch;
+    if (!r) { alert('Run research first.'); return; }
+    const L = [`# Research — ${company.name}`, ''];
+    if (r.summary) L.push(`**Summary:** ${r.summary}`, '');
+    (r.opportunities || []).forEach((o, i) => {
+      L.push(`## ${i + 1}. ${o.title || 'Opportunity'}${o.strength ? ` (${o.strength})` : ''}`);
+      if (o.analysis) L.push(o.analysis);
+      if (Array.isArray(o.products) && o.products.length) L.push(`Fits: ${o.products.join(', ')}`);
+      L.push('');
+    });
+    const blob = new Blob([L.join('\n')], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `research-${String(company.name || 'prospect').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}.md`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // ── Prospect creation modes (Manual · From CRM · Discover online) ─────────
+  function wireProspectModes(host) {
+    host.querySelectorAll('[data-pmode]').forEach((b) => b.addEventListener('click', () => {
+      _prospectMode = b.dataset.pmode;
+      host.querySelectorAll('[data-pmode]').forEach((x) => x.classList.toggle('active', x.dataset.pmode === _prospectMode));
+      renderProspectModePanel();
+    }));
+    renderProspectModePanel();
+  }
+
+  function renderProspectModePanel() {
+    const panel = $('prospect-mode-panel');
+    if (!panel) return;
+    if (_prospectMode === 'crm') renderProspectCrmMode(panel);
+    else if (_prospectMode === 'discover') renderProspectDiscoverMode(panel);
+    else renderProspectManualMode(panel);
+  }
+
+  function renderProspectManualMode(panel) {
+    panel.innerHTML = `
+      <div class="prospect-quick-h"><strong>Add a prospect</strong> — paste a name + website and we'll build a sales-angled dossier in ~60s.</div>
+      <div class="prospect-quick-row">
+        <input id="prospect-quick-name"   type="text" placeholder="Company name (e.g. Acme Corp)">
+        <input id="prospect-quick-domain" type="text" placeholder="Domain (e.g. acme.com)">
+        <button class="primary-cta" id="prospect-quick-run-btn">Run research</button>
+      </div>
+      <div class="kb-result hidden" id="prospect-quick-result"></div>`;
+    wireQuickResearch(panel);
+  }
+
+  async function renderProspectCrmMode(panel) {
+    panel.innerHTML = '<div class="kb-subtle">Loading your CRM connections…</div>';
+    let providers = [];
+    try { providers = (await fetchJson('/api/crm/providers')).providers || []; } catch { providers = []; }
+    const connected = providers.filter((p) => p.connection && p.connection.connected);
+    if (!connected.length) {
+      panel.innerHTML = `
+        <div class="prospect-quick-h"><strong>Pull prospects from your CRM</strong></div>
+        <div class="kb-subtle">No CRM connected yet. <a href="#integrations">Connect a CRM on the Integrations page</a> (HubSpot is live today), then come back here to pull your companies + contacts in.</div>`;
+      return;
+    }
+    panel.innerHTML = `
+      <div class="prospect-quick-h"><strong>Pull prospects from your CRM</strong></div>
+      <div class="crm-pull-list">${connected.map((p) => `
+        <div class="crm-pull-row">
+          <span>${escapeHtml(p.label)}${p.connection.lastSyncAt ? ` <span class="kb-subtle">· last pull ${escapeHtml(fmtDate(p.connection.lastSyncAt))}</span>` : ''}</span>
+          <button class="primary-cta" data-crm-import="${escapeHtml(p.id)}">⬇ Pull prospects</button>
+          <span class="kb-result hidden" id="crm-result-${escapeHtml(p.id)}"></span>
+        </div>`).join('')}</div>
+      <div class="kb-subtle" style="margin-top:8px">Manage connections on <a href="#integrations">Integrations</a>.</div>`;
+    panel.querySelectorAll('[data-crm-import]').forEach((b) => b.addEventListener('click', async () => {
+      await crmImport(b.dataset.crmImport, b);
+      loaded.prospects = false;
+      await loadProspects(); // refresh the list with the pulled prospects (stays on CRM mode)
+    }));
+  }
+
+  const PROSPECT_PRIO = { 5: 'Critical', 4: 'High', 3: 'Medium', 2: 'Low', 1: 'Watch' };
+  function prioLabel(l) { return PROSPECT_PRIO[l] || 'Medium'; }
+
+  async function renderProspectDiscoverMode(panel) {
+    panel.innerHTML = `
+      <div class="prospect-quick-h"><strong>Discover prospects online</strong> — we scan the web for companies with a buying signal that fits your products, rank them by priority, and show why.</div>
+      <div class="prospect-discover-form">
+        <label class="comp-finder-field">Region
+          <select id="pdisc-region">${COMPETITOR_REGIONS.map((r) => `<option>${escapeHtml(r)}</option>`).join('')}</select>
+        </label>
+        <label class="comp-finder-field">Industry
+          <select id="pdisc-industry"><option value="">Any industry</option></select>
+        </label>
+        <button type="button" class="primary-cta" id="pdisc-search">Search</button>
+      </div>
+      <div id="pdisc-body"></div>`;
+    try {
+      const { industries } = await fetchJson('/api/onboarding/industries');
+      const sel = $('pdisc-industry');
+      (industries || []).forEach((i) => { const o = document.createElement('option'); o.value = i; o.textContent = i; sel.appendChild(o); });
+    } catch { /* dropdown stays at "Any industry" */ }
+    $('pdisc-search').addEventListener('click', runProspectDiscover);
+  }
+
+  async function runProspectDiscover() {
+    const btn = $('pdisc-search'); const body = $('pdisc-body');
+    const region = $('pdisc-region').value; const industry = $('pdisc-industry').value;
+    btn.disabled = true; const o = btn.textContent; btn.textContent = 'Searching…';
+    body.innerHTML = `<div class="kb-subtle" style="padding:12px">🔎 Searching the web for prospects${industry ? ` in ${escapeHtml(industry)}` : ''}${region && !/global|any/i.test(region) ? `, ${escapeHtml(region)}` : ''}…</div>`;
+    try {
+      const data = await fetchJson('/api/companies/discover', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ region, industry }),
+      });
+      renderProspectCandidates(body, (data && data.prospects) || []);
+    } catch (err) {
+      body.innerHTML = `<div class="kb-result error" style="margin:12px">${escapeHtml(err.message)}</div>`;
+    } finally { btn.disabled = false; btn.textContent = o; }
+  }
+
+  function renderProspectCandidates(body, list) {
+    if (!list.length) {
+      body.innerHTML = '<div class="empty" style="padding:16px">No prospects surfaced. Try a different region or industry.</div>';
+      return;
+    }
+    const rows = list.map((c, i) => {
+      const lvl = c.priority || 3;
+      const fits = (c.matchedProductNames && c.matchedProductNames.length)
+        ? c.matchedProductNames.map((n) => `<span class="kb-stream-pill stream-file">${escapeHtml(n)}</span>`).join(' ')
+        : '<span class="kb-subtle">—</span>';
+      const sub = c.domain ? `<div class="kb-subtle"><a href="https://${escapeHtml(c.domain)}" target="_blank" rel="noopener">${escapeHtml(c.domain)}</a></div>` : '';
+      return `
+      <tr data-pcand="${i}">
+        <td><span class="prio prio-${lvl}">${prioLabel(lvl)}</span></td>
+        <td class="dt-name"><strong>${escapeHtml(c.name)}</strong>${sub}</td>
+        <td class="dt-what">${escapeHtml(c.signal || '')}${c.fitReason ? `<div class="kb-subtle">${escapeHtml(c.fitReason)}</div>` : ''}</td>
+        <td class="dt-vs">${fits}</td>
+        <td class="dt-act">${c.exists ? '<span class="kb-subtle">✓ tracked</span>' : `<button type="button" class="kb-secondary-btn pcand-add" data-i="${i}">＋ Add prospect</button>`}</td>
       </tr>`;
+    }).join('');
+    body.innerHTML = `
+      <table class="comp-discover-table">
+        <thead><tr><th>Priority</th><th>Company</th><th>Signal / why now</th><th>Fits (our products)</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="kb-subtle" style="padding:2px 0 10px">Ranked by priority — best product fit and freshest buying signal first.</div>
+      <div class="kb-result hidden" id="pcand-result"></div>`;
+    body.querySelectorAll('.pcand-add').forEach((b) => b.addEventListener('click', () => addProspectCandidate(list[Number(b.dataset.i)], b)));
   }
 
-  async function loadCaches() {
-    const { caches } = await fetchJson('/api/admin/caches');
-    $('caches-table').innerHTML = caches.length === 0
-      ? '<div class="empty">No caches in registry.</div>'
-      : `
-        <table class="dt">
-          <thead><tr><th>Name</th><th>Model</th><th>Mode</th><th>Hash</th><th>Expires</th></tr></thead>
-          <tbody>${caches.map(cacheRow).join('')}</tbody>
-        </table>`;
+  async function addProspectCandidate(c, btn) {
+    btn.disabled = true; btn.textContent = 'Adding…';
+    try {
+      const r = await fetchJson('/api/companies/discover/add', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: c.name, domain: c.domain || null, signal: c.signal || null, fitReason: c.fitReason || null,
+          matchedProductNames: c.matchedProductNames || [], priority: c.priority || 3,
+        }),
+      });
+      btn.textContent = r.signalSaved ? '✓ Added · signal saved' : '✓ Added';
+      btn.classList.add('ev-added');
+      loaded.prospects = false; // list refreshes on next visit / refresh
+      if (r.company && r.company.id) _prospectsState.selectedCompanyId = r.company.id;
+    } catch (err) {
+      if (/already exists/i.test(err.message)) { btn.textContent = '✓ Exists'; btn.classList.add('ev-added'); return; }
+      btn.disabled = false; btn.textContent = '＋ Add prospect';
+      const rr = $('pcand-result'); if (rr) { rr.classList.remove('hidden', 'success'); rr.classList.add('error'); rr.textContent = `${c.name}: ${err.message}`; }
+    }
   }
 
-  function cacheRow(c) {
+  function wireQuickResearch(host) {
+    const btn = $('prospect-quick-run-btn');
+    if (!btn || btn.dataset.wired === '1') return;
+    btn.dataset.wired = '1';
+    btn.addEventListener('click', async () => {
+      const result = $('prospect-quick-result');
+      result.classList.add('hidden'); result.classList.remove('error', 'success');
+      const name   = $('prospect-quick-name').value.trim();
+      const domain = $('prospect-quick-domain').value.trim();
+      if (!name) {
+        result.classList.remove('hidden'); result.classList.add('error');
+        result.textContent = 'Company name is required.';
+        return;
+      }
+      btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Creating prospect…';
+      try {
+        // Reuse-or-create on the prospect side: if the rep typed a name
+        // that already exists, /companies returns 409 — we recover by
+        // looking it up and using its id.
+        let companyId = null;
+        try {
+          const r = await fetchJson('/api/companies', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, domain: domain || null }),
+          });
+          companyId = (r.company || r).id;
+        } catch (err) {
+          // Conflict path — look up by name.
+          const list = await fetchJson('/api/companies');
+          const match = (list.companies || []).find((c) => c.name.toLowerCase() === name.toLowerCase());
+          if (!match) throw err;
+          companyId = match.id;
+        }
+        btn.textContent = 'Starting research…';
+        await fetchJson(`/api/knowledge/research/${encodeURIComponent(companyId)}`, { method: 'POST' });
+        // Land on the new prospect.
+        _prospectsState.selectedCompanyId = companyId;
+        loaded.prospects = false;
+        $('prospect-quick-name').value = '';
+        $('prospect-quick-domain').value = '';
+        await loadProspects();
+        result.classList.remove('hidden'); result.classList.add('success');
+        result.innerHTML = `Research started for <strong>${escapeHtml(name)}</strong>. It runs in the background (~30-60s) — refresh the page or open the prospect to watch progress.`;
+      } catch (err) {
+        result.classList.remove('hidden'); result.classList.add('error');
+        result.textContent = `Couldn't start: ${err.message}`;
+      } finally {
+        btn.disabled = false; btn.textContent = orig;
+      }
+    });
+  }
+
+  function renderProspectDetail(c, contacts) {
     return `
-      <tr>
-        <td class="mono">${escapeHtml(c.name || c.cacheName || '—')}</td>
-        <td class="mono">${escapeHtml(c.model || '—')}</td>
-        <td><span class="pill pill-${c.mode || 'inline'}">${c.mode || 'inline'}</span></td>
-        <td class="mono">${escapeHtml(c.contentHash || '—')}</td>
-        <td>${c.expiresAt ? fmtDate(c.expiresAt) : '—'}</td>
+      <div class="prospect-detail-h">
+        <input id="prospect-name" type="text" class="prospect-name-input" value="${escapeHtml(c.name)}" maxlength="200">
+        <div class="prospect-detail-actions">
+          <button class="kb-secondary-btn" id="prospect-save-btn">Save</button>
+          <button class="kb-secondary-btn danger" id="prospect-delete-btn">Delete prospect</button>
+        </div>
+      </div>
+      <div class="prospect-detail-fields">
+        <label>Domain<input id="prospect-domain" type="text" value="${escapeHtml(c.domain || '')}" placeholder="acme.com"></label>
+        <label>Primary contact<input id="prospect-primary" type="text" value="${escapeHtml(c.primary_contact || '')}" placeholder="Jane Smith"></label>
+        <label>Notes<textarea id="prospect-notes" rows="2" placeholder="Anything worth remembering across engagements">${escapeHtml(c.notes || '')}</textarea></label>
+      </div>
+
+      <div class="prospect-tabs">
+        <button type="button" class="kb-tab active" data-prospect-tab="signals">🔎 Signals</button>
+        <button type="button" class="kb-tab" data-prospect-tab="people">👤 People (${contacts.length})</button>
+        <button type="button" class="kb-tab" data-prospect-tab="intel">📁 Intel</button>
+      </div>
+
+      <div class="prospect-tab-pane" data-prospect-pane="signals">
+        <span class="kb-subtle">Why this company is worth a call right now. We scan their site, the web, and recent news, then match what we find to your products.</span>
+        <div class="prospect-intel-actions">
+          <button class="primary-cta" id="prospect-intel-run-btn">🔎 Research / refresh</button>
+          <button class="kb-secondary-btn" id="prospect-intel-reanalyze-btn">⚙︎ Re-analyze</button>
+          <button class="kb-secondary-btn" id="prospect-research-download-btn">⬇ Download</button>
+        </div>
+        <div class="prospect-intel-status kb-subtle" id="prospect-intel-status">Loading…</div>
+        <div id="prospect-opps" class="prospect-opps"></div>
+      </div>
+
+      <div class="prospect-tab-pane hidden" data-prospect-pane="people">
+        <span class="kb-subtle">The people you deal with at this company. You'll pick from this list when you schedule a call or create a Teams meeting.</span>
+        ${contacts.length === 0
+          ? '<div class="empty" style="padding:10px 0">No contacts yet. Add the first one below.</div>'
+          : `<table class="prospect-contacts-table">
+              <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Persona link</th><th></th></tr></thead>
+              <tbody>
+                ${contacts.map((ct) => `
+                  <tr data-contact-row="${escapeHtml(ct.id)}">
+                    <td><input type="text" data-contact-field="name"  value="${escapeHtml(ct.name)}"  maxlength="200"></td>
+                    <td><input type="email" data-contact-field="email" value="${escapeHtml(ct.email)}"></td>
+                    <td><input type="text" data-contact-field="role"  value="${escapeHtml(ct.role)}" maxlength="100"></td>
+                    <td>${ct.persona_name ? `<span class="pill pill-info">${escapeHtml(ct.persona_name)}</span>` : '<span class="kb-subtle">—</span>'}</td>
+                    <td>
+                      <button class="kb-link-btn" data-contact-save="${escapeHtml(ct.id)}">Save</button>
+                      <button class="kb-link-btn danger" data-contact-delete="${escapeHtml(ct.id)}">Delete</button>
+                    </td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>`}
+        <div class="prospect-contact-add">
+          <h5 style="margin:14px 0 6px 0">Add a contact</h5>
+          <div class="prospect-contact-add-row">
+            <input id="prospect-new-name"  type="text"  placeholder="Name (e.g. Jane Smith)" maxlength="200">
+            <input id="prospect-new-email" type="email" placeholder="Email (e.g. jane@acme.com)">
+            <input id="prospect-new-role"  type="text"  placeholder="Role (e.g. CFO)" maxlength="100">
+            <button class="primary-cta" id="prospect-new-add-btn">Add</button>
+          </div>
+          <div class="kb-result hidden" id="prospect-add-result"></div>
+        </div>
+      </div>
+
+      <div class="prospect-tab-pane hidden" data-prospect-pane="intel">
+        <span class="kb-subtle">Files, links, and notes you've saved about this company. They're searchable and feed both the research summary and your pre-call briefs.</span>
+        <div class="prospect-note-add">
+          <input id="prospect-note-title" type="text" placeholder='Note title (e.g. "From their Q3 call")'>
+          <textarea id="prospect-note-text" rows="3" placeholder="Paste a note — internal context, conference notes, a forwarded email…"></textarea>
+          <button type="button" class="kb-secondary-btn" id="prospect-note-add-btn">＋ Add note</button>
+          <div class="kb-result hidden" id="prospect-note-result"></div>
+        </div>
+        <div id="prospect-intel-library-host" style="margin:10px 0 8px 0"></div>
+      </div>
+    `;
+  }
+
+  function wireProspectDetail(host, company) {
+    $('prospect-save-btn').addEventListener('click', async (e) => {
+      const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        await fetchJson(`/api/companies/${encodeURIComponent(company.id)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name:           $('prospect-name').value.trim(),
+            domain:         $('prospect-domain').value.trim() || null,
+            primaryContact: $('prospect-primary').value.trim() || null,
+            notes:          $('prospect-notes').value.trim() || null,
+          }),
+        });
+        loaded.prospects = false;
+        await loadProspects();
+      } catch (err) { alert(`Couldn't save: ${err.message}`); }
+      finally { btn.disabled = false; btn.textContent = 'Save'; }
+    });
+    $('prospect-delete-btn').addEventListener('click', async () => {
+      if (!confirm(`Delete "${company.name}" and all its contacts? This does NOT delete past engagements linked to this prospect.`)) return;
+      try {
+        await fetchJson(`/api/companies/${encodeURIComponent(company.id)}`, { method: 'DELETE' });
+        _prospectsState.selectedCompanyId = null;
+        loaded.prospects = false;
+        await loadProspects();
+      } catch (err) { alert(`Couldn't delete: ${err.message}`); }
+    });
+
+    host.querySelectorAll('[data-contact-save]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        const id = b.dataset.contactSave;
+        const row = host.querySelector(`[data-contact-row="${id}"]`);
+        const patch = {};
+        row.querySelectorAll('[data-contact-field]').forEach((el) => { patch[el.dataset.contactField] = el.value; });
+        b.disabled = true; b.textContent = 'Saving…';
+        try {
+          await fetchJson(`/api/contacts/${encodeURIComponent(id)}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(patch),
+          });
+          loaded.prospects = false;
+          await loadProspects();
+        } catch (err) { alert(`Couldn't save: ${err.message}`); b.disabled = false; b.textContent = 'Save'; }
+      }));
+    host.querySelectorAll('[data-contact-delete]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        const id = b.dataset.contactDelete;
+        if (!confirm('Delete this contact?')) return;
+        try {
+          await fetchJson(`/api/contacts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+          loaded.prospects = false;
+          await loadProspects();
+        } catch (err) { alert(`Couldn't delete: ${err.message}`); }
+      }));
+
+    // ── Tabs (Signals / People / Intel) ──
+    host.querySelectorAll('[data-prospect-tab]').forEach((t) => t.addEventListener('click', () => {
+      host.querySelectorAll('[data-prospect-tab]').forEach((x) => x.classList.toggle('active', x === t));
+      host.querySelectorAll('[data-prospect-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.prospectPane !== t.dataset.prospectTab));
+    }));
+
+    // ── Intel Library (the unified, retrievable store) ──
+    const intelHost = $('prospect-intel-library-host');
+    const reloadIntel = () => { if (intelHost) renderIntelLibrary({ container: intelHost, scope: 'PROSPECT', companyId: company.id, onChange: () => { loaded.prospects = false; } }); };
+    reloadIntel();
+
+    // ── Signals: research run / re-analyze / download ──
+    refreshProspectIntelStatus(company.id);
+    $('prospect-intel-run-btn').addEventListener('click', async (e) => {
+      const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Starting…';
+      try {
+        await fetchJson(`/api/knowledge/research/${encodeURIComponent(company.id)}`, { method: 'POST' });
+        setTimeout(() => refreshProspectIntelStatus(company.id), 1000);
+      } catch (err) { alert(`Couldn't start: ${err.message}`); }
+      finally { btn.disabled = false; btn.textContent = '🔎 Research / refresh'; }
+    });
+    $('prospect-intel-reanalyze-btn').addEventListener('click', async (e) => {
+      const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Re-analyzing…';
+      try {
+        await fetchJson(`/api/knowledge/research/${encodeURIComponent(company.id)}/reanalyze`, { method: 'POST' });
+        await refreshProspectIntelStatus(company.id);
+      } catch (err) { alert(`Couldn't re-analyze: ${err.message}`); }
+      finally { btn.disabled = false; btn.textContent = '⚙︎ Re-analyze'; }
+    });
+    const dlBtn = $('prospect-research-download-btn');
+    if (dlBtn) dlBtn.addEventListener('click', () => downloadProspectResearch(company));
+
+    // ── Intel: add a note → filed as a retrievable prospect doc (unified store) ──
+    const noteBtn = $('prospect-note-add-btn');
+    if (noteBtn) noteBtn.addEventListener('click', async () => {
+      const title = $('prospect-note-title').value.trim();
+      const text = $('prospect-note-text').value;
+      const result = $('prospect-note-result');
+      if (result) { result.classList.add('hidden'); result.classList.remove('error', 'success'); }
+      if (!text.trim()) { if (result) { result.classList.remove('hidden'); result.classList.add('error'); result.textContent = 'Note text is required.'; } return; }
+      noteBtn.disabled = true; const o = noteBtn.textContent; noteBtn.textContent = 'Adding…';
+      try {
+        const md = `# ${title || 'Note'}\n\n${text}`;
+        const fd = new FormData();
+        fd.append('file', new Blob([md], { type: 'text/markdown' }), 'note.md');
+        fd.append('scope', 'PROSPECT');
+        fd.append('category', 'ORG_INTELLIGENCE');
+        fd.append('companyId', company.id);
+        fd.append('title', title || 'Note');
+        const r = await fetch('/api/knowledge/upload', { method: 'POST', credentials: 'include', body: fd });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        $('prospect-note-title').value = ''; $('prospect-note-text').value = '';
+        if (result) { result.classList.remove('hidden'); result.classList.add('success'); result.textContent = 'Note filed. It feeds the pre-call brief + research re-analysis.'; }
+        reloadIntel();
+        loaded.prospects = false;
+      } catch (err) { if (result) { result.classList.remove('hidden'); result.classList.add('error'); result.textContent = err.message; } }
+      finally { noteBtn.disabled = false; noteBtn.textContent = o; }
+    });
+
+    $('prospect-new-add-btn').addEventListener('click', async () => {
+      const result = $('prospect-add-result');
+      result.classList.add('hidden');
+      const body = {
+        companyId: company.id,
+        name:      $('prospect-new-name').value.trim(),
+        email:     $('prospect-new-email').value.trim(),
+        role:      $('prospect-new-role').value.trim() || 'Unknown',
+      };
+      if (!body.name || !body.email) {
+        result.classList.remove('hidden'); result.classList.add('error'); result.textContent = 'Name and email are required.';
+        return;
+      }
+      try {
+        await fetchJson('/api/contacts', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        loaded.prospects = false;
+        await loadProspects();
+      } catch (err) {
+        result.classList.remove('hidden'); result.classList.add('error'); result.textContent = err.message;
+      }
+    });
+  }
+
+  // ── Intel Library widget — embedded inside Company / Prospect / Competitor
+  // pages. Self-contained: knows its scope + entity FK, renders the doc list,
+  // and provides a small File/Web ingest form. Built fresh rather than
+  // refactoring the legacy KB Intel form so the entity pages don't depend on
+  // the about-to-be-removed Knowledge page DOM.
+  //
+  // opts: {
+  //   container: DOM element (e.g. a div on the Company/Prospect/Competitor page)
+  //   scope:     'TENANT' | 'PROSPECT' | 'COMPETITOR'
+  //   companyId: required when scope='PROSPECT'
+  //   competitorId: required when scope='COMPETITOR'
+  //   products:  [{id, name}] — for Company (product-line filing) and Competitor (applies-to selector)
+  //   onChange:  optional callback fired after a successful ingest or delete (e.g. parent re-renders counts)
+  // }
+  async function renderIntelLibrary(opts) {
+    const { container, scope, companyId, competitorId, products = [], competitorOfferings = [], hasMainIntel = false, onChange } = opts || {};
+    if (!container) return;
+    // Scope all element lookups to THIS library's container. The Intel library
+    // renders in three places (Company, Prospect, Competitor) with identical
+    // element ids; the global `$` (getElementById) returns the first match in
+    // document order, so once a second instance is in the DOM the handlers
+    // would wire onto the wrong one — e.g. the competitor "Add intel" button
+    // appearing dead until a refresh dropped the other sections. `q` keeps each
+    // instance wiring its own controls.
+    const q = (id) => container.querySelector('#' + id);
+    const queryParams = new URLSearchParams({ scope });
+    if (companyId)    queryParams.set('companyId', companyId);
+    if (competitorId) queryParams.set('competitorIds', competitorId);
+    let docs = [];
+    try {
+      const r = await fetchJson(`/api/knowledge/documents?${queryParams.toString()}`);
+      docs = (r.documents || r) || [];
+      // For competitors, the backend filter is best-effort via the kb_document_competitors join.
+      // Some legacy paths return all-scope docs; defensively filter client-side.
+      docs = docs.filter((d) => {
+        if (scope === 'TENANT')     return d.scope === 'TENANT';
+        if (scope === 'PROSPECT')   return d.scope === 'PROSPECT' && d.company_id === companyId;
+        if (scope === 'COMPETITOR') return d.scope === 'COMPETITOR' &&
+          Array.isArray(d.competitor_ids) && d.competitor_ids.includes(competitorId);
+        return true;
+      });
+    } catch (err) {
+      container.innerHTML = `<div class="empty">Couldn't load intel: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+
+    // Slug → display name for THEIR products, so a doc filed under an offering
+    // shows the offering name (not its slug) as a pill on the card.
+    const offeringNames = new Map((competitorOfferings || []).map((o) => [o.id, o.name]));
+    const scopeLabel = scope === 'TENANT' ? 'workspace intel' : scope === 'PROSPECT' ? 'prospect memory' : 'battlecards';
+    container.innerHTML = `
+      <div class="intel-lib-h">
+        <strong>${docs.length} doc${docs.length === 1 ? '' : 's'}</strong>
+        <span class="kb-subtle"> · ${scopeLabel} on file</span>
+        <button class="kb-secondary-btn intel-lib-add-btn" id="intel-lib-add-btn">➕ Add intel</button>
+      </div>
+      <div class="intel-lib-add-pane hidden" id="intel-lib-add-pane">
+        <div class="prospect-intel-add-tabs">
+          <button class="kb-tab active" id="intel-lib-tab-file" data-intel-lib-tab="file">📄 File</button>
+          <button class="kb-tab" id="intel-lib-tab-web" data-intel-lib-tab="web">🌐 URL</button>
+        </div>
+        ${scope === 'COMPETITOR' ? `
+        <div class="intel-mode-row" id="intel-lib-mode-row">
+          <span class="kb-subtle">This intel is about:</span>
+          <label class="kb-radio"><input type="radio" name="intel-lib-mode" value="main" checked> Main company</label>
+          <label class="kb-radio${hasMainIntel ? '' : ' kb-radio-disabled'}"><input type="radio" name="intel-lib-mode" value="product"${hasMainIntel ? '' : ' disabled'}> Their product</label>
+          ${hasMainIntel ? '' : '<span class="kb-subtle intel-mode-hint">Add main-company intel first to unlock per-product intel.</span>'}
+        </div>
+        <div class="intel-mode-product hidden" id="intel-lib-mode-product">
+          ${competitorOfferings.length
+            ? `<label class="kb-subtle" style="display:block">Which of their products
+                 <select id="intel-lib-comp-product">${competitorOfferings.map((o) => `<option value="${escapeHtml(o.id)}">${escapeHtml(o.name)}</option>`).join('')}</select>
+               </label>`
+            : '<span class="kb-subtle">No products yet — add one in the "Their products" panel above, then come back.</span>'}
+        </div>
+        ${products.length
+          ? `<div class="intel-applies-row" style="margin-top:6px"><span class="kb-subtle">Relevant to our products:</span>
+               <label class="kb-checkbox"><input type="checkbox" id="intel-lib-applies-all" checked> <span>All products</span></label>
+               <div id="intel-lib-applies-list" class="hidden">${products.map((p) => `<label class="kb-checkbox"><input type="checkbox" data-applies-p="${escapeHtml(p.id)}"> <span>${escapeHtml(p.name)}</span></label>`).join('')}</div>
+             </div>` : ''}
+        ` : ''}
+        <div class="intel-lib-tab-pane" id="intel-lib-pane-file">
+          <input type="file" id="intel-lib-file" accept=".pdf,.md,.txt,.docx">
+          ${products.length && scope === 'TENANT'
+            ? `<label class="kb-subtle" style="display:block;margin-top:6px">Product line (optional)
+                 <select id="intel-lib-product"><option value="">— Company-wide —</option>${products.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('')}</select>
+               </label>` : ''}
+          <button class="kb-secondary-btn" id="intel-lib-file-submit">Upload &amp; index</button>
+        </div>
+        <div class="intel-lib-tab-pane hidden" id="intel-lib-pane-web">
+          <input type="url" id="intel-lib-url" placeholder="https://example.com/page">
+          ${products.length && scope === 'TENANT'
+            ? `<label class="kb-subtle" style="display:block;margin-top:6px">Product line (optional)
+                 <select id="intel-lib-url-product"><option value="">— Company-wide —</option>${products.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('')}</select>
+               </label>` : ''}
+          <button class="kb-secondary-btn" id="intel-lib-url-submit">Fetch &amp; index</button>
+        </div>
+        <div class="kb-result hidden" id="intel-lib-result"></div>
+      </div>
+      <div class="intel-lib-list company-intel-grid">
+        ${docs.length === 0
+          ? '<div class="empty" style="padding:14px">No docs on file yet — add the first one above.</div>'
+          : docs.map((d) => companyIntelCard(d, { deletable: true, keyPointsAction: true, compProductName: offeringNames.get((d.metadata || {}).competitorProductId) })).join('')}
+      </div>
+    `;
+
+    // Add-intel toggle
+    q('intel-lib-add-btn').addEventListener('click', () => {
+      q('intel-lib-add-pane').classList.toggle('hidden');
+    });
+    // File/URL tab switcher
+    container.querySelectorAll('[data-intel-lib-tab]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const t = b.dataset.intelLibTab;
+        container.querySelectorAll('[data-intel-lib-tab]').forEach((x) => x.classList.toggle('active', x === b));
+        q('intel-lib-pane-file').classList.toggle('hidden', t !== 'file');
+        q('intel-lib-pane-web').classList.toggle('hidden',  t !== 'web');
+      }));
+    // Competitor "applies to" toggle
+    const allBox = q('intel-lib-applies-all');
+    if (allBox) {
+      allBox.addEventListener('change', () => {
+        q('intel-lib-applies-list').classList.toggle('hidden', allBox.checked);
+        if (allBox.checked) {
+          container.querySelectorAll('[data-applies-p]').forEach((x) => { x.checked = false; });
+        }
+      });
+    }
+
+    function readAppliesIds() {
+      if (!allBox || allBox.checked) return [];
+      return Array.from(container.querySelectorAll('[data-applies-p]:checked')).map((x) => x.dataset.appliesP);
+    }
+
+    // Competitor intel mode: "main" (competitor-wide) vs "product" (filed under
+    // one of their offerings). The product dropdown only shows in product mode.
+    function currentIntelMode() {
+      const checked = container.querySelector('input[name="intel-lib-mode"]:checked');
+      return checked ? checked.value : 'main';
+    }
+    container.querySelectorAll('input[name="intel-lib-mode"]').forEach((r) =>
+      r.addEventListener('change', () => {
+        const pe = q('intel-lib-mode-product');
+        if (pe) pe.classList.toggle('hidden', currentIntelMode() !== 'product');
+      }));
+
+    // Resolves which of THEIR products to file under: '' for main-company mode,
+    // the selected offering id for product mode. Returns null (after flagging an
+    // error) if product mode is chosen without an offering selected.
+    function resolveCompProductId(result) {
+      if (scope !== 'COMPETITOR' || currentIntelMode() !== 'product') return '';
+      const cp = q('intel-lib-comp-product');
+      const cpid = cp && cp.value ? cp.value : '';
+      if (!cpid) {
+        result.classList.remove('hidden', 'success'); result.classList.add('error');
+        result.textContent = 'Pick which of their products this intel is about (or add one in "Their products" below).';
+        return null;
+      }
+      return cpid;
+    }
+
+    // Backend requires a category on /upload and /web-sync. We hide the
+    // dropdown from the UI (per ADR-equivalent decision) and infer it from
+    // scope + product-line selection.
+    function categoryFor(productId) {
+      if (scope === 'COMPETITOR') return 'BATTLECARDS';
+      if (scope === 'TENANT' && productId) return 'PRODUCT_INTEL';
+      return 'ORG_INTELLIGENCE';
+    }
+
+    // File upload submit
+    q('intel-lib-file-submit').addEventListener('click', async (e) => {
+      const btn = e.currentTarget; const result = q('intel-lib-result');
+      const file = (q('intel-lib-file').files || [])[0];
+      result.classList.add('hidden'); result.classList.remove('error', 'success');
+      if (!file) { result.classList.remove('hidden'); result.classList.add('error'); result.textContent = 'Pick a file first.'; return; }
+      const compProductId = resolveCompProductId(result);
+      if (compProductId === null) return; // product mode without a product picked
+      btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Uploading…';
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('scope', scope);
+        const prodSel = q('intel-lib-product');
+        const productId = prodSel && prodSel.value ? prodSel.value : null;
+        fd.append('category', categoryFor(productId));
+        // Backend requires `title` on /upload (no filename fallback). Default
+        // to the file name with the extension stripped — replicates what the
+        // rep would type anyway and lets them edit later via the doc detail.
+        const defaultTitle = file.name ? file.name.replace(/\.[^.]+$/, '').trim() || file.name : 'Untitled';
+        fd.append('title', defaultTitle);
+        if (companyId)    fd.append('companyId', companyId);
+        if (competitorId) fd.append('competitorIds', competitorId);
+        if (productId)    fd.append('productIds', productId);
+        if (scope === 'COMPETITOR') {
+          for (const pid of readAppliesIds()) fd.append('appliesToProductIds', pid);
+          if (compProductId) fd.append('competitorProductId', compProductId);
+        }
+        const r = await fetch('/api/knowledge/upload', { method: 'POST', credentials: 'include', body: fd });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        result.classList.remove('hidden'); result.classList.add('success');
+        result.textContent = `Indexed — ${fmtNum(j.chunks || 0)} chunks created.`;
+        if (typeof onChange === 'function') onChange();
+        await renderIntelLibrary(opts); // refresh the list in place
+      } catch (err) {
+        result.classList.remove('hidden'); result.classList.add('error');
+        result.textContent = err.message;
+      } finally { btn.disabled = false; btn.textContent = orig; }
+    });
+
+    // URL ingest submit
+    q('intel-lib-url-submit').addEventListener('click', async (e) => {
+      const btn = e.currentTarget; const result = q('intel-lib-result');
+      const url = q('intel-lib-url').value.trim();
+      result.classList.add('hidden'); result.classList.remove('error', 'success');
+      if (!/^https?:\/\//i.test(url)) {
+        result.classList.remove('hidden'); result.classList.add('error');
+        result.textContent = 'A valid http(s) URL is required.'; return;
+      }
+      const compProductId = resolveCompProductId(result);
+      if (compProductId === null) return; // product mode without a product picked
+      btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Fetching…';
+      try {
+        const urlProd = q('intel-lib-url-product');
+        const urlProductId = urlProd && urlProd.value ? urlProd.value : null;
+        const body = { url, scope, category: categoryFor(urlProductId) };
+        if (companyId)    body.companyId = companyId;
+        if (competitorId) body.competitorIds = [competitorId];
+        if (urlProductId) body.productIds = [urlProductId];
+        if (scope === 'COMPETITOR') {
+          const a = readAppliesIds();
+          if (a.length) body.appliesToProductIds = a;
+          if (compProductId) body.competitorProductId = compProductId;
+        }
+        const r = await fetch('/api/knowledge/web-sync', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        result.classList.remove('hidden'); result.classList.add('success');
+        result.textContent = `Indexed — ${fmtNum((j.result && j.result.chunks) || 0)} chunks created.`;
+        if (typeof onChange === 'function') onChange();
+        await renderIntelLibrary(opts);
+      } catch (err) {
+        result.classList.remove('hidden'); result.classList.add('error');
+        result.textContent = err.message;
+      } finally { btn.disabled = false; btn.textContent = orig; }
+    });
+
+    // Card click → open full-view modal. Modal owns the lazy-load of the
+    // full text + the action buttons (regen analysis · delete). After a
+    // delete or analysis run, the modal closes and we re-render this list.
+    container.querySelectorAll('[data-intel-card-open]').forEach((card) => {
+      const open = () => {
+        const d = docs.find((x) => x.id === card.dataset.docId);
+        if (d) openIntelDocModal(d, { onChange: async () => {
+          if (typeof onChange === 'function') onChange();
+          await renderIntelLibrary(opts);
+        }});
+      };
+      card.addEventListener('click', open);
+      card.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      });
+    });
+  }
+
+  // ── Competitors (battlecard library + strengths/weaknesses) ──────────────
+  // Two-pane layout mirroring Prospects: list of competitors on the left,
+  // selected detail on the right. Detail card lets the rep edit name +
+  // description inline. The Intel Library section that gets added in a
+  // follow-up task lists every kb_document tagged with this competitor.
+
+  let _competitorsState = { competitors: [], selectedId: null };
+  const COMPETITOR_REGIONS = ['Global / Any', 'Africa', 'Europe', 'GCC / Middle East', 'North America', 'Latin America', 'Asia-Pacific'];
+  let _finderAddedAny = false; // any competitor added in the finder modal → reload the list on close
+
+  async function loadCompetitors() {
+    const host = $('competitors-body');
+    if (!host) return;
+    host.innerHTML = '<div class="kb-subtle">Loading…</div>';
+    try {
+      const data = await fetchJson('/api/portfolio/competitors');
+      _competitorsState.competitors = data.competitors || [];
+    } catch (err) {
+      host.innerHTML = `<div class="empty">Couldn't load competitors: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    if (!_competitorsState.selectedId && _competitorsState.competitors.length > 0) {
+      _competitorsState.selectedId = _competitorsState.competitors[0].id;
+    }
+    await renderCompetitors(host);
+  }
+
+  async function renderCompetitors(host) {
+    const list = _competitorsState.competitors;
+    const selectedId = _competitorsState.selectedId;
+
+    // Quick-add banner. Even when there are no competitors yet the rep needs
+    // an entry point — this is also the only way to create one now that the
+    // KB Intel form's "A competitor" lane is going away.
+    const quickAdd = `
+      <div class="prospect-quick-banner">
+        <div class="prospect-quick-h"><strong>➕ Add a competitor</strong> — name + website; we'll pull their homepage as the first company-wide intel.</div>
+        <div class="prospect-quick-row" style="grid-template-columns: 0.7fr 1fr 1.5fr auto;">
+          <input id="competitor-quick-id"   type="text" placeholder="ID (slug — e.g. gong)" maxlength="64">
+          <input id="competitor-quick-name" type="text" placeholder="Name (e.g. Gong)">
+          <input id="competitor-quick-website" type="text" placeholder="Website (e.g. gong.io)">
+          <button class="primary-cta" id="competitor-quick-add-btn">Add</button>
+        </div>
+        <div class="kb-result hidden" id="competitor-quick-result"></div>
+        <div class="prospect-quick-find">or <button type="button" class="kb-link-btn" id="competitor-find-btn">🔎 Find competitors automatically</button> — we'll search the web for rivals in a region you pick.</div>
+      </div>`;
+
+    if (list.length === 0) {
+      host.innerHTML = `${quickAdd}<div class="empty"><p>No competitors yet.</p><p class="kb-subtle">Add the first one above.</p></div>`;
+      wireCompetitorQuickAdd(host);
+      return;
+    }
+
+    const selected = list.find((c) => c.id === selectedId);
+
+    host.innerHTML = `
+      ${quickAdd}
+      <div class="prospects-grid">
+        <div class="prospects-list">
+          <div class="prospects-list-h">${list.length} competitor${list.length === 1 ? '' : 's'}</div>
+          <div class="prospects-list-rows">
+            ${list.map((c) => `
+              <div class="comp-row-wrap ${c.id === selectedId ? 'active' : ''}">
+                <div class="prospect-row ${c.id === selectedId ? 'active' : ''}" data-competitor-pick="${escapeHtml(c.id)}" role="button" tabindex="0">
+                  <div class="prospect-row-name">${escapeHtml(c.name)}</div>
+                  <div class="prospect-row-meta kb-subtle">${escapeHtml(c.id)} · ${fmtNum(c.doc_count || 0)} doc${(c.doc_count || 0) === 1 ? '' : 's'}</div>
+                </div>
+                <ul class="comp-subnav">
+                  <li><button type="button" class="comp-subnav-link" data-comp-nav="${escapeHtml(c.id)}" data-comp-section="view">View</button></li>
+                  <li><button type="button" class="comp-subnav-link" data-comp-nav="${escapeHtml(c.id)}" data-comp-section="battlecard">Matchups</button></li>
+                </ul>
+              </div>`).join('')}
+          </div>
+        </div>
+        <div class="prospects-detail">
+          ${selected ? renderCompetitorDetail(selected) : '<div class="kb-subtle">Pick a competitor on the left.</div>'}
+        </div>
+      </div>
+    `;
+    host.querySelectorAll('[data-competitor-pick]').forEach((el) => {
+      el.addEventListener('click', () => {
+        _competitorsState.selectedId = el.dataset.competitorPick;
+        renderCompetitors(host);
+      });
+    });
+    // Per-competitor sublist → jump straight to a section of that competitor's
+    // detail pane. Selecting a different competitor first re-renders the detail
+    // (so the target section exists), then we scroll to it.
+    host.querySelectorAll('[data-comp-section]').forEach((el) => {
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const id = el.dataset.compNav;
+        const section = el.dataset.compSection;
+        if (_competitorsState.selectedId !== id) {
+          _competitorsState.selectedId = id;
+          await renderCompetitors(host);
+        }
+        scrollCompetitorSection(section);
+      });
+    });
+    if (selected) wireCompetitorDetail(host, selected);
+    wireCompetitorQuickAdd(host);
+  }
+
+  function scrollCompetitorSection(section) {
+    const id = { view: 'competitor-section-view', battlecard: 'competitor-section-battlecard', intel: 'competitor-section-intel' }[section];
+    if (!id) return;
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    el.classList.add('comp-section-flash');
+    setTimeout(() => el.classList.remove('comp-section-flash'), 1600);
+  }
+
+  function renderCompetitorDetail(c) {
+    return `
+      <div class="prospect-detail-h comp-section-anchor" id="competitor-section-view">
+        <input id="competitor-name" type="text" class="prospect-name-input" value="${escapeHtml(c.name)}" maxlength="200">
+        <div class="prospect-detail-actions">
+          <button class="kb-secondary-btn" id="competitor-save-btn">Save</button>
+          <button class="kb-secondary-btn danger" id="competitor-delete-btn">Delete</button>
+        </div>
+      </div>
+      <div class="prospect-detail-fields">
+        <label>ID <span class="kb-subtle">(immutable)</span><input type="text" value="${escapeHtml(c.id)}" disabled></label>
+        <label>Created<input type="text" value="${escapeHtml(c.created_at ? fmtDate(c.created_at) : '—')}" disabled></label>
+        <label>Description<textarea id="competitor-description" rows="3" placeholder="What's their pitch? Where do they win and where do they lose?">${escapeHtml(c.description || '')}</textarea></label>
+      </div>
+
+      <div class="prospect-intel-panel">
+        <h4 style="margin:14px 0 6px 0">Matchups</h4>
+        <span class="kb-subtle">Pick a matchup — ${escapeHtml(c.name)} company-wide, or one of their products — to see its battlecard and the evidence behind it.</span>
+        <div id="competitor-portfolio-host" class="comp-portfolio" style="margin:8px 0 10px 0"></div>
+      </div>
+
+      <div id="competitor-section-battlecard" class="comp-section-anchor">
+        <div id="competitor-workspace-host" class="comp-workspace"></div>
+      </div>
+    `;
+  }
+
+  function wireCompetitorQuickAdd(host) {
+    const findBtn = $('competitor-find-btn');
+    if (findBtn && findBtn.dataset.wired !== '1') {
+      findBtn.dataset.wired = '1';
+      findBtn.addEventListener('click', openCompetitorFinderModal);
+    }
+    const btn = $('competitor-quick-add-btn');
+    if (!btn || btn.dataset.wired === '1') return;
+    btn.dataset.wired = '1';
+    btn.addEventListener('click', async () => {
+      const result = $('competitor-quick-result');
+      result.classList.add('hidden'); result.classList.remove('error', 'success');
+      const id   = $('competitor-quick-id').value.trim().toLowerCase();
+      const name = $('competitor-quick-name').value.trim();
+      const website = $('competitor-quick-website').value.trim();
+      if (!id || !name) {
+        result.classList.remove('hidden'); result.classList.add('error');
+        result.textContent = 'ID and Name are required.';
+        return;
+      }
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)) {
+        result.classList.remove('hidden'); result.classList.add('error');
+        result.textContent = 'ID must be slug-shaped: lowercase letters, numbers, hyphens, underscores (max 64 chars).';
+        return;
+      }
+      btn.disabled = true; const orig = btn.textContent;
+      btn.textContent = website ? 'Adding & pulling intel…' : 'Adding…';
+      try {
+        // manual-add creates the competitor AND, when a website is given, scrapes
+        // its homepage as the first company-wide intel (unlocks per-product work).
+        const r = await fetchJson('/api/portfolio/competitors/manual-add', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, name, website: website || null }),
+        });
+        _competitorsState.selectedId = (r.competitor || {}).id || id;
+        loaded.competitors = false;
+        $('competitor-quick-id').value = '';
+        $('competitor-quick-name').value = '';
+        $('competitor-quick-website').value = '';
+        if (website && r.intelFiled === false) {
+          result.classList.remove('hidden', 'error'); result.classList.add('success');
+          result.textContent = `Added ${name}. We couldn't read that website — add intel manually on its page.`;
+        }
+        await loadCompetitors();
+      } catch (err) {
+        result.classList.remove('hidden'); result.classList.add('error');
+        result.textContent = err.message;
+      } finally {
+        btn.disabled = false; btn.textContent = orig;
+      }
+    });
+  }
+
+  // ── Competitor finder (auto-discover rivals of OUR company, by region) ────
+  function closeCompetitorFinder() { const o = $('comp-finder-overlay'); if (o) o.classList.add('hidden'); }
+  function _finderEsc(e) { if (e.key === 'Escape') finderDone(); }
+  function finderDone() {
+    closeCompetitorFinder();
+    if (_finderAddedAny) { _finderAddedAny = false; loaded.competitors = false; loadCompetitors(); }
+  }
+
+  function openCompetitorFinderModal() {
+    let overlay = $('comp-finder-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'comp-finder-overlay';
+      overlay.className = 'cal-picker-overlay';
+      overlay.innerHTML = `
+        <div class="comp-discover-modal">
+          <div class="cal-picker-h"><span class="cal-picker-title">🔎 Find competitors</span><button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
+          <div class="comp-finder-form">
+            <label class="comp-finder-field">Region
+              <select id="comp-finder-region">${COMPETITOR_REGIONS.map((r) => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('')}</select>
+            </label>
+            <button type="button" class="primary-cta" id="comp-finder-search">Search</button>
+          </div>
+          <div class="comp-discover-body" id="comp-finder-body"></div>
+          <div class="comp-discover-foot"><button type="button" class="kb-secondary-btn" id="comp-finder-done">Done</button></div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) finderDone(); });
+      overlay.querySelector('.cal-picker-close').addEventListener('click', finderDone);
+      document.addEventListener('keydown', _finderEsc);
+    }
+    $('comp-finder-body').innerHTML = `<div class="kb-subtle" style="padding:14px">Pick a region and hit Search. We'll find companies that compete with you, based on your own profile and products.</div>`;
+    $('comp-finder-search').onclick = runCompetitorFinderSearch;
+    $('comp-finder-done').onclick = finderDone;
+    overlay.classList.remove('hidden');
+  }
+
+  async function runCompetitorFinderSearch() {
+    const btn = $('comp-finder-search');
+    const body = $('comp-finder-body');
+    const region = $('comp-finder-region').value;
+    btn.disabled = true; const o = btn.textContent; btn.textContent = 'Searching…';
+    body.innerHTML = `<div class="kb-subtle" style="padding:14px">🔎 Searching the web for competitors${region && !/global|any/i.test(region) ? ` in ${escapeHtml(region)}` : ''}…</div>`;
+    try {
+      const data = await fetchJson('/api/portfolio/competitors/discover', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ region }),
+      });
+      renderCompetitorCandidates(body, (data && data.competitors) || []);
+    } catch (err) {
+      body.innerHTML = `<div class="kb-result error" style="margin:14px">${escapeHtml(err.message)}</div>`;
+    } finally { btn.disabled = false; btn.textContent = o; }
+  }
+
+  const THREAT_LABELS = { 5: 'Critical', 4: 'High', 3: 'Medium', 2: 'Low', 1: 'Minimal' };
+  function threatLabel(l) { return THREAT_LABELS[l] || 'Medium'; }
+
+  function renderCompetitorCandidates(body, comps) {
+    if (!comps.length) {
+      body.innerHTML = '<div class="empty" style="padding:16px">No competitors surfaced. Try a different region, or add one manually.</div>';
+      return;
+    }
+    // Backend already orders by competing threat (highest first).
+    const rows = comps.map((c, i) => {
+      const lvl = c.threatLevel || 3;
+      const threatens = (c.threatToProductNames && c.threatToProductNames.length)
+        ? c.threatToProductNames.map((n) => `<span class="kb-stream-pill stream-file">${escapeHtml(n)}</span>`).join(' ')
+        : '<span class="kb-subtle">general</span>';
+      const sub = [c.website ? `<a href="https://${escapeHtml(c.website)}" target="_blank" rel="noopener">${escapeHtml(c.website)}</a>` : '', c.region ? escapeHtml(c.region) : ''].filter(Boolean).join(' · ');
+      return `
+      <tr data-cand="${i}">
+        <td class="dt-name"><strong>${escapeHtml(c.name)}</strong>${sub ? `<div class="kb-subtle">${sub}</div>` : ''}</td>
+        <td class="dt-what">${escapeHtml(c.description || '')}</td>
+        <td class="dt-their">${escapeHtml(c.theirStrength || c.whyRelevant || '')}</td>
+        <td class="dt-vs">${threatens}</td>
+        <td><span class="comp-threat comp-threat-${lvl}">${threatLabel(lvl)}</span></td>
+        <td class="dt-act">${c.exists ? '<span class="kb-subtle">✓ tracked</span>' : `<button type="button" class="kb-secondary-btn cand-add" data-i="${i}">＋ Add</button>`}</td>
       </tr>`;
+    }).join('');
+    body.innerHTML = `
+      <table class="comp-discover-table">
+        <thead><tr><th>Company</th><th>What they do</th><th>Their strength</th><th>Threatens (our products)</th><th>Threat</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="kb-subtle" style="padding:2px 0 12px">Ranked by competing threat — most direct first.</div>
+      <div class="kb-result hidden" id="cand-result"></div>`;
+    body.querySelectorAll('.cand-add').forEach((b) => b.addEventListener('click', () => addCompetitorCandidate(comps[Number(b.dataset.i)], b)));
+  }
+
+  async function addCompetitorCandidate(c, btn) {
+    btn.disabled = true; btn.textContent = 'Filing intel…';
+    const id = slugify(c.name);
+    try {
+      // Creates the competitor AND files the analysis as company-wide intel —
+      // which unlocks per-product intel/matchups for it.
+      const r = await fetchJson('/api/portfolio/competitors/discover/add', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id, name: c.name, description: c.description || null,
+          website: c.website || null, region: c.region || null,
+          whyRelevant: c.whyRelevant || null, theirStrength: c.theirStrength || null,
+          threatToProductNames: c.threatToProductNames || [], threatLevel: c.threatLevel || 3,
+        }),
+      });
+      btn.textContent = r.intelFiled ? '✓ Added · unlocked' : '✓ Added';
+      btn.classList.add('ev-added');
+      _finderAddedAny = true;
+      _competitorsState.selectedId = (r.competitor || {}).id || id;
+    } catch (err) {
+      if (/already exists/i.test(err.message)) { btn.textContent = '✓ Exists'; btn.classList.add('ev-added'); return; }
+      btn.disabled = false; btn.textContent = '＋ Add';
+      const rr = $('cand-result'); if (rr) { rr.classList.remove('hidden', 'success'); rr.classList.add('error'); rr.textContent = `${c.name}: ${err.message}`; }
+    }
+  }
+
+  async function wireCompetitorDetail(host, competitor) {
+    // Product-centric view: reset the matchup to "company-wide vs whole
+    // portfolio" whenever a competitor opens, then load the portfolio (which
+    // renders the matchup node list + opens the default matchup workspace).
+    _bcScope.product = '';
+    _bcScope.competitorProduct = '';
+    loadCompetitorPortfolio(competitor);
+    $('competitor-save-btn').addEventListener('click', async (e) => {
+      const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name:        $('competitor-name').value.trim(),
+            description: $('competitor-description').value.trim() || null,
+          }),
+        });
+        loaded.competitors = false;
+        await loadCompetitors();
+      } catch (err) { alert(`Couldn't save: ${err.message}`); }
+      finally { btn.disabled = false; btn.textContent = 'Save'; }
+    });
+    $('competitor-delete-btn').addEventListener('click', async () => {
+      if (!confirm(`Delete competitor "${competitor.name}"? Any docs tagged with it will block deletion until untagged.`)) return;
+      try {
+        await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}`, { method: 'DELETE' });
+        _competitorsState.selectedId = null;
+        loaded.competitors = false;
+        await loadCompetitors();
+      } catch (err) { alert(`Couldn't delete: ${err.message}`); }
+    });
+  }
+
+  // ── Competitor battlecard (per-competitor synthesised view) ──────────────
+  // Aggregates every kb_document tagged with this competitor + their
+  // per-doc assessments + adds an AI-synthesised talk-track + objection
+  // handlers + migration story. Backend lives in api/src/knowledge/
+  // assessment.js#extractBattlecard; routes in portfolio.js.
+
+  // Per-competitor battlecard scope: which of OUR products the card is for.
+  // '' = company-wide (competitors.battlecard); a product id = a product-
+  // scoped card (competitor_battlecards). Reset when a competitor is opened.
+  // Battlecard matchup scope: '' on a side = "the whole side".
+  //   product           = one of OUR product lines (or '')
+  //   competitorProduct = one of THEIR offerings (or '')
+  const _bcScope = { product: '', competitorProduct: '' };
+
+  function bcScopeQuery() {
+    const q = [];
+    if (_bcScope.product) q.push(`product=${encodeURIComponent(_bcScope.product)}`);
+    if (_bcScope.competitorProduct) q.push(`competitorProduct=${encodeURIComponent(_bcScope.competitorProduct)}`);
+    return q.length ? `?${q.join('&')}` : '';
+  }
+
+  // ── Product-centric competitor view ──────────────────────────────────────
+  // A competitor is a portfolio of matchups: "Company-wide" + each of their
+  // products. The node list picks the THEIR side (_bcScope.competitorProduct,
+  // '' = company-wide); clicking a node opens a focused workspace where you pick
+  // the OUR side (_bcScope.product) and see that matchup's battlecard + evidence.
+  // Add-evidence is auto-scoped to the node — no toggles or scope dropdowns.
+  let _lastPortfolio = { products: [], offerings: [], byNode: new Map() };
+  let _currentBattlecard = null; // the live battlecard shown in the open workspace
+
+  // Flag the live battlecard as stale after new evidence lands.
+  function markBattlecardStale() {
+    const flag = $('competitor-battlecard-stale-flag');
+    if (flag) flag.classList.remove('hidden');
+  }
+
+  function verdictChip(adv) {
+    if (adv == null) return '<span class="kb-subtle">no card yet</span>';
+    const n = Number(adv) || 0;
+    const cls = n > 5 ? 'win' : n < -5 ? 'lose' : 'tie';
+    const txt = n > 5 ? `we lead +${n}%` : n < -5 ? `we trail ${n}%` : `tied ${n >= 0 ? '+' : ''}${n}%`;
+    return `<span class="bc-verdict bc-verdict-${cls} comp-node-verdict">${escapeHtml(txt)}</span>`;
+  }
+
+  // Fetch + shape everything the portfolio view needs: our products, their
+  // offerings (+ gate), the competitor's docs grouped by their-product, and the
+  // default-our-side verdict per node.
+  async function fetchPortfolioData(competitor) {
+    let products = [], offerings = [], hasMainIntel = false, docs = [], summary = [];
+    const [pRes, oRes, dRes, sRes] = await Promise.allSettled([
+      fetchJson('/api/portfolio/products'),
+      fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/offerings`),
+      fetchJson(`/api/knowledge/documents?scope=COMPETITOR&competitorIds=${encodeURIComponent(competitor.id)}`),
+      fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/battlecards/summary`),
+    ]);
+    if (pRes.status === 'fulfilled') products = pRes.value.products || [];
+    if (oRes.status === 'fulfilled') { offerings = oRes.value.offerings || []; hasMainIntel = !!oRes.value.hasMainIntel; }
+    if (dRes.status === 'fulfilled') {
+      const all = dRes.value.documents || dRes.value || [];
+      docs = all.filter((d) => d.scope === 'COMPETITOR' && Array.isArray(d.competitor_ids) && d.competitor_ids.includes(competitor.id));
+    }
+    if (sRes.status === 'fulfilled') summary = sRes.value.summary || [];
+    const byNode = new Map();
+    for (const d of docs) {
+      const k = ((d.metadata || {}).competitorProductId) || '';
+      if (!byNode.has(k)) byNode.set(k, []);
+      byNode.get(k).push(d);
+    }
+    const verdictByNode = new Map();
+    for (const s of summary) {
+      if (s.productId == null) verdictByNode.set(s.competitorProductId || '', s.weightedAdvantage);
+    }
+    return { products, offerings, hasMainIntel, byNode, verdictByNode };
+  }
+
+  async function loadCompetitorPortfolio(competitor) {
+    const portHost = $('competitor-portfolio-host');
+    if (!portHost) return;
+    portHost.innerHTML = '<div class="kb-subtle" style="padding:6px 0">Loading…</div>';
+    const data = await fetchPortfolioData(competitor);
+    // Drop a selected node/our-product that no longer exists.
+    if (_bcScope.competitorProduct && !data.offerings.some((o) => o.id === _bcScope.competitorProduct)) _bcScope.competitorProduct = '';
+    if (_bcScope.product && !data.products.some((p) => p.id === _bcScope.product)) _bcScope.product = '';
+    _lastPortfolio = { products: data.products, offerings: data.offerings, byNode: data.byNode };
+    renderPortfolioNodes(competitor, data);
+    openMatchupWorkspace(competitor);
+  }
+
+  // Wire evidence-card clicks (open the doc modal) for a given container + docs.
+  function wireEvidenceCards(container, docs, competitor) {
+    container.querySelectorAll('[data-intel-card-open]').forEach((card) => {
+      const open = () => {
+        const d = docs.find((x) => x.id === card.dataset.docId);
+        if (d) openIntelDocModal(d, { onChange: () => loadCompetitorPortfolio(competitor) });
+      };
+      card.addEventListener('click', open);
+      card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    });
+  }
+
+  // Refresh the evidence list + node-list counts/verdicts/gate in place, WITHOUT
+  // rebuilding the workspace's add-evidence panel — so an open web-search result
+  // list survives while the rep adds hits one by one.
+  async function refreshEvidenceInPlace(competitor) {
+    const data = await fetchPortfolioData(competitor);
+    _lastPortfolio = { products: data.products, offerings: data.offerings, byNode: data.byNode };
+    renderPortfolioNodes(competitor, data); // node list is a separate DOM subtree
+    const node = _bcScope.competitorProduct || '';
+    const list = data.byNode.get(node) || [];
+    const ws = $('competitor-workspace-host');
+    if (!ws) return;
+    const count = ws.querySelector('.comp-evidence-count');
+    if (count) count.textContent = String(list.length);
+    const grid = ws.querySelector('.comp-evidence .intel-lib-list');
+    if (grid) {
+      const offeringNames = new Map(data.offerings.map((o) => [o.id, o.name]));
+      grid.innerHTML = list.length
+        ? list.map((d) => companyIntelCard(d, { deletable: true, keyPointsAction: true, compProductName: offeringNames.get((d.metadata || {}).competitorProductId) })).join('')
+        : '<div class="empty" style="padding:12px">No evidence yet — add a deck, URL, or web search below.</div>';
+      wireEvidenceCards(grid, list, competitor);
+    }
+    markBattlecardStale();
+  }
+
+  function renderPortfolioNodes(competitor, { offerings, hasMainIntel, byNode, verdictByNode }) {
+    const host = $('competitor-portfolio-host');
+    if (!host) return;
+    const row = (id, label, opts = {}) => {
+      const docs = byNode.get(id) || [];
+      const unver = docs.filter((d) => (d.metadata || {}).relevanceVerified === false).length;
+      const active = (_bcScope.competitorProduct || '') === id;
+      const meta = opts.locked
+        ? '<span class="kb-subtle">🔒 add main intel first</span>'
+        : `${verdictChip(verdictByNode.has(id) ? verdictByNode.get(id) : null)} <span class="kb-subtle">· ${docs.length} doc${docs.length === 1 ? '' : 's'}</span>${unver ? ` <span class="kb-stream-pill warning">⚠ ${unver}</span>` : ''}`;
+      return `<button type="button" class="comp-node${active ? ' active' : ''}${opts.locked ? ' locked' : ''}" data-node="${escapeHtml(id)}">
+          <span class="comp-node-name">${escapeHtml(label)}</span>
+          <span class="comp-node-meta">${meta}</span>
+        </button>`;
+    };
+    const companyRow = row('', `${competitor.name} · Company-wide`);
+    const productRows = offerings.map((o) => row(o.id, o.name, { locked: !hasMainIntel })).join('');
+    const addRow = hasMainIntel
+      ? `<div class="comp-node-add"><input id="comp-new-product" type="text" placeholder="Add their product (e.g. Forecast)" maxlength="200"><button class="kb-secondary-btn" id="comp-add-product-btn">＋ Add their product</button></div><div class="kb-result hidden" id="comp-add-product-result"></div>`
+      : `<div class="comp-node-add-hint kb-subtle">🔒 Add Company-wide intel first to break out ${escapeHtml(competitor.name)}'s individual products.</div>`;
+    const discoverRow = `<div class="comp-discover-row"><button class="kb-secondary-btn" id="comp-discover-btn">🔎 Discover their products</button><span class="kb-subtle">Don’t know their lineup? Search the web + map it against our products.</span></div>`;
+    host.innerHTML = `<div class="comp-node-list">${companyRow}${productRows}</div>${addRow}${discoverRow}`;
+    host.querySelectorAll('[data-node]').forEach((b) => b.addEventListener('click', () => {
+      _bcScope.competitorProduct = b.dataset.node || '';
+      _bcScope.product = ''; // reset our-side to whole portfolio on their-side switch
+      host.querySelectorAll('[data-node]').forEach((x) => x.classList.toggle('active', x === b));
+      openMatchupWorkspace(competitor);
+    }));
+    wireAddTheirProduct(competitor);
+    const discBtn = $('comp-discover-btn');
+    if (discBtn) discBtn.addEventListener('click', () => discoverCompetitorProducts(competitor, hasMainIntel));
+  }
+
+  async function discoverCompetitorProducts(competitor, hasMainIntel) {
+    const btn = $('comp-discover-btn');
+    const orig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '🔎 Searching the web…'; }
+    try {
+      const data = await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/discover-products`, { method: 'POST' });
+      openDiscoveryModal(competitor, data, hasMainIntel);
+    } catch (err) {
+      alert(`Discovery failed: ${err.message}`);
+    } finally { if (btn) { btn.disabled = false; btn.textContent = orig; } }
+  }
+
+  function closeDiscoveryModal() { const o = $('comp-discovery-overlay'); if (o) o.classList.add('hidden'); }
+  function _discoveryEsc(e) { if (e.key === 'Escape') closeDiscoveryModal(); }
+
+  function openDiscoveryModal(competitor, data, hasMainIntel) {
+    const products = (data && data.products) || [];
+    let overlay = $('comp-discovery-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'comp-discovery-overlay';
+      overlay.className = 'cal-picker-overlay';
+      overlay.innerHTML = `
+        <div class="comp-discover-modal">
+          <div class="cal-picker-h"><span class="cal-picker-title comp-discover-title"></span><button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
+          <div class="comp-discover-body"></div>
+          <div class="comp-discover-foot"></div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) closeDiscoveryModal(); });
+      overlay.querySelector('.cal-picker-close').addEventListener('click', closeDiscoveryModal);
+      document.addEventListener('keydown', _discoveryEsc);
+    }
+    overlay.querySelector('.comp-discover-title').textContent = `Discovered products · ${competitor.name}`;
+    const body = overlay.querySelector('.comp-discover-body');
+    const foot = overlay.querySelector('.comp-discover-foot');
+
+    if (!products.length) {
+      body.innerHTML = '<div class="empty" style="padding:16px">No products surfaced from the web. Try adding them manually, or run again later.</div>';
+      foot.innerHTML = '';
+      overlay.classList.remove('hidden');
+      return;
+    }
+
+    const rows = products.map((p, i) => `
+      <tr data-disc-row="${i}">
+        <td class="dt-name"><strong>${escapeHtml(p.name)}</strong></td>
+        <td class="dt-what">${escapeHtml(p.description || '')}</td>
+        <td class="dt-vs">${p.competesWithProductName ? `<span class="kb-stream-pill stream-file">${escapeHtml(p.competesWithProductName)}</span>` : '<span class="kb-subtle">no direct match</span>'}</td>
+        <td class="dt-their">${escapeHtml(p.theirStrength || '')}</td>
+        <td class="dt-win">${escapeHtml(p.whereWeWin || '')}</td>
+        <td class="dt-act">${hasMainIntel ? `<button type="button" class="kb-secondary-btn disc-add-one" data-i="${i}">＋ Add</button>` : '<span class="kb-subtle">🔒</span>'}</td>
+      </tr>`).join('');
+    body.innerHTML = `
+      <table class="comp-discover-table">
+        <thead><tr><th>Their product</th><th>What it is</th><th>Competes with (ours)</th><th>Their strength</th><th>Where we'd win</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="kb-result hidden" id="disc-result"></div>`;
+    foot.innerHTML = hasMainIntel
+      ? '<button type="button" class="primary-cta" id="disc-add-all">Add all as matchups</button><button type="button" class="kb-secondary-btn" id="disc-done">Done</button>'
+      : '<span class="kb-subtle">🔒 Add Company-wide intel first to turn these into matchups.</span><button type="button" class="kb-secondary-btn" id="disc-done">Close</button>';
+
+    // Build the offering description that carries the mapping + read.
+    const descFor = (p) => {
+      const bits = [];
+      if (p.competesWithProductName) bits.push(`Competes with: ${p.competesWithProductName}.`);
+      if (p.description) bits.push(p.description);
+      if (p.theirStrength) bits.push(`Their strength: ${p.theirStrength}.`);
+      if (p.whereWeWin) bits.push(`Where we win: ${p.whereWeWin}.`);
+      return bits.join(' ').slice(0, 1000) || null;
+    };
+    // Add a single product as an offering. Returns true on success.
+    const addOne = async (p, btn) => {
+      if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
+      try {
+        await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/offerings`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: p.name, description: descFor(p) }),
+        });
+        if (btn) { btn.textContent = '✓ Added'; btn.classList.add('ev-added'); }
+        return true;
+      } catch (err) {
+        // 409 = already exists → treat as added; otherwise surface.
+        if (/already exists/i.test(err.message)) { if (btn) { btn.textContent = '✓ Exists'; btn.classList.add('ev-added'); } return true; }
+        if (btn) { btn.textContent = '＋ Add'; btn.disabled = false; }
+        const r = $('disc-result'); if (r) { r.classList.remove('hidden', 'success'); r.classList.add('error'); r.textContent = `${p.name}: ${err.message}`; }
+        return false;
+      }
+    };
+
+    body.querySelectorAll('.disc-add-one').forEach((btn) => btn.addEventListener('click', async () => {
+      await addOne(products[Number(btn.dataset.i)], btn);
+    }));
+    const addAll = $('disc-add-all');
+    if (addAll) addAll.addEventListener('click', async () => {
+      addAll.disabled = true; addAll.textContent = 'Adding…';
+      const buttons = Array.from(body.querySelectorAll('.disc-add-one')).filter((b) => !b.classList.contains('ev-added'));
+      for (const btn of buttons) { await addOne(products[Number(btn.dataset.i)], btn); }
+      addAll.textContent = 'Added';
+      await loadCompetitorPortfolio(competitor);
+    });
+    const done = $('disc-done');
+    if (done) done.addEventListener('click', async () => { closeDiscoveryModal(); await loadCompetitorPortfolio(competitor); });
+
+    overlay.classList.remove('hidden');
+  }
+
+  function openMatchupWorkspace(competitor) {
+    const host = $('competitor-workspace-host');
+    if (!host) return;
+    const { products, offerings, byNode } = _lastPortfolio;
+    const node = _bcScope.competitorProduct || '';
+    const offering = node ? offerings.find((o) => o.id === node) : null;
+    const theirLabel = node ? (offering ? offering.name : node) : `${competitor.name} · Company-wide`;
+    const ourOpts = ['<option value="">Our whole portfolio</option>']
+      .concat(products.map((p) => `<option value="${escapeHtml(p.id)}"${_bcScope.product === p.id ? ' selected' : ''}>${escapeHtml(p.name)}</option>`)).join('');
+    const docs = byNode.get(node) || [];
+    const offeringNames = new Map(offerings.map((o) => [o.id, o.name]));
+    const evidenceCards = docs.length
+      ? docs.map((d) => companyIntelCard(d, { deletable: true, keyPointsAction: true, compProductName: offeringNames.get((d.metadata || {}).competitorProductId) })).join('')
+      : '<div class="empty" style="padding:12px">No evidence yet — add a deck, URL, or web search below.</div>';
+    host.innerHTML = `
+      <div class="comp-matchup-h">
+        <span class="comp-matchup-their">${escapeHtml(theirLabel)}</span>
+        <span class="comp-matchup-x">vs</span>
+        <select id="comp-our-select" class="comp-our-select">${ourOpts}</select>
+        ${node ? '<button type="button" class="kb-link-btn comp-remove-product" id="comp-remove-product-btn" title="Remove this product (its evidence is kept, moved to Company-wide)">✕ Remove product</button>' : ''}
+      </div>
+      <div id="competitor-battlecard-host" class="competitor-battlecard-host"></div>
+      <div class="comp-evidence">
+        <div class="comp-evidence-h">Evidence <span class="comp-evidence-count">${docs.length}</span></div>
+        <div id="comp-evidence-add"></div>
+        <div class="intel-lib-list company-intel-grid">${evidenceCards}</div>
+      </div>`;
+    const ourSel = $('comp-our-select');
+    if (ourSel) ourSel.addEventListener('change', () => { _bcScope.product = ourSel.value; loadCompetitorBattlecard(competitor); });
+    const rm = $('comp-remove-product-btn');
+    if (rm) rm.addEventListener('click', async () => {
+      if (!confirm(`Remove "${theirLabel}"?\n\nIts product-vs-product battlecards are deleted, but its filed evidence is KEPT and moved to ${competitor.name}'s Company-wide intel.`)) return;
+      rm.disabled = true;
+      try {
+        const res = await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/offerings/${encodeURIComponent(node)}`, { method: 'DELETE' });
+        _bcScope.competitorProduct = ''; _bcScope.product = ''; // back to Company-wide
+        await loadCompetitorPortfolio(competitor);
+        if (res && res.movedDocs) {
+          const r2 = $('comp-add-product-result');
+          if (r2) { r2.classList.remove('hidden', 'error'); r2.classList.add('warning'); r2.textContent = `Removed — ${res.movedDocs} evidence doc${res.movedDocs === 1 ? '' : 's'} moved to Company-wide.`; }
+        }
+      } catch (err) { alert(`Couldn't remove: ${err.message}`); rm.disabled = false; }
+    });
+    loadCompetitorBattlecard(competitor);
+    wireEvidenceCards(host, docs, competitor);
+    wireAddEvidence(competitor, node, $('comp-evidence-add'));
+  }
+
+  // One unified add-evidence panel (file · URL · web search), auto-scoped to the
+  // node: company-wide (node='') files main intel; a product node tags that
+  // offering. Replaces both the old per-offering tabs and the intel-library form.
+  function wireAddEvidence(competitor, node, host) {
+    if (!host) return;
+    const compProductId = node || null;
+    const theirName = node ? ((_lastPortfolio.offerings.find((o) => o.id === node) || {}).name || node) : '';
+    const searchLabel = node ? `${competitor.name} ${theirName}` : competitor.name;
+    host.innerHTML = `
+      <div class="comp-add-ev">
+        <div class="off-intel-tabs">
+          <button type="button" class="kb-tab active" data-ev-tab="file">📄 Deck</button>
+          <button type="button" class="kb-tab" data-ev-tab="url">🌐 URL</button>
+          <button type="button" class="kb-tab" data-ev-tab="web">🔎 Web search</button>
+        </div>
+        <div class="off-intel-pane" data-ev-pane="file">
+          <input type="file" class="ev-file" accept=".pdf,.md,.txt,.docx">
+          <button type="button" class="kb-secondary-btn ev-file-btn">Upload</button>
+        </div>
+        <div class="off-intel-pane hidden" data-ev-pane="url">
+          <input type="url" class="ev-url" placeholder="https://competitor.com/...">
+          <button type="button" class="kb-secondary-btn ev-url-btn">Fetch &amp; index</button>
+        </div>
+        <div class="off-intel-pane hidden" data-ev-pane="web">
+          <span class="kb-subtle">Search the web for "${escapeHtml(searchLabel)}", then pick which results to file.</span>
+          <button type="button" class="kb-secondary-btn ev-web-btn">🔎 Search the web</button>
+          <div class="ev-web-results"></div>
+        </div>
+        <div class="kb-result hidden ev-result"></div>
+      </div>`;
+    const sel = (s) => host.querySelector(s);
+    const result = sel('.ev-result');
+    const note = (msg, ok) => { if (!result) return; result.classList.remove('hidden', 'error', 'success'); result.classList.add(ok ? 'success' : 'error'); result.textContent = msg; };
+    // Land an add in the evidence list without tearing down this panel, so the
+    // rep can keep adding (matches the web-search "Add to evidence" behavior).
+    const afterAdd = async (msg) => { note(msg, true); await refreshEvidenceInPlace(competitor); };
+    host.querySelectorAll('[data-ev-tab]').forEach((t) => t.addEventListener('click', () => {
+      host.querySelectorAll('[data-ev-tab]').forEach((x) => x.classList.toggle('active', x === t));
+      host.querySelectorAll('[data-ev-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.evPane !== t.dataset.evTab));
+    }));
+
+    const fileBtn = sel('.ev-file-btn');
+    if (fileBtn) fileBtn.addEventListener('click', async () => {
+      const file = (sel('.ev-file').files || [])[0];
+      if (!file) { note('Pick a file first.', false); return; }
+      fileBtn.disabled = true; const o = fileBtn.textContent; fileBtn.textContent = 'Uploading…';
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('scope', 'COMPETITOR');
+        fd.append('category', 'BATTLECARDS');
+        fd.append('competitorIds', competitor.id);
+        if (compProductId) fd.append('competitorProductId', compProductId);
+        fd.append('title', file.name ? (file.name.replace(/\.[^.]+$/, '').trim() || file.name) : 'Untitled');
+        const r = await fetch('/api/knowledge/upload', { method: 'POST', credentials: 'include', body: fd });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        sel('.ev-file').value = '';
+        await afterAdd('Deck added to evidence.');
+      } catch (err) { note(err.message, false); }
+      finally { fileBtn.disabled = false; fileBtn.textContent = o; }
+    });
+
+    const urlBtn = sel('.ev-url-btn');
+    if (urlBtn) urlBtn.addEventListener('click', async () => {
+      const url = (sel('.ev-url').value || '').trim();
+      if (!/^https?:\/\//i.test(url)) { note('A valid http(s) URL is required.', false); return; }
+      urlBtn.disabled = true; const o = urlBtn.textContent; urlBtn.textContent = 'Fetching…';
+      try {
+        const body = { url, scope: 'COMPETITOR', category: 'BATTLECARDS', competitorIds: [competitor.id] };
+        if (compProductId) body.competitorProductId = compProductId;
+        await fetchJson('/api/knowledge/web-sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        sel('.ev-url').value = '';
+        await afterAdd('URL added to evidence.');
+      } catch (err) { note(err.message, false); }
+      finally { urlBtn.disabled = false; urlBtn.textContent = o; }
+    });
+
+    const webBtn = sel('.ev-web-btn');
+    if (webBtn) webBtn.addEventListener('click', async () => {
+      webBtn.disabled = true; const o = webBtn.textContent; webBtn.textContent = 'Searching…';
+      const rhost = sel('.ev-web-results'); if (rhost) rhost.innerHTML = '';
+      const base = compProductId
+        ? `/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/offerings/${encodeURIComponent(compProductId)}/research`
+        : `/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/research`;
+      try {
+        const data = await fetchJson(base, { method: 'POST' });
+        renderCompetitorWebResults(competitor, compProductId, host, data);
+      } catch (err) { note(err.message, false); }
+      finally { webBtn.disabled = false; webBtn.textContent = o; }
+    });
+  }
+
+  // Web-search results — each hit gets its own "Add to evidence" button that
+  // scrapes + files just that URL and drops it straight into the evidence list
+  // (refreshed in place, so the rest of the results stay for adding more).
+  function renderCompetitorWebResults(competitor, compProductId, host, data) {
+    const rhost = host.querySelector('.ev-web-results');
+    if (!rhost) return;
+    const results = (data && data.results) || [];
+    if (!results.length) { rhost.innerHTML = '<div class="kb-subtle" style="margin-top:6px">No web results found.</div>'; return; }
+    const ingBase = compProductId
+      ? `/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/offerings/${encodeURIComponent(compProductId)}/research/ingest`
+      : `/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/research/ingest`;
+    rhost.innerHTML = `
+      <ul class="off-web-list">${results.map((r) => `
+        <li class="off-web-item ev-web-row">
+          <span class="off-web-meta">
+            <span class="off-web-title">${escapeHtml(r.title)}</span>
+            <a class="off-web-url" href="${escapeHtml(r.url)}" target="_blank" rel="noopener">${escapeHtml(r.url)}</a>
+            ${r.description ? `<span class="kb-subtle">${escapeHtml(r.description)}</span>` : ''}
+          </span>
+          <button type="button" class="kb-secondary-btn ev-add-one" data-url="${escapeHtml(r.url)}">＋ Add to evidence</button>
+        </li>`).join('')}</ul>`;
+    rhost.querySelectorAll('.ev-add-one').forEach((btn) => btn.addEventListener('click', async () => {
+      const url = btn.dataset.url;
+      btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Adding…';
+      try {
+        const res = await fetchJson(ingBase, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ urls: [url] }) });
+        if (res && res.ingested) {
+          btn.textContent = '✓ Added to evidence';
+          btn.classList.add('ev-added');
+          await refreshEvidenceInPlace(competitor);
+        } else {
+          btn.textContent = '⚠ Couldn’t fetch — retry'; btn.disabled = false;
+        }
+      } catch (err) {
+        btn.textContent = '⚠ Failed — retry'; btn.disabled = false;
+      }
+    }));
+  }
+
+  function wireAddTheirProduct(competitor) {
+    const addBtn = $('comp-add-product-btn');
+    if (!addBtn) return;
+    addBtn.addEventListener('click', async () => {
+      const input = $('comp-new-product');
+      const name = input && input.value.trim();
+      const result = $('comp-add-product-result');
+      if (result) { result.classList.add('hidden'); result.classList.remove('error', 'warning'); }
+      if (!name) return;
+      addBtn.disabled = true;
+      try {
+        const resp = await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/offerings`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+        });
+        const newId = resp && resp.offering && resp.offering.id;
+        const warning = resp && resp.warning;
+        if (newId) _bcScope.competitorProduct = newId; // jump into the new product
+        _bcScope.product = '';
+        await loadCompetitorPortfolio(competitor);
+        if (warning) {
+          const r2 = $('comp-add-product-result');
+          if (r2) { r2.classList.remove('hidden', 'error'); r2.classList.add('warning'); r2.textContent = `Added "${name}" — heads up: ${warning}`; }
+        }
+      } catch (err) {
+        if (result) { result.classList.remove('hidden'); result.classList.add('error'); result.textContent = err.message; }
+        addBtn.disabled = false;
+      }
+    });
+  }
+
+  async function loadCompetitorBattlecard(competitor) {
+    const host = $('competitor-battlecard-host');
+    if (!host) return;
+    host.innerHTML = '<div class="kb-subtle" style="padding:10px 0">Loading battlecard…</div>';
+    let data;
+    try {
+      data = await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/battlecard${bcScopeQuery()}`);
+    } catch (err) {
+      host.innerHTML = `<div class="kb-result error">Couldn't load battlecard: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    _currentBattlecard = (data.battlecard && !data.empty) ? data.battlecard : null;
+    const cardHtml = _currentBattlecard
+      ? renderBattlecard(competitor, data.battlecard)
+      : renderBattlecardEmpty(competitor);
+    host.innerHTML = cardHtml + '<div class="bc-history" id="bc-history-host"></div>';
+    wireBattlecardActions(competitor);
+    loadBattlecardHistory(competitor);
+  }
+
+  function renderBattlecardEmpty(competitor) {
+    return `
+      <div class="bc-card bc-empty">
+        <div class="bc-h">
+          <h3 style="margin:0">⚔ Battlecard · ${escapeHtml(competitor.name)}</h3>
+          <button class="primary-cta" id="bc-regen-btn">Generate battlecard</button>
+        </div>
+        <p class="kb-subtle" style="margin:8px 0 0 0">No battlecard yet. Add at least one piece of evidence below, then click "Generate battlecard" to synthesise the talk track, objection handlers, and migration story from it.</p>
+        <div class="kb-result hidden" id="bc-action-result"></div>
+      </div>`;
+  }
+
+  function renderBattlecard(competitor, bc, opts = {}) {
+    const adv = Number(bc.weightedAdvantage) || 0;
+    const verdictClass = adv > 5 ? 'win' : adv < -5 ? 'lose' : 'tie';
+    const verdictLabel = adv > 5 ? `We lead by ${adv}%`
+                       : adv < -5 ? `We trail by ${Math.abs(adv)}%`
+                       : `Roughly tied (${adv >= 0 ? '+' : ''}${adv}%)`;
+    const edited = Array.isArray(bc.editedSections) ? bc.editedSections : [];
+    const editPill = (key) => edited.includes(key)
+      ? '<span class="bc-edit-pill" title="You have a manual edit on this section">✎ edited</span>' : '';
+    // Read-only history view: a banner replaces the live actions, and the
+    // per-section edit / regenerate controls are hidden via the modifier class.
+    const ver = opts.readOnly ? opts.version : null;
+    const banner = ver ? `
+      <div class="bc-version-banner">
+        <span>🕘 Viewing snapshot from <strong>${escapeHtml(fmtDate(ver.generatedAt))}</strong>${ver.current ? ' · this is the current version' : ''}</span>
+        <span class="bc-version-banner-actions">
+          <button class="kb-secondary-btn" id="bc-version-back">← Back to current</button>
+          ${ver.current ? '' : `<button class="primary-cta" id="bc-version-restore" data-hist-id="${escapeHtml(ver.id)}">Restore this version</button>`}
+        </span>
+      </div>` : '';
+    return `
+      <div class="bc-card${opts.readOnly ? ' bc-card--readonly' : ''}">
+        ${banner}
+        <div class="bc-h">
+          <div>
+            <h3 style="margin:0">⚔ Battlecard · ${escapeHtml(competitor.name)}</h3>
+            <div class="bc-verdict bc-verdict-${verdictClass}">${escapeHtml(verdictLabel)}</div>
+          </div>
+          <div class="bc-h-actions">
+            <span class="bc-stale-flag hidden" id="competitor-battlecard-stale-flag">New evidence — regenerate to refresh</span>
+            ${opts.readOnly ? '' : '<button class="kb-secondary-btn" id="bc-download-btn" title="Download this battlecard as a markdown file">⬇ Download</button><button class="kb-secondary-btn" id="bc-add-evidence-btn" title="Save this battlecard as a reference snapshot in the evidence list (kept out of future regenerations)">＋ Add to evidence</button>'}
+            <button class="kb-secondary-btn" id="bc-regen-btn">↻ Regenerate</button>
+          </div>
+        </div>
+
+        ${bc.verdictHeadline ? `
+          <div class="bc-section">
+            <div class="bc-label">Verdict ${editPill('verdictHeadline')}<button class="bc-edit-btn" data-bc-edit="verdictHeadline">${edited.includes('verdictHeadline') ? '↩ Use AI' : '✎'}</button></div>
+            <p class="bc-verdict-line">${escapeHtml(bc.verdictHeadline)}</p>
+          </div>` : ''}
+
+        <div class="bc-row-2col">
+          <div class="bc-section">
+            <div class="bc-label">Where we win</div>
+            <ul class="bc-win-list">
+              ${(bc.whereWeWin || []).map((w) => `
+                <li>
+                  <div class="bc-claim">${escapeHtml(w.claim || '')}</div>
+                  ${w.evidence ? `<div class="bc-evidence">"${escapeHtml(w.evidence)}"</div>` : ''}
+                </li>`).join('') || '<li class="kb-subtle">No clear advantages surfaced from the evidence.</li>'}
+            </ul>
+          </div>
+          <div class="bc-section">
+            <div class="bc-label">Where we lose</div>
+            <ul class="bc-lose-list">
+              ${(bc.whereWeLose || []).map((w) => `
+                <li>
+                  <div class="bc-claim">${escapeHtml(w.claim || '')}</div>
+                  ${w.gapToOvercome ? `<div class="bc-gap">▲ Fix: ${escapeHtml(w.gapToOvercome)}</div>` : ''}
+                </li>`).join('') || '<li class="kb-subtle">No losses surfaced from the evidence.</li>'}
+            </ul>
+          </div>
+        </div>
+
+        <div class="bc-section">
+          <div class="bc-label">Talk track ${editPill('talkTrack')}<button class="bc-edit-btn" data-bc-edit="talkTrack">${edited.includes('talkTrack') ? '↩ Use AI' : '✎'}</button></div>
+          <div class="bc-talktrack" id="bc-talktrack-display">
+            ${(bc.talkTrack || []).map((line, i) => `
+              <div class="bc-talkline"><span class="bc-talkidx">${i + 1}</span><span>${escapeHtml(line)}</span></div>`).join('') || '<div class="kb-subtle">No talk track yet.</div>'}
+          </div>
+        </div>
+
+        <div class="bc-section">
+          <div class="bc-label">Objection handlers ${editPill('objections')}<button class="bc-edit-btn" data-bc-edit="objections">${edited.includes('objections') ? '↩ Use AI' : '✎'}</button></div>
+          <div class="bc-objections" id="bc-objections-display">
+            ${(bc.objections || []).map((o) => `
+              <div class="bc-objection">
+                <div class="bc-objection-claim">They say: <em>"${escapeHtml(o.claim || '')}"</em></div>
+                <div class="bc-objection-response">We say: ${escapeHtml(o.response || '')}</div>
+                ${o.evidence ? `<div class="bc-objection-evidence">Evidence: ${escapeHtml(o.evidence)}</div>` : ''}
+              </div>`).join('') || '<div class="kb-subtle">No objection handlers yet.</div>'}
+          </div>
+        </div>
+
+        <div class="bc-section">
+          <div class="bc-label">Migration story ${editPill('migrationStory')}<button class="bc-edit-btn" data-bc-edit="migrationStory">${edited.includes('migrationStory') ? '↩ Use AI' : '✎'}</button></div>
+          <div id="bc-migration-display" class="bc-migration">${bc.migrationStory ? escapeHtml(bc.migrationStory) : '<span class="kb-subtle">No migration story yet.</span>'}</div>
+        </div>
+
+        ${bc.lastRefreshedAt ? `<div class="bc-meta kb-subtle">Synthesised ${escapeHtml(fmtDate(bc.lastRefreshedAt))}${bc.model ? ` · ${escapeHtml(bc.model)}` : ''}${bc.sourceDocIds && bc.sourceDocIds.length ? ` · ${bc.sourceDocIds.length} source doc${bc.sourceDocIds.length === 1 ? '' : 's'}` : ''}</div>` : ''}
+        <div class="kb-result hidden" id="bc-action-result"></div>
+      </div>`;
+  }
+
+  // Serialize a battlecard to markdown so it can be filed as an evidence doc.
+  function battlecardToMarkdown(competitor, bc) {
+    const offering = _bcScope.competitorProduct ? (_lastPortfolio.offerings.find((o) => o.id === _bcScope.competitorProduct) || {}).name : null;
+    const ourProd = _bcScope.product ? (_lastPortfolio.products.find((p) => p.id === _bcScope.product) || {}).name : null;
+    const their = offering ? `${competitor.name} ${offering}` : `${competitor.name} (company-wide)`;
+    const our = ourProd || 'our whole portfolio';
+    const adv = Number(bc.weightedAdvantage) || 0;
+    const verdict = adv > 5 ? `We lead by ${adv}%` : adv < -5 ? `We trail by ${Math.abs(adv)}%` : `Roughly tied (${adv >= 0 ? '+' : ''}${adv}%)`;
+    const L = [`# Battlecard — ${our} vs ${their}`, '', `**Verdict:** ${verdict}`];
+    if (bc.verdictHeadline) L.push('', bc.verdictHeadline);
+    if ((bc.whereWeWin || []).length) { L.push('', '## Where we win'); for (const w of bc.whereWeWin) L.push(`- ${w.claim || ''}${w.evidence ? ` — "${w.evidence}"` : ''}`); }
+    if ((bc.whereWeLose || []).length) { L.push('', '## Where we lose'); for (const w of bc.whereWeLose) L.push(`- ${w.claim || ''}${w.gapToOvercome ? ` — Fix: ${w.gapToOvercome}` : ''}`); }
+    if ((bc.talkTrack || []).length) { L.push('', '## Talk track'); bc.talkTrack.forEach((t, i) => L.push(`${i + 1}. ${t}`)); }
+    if ((bc.objections || []).length) { L.push('', '## Objection handlers'); for (const o of bc.objections) { L.push(`- **They say:** "${o.claim || ''}"`, `  **We say:** ${o.response || ''}`); if (o.evidence) L.push(`  **Evidence:** ${o.evidence}`); } }
+    if (bc.migrationStory) L.push('', '## Migration story', bc.migrationStory);
+    if (bc.lastRefreshedAt) L.push('', `_Synthesised ${fmtDate(bc.lastRefreshedAt)}${bc.model ? ` · ${bc.model}` : ''}._`);
+    return L.join('\n');
+  }
+
+  function wireBattlecardActions(competitor) {
+    // Download the live battlecard as a markdown file (client-side, no upload).
+    const dl = $('bc-download-btn');
+    if (dl) dl.addEventListener('click', () => {
+      if (!_currentBattlecard) return;
+      const offering = _bcScope.competitorProduct ? (_lastPortfolio.offerings.find((x) => x.id === _bcScope.competitorProduct) || {}).name : null;
+      const slug = `${competitor.name}-${offering || 'company-wide'}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      const md = battlecardToMarkdown(competitor, _currentBattlecard);
+      const blob = new Blob([md], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `battlecard-${slug || 'competitor'}.md`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+
+    // Save the live battlecard as a reference snapshot in this matchup's evidence
+    // list. Tagged isBattlecardSnapshot so it's kept OUT of future synthesis.
+    const addEv = $('bc-add-evidence-btn');
+    if (addEv) addEv.addEventListener('click', async () => {
+      if (!_currentBattlecard) return;
+      const result = $('bc-action-result');
+      if (result) { result.classList.add('hidden'); result.classList.remove('error', 'success'); }
+      addEv.disabled = true; const o = addEv.textContent; addEv.textContent = 'Adding…';
+      try {
+        const md = battlecardToMarkdown(competitor, _currentBattlecard);
+        const offering = _bcScope.competitorProduct ? (_lastPortfolio.offerings.find((x) => x.id === _bcScope.competitorProduct) || {}).name : null;
+        const stamp = fmtDate(_currentBattlecard.lastRefreshedAt || new Date().toISOString());
+        const title = `Battlecard — ${offering || 'Company-wide'} (${stamp})`;
+        const fd = new FormData();
+        fd.append('file', new Blob([md], { type: 'text/markdown' }), 'battlecard.md');
+        fd.append('scope', 'COMPETITOR');
+        fd.append('category', 'BATTLECARDS');
+        fd.append('competitorIds', competitor.id);
+        if (_bcScope.competitorProduct) fd.append('competitorProductId', _bcScope.competitorProduct);
+        fd.append('title', title);
+        // Mark it a snapshot so it stays a readable reference but is kept OUT of
+        // future battlecard synthesis + the main-intel gate (no feedback loop).
+        fd.append('metadata', JSON.stringify({ isBattlecardSnapshot: true }));
+        const r = await fetch('/api/knowledge/upload', { method: 'POST', credentials: 'include', body: fd });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        if (result) { result.classList.remove('hidden'); result.classList.add('success'); result.textContent = 'Battlecard saved to evidence as a snapshot (kept out of future regenerations).'; }
+        await refreshEvidenceInPlace(competitor);
+      } catch (err) {
+        if (result) { result.classList.remove('hidden'); result.classList.add('error'); result.textContent = err.message; }
+      } finally { addEv.disabled = false; addEv.textContent = o; }
+    });
+
+    const regen = $('bc-regen-btn');
+    if (regen) regen.addEventListener('click', async () => {
+      const result = $('bc-action-result');
+      if (result) { result.classList.add('hidden'); result.classList.remove('error', 'success'); }
+      if (!confirm('Regenerate the battlecard? Costs one AI call; manual edits will be preserved.')) return;
+      regen.disabled = true; const orig = regen.textContent; regen.textContent = 'Synthesising…';
+      try {
+        await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/battlecard/regenerate${bcScopeQuery()}`, { method: 'POST' });
+        await loadCompetitorBattlecard(competitor);
+      } catch (err) {
+        if (result) {
+          result.classList.remove('hidden'); result.classList.add('error');
+          result.textContent = `Regen failed: ${err.message}`;
+        }
+      } finally { regen.disabled = false; regen.textContent = orig; }
+    });
+
+    // Per-section edit / revert buttons.
+    document.querySelectorAll('[data-bc-edit]').forEach((b) => {
+      b.addEventListener('click', () => editBattlecardSection(competitor, b.dataset.bcEdit, b));
+    });
+  }
+
+  async function editBattlecardSection(competitor, section, btn) {
+    // If the button is currently in "↩ Use AI" mode, revert.
+    if ((btn.textContent || '').startsWith('↩')) {
+      try {
+        await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/battlecard${bcScopeQuery()}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ section, revert: true }),
+        });
+        await loadCompetitorBattlecard(competitor);
+      } catch (err) { alert(`Couldn't revert: ${err.message}`); }
+      return;
+    }
+    // Otherwise prompt for the new value. For simple strings (verdictHeadline,
+    // migrationStory) → prompt(). For arrays → take pasted JSON-line form.
+    const current = await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/battlecard${bcScopeQuery()}`);
+    const bc = current.battlecard || {};
+    let value;
+    if (section === 'verdictHeadline' || section === 'migrationStory') {
+      const cur = bc[section] || '';
+      value = prompt(`Edit ${section}:`, cur);
+      if (value === null) return;
+    } else if (section === 'talkTrack') {
+      const cur = (bc.talkTrack || []).join('\n');
+      const v = prompt('Edit talk track (one line per row, blank lines stripped):', cur);
+      if (v === null) return;
+      value = v.split(/\n+/).map((s) => s.trim()).filter(Boolean).slice(0, 5);
+    } else if (section === 'whereWeWin' || section === 'whereWeLose') {
+      // Edit as JSON to keep the structure. Power-user mode for now.
+      const cur = JSON.stringify(bc[section] || [], null, 2);
+      const v = prompt(`Edit ${section} as JSON array (each item: {claim, evidence} or {claim, gapToOvercome}):`, cur);
+      if (v === null) return;
+      try { value = JSON.parse(v); } catch { alert('Invalid JSON.'); return; }
+    } else if (section === 'objections') {
+      const cur = JSON.stringify(bc.objections || [], null, 2);
+      const v = prompt('Edit objections as JSON array (each item: {claim, response, evidence?}):', cur);
+      if (v === null) return;
+      try { value = JSON.parse(v); } catch { alert('Invalid JSON.'); return; }
+    }
+    try {
+      await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/battlecard${bcScopeQuery()}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ section, value }),
+      });
+      await loadCompetitorBattlecard(competitor);
+    } catch (err) { alert(`Couldn't save: ${err.message}`); }
+  }
+
+  // ── Battlecard history (dated versions · view / restore) ─────────────────
+  // Fetches the dated version list for the current (competitor, product?) scope
+  // and renders it below the live card. `viewingId` highlights the version
+  // currently being previewed read-only.
+  async function loadBattlecardHistory(competitor, viewingId) {
+    const hist = $('bc-history-host');
+    if (!hist) return;
+    let data;
+    try {
+      data = await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/battlecard/history${bcScopeQuery()}`);
+    } catch { hist.innerHTML = ''; return; }
+    const versions = data.versions || [];
+    if (!versions.length) { hist.innerHTML = ''; return; }
+    hist.innerHTML = renderBattlecardHistory(versions, viewingId);
+    hist.querySelectorAll('[data-bc-hist-view]').forEach((b) => b.addEventListener('click', () => {
+      const v = versions.find((x) => x.id === b.dataset.bcHistView);
+      if (v) viewBattlecardVersion(competitor, v);
+    }));
+    hist.querySelectorAll('[data-bc-hist-restore]').forEach((b) => b.addEventListener('click', () =>
+      restoreBattlecardVersion(competitor, b.dataset.bcHistRestore)));
+  }
+
+  function renderBattlecardHistory(versions, viewingId) {
+    const advTxt = (a) => typeof a === 'number' ? `${a >= 0 ? '+' : ''}${a}%` : '';
+    return `
+      <details class="bc-history-details"${viewingId ? ' open' : ''}>
+        <summary>🕘 History · ${versions.length} version${versions.length === 1 ? '' : 's'}</summary>
+        <ul class="bc-history-list">
+          ${versions.map((v) => `
+            <li class="bc-history-row${v.current ? ' current' : ''}${v.id === viewingId ? ' viewing' : ''}">
+              <div class="bc-history-meta">
+                <span class="bc-history-date">${escapeHtml(fmtDate(v.generatedAt))}</span>
+                ${v.current ? '<span class="bc-history-badge">current</span>' : ''}
+                <span class="kb-subtle">${advTxt(v.weightedAdvantage)}${v.sourceDocCount ? ` · ${v.sourceDocCount} src` : ''}${v.model ? ` · ${escapeHtml(v.model)}` : ''}</span>
+              </div>
+              <div class="bc-history-actions">
+                <button type="button" class="kb-link-btn" data-bc-hist-view="${escapeHtml(v.id)}">View</button>
+                ${v.current ? '' : `<button type="button" class="kb-link-btn" data-bc-hist-restore="${escapeHtml(v.id)}">Restore</button>`}
+              </div>
+            </li>`).join('')}
+        </ul>
+      </details>`;
+  }
+
+  // Render a past snapshot read-only in place of the live card, keeping the
+  // history list visible below (with this version highlighted).
+  function viewBattlecardVersion(competitor, version) {
+    const host = $('competitor-battlecard-host');
+    if (!host) return;
+    host.innerHTML = renderBattlecard(competitor, version.battlecard, { readOnly: true, version })
+      + '<div class="bc-history" id="bc-history-host"></div>';
+    const back = $('bc-version-back');
+    if (back) back.addEventListener('click', () => loadCompetitorBattlecard(competitor));
+    const restore = $('bc-version-restore');
+    if (restore) restore.addEventListener('click', () => restoreBattlecardVersion(competitor, restore.dataset.histId));
+    loadBattlecardHistory(competitor, version.id);
+  }
+
+  async function restoreBattlecardVersion(competitor, histId) {
+    if (!confirm('Restore this version as the current battlecard? The current version stays in history.')) return;
+    try {
+      await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/battlecard/history/${encodeURIComponent(histId)}/restore${bcScopeQuery()}`, { method: 'POST' });
+      await loadCompetitorBattlecard(competitor);
+    } catch (err) { alert(`Couldn't restore: ${err.message}`); }
   }
 
   // ── Integrations (calendar) ──────────────────────────────────────────────
@@ -309,11 +2650,37 @@
       host.innerHTML = `<div class="empty">Couldn't load integrations: ${escapeHtml(err.message)}</div>`;
       return;
     }
+    // CRM providers (pull prospects). Best-effort — a failure just hides the group.
+    // Hide "coming soon" (not-yet-live) connectors for now — show only live ones
+    // (plus any already connected, defensively).
+    let crmProviders = [];
+    try { crmProviders = (await fetchJson('/api/crm/providers')).providers || []; } catch { crmProviders = []; }
+    crmProviders = crmProviders.filter((p) => p.live || (p.connection && p.connection.connected));
+
     // Flash from the Nylas callback redirect (?cal=connected / ?cal_error=…).
     const flash = readCalFlash();
+    // Group by connection model so the two flows read clearly: calendars we READ
+    // (Nylas / Microsoft) vs inbound booking webhooks (Calendly).
+    const readCal = providers.filter((p) => p.mode !== 'webhook');
+    const inbound = providers.filter((p) => p.mode === 'webhook');
+    const group = (label, hint, list) => list.length
+      ? `<div class="integration-group">
+           <div class="integration-group-h">${label} <span class="kb-subtle">${hint}</span></div>
+           <div class="integration-grid">${list.map(integrationCard).join('')}</div>
+         </div>`
+      : '';
+    const crmGroup = crmProviders.length
+      ? `<div class="integration-group">
+           <div class="integration-group-h">CRM <span class="kb-subtle">— pull your prospects (companies + contacts) into GhostStream</span></div>
+           <div class="integration-grid">${crmProviders.map(crmCard).join('')}</div>
+         </div>`
+      : '';
     host.innerHTML =
       (flash || '') +
-      `<div class="integration-grid">${providers.map(integrationCard).join('')}</div>`;
+      crmGroup +
+      group('Read your calendar', '— pull events into the schedule form', readCal) +
+      group('Inbound booking', '— auto-create engagements when prospects book', inbound);
+    wireCrmCards(host);
     host.querySelectorAll('[data-copy]').forEach((b) =>
       b.addEventListener('click', () => copyToClipboard(b.dataset.copy, b)));
     host.querySelectorAll('[data-cal-connect]').forEach((b) =>
@@ -324,17 +2691,222 @@
       b.addEventListener('click', () => { window.location.href = '/api/integrations/calendly/connect'; }));
     host.querySelectorAll('[data-caly-disconnect]').forEach((b) =>
       b.addEventListener('click', () => calendlyDisconnect(b)));
+    host.querySelectorAll('[data-caly-verify]').forEach((b) =>
+      b.addEventListener('click', () => calendlyVerify(b)));
+    // Microsoft 365 (direct) — per-user delegated OAuth only. Authenticated
+    // Teams meeting joining is a Recall dashboard config, not handled here.
+    host.querySelectorAll('[data-ms-connect]').forEach((b) =>
+      b.addEventListener('click', () => { window.location.href = '/api/integrations/microsoft/connect'; }));
+    host.querySelectorAll('[data-ms-disconnect]').forEach((b) =>
+      b.addEventListener('click', () => microsoftDisconnect(b)));
+    host.querySelectorAll('[data-ms-reconnect]').forEach((b) =>
+      b.addEventListener('click', () => microsoftReconnect(b)));
+    host.querySelectorAll('[data-nylas-ms-switch]').forEach((b) =>
+      b.addEventListener('click', () => nylasSwitchToDirectMicrosoft(b)));
   }
 
-  // Pull (and clear) the ?cal=… flash params the Nylas callback set, returning
-  // a banner HTML string (or null). Cleans them off the URL so a refresh is quiet.
+  // Disconnect + immediately route to the new-scopes OAuth flow. Used by the
+  // amber "stale scopes" banner — and also called from the meeting modal
+  // when the API returns CONSENT_REQUIRED.
+  async function microsoftReconnect(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Reconnecting…'; }
+    try {
+      await fetch('/api/integrations/microsoft/connection', { method: 'DELETE', credentials: 'include' });
+    } catch { /* best-effort; the connect step will overwrite the grant anyway */ }
+    window.location.href = '/api/integrations/microsoft/connect';
+  }
+
+  // ── Calendar agenda view ─────────────────────────────────────────────────
+  // Pulls upcoming events from every connected source (Microsoft 365 direct,
+  // Calendly). Renders an agenda grouped by day; each row offers a quick
+  // "Schedule mission" hand-off that pre-fills the Missions form.
+
+  let _calendarEvents = [];
+
+  async function loadCalendar() {
+    const host = $('calendar-body');
+    if (!host) return;
+    const refreshBtn = $('calendar-refresh-btn');
+    if (refreshBtn && refreshBtn.dataset.wired !== '1') {
+      refreshBtn.dataset.wired = '1';
+      refreshBtn.addEventListener('click', () => { loaded.calendar = false; loadCalendar(); });
+    }
+    host.innerHTML = '<div class="kb-subtle">Loading your upcoming meetings…</div>';
+
+    // Find out which sources are connected so we know what to pull from + can
+    // show an honest empty state if nothing is connected.
+    let msConnected = false, calyConnected = false, nylasConnected = false;
+    let anyConfigured = false;
+    try {
+      const providers = (await fetchJson('/api/integrations/calendar')).providers || [];
+      const ms = providers.find((p) => p.key === 'microsoft');
+      const cl = providers.find((p) => p.key === 'calendly');
+      const ny = providers.find((p) => p.key === 'nylas');
+      msConnected    = !!(ms && ms.connection && ms.connection.connected);
+      calyConnected  = !!(cl && cl.connection && cl.connection.connected);
+      nylasConnected = !!(ny && ny.connection && ny.connection.connected);
+      anyConfigured  = !!((ms && ms.configured) || (cl && cl.configured) || (ny && ny.configured));
+    } catch (err) {
+      host.innerHTML = `<div class="empty">Couldn't read integrations: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+
+    if (!msConnected && !calyConnected && !nylasConnected) {
+      host.innerHTML = `
+        <div class="empty">
+          <p>No connected calendar yet.</p>
+          <p class="kb-subtle">${anyConfigured
+            ? 'Open <a href="#integrations">Integrations</a> to connect Microsoft 365, Google / iCloud, or Calendly.'
+            : 'No calendar provider is configured yet. Set the env vars and connect from <a href="#integrations">Integrations</a>.'}</p>
+        </div>`;
+      return;
+    }
+
+    // Fetch every connected source in parallel; tolerate any one failing.
+    const [msRes, calyRes, nylasRes] = await Promise.allSettled([
+      msConnected    ? fetchJson('/api/integrations/microsoft/events?days=14') : Promise.resolve({ events: [] }),
+      calyConnected  ? fetchJson('/api/integrations/calendly/events?days=30')  : Promise.resolve({ events: [] }),
+      nylasConnected ? fetchJson('/api/integrations/calendar/events?days=14')  : Promise.resolve({ events: [] }),
+    ]);
+    const errors = [];
+    const events = [];
+    if (msRes.status    === 'fulfilled') events.push(...(msRes.value.events    || []));
+    else                                 errors.push(`Microsoft 365: ${msRes.reason.message}`);
+    if (calyRes.status  === 'fulfilled') events.push(...(calyRes.value.events  || []));
+    else                                 errors.push(`Calendly: ${calyRes.reason.message}`);
+    if (nylasRes.status === 'fulfilled') events.push(...(nylasRes.value.events || []));
+    else                                 errors.push(`Calendar (Nylas): ${nylasRes.reason.message}`);
+
+    // Sort + dedupe (same event can appear in both feeds — match on
+    // meetingUrl + start as a best-effort key).
+    events.sort((a, b) => new Date(a.start) - new Date(b.start));
+    const seen = new Set();
+    const deduped = events.filter((ev) => {
+      const key = `${(ev.url || '').toLowerCase()}|${ev.start}`;
+      if (key === '|' || seen.has(key)) return seen.has(key) ? false : seen.add(key);
+      seen.add(key); return true;
+    });
+    _calendarEvents = deduped;
+
+    const errorBanner = errors.length
+      ? `<div class="kb-result error" style="margin-bottom:14px">Partial load — some sources failed: ${escapeHtml(errors.join('; '))}</div>` : '';
+
+    if (deduped.length === 0) {
+      host.innerHTML = errorBanner + '<div class="empty">No upcoming meetings in the next 14 days.</div>';
+      return;
+    }
+
+    // Group by local day.
+    const groups = new Map();
+    for (const ev of deduped) {
+      const d = new Date(ev.start);
+      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(ev);
+    }
+
+    const todayKey = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+    const tomorrowKey = (() => { const d = new Date(); d.setDate(d.getDate()+1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+
+    const sections = [...groups.entries()].map(([dayKey, items]) => {
+      const sample = new Date(items[0].start);
+      const heading = dayKey === todayKey
+        ? `Today · ${sample.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}`
+        : dayKey === tomorrowKey
+          ? `Tomorrow · ${sample.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}`
+          : sample.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+      return `
+        <div class="cal-day">
+          <div class="cal-day-h">${escapeHtml(heading)}</div>
+          ${items.map((ev, _i) => calendarRow(ev, deduped.indexOf(ev))).join('')}
+        </div>`;
+    }).join('');
+
+    host.innerHTML = errorBanner + `<div class="cal-agenda">${sections}</div>`;
+
+    host.querySelectorAll('[data-cal-schedule]').forEach((el) =>
+      el.addEventListener('click', () => scheduleMissionFromCalendarRow(parseInt(el.dataset.calSchedule, 10))));
+    host.querySelectorAll('[data-cal-open]').forEach((el) =>
+      el.addEventListener('click', (e) => {
+        // Don't intercept the click if the user is meta/ctrl-clicking — let
+        // them open the join URL in a new tab naturally.
+        if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+      }));
+  }
+
+  // One agenda row.
+  function calendarRow(ev, idx) {
+    const start = new Date(ev.start);
+    const end   = ev.end ? new Date(ev.end) : null;
+    const fmt = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const timeStr = end ? `${fmt(start)} – ${fmt(end)}` : fmt(start);
+    const att = Array.isArray(ev.attendees) ? ev.attendees : [];
+    const attShort = att.slice(0, 3).join(', ') + (att.length > 3 ? ` +${att.length - 3}` : '');
+    const sug = ev.suggestion || {};
+    const provider = sourcePill(ev);
+    const joinHost = ev.url ? safeJoinHost(ev.url) : null;
+    const joinBtn  = ev.url
+      ? `<a class="kb-link-btn" data-cal-open href="${escapeHtml(ev.url)}" target="_blank" rel="noopener" title="Join ${escapeHtml(joinHost || 'meeting')}">🔗 Join ${escapeHtml(joinLabel(joinHost))}</a>`
+      : '';
+    const company = sug.companyName ? ` · <span class="kb-subtle">→ ${escapeHtml(sug.companyName)}</span>` : '';
+    return `
+      <div class="cal-row">
+        <div class="cal-row-time"><strong>${escapeHtml(timeStr)}</strong></div>
+        <div class="cal-row-body">
+          <div class="cal-row-title">${escapeHtml(ev.title || '(no title)')} ${provider}</div>
+          <div class="cal-row-meta kb-subtle">${escapeHtml(attShort || '(no attendees)')}${company}</div>
+        </div>
+        <div class="cal-row-actions">
+          ${joinBtn}
+          <button class="kb-secondary-btn" data-cal-schedule="${idx}">📅 Schedule engagement</button>
+        </div>
+      </div>`;
+  }
+
+  // Hand-off: navigate to Missions → Schedule, then prefill from the event.
+  async function scheduleMissionFromCalendarRow(idx) {
+    const ev = _calendarEvents[idx];
+    if (!ev) return;
+    await switchSection('missions', {});
+    // loadMissions sets up the form + tabs idempotently. Switch to the
+    // schedule pane (in case the user landed on a different one previously),
+    // then apply the event's suggestion into the form.
+    await switchMissionsTab('schedule');
+    applyCalendarEvent(ev);
+    // Make the URL reflect where we are (so refresh keeps the user here).
+    if (window.location.hash !== '#missions') {
+      history.replaceState(null, '', location.pathname + location.search + '#missions');
+    }
+    // Scroll the form into view — the schedule pane sits below the tab bar.
+    const sched = $('missions-pane-schedule');
+    if (sched && sched.scrollIntoView) sched.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function safeJoinHost(url) {
+    try { return new URL(url).hostname; } catch { return null; }
+  }
+  function joinLabel(host) {
+    if (!host) return '';
+    if (/teams\./i.test(host))  return 'Teams';
+    if (/zoom\./i.test(host))   return 'Zoom';
+    if (/meet\.google\.com$/i.test(host)) return 'Meet';
+    if (/webex\./i.test(host))  return 'Webex';
+    return '';
+  }
+
+  // Pull (and clear) the ?cal=… / ?ms=… flash params the callbacks set,
+  // returning a banner HTML string (or null). Cleans them off the URL so a
+  // refresh is quiet.
   function readCalFlash() {
     const q = new URLSearchParams(location.search);
-    const ok = q.get('cal'), err = q.get('cal_error'), notice = q.get('cal_notice');
-    if (!ok && !err && !notice) return null;
-    q.delete('cal'); q.delete('cal_error'); q.delete('cal_notice');
+    const ok   = q.get('cal'), err   = q.get('cal_error'), notice = q.get('cal_notice');
+    const msOk = q.get('ms'),  msErr = q.get('ms_error');
+    if (!ok && !err && !notice && !msOk && !msErr) return null;
+    ['cal', 'cal_error', 'cal_notice', 'ms', 'ms_error'].forEach((k) => q.delete(k));
     const clean = location.pathname + (q.toString() ? `?${q}` : '') + location.hash;
     history.replaceState(null, '', clean);
+    if (msErr)  return `<div class="kb-result error"   style="margin-bottom:14px">Microsoft 365: ${escapeHtml(msErr)}</div>`;
+    if (msOk)   return `<div class="kb-result success" style="margin-bottom:14px">Microsoft 365 calendar ${escapeHtml(msOk)}.</div>`;
     if (err)    return `<div class="kb-result error"   style="margin-bottom:14px">Calendar connect failed: ${escapeHtml(err)}</div>`;
     if (notice) return `<div class="kb-result success" style="margin-bottom:14px">Calendar ${escapeHtml(notice)}</div>`;
     return `<div class="kb-result success" style="margin-bottom:14px">Calendar connected.</div>`;
@@ -351,8 +2923,27 @@
     await loadIntegrations();
   }
 
+  // Retry webhook registration for an already-connected account. The status is
+  // captured at connect time, so this recovers the "connected · webhook
+  // inactive" state after the OAuth app's scopes were fixed. Surfaces Calendly's
+  // own error (scope / plan tier) when registration still fails.
+  async function calendlyVerify(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Activating…'; }
+    try {
+      const r = await fetch('/api/integrations/calendly/verify', { method: 'POST', credentials: 'include' });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    } catch (err) {
+      alert(`Couldn't activate the webhook: ${err.message}`);
+      if (btn) { btn.disabled = false; btn.textContent = 'Activate webhook'; }
+      return;
+    }
+    loaded.integrations = false;
+    await loadIntegrations();
+  }
+
   async function calendlyDisconnect(btn) {
-    if (!confirm('Disconnect Calendly? The invitee.created webhook subscription will be removed — new bookings will stop auto-creating missions.')) return;
+    if (!confirm('Disconnect Calendly? New bookings will stop auto-creating engagements.')) return;
     if (btn) { btn.disabled = true; btn.textContent = 'Disconnecting…'; }
     try {
       const r = await fetch('/api/integrations/calendly/connection', { method: 'DELETE', credentials: 'include' });
@@ -362,56 +2953,85 @@
     await loadIntegrations();
   }
 
+  async function microsoftDisconnect(btn) {
+    if (!confirm('Disconnect your Microsoft 365 calendar? The schedule form will stop offering its events (re-connect any time).')) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Disconnecting…'; }
+    try {
+      const r = await fetch('/api/integrations/microsoft/connection', { method: 'DELETE', credentials: 'include' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    } catch (err) { alert(`Couldn't disconnect: ${err.message}`); }
+    loaded.integrations = false;
+    await loadIntegrations();
+  }
+
+  // Soft-deprecation hand-off: drop the Nylas grant + route the rep to the
+  // direct Microsoft OAuth flow. Their Microsoft account picker comes up
+  // pre-selected since the browser already has them signed in.
+  async function nylasSwitchToDirectMicrosoft(btn) {
+    if (!confirm('Disconnect the Nylas-based Microsoft calendar and connect via direct Microsoft Graph instead?')) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Switching…'; }
+    try {
+      const r = await fetch('/api/integrations/calendar/connection', { method: 'DELETE', credentials: 'include' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    } catch (err) {
+      alert(`Couldn't disconnect Nylas: ${err.message}`);
+      if (btn) { btn.disabled = false; btn.textContent = 'Switch to direct Microsoft →'; }
+      return;
+    }
+    window.location.href = '/api/integrations/microsoft/connect';
+  }
+
   function integrationCard(p) {
-    const isCalendly = p.key === 'calendly';
-    const uriLabel = isCalendly ? 'Redirect URI' : 'Callback URI';
+    const isCalendly  = p.key === 'calendly';
+    const isMicrosoft = p.key === 'microsoft';
     let badge, action;
     if (!p.configured) {
-      badge = '<span class="pill pill-warn">Not configured</span>';
-      action = `
-        <div class="integration-setup">${escapeHtml(p.setup)}</div>
-        <ul class="integration-env">${p.requires.map((r) =>
-          `<li><code>${escapeHtml(r.name)}</code> ${r.set ? '<span class="pill pill-ok">set</span>' : '<span class="pill pill-warn">missing</span>'}</li>`).join('')}</ul>
-        ${p.callbackUri ? `<div class="integration-url">${uriLabel} ${copyBtn(p.callbackUri)}<code>${escapeHtml(p.callbackUri)}</code></div>` : ''}
-        ${p.webhookUrl  ? `<div class="integration-url">Webhook URL ${copyBtn(p.webhookUrl)}<code>${escapeHtml(p.webhookUrl)}</code></div>` : ''}`;
+      badge = '<span class="pill pill-warn">Unavailable</span>';
+      action = '<div class="integration-setup">Not available on your workspace yet.</div>';
+    } else if (isMicrosoft) {
+      const conn = p.connection || {};
+      const reconnect = (conn.connected && conn.needsReconsent)
+        ? '<div class="integration-actions"><button class="kb-link-btn" data-ms-reconnect>Reconnect to enable meeting creation →</button></div>'
+        : '';
+      badge = conn.connected ? '<span class="pill pill-ok">Connected</span>' : '<span class="pill pill-warn">Not connected</span>';
+      action = conn.connected
+        ? `<div class="integration-connected">Connected as <strong>${escapeHtml(conn.email || conn.name || 'your account')}</strong></div>
+           ${reconnect}
+           <div class="integration-actions"><button class="kb-secondary-btn" data-ms-disconnect>Disconnect</button></div>`
+        : '<div class="integration-actions"><button class="primary-cta" data-ms-connect>Connect Microsoft 365</button></div>';
     } else if (isCalendly) {
       const conn = p.connection || {};
       if (conn.connected) {
-        badge = conn.webhookActive ? '<span class="pill pill-ok">Connected</span>' : '<span class="pill pill-warn">Connected · no webhook</span>';
+        badge = conn.webhookActive ? '<span class="pill pill-ok">Connected</span>' : '<span class="pill pill-warn">Connected · webhook inactive</span>';
         action = `
           <div class="integration-connected">${conn.webhookActive
-            ? 'Connected — the <code>invitee.created</code> webhook is registered. New bookings auto-create missions.'
-            : 'Connected, but the webhook subscription isn\'t active (your Calendly plan may not allow webhooks) — bookings won\'t auto-create missions.'}${conn.connectedAt ? ` <span class="kb-subtle">· since ${escapeHtml(fmtDate(conn.connectedAt))}</span>` : ''}</div>
-          <div class="integration-url">Webhook URL ${copyBtn(p.webhookUrl)}<code>${escapeHtml(p.webhookUrl || '')}</code></div>
-          <div class="integration-actions"><button class="kb-secondary-btn" data-caly-disconnect>Disconnect</button></div>`;
+            ? 'Connected — new bookings auto-create engagements.'
+            : 'Connected, but the invitee.created webhook isn\'t registered yet, so bookings won\'t auto-create engagements. If you just added the webhooks scopes, activate it below.'}</div>
+          <div class="integration-actions">
+            ${conn.webhookActive ? '' : '<button class="primary-cta" data-caly-verify>Activate webhook</button>'}
+            <button class="kb-secondary-btn" data-caly-disconnect>Disconnect</button>
+          </div>`;
       } else {
         badge = '<span class="pill pill-warn">Not connected</span>';
-        action = `
-          <div class="integration-setup">Make sure this redirect URI is registered in your Calendly OAuth app, then connect — we'll register the <code>invitee.created</code> webhook for you.</div>
-          <div class="integration-url">${uriLabel} ${copyBtn(p.callbackUri)}<code>${escapeHtml(p.callbackUri || '')}</code></div>
-          <div class="integration-url">Webhook URL ${copyBtn(p.webhookUrl)}<code>${escapeHtml(p.webhookUrl || '')}</code></div>
-          <button class="primary-cta" data-caly-connect>Connect Calendly</button>`;
+        action = '<div class="integration-actions"><button class="primary-cta" data-caly-connect>Connect Calendly</button></div>';
       }
     } else {
       // Read-calendar provider (Nylas). Configured → connect (per provider) / connected.
+      // Microsoft is intentionally NOT offered here anymore — the direct
+      // Microsoft Graph card is the canonical path. Existing Nylas-Microsoft
+      // grants keep working, with a one-click "switch to direct" prompt.
       const conn = p.connection || {};
       if (conn.connected) {
         badge = '<span class="pill pill-ok">Connected</span>';
         action = `
-          <div class="integration-connected">Connected as <strong>${escapeHtml(conn.email || 'unknown')}</strong>${conn.provider ? ` <span class="kb-subtle">(${escapeHtml(conn.provider)})</span>` : ''}${conn.connectedAt ? ` <span class="kb-subtle">· since ${escapeHtml(fmtDate(conn.connectedAt))}</span>` : ''}</div>
-          <div class="integration-actions">
-            <button class="kb-secondary-btn" data-cal-disconnect>Disconnect</button>
-            <span class="kb-subtle">Importing events on the <a href="#missions">schedule form</a> ↗</span>
-          </div>`;
+          <div class="integration-connected">Connected as <strong>${escapeHtml(conn.email || 'your account')}</strong></div>
+          <div class="integration-actions"><button class="kb-secondary-btn" data-cal-disconnect>Disconnect</button></div>`;
       } else {
         badge = '<span class="pill pill-warn">Not connected</span>';
         action = `
-          <div class="integration-setup">${escapeHtml(p.setup)}</div>
-          <div class="integration-url">${uriLabel} ${copyBtn(p.callbackUri)}<code>${escapeHtml(p.callbackUri || '')}</code></div>
           <div class="integration-actions">
             <button class="primary-cta" data-cal-connect="google">Connect Google</button>
-            <button class="kb-secondary-btn" data-cal-connect="microsoft">Microsoft 365</button>
-            <button class="kb-secondary-btn" data-cal-connect="imap">IMAP / iCloud</button>
+            <button class="kb-secondary-btn" data-cal-connect="imap">iCloud / IMAP</button>
           </div>`;
       }
     }
@@ -420,7 +3040,6 @@
         <div class="integration-h">
           <span class="integration-icon">${p.icon || '🔌'}</span>
           <span class="integration-name">${escapeHtml(p.name)}</span>
-          <span class="integration-mode kb-subtle">${p.mode === 'webhook' ? 'inbound' : 'read calendar'}</span>
           ${badge}
         </div>
         <div class="integration-blurb">${escapeHtml(p.blurb)}</div>
@@ -428,9 +3047,110 @@
       </div>`;
   }
 
+  // CRM provider card: connect via API token, then Pull prospects (or "coming
+  // soon" for providers whose connector isn't live yet).
+  const CRM_ICON = { hubspot: '🟠', salesforce: '☁️', zoho: '🟡', pipedrive: '🟢', dynamics: '🔷' };
+  function crmCard(p) {
+    const conn = p.connection;
+    const icon = CRM_ICON[p.id] || '🔌';
+    let badge, body;
+    if (conn && conn.connected) {
+      const s = conn.lastSyncSummary || null;
+      const last = conn.lastSyncAt ? `Last pull ${escapeHtml(fmtDate(conn.lastSyncAt))}` : 'Not pulled yet';
+      const sline = s ? `<div class="kb-subtle">${fmtNum(s.contactsCreated || 0)} new contacts · ${fmtNum(s.companiesCreated || 0)} new companies${s.contactsExisting ? ` · ${fmtNum(s.contactsExisting)} already on file` : ''}${s.skipped ? ` · ${fmtNum(s.skipped)} skipped` : ''}</div>` : '';
+      badge = '<span class="pill pill-ok">Connected</span>';
+      body = `
+        <div class="integration-connected">Connected${conn.tokenHint ? ` <span class="kb-subtle">· token ${escapeHtml(conn.tokenHint)}</span>` : ''}</div>
+        <div class="kb-subtle">${last}</div>
+        ${sline}
+        <div class="integration-actions">
+          <button class="primary-cta" data-crm-import="${escapeHtml(p.id)}">⬇ Pull prospects</button>
+          <button class="kb-secondary-btn" data-crm-disconnect="${escapeHtml(p.id)}">Disconnect</button>
+        </div>
+        <div class="kb-result hidden" id="crm-result-${escapeHtml(p.id)}"></div>`;
+    } else if (p.live) {
+      badge = '<span class="pill pill-warn">Not connected</span>';
+      body = `
+        <div class="integration-setup">${escapeHtml(p.tokenHelp || '')} ${p.docsUrl ? `<a href="${escapeHtml(p.docsUrl)}" target="_blank" rel="noopener">Docs ↗</a>` : ''}</div>
+        <div class="crm-connect-row">
+          <input type="password" id="crm-token-${escapeHtml(p.id)}" placeholder="${escapeHtml(p.tokenLabel || 'API token')}" autocomplete="off">
+          <button class="primary-cta" data-crm-connect="${escapeHtml(p.id)}">Connect</button>
+        </div>
+        <div class="kb-result hidden" id="crm-result-${escapeHtml(p.id)}"></div>`;
+    } else {
+      badge = '<span class="pill">Coming soon</span>';
+      body = `<div class="integration-setup">${escapeHtml(p.tokenHelp || '')} ${p.docsUrl ? `<a href="${escapeHtml(p.docsUrl)}" target="_blank" rel="noopener">Docs ↗</a>` : ''}</div>`;
+    }
+    return `
+      <div class="integration-card">
+        <div class="integration-h">
+          <span class="integration-icon">${icon}</span>
+          <span class="integration-name">${escapeHtml(p.label)}</span>
+          <span class="integration-mode kb-subtle">pull prospects</span>
+          ${badge}
+        </div>
+        ${body}
+      </div>`;
+  }
+
+  function wireCrmCards(host) {
+    host.querySelectorAll('[data-crm-connect]').forEach((b) => b.addEventListener('click', () => crmConnect(b.dataset.crmConnect)));
+    host.querySelectorAll('[data-crm-import]').forEach((b) => b.addEventListener('click', () => crmImport(b.dataset.crmImport, b)));
+    host.querySelectorAll('[data-crm-disconnect]').forEach((b) => b.addEventListener('click', () => crmDisconnect(b.dataset.crmDisconnect)));
+  }
+
+  function crmResult(provider, msg, kind) {
+    const el = $(`crm-result-${provider}`);
+    if (!el) return;
+    el.classList.remove('hidden', 'error', 'success');
+    if (kind) el.classList.add(kind);
+    el.textContent = msg;
+  }
+
+  async function crmConnect(provider) {
+    const input = $(`crm-token-${provider}`);
+    const token = input ? input.value.trim() : '';
+    if (!token) { crmResult(provider, 'Paste your token first.', 'error'); return; }
+    crmResult(provider, 'Verifying…', '');
+    try {
+      await fetchJson('/api/crm/connections', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, token }),
+      });
+      loaded.integrations = false;
+      await loadIntegrations();
+    } catch (err) {
+      crmResult(provider, err.message, 'error');
+    }
+  }
+
+  async function crmImport(provider, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Pulling…'; }
+    crmResult(provider, 'Pulling prospects from your CRM — this can take a moment…', '');
+    try {
+      const r = await fetchJson(`/api/crm/connections/${encodeURIComponent(provider)}/import`, { method: 'POST' });
+      const s = r.summary || {};
+      crmResult(provider, `Done — ${s.contactsCreated || 0} new contacts, ${s.companiesCreated || 0} new companies${s.contactsExisting ? `, ${s.contactsExisting} already on file` : ''}${s.skipped ? `, ${s.skipped} skipped` : ''}. See them on the Prospects page.`, 'success');
+      loaded.prospects = false; // refresh prospects next visit
+    } catch (err) {
+      crmResult(provider, err.message, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '⬇ Pull prospects'; }
+    }
+  }
+
+  async function crmDisconnect(provider) {
+    if (!confirm(`Disconnect ${provider}? Prospects already pulled stay; we just forget the token.`)) return;
+    try {
+      await fetch(`/api/crm/connections/${encodeURIComponent(provider)}`, { method: 'DELETE', credentials: 'include' });
+      loaded.integrations = false;
+      await loadIntegrations();
+    } catch (err) { alert(`Couldn't disconnect: ${err.message}`); }
+  }
+
   function copyBtn(text) {
     if (!text) return '';
-    return `<button class="kb-link-btn integration-copy" data-copy="${escapeHtml(text)}" title="Copy">copy</button>`;
+    return `<button class="kb-link-btn integration-copy" data-copy="${escapeHtml(text)}" title="Copy">⧉ copy</button>`;
   }
   async function copyToClipboard(text, btn) {
     try {
@@ -446,68 +3166,74 @@
   // modal; choosing an event prefills the form from its `suggestion`.
 
   let _calPickerEvents = [];
-  // What the Nylas "📅 …" button does: 'import' (calendar linked → picker),
-  // 'connect' (Nylas configured, not linked → OAuth), or 'disabled'.
+  // Single "Check upcoming meetings" button. State machine:
+  //   'import'   — at least one source connected → opens aggregated picker
+  //   'connect'  — at least one source configured but none connected →
+  //                routes to #integrations so the rep picks which to connect
+  //   'disabled' — no source configured at all
   let _calImportMode = 'disabled';
 
   async function refreshCalendarImportButton() {
-    const nb = $('missions-import-btn'), cb = $('missions-calendly-btn'), hint = $('missions-import-hint');
-    if (!nb && !cb) return;
-    let nylasConn = null, calyConn = null, nylasCfg = false;
+    const nb = $('missions-import-btn'), hint = $('missions-import-hint');
+    if (!nb) return;
+    let nylasConn = null, calyConn = null, msConn = null;
+    let nylasCfg = false, calyCfg = false, msCfg = false;
     try {
       const providers = (await fetchJson('/api/integrations/calendar')).providers || [];
       const nyl = providers.find((p) => p.key === 'nylas');
       const cly = providers.find((p) => p.key === 'calendly');
+      const ms  = providers.find((p) => p.key === 'microsoft');
       nylasConn = nyl && nyl.connection; nylasCfg = !!(nyl && nyl.configured);
-      calyConn  = cly && cly.connection;
-    } catch { /* leave everything disabled */ }
+      calyConn  = cly && cly.connection; calyCfg  = !!(cly && cly.configured);
+      msConn    = ms  && ms.connection;  msCfg    = !!(ms  && ms.configured);
+    } catch { /* leave the button disabled */ }
 
-    // Nylas button
-    if (nb) {
-      if (nylasConn && nylasConn.connected) {
-        _calImportMode = 'import'; nb.disabled = false;
-        nb.textContent = '📅 Import from calendar';
-        nb.title = `Connected as ${nylasConn.email || 'your calendar'}`;
-      } else if (nylasCfg) {
-        _calImportMode = 'connect'; nb.disabled = false;
-        nb.textContent = '📅 Connect a calendar';
-        nb.title = 'Connect Google / Microsoft 365 / iCloud via Nylas';
-      } else {
-        _calImportMode = 'disabled'; nb.disabled = true;
-        nb.textContent = '📅 Import from calendar';
-        nb.title = 'Set up Nylas on the Integrations page first';
-      }
-    }
-    // Calendly button — enabled only when connected (connect lives on the
-    // Integrations page; it needs the redirect URI registered first).
-    if (cb) {
-      if (calyConn && calyConn.connected) {
-        cb.disabled = false;
-        cb.title = calyConn.webhookActive ? 'Pick an upcoming Calendly booking' : 'Connected (no webhook) — you can still pull upcoming bookings';
-      } else {
-        cb.disabled = true;
-        cb.title = 'Connect Calendly on the Integrations page first';
-      }
-    }
-    // Hint line
-    if (hint) {
+    const anyConnected = !!((nylasConn && nylasConn.connected) ||
+                            (calyConn  && calyConn.connected)  ||
+                            (msConn    && msConn.connected));
+    const anyConfigured = nylasCfg || calyCfg || msCfg;
+
+    // The "🎥 Generate Teams meeting" button next to the URL field is gated
+    // by the same Microsoft connection state, so toggle it here.
+    refreshGenerateTeamsButton(msConn);
+
+    if (anyConnected) {
+      _calImportMode = 'import'; nb.disabled = false;
+      nb.textContent = '📅 Check upcoming meetings';
       const bits = [];
-      if (nylasConn && nylasConn.connected) bits.push(`calendar (<strong>${escapeHtml(nylasConn.email || 'linked')}</strong>)`);
-      if (calyConn && calyConn.connected) bits.push('Calendly');
-      hint.innerHTML = bits.length
-        ? `Pull a meeting from ${bits.join(' or ')} — date, link and attendees fill in. <a href="#integrations">Manage</a>`
-        : `Connect a calendar or Calendly in <a href="#integrations">Integrations</a> to skip the typing — or just fill the fields below.`;
+      if (msConn    && msConn.connected)    bits.push('Microsoft 365');
+      if (calyConn  && calyConn.connected)  bits.push('Calendly');
+      if (nylasConn && nylasConn.connected) bits.push(nylasConn.provider === 'google' ? 'Google' : (nylasConn.provider || 'calendar'));
+      nb.title = `Aggregated from ${bits.join(' + ')}`;
+    } else if (anyConfigured) {
+      _calImportMode = 'connect'; nb.disabled = false;
+      nb.textContent = '📅 Connect a calendar';
+      nb.title = 'Connect Microsoft 365, Google, iCloud or Calendly on the Integrations page';
+    } else {
+      _calImportMode = 'disabled'; nb.disabled = true;
+      nb.textContent = '📅 Check upcoming meetings';
+      nb.title = 'No calendar provider configured — set env vars first';
+    }
+
+    if (hint) {
+      const connectedBits = [];
+      if (msConn    && msConn.connected)    connectedBits.push(`Microsoft 365 (<strong>${escapeHtml(msConn.email || 'linked')}</strong>)`);
+      if (calyConn  && calyConn.connected)  connectedBits.push('Calendly');
+      if (nylasConn && nylasConn.connected) connectedBits.push(`${nylasConn.provider === 'google' ? 'Google' : 'calendar'} (<strong>${escapeHtml(nylasConn.email || 'linked')}</strong>)`);
+      hint.innerHTML = connectedBits.length
+        ? `Showing upcoming meetings from ${connectedBits.join(' + ')}. <a href="#integrations">Manage</a>`
+        : `Connect a calendar in <a href="#integrations">Integrations</a> to skip the typing — or just fill the fields below.`;
     }
   }
 
   function _calPickerEsc(e) { if (e.key === 'Escape') closeCalendarPicker(); }
   function closeCalendarPicker() { const o = $('cal-picker-overlay'); if (o) o.classList.add('hidden'); }
 
-  // source: 'calendar' (Nylas /calendar/events) | 'calendly' (/calendly/events)
-  async function openEventPicker(source) {
-    const cfg = source === 'calendly'
-      ? { title: 'Pick an upcoming Calendly meeting', url: '/api/integrations/calendly/events?days=30', loading: 'Loading your Calendly bookings…', empty: 'No upcoming Calendly bookings in the next 30 days.', manage: 'Manage Calendly' }
-      : { title: 'Pick an upcoming meeting', url: '/api/integrations/calendar/events?days=21', loading: 'Loading your calendar…', empty: 'No upcoming meetings in the next 3 weeks.', manage: 'Manage calendar' };
+  // Aggregated picker — pulls upcoming meetings from every connected source
+  // (Microsoft 365 direct, Calendly, Nylas calendar) in parallel, dedupes,
+  // and renders one merged list with a source pill on each row. Replaces
+  // the per-source picker; one button on the schedule form drives it.
+  async function openAggregatedPicker() {
     let overlay = $('cal-picker-overlay');
     if (!overlay) {
       overlay = document.createElement('div');
@@ -523,28 +3249,98 @@
       overlay.querySelector('.cal-picker-close').addEventListener('click', closeCalendarPicker);
       document.addEventListener('keydown', _calPickerEsc);
     }
-    overlay.querySelector('.cal-picker-title').textContent = cfg.title;
+    overlay.querySelector('.cal-picker-title').textContent = 'Upcoming meetings — all sources';
     overlay.classList.remove('hidden');
     const body = overlay.querySelector('.cal-picker-body');
-    body.innerHTML = `<div class="kb-subtle">${escapeHtml(cfg.loading)}</div>`;
-    let events = [];
+    body.innerHTML = '<div class="kb-subtle">Loading your upcoming meetings…</div>';
+
+    // Figure out which sources are connected so we only fetch what's
+    // available (and so we can render an honest empty state if none are).
+    let msConn = false, calyConn = false, nylasConn = false;
+    let msCfg = false, calyCfg = false, nylasCfg = false;
     try {
-      events = (await fetchJson(cfg.url)).events || [];
+      const providers = (await fetchJson('/api/integrations/calendar')).providers || [];
+      const ms = providers.find((p) => p.key === 'microsoft');
+      const cl = providers.find((p) => p.key === 'calendly');
+      const ny = providers.find((p) => p.key === 'nylas');
+      msConn    = !!(ms && ms.connection && ms.connection.connected);
+      calyConn  = !!(cl && cl.connection && cl.connection.connected);
+      nylasConn = !!(ny && ny.connection && ny.connection.connected);
+      msCfg     = !!(ms && ms.configured);
+      calyCfg   = !!(cl && cl.configured);
+      nylasCfg  = !!(ny && ny.configured);
     } catch (err) {
-      body.innerHTML = `<div class="empty">Couldn't load events: ${escapeHtml(err.message)}. <a href="#integrations">${escapeHtml(cfg.manage)}</a></div>`;
+      body.innerHTML = `<div class="empty">Couldn't read integrations: ${escapeHtml(err.message)}</div>`;
       return;
     }
-    if (events.length === 0) {
-      body.innerHTML = `<div class="empty">${escapeHtml(cfg.empty)}</div>`;
+
+    if (!msConn && !calyConn && !nylasConn) {
+      body.innerHTML = `
+        <div class="empty">
+          <p>No connected calendar yet.</p>
+          <p class="kb-subtle">${(msCfg || calyCfg || nylasCfg)
+            ? 'Connect one on the <a href="#integrations">Integrations page</a> and try again.'
+            : 'None of the calendar providers are configured. Set their env vars and connect from <a href="#integrations">Integrations</a>.'}</p>
+        </div>`;
       return;
     }
-    _calPickerEvents = events;
-    body.innerHTML = `<div class="cal-picker-list">${events.map(calEventRow).join('')}</div>`;
+
+    const [msRes, calyRes, nylasRes] = await Promise.allSettled([
+      msConn    ? fetchJson('/api/integrations/microsoft/events?days=21') : Promise.resolve({ events: [] }),
+      calyConn  ? fetchJson('/api/integrations/calendly/events?days=30')  : Promise.resolve({ events: [] }),
+      nylasConn ? fetchJson('/api/integrations/calendar/events?days=21')  : Promise.resolve({ events: [] }),
+    ]);
+    const errors = [];
+    const events = [];
+    if (msRes.status    === 'fulfilled') events.push(...(msRes.value.events    || []));
+    else                                 errors.push(`Microsoft 365: ${msRes.reason.message}`);
+    if (calyRes.status  === 'fulfilled') events.push(...(calyRes.value.events  || []));
+    else                                 errors.push(`Calendly: ${calyRes.reason.message}`);
+    if (nylasRes.status === 'fulfilled') events.push(...(nylasRes.value.events || []));
+    else                                 errors.push(`Calendar (Nylas): ${nylasRes.reason.message}`);
+
+    events.sort((a, b) => new Date(a.start) - new Date(b.start));
+    // Dedupe by (join URL + start time) — same meeting can appear in both
+    // Calendly (the booking) and Microsoft (the calendar event Calendly
+    // created from the booking).
+    const seen = new Set();
+    const deduped = events.filter((ev) => {
+      const key = `${(ev.url || '').toLowerCase()}|${ev.start || ''}`;
+      if (key === '|' || !seen.has(key)) { seen.add(key); return true; }
+      return false;
+    });
+    _calPickerEvents = deduped;
+
+    const errorBanner = errors.length
+      ? `<div class="kb-result error" style="margin: 0 0 10px 0">Partial load: ${escapeHtml(errors.join('; '))}</div>` : '';
+
+    if (deduped.length === 0) {
+      body.innerHTML = errorBanner + '<div class="empty">No upcoming meetings in the next 3 weeks.</div>';
+      return;
+    }
+
+    body.innerHTML = errorBanner + `<div class="cal-picker-list">${deduped.map(calEventRow).join('')}</div>`;
     body.querySelectorAll('[data-cal-pick]').forEach((el) => {
       const pick = () => { applyCalendarEvent(_calPickerEvents[parseInt(el.dataset.calPick, 10)]); closeCalendarPicker(); };
       el.addEventListener('click', pick);
       el.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); pick(); } });
     });
+  }
+
+  // Source badge mapping. Nylas events come back with `provider` set to the
+  // underlying mail provider (google / microsoft / imap), which we surface
+  // so the user can tell a Nylas-google entry from a direct-Graph entry.
+  function sourcePill(ev) {
+    const p = String(ev.provider || '').toLowerCase();
+    if (p === 'microsoft' && !ev.id?.startsWith?.('AAMk')) {
+      // Heuristic: Graph event ids start with "AAMk"; Nylas-microsoft IDs
+      // don't. When in doubt we still render M365.
+    }
+    if (p === 'calendly')  return '<span class="pill pill-info" title="Calendly booking">Calendly</span>';
+    if (p === 'microsoft') return '<span class="pill pill-info" title="Microsoft 365 (direct Graph)">M365</span>';
+    if (p === 'google')    return '<span class="pill pill-info" title="Google calendar (via Nylas)">Google</span>';
+    if (p === 'imap' || p === 'icloud') return '<span class="pill pill-info" title="iCloud / IMAP (via Nylas)">iCloud</span>';
+    return `<span class="pill pill-info" title="${escapeHtml(p || 'calendar')}">${escapeHtml((p || 'cal').toUpperCase().slice(0, 8))}</span>`;
   }
 
   function calEventRow(ev, i) {
@@ -556,7 +3352,7 @@
     const sug = ev.suggestion || {};
     return `
       <div class="cal-event-row" role="button" tabindex="0" data-cal-pick="${i}">
-        <div class="cal-event-title">${escapeHtml(ev.title || '(no title)')}</div>
+        <div class="cal-event-title">${escapeHtml(ev.title || '(no title)')} ${sourcePill(ev)}</div>
         <div class="cal-event-meta">${escapeHtml(when)}${ev.url ? ' · 🔗 has link' : ''}${attStr ? ' · ' + escapeHtml(attStr) : ''}</div>
         ${sug.companyName ? `<div class="cal-event-sug">→ fills: <strong>${escapeHtml(sug.companyName)}</strong>${sug.companyDomain ? ` <span class="kb-subtle">(${escapeHtml(sug.companyDomain)})</span>` : ''}</div>` : ''}
       </div>`;
@@ -578,7 +3374,17 @@
     if (adv) adv.open = true;
     if (s.companyDomain && $('missions-domain')) $('missions-domain').value = s.companyDomain;
     if (s.primaryContact && $('missions-primary-contact')) $('missions-primary-contact').value = s.primaryContact;
-    if (Array.isArray(s.prospectEmails) && s.prospectEmails.length && $('missions-emails')) $('missions-emails').value = s.prospectEmails.join('\n');
+    if (Array.isArray(s.prospectEmails) && s.prospectEmails.length) {
+      // Replace chip state with the calendar-derived attendees. Names aren't
+      // known at this point — they get filled in later when the rep edits.
+      _missionAttendees = s.prospectEmails
+        .filter((e) => typeof e === 'string' && /@/.test(e))
+        .map((email) => ({ email, name: email, role: null }));
+      renderMissionChips();
+      syncAttendeesToHiddenField();
+      // Try to attach to a real company so quick-add wires to the right id.
+      if (s.companyName) loadAttendeeCandidatesForCompany(s.companyName);
+    }
     if (s.notes && $('missions-notes')) {
       const cur = $('missions-notes').value.trim();
       $('missions-notes').value = cur ? `${cur}\n${s.notes}` : s.notes;
@@ -589,6 +3395,418 @@
     if (result) {
       result.classList.remove('hidden', 'error'); result.classList.add('success');
       result.innerHTML = `Pulled from your calendar: <strong>${escapeHtml(ev.title || 'meeting')}</strong>. Review and adjust below, then schedule.`;
+    }
+  }
+
+  // ── Generate Teams meeting (Microsoft 365 direct) ────────────────────────
+  // Modal for creating a Teams meeting on the rep's calendar + writing the
+  // resulting joinUrl into the schedule form's meeting URL field. Pre-fills
+  // start from the form's existing scheduledAt input; the resulting Outlook
+  // event sends invites to the picked attendees on behalf of the rep.
+
+  let _teamsAttendees = []; // [{ email, displayName, company }]
+  let _teamsContactsCache = []; // last MS /me/people autocomplete response
+  let _teamsApolloCache = [];   // last Apollo autocomplete response
+  let _teamsContactsTimer = null;
+  // When set, the modal is in EDIT mode: submitting hits PATCH on this
+  // event id instead of POSTing a new meeting. Cleared on open/close.
+  let _teamsEditContext = null; // { eventId, missionId } | null
+
+  async function openGenerateTeamsModal(editContext) {
+    _teamsEditContext = editContext || null;
+
+    // Defaults — either pulled from the mission being edited, or from the
+    // surrounding schedule form (create mode).
+    let subject, startStr, durationMin = 30, bodyStr = '';
+    if (_teamsEditContext) {
+      const m = _teamsEditContext.mission || {};
+      subject = m.ms_subject || m.company_name ? `GhostStream call · ${m.company_name || ''}`.trim() : 'GhostStream call';
+      // Convert the mission's scheduled_at (UTC ISO) into the datetime-local
+      // shape the input expects.
+      const d = m.scheduled_at ? new Date(m.scheduled_at) : new Date(Date.now() + 30 * 60_000);
+      const pad = (n) => String(n).padStart(2, '0');
+      startStr = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      _teamsAttendees = (m.ms_attendee_emails && m.ms_attendee_emails.length ? m.ms_attendee_emails : m.prospect_emails || [])
+        .map((email) => ({ email, displayName: email }));
+    } else {
+      const company = ($('missions-company') && $('missions-company').value || '').trim();
+      subject = company ? `GhostStream call · ${company}` : 'GhostStream call';
+      const formStart = ($('missions-scheduled-at') && $('missions-scheduled-at').value) || '';
+      startStr = formStart || (() => {
+        const d = new Date(Date.now() + 30 * 60_000);
+        d.setMinutes(Math.ceil(d.getMinutes() / 15) * 15, 0, 0);
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      })();
+      // Seed attendees from the prospect emails the rep may have already typed.
+      const prospects = ($('missions-emails') && $('missions-emails').value || '')
+        .split(/[\s,;]+/).map((s) => s.trim()).filter((s) => /@/.test(s));
+      _teamsAttendees = prospects.map((email) => ({ email, displayName: email }));
+    }
+
+    let overlay = $('teams-modal-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'teams-modal-overlay';
+      overlay.className = 'cal-picker-overlay';
+      overlay.innerHTML = `
+        <div class="cal-picker teams-modal">
+          <div class="cal-picker-h">
+            <span class="cal-picker-title">🎥 Generate Teams meeting</span>
+            <button type="button" class="kb-link-btn cal-picker-close">✕</button>
+          </div>
+          <div class="cal-picker-body">
+            <div class="kb-form teams-form">
+              <div class="field">
+                <label for="teams-subject">Subject</label>
+                <input id="teams-subject" type="text" maxlength="250">
+              </div>
+              <div class="field kb-inline-pair">
+                <div>
+                  <label for="teams-start">Starts</label>
+                  <input id="teams-start" type="datetime-local">
+                </div>
+                <div>
+                  <label for="teams-duration">Duration</label>
+                  <select id="teams-duration">
+                    <option value="15">15 min</option>
+                    <option value="30" selected>30 min</option>
+                    <option value="45">45 min</option>
+                    <option value="60">1 hour</option>
+                    <option value="90">1.5 hours</option>
+                  </select>
+                </div>
+              </div>
+              <div class="field">
+                <label for="teams-attendee-input">Attendees <span class="kb-subtle">(start typing a name or email)</span></label>
+                <div class="teams-chips" id="teams-chips"></div>
+                <div class="teams-autocomplete-wrap">
+                  <input id="teams-attendee-input" type="text" placeholder="alice@acme.com or 'Alice Doe'">
+                  <div class="teams-autocomplete-results hidden" id="teams-ac-results"></div>
+                </div>
+              </div>
+              <div class="field">
+                <label for="teams-body">Agenda <span class="kb-subtle">(optional, sent in the invite)</span></label>
+                <textarea id="teams-body" rows="3" placeholder="Quick discovery call to walk through your current stack…"></textarea>
+              </div>
+              <div class="teams-modal-actions">
+                <button type="button" class="kb-secondary-btn" id="teams-cancel-btn">Cancel</button>
+                <button type="button" class="primary-cta" id="teams-submit-btn">Create + insert URL</button>
+              </div>
+              <div class="kb-result hidden" id="teams-modal-result"></div>
+            </div>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) closeGenerateTeamsModal(); });
+      overlay.querySelector('.cal-picker-close').addEventListener('click', closeGenerateTeamsModal);
+      $('teams-cancel-btn').addEventListener('click', closeGenerateTeamsModal);
+      $('teams-submit-btn').addEventListener('click', submitGenerateTeams);
+      $('teams-attendee-input').addEventListener('input', onAttendeeInput);
+      $('teams-attendee-input').addEventListener('keydown', onAttendeeKeyDown);
+      $('teams-attendee-input').addEventListener('blur', () => setTimeout(() => $('teams-ac-results').classList.add('hidden'), 150));
+      document.addEventListener('keydown', _teamsEsc);
+    }
+
+    $('teams-subject').value  = subject;
+    $('teams-start').value    = startStr;
+    $('teams-duration').value = String(durationMin);
+    $('teams-body').value     = bodyStr;
+    $('teams-attendee-input').value = '';
+    $('teams-modal-result').classList.add('hidden');
+    // Reflect mode in the title + submit button.
+    const titleEl  = overlay.querySelector('.cal-picker-title');
+    const submitEl = $('teams-submit-btn');
+    if (_teamsEditContext) {
+      if (titleEl)  titleEl.textContent = '🎥 Edit Teams meeting';
+      if (submitEl) submitEl.textContent = 'Save changes';
+    } else {
+      if (titleEl)  titleEl.textContent = '🎥 Generate Teams meeting';
+      if (submitEl) submitEl.textContent = 'Create + insert URL';
+    }
+    renderTeamsChips();
+    overlay.classList.remove('hidden');
+    setTimeout(() => $('teams-subject').focus(), 50);
+  }
+
+  function _teamsEsc(e) { if (e.key === 'Escape') closeGenerateTeamsModal(); }
+  function closeGenerateTeamsModal() {
+    const o = $('teams-modal-overlay'); if (o) o.classList.add('hidden');
+  }
+
+  function renderTeamsChips() {
+    const host = $('teams-chips');
+    if (!host) return;
+    if (_teamsAttendees.length === 0) {
+      host.innerHTML = '<span class="kb-subtle teams-chips-empty">No attendees yet — pick from the suggestions below or type an email.</span>';
+      return;
+    }
+    host.innerHTML = _teamsAttendees.map((a, i) => `
+      <span class="teams-chip" title="${escapeHtml(a.email)}">
+        <span>${escapeHtml(a.displayName || a.email)}</span>
+        <button type="button" class="teams-chip-x" data-teams-chip-remove="${i}" aria-label="Remove">✕</button>
+      </span>`).join('');
+    host.querySelectorAll('[data-teams-chip-remove]').forEach((b) =>
+      b.addEventListener('click', () => {
+        _teamsAttendees.splice(parseInt(b.dataset.teamsChipRemove, 10), 1);
+        renderTeamsChips();
+      }));
+  }
+
+  function onAttendeeInput() {
+    const q = $('teams-attendee-input').value.trim();
+    if (_teamsContactsTimer) clearTimeout(_teamsContactsTimer);
+    if (q.length < 1) {
+      $('teams-ac-results').classList.add('hidden');
+      return;
+    }
+    _teamsContactsTimer = setTimeout(() => fetchAttendeeSuggestions(q), 250);
+  }
+
+  async function fetchAttendeeSuggestions(q) {
+    const host = $('teams-ac-results');
+    host.classList.remove('hidden');
+    host.innerHTML = '<div class="kb-subtle teams-ac-loading">Searching your contacts…</div>';
+    // Three sources in parallel: prospect_contacts (Name/Email/Role on file
+    // for the buyer side), Microsoft /me/people (rep's address book), and
+    // Apollo (extra decision-makers at the prospect's domain). Prospect
+    // contacts win top slots — they're the people the rep is actually
+    // trying to invite to *this* call.
+    let prospectMatches = [];
+    let msMatches = [];
+    let apolloMatches = [];
+    let msError = null;
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (_missionCandidateCompanyId) params.set('companyId', _missionCandidateCompanyId);
+    // For Apollo, derive the company's domain from the picked company so we
+    // only suggest people *at the prospect company*, not a global search.
+    const companyForApollo = _prospectsState && _prospectsState.companies
+      ? (_prospectsState.companies.find((c) => c.id === _missionCandidateCompanyId) || null) : null;
+    const apolloDomain = companyForApollo && companyForApollo.domain;
+    const [prospectRes, msRes, apolloRes] = await Promise.allSettled([
+      fetchJson(`/api/contacts?${params.toString()}`),
+      fetchJson(`/api/integrations/microsoft/contacts?q=${encodeURIComponent(q)}`),
+      apolloDomain ? fetchJson(`/api/contacts/apollo-search?domain=${encodeURIComponent(apolloDomain)}&q=${encodeURIComponent(q || '')}`) : Promise.resolve({ people: [] }),
+    ]);
+    if (prospectRes.status === 'fulfilled') prospectMatches = (prospectRes.value.contacts || []).slice(0, 6);
+    if (msRes.status === 'fulfilled') msMatches = msRes.value.contacts || [];
+    else                              msError = msRes.reason.message;
+    if (apolloRes.status === 'fulfilled') apolloMatches = apolloRes.value.people || [];
+    _teamsContactsCache = msMatches;
+    // Stash Apollo results so the pick handler can read them by index.
+    _teamsApolloCache = apolloMatches;
+
+    let rows = '';
+    if (prospectMatches.length) {
+      rows += prospectMatches.map((c, i) => `
+        <div class="teams-ac-row" data-teams-prospect-pick="${i}">
+          <div class="teams-ac-name">${escapeHtml(c.name)} <span class="pill pill-info" title="On file for this prospect">contact</span></div>
+          <div class="teams-ac-meta kb-subtle">${escapeHtml(c.email)} · ${escapeHtml(c.role || 'Unknown')}${c.company_name ? ' · ' + escapeHtml(c.company_name) : ''}</div>
+        </div>`).join('');
+    }
+    if (apolloMatches.length) {
+      rows += apolloMatches.filter((p) => p && p.email).map((p, i) => `
+        <div class="teams-ac-row" data-teams-apollo-pick="${i}">
+          <div class="teams-ac-name">${escapeHtml(p.name || p.email)} <span class="pill pill-info" title="From Apollo">Apollo</span></div>
+          <div class="teams-ac-meta kb-subtle">${escapeHtml(p.email)}${p.emailStatus === 'verified' ? ' ✓' : ''}${p.title ? ' · ' + escapeHtml(p.title) : ''}${p.company ? ' · ' + escapeHtml(p.company) : ''}</div>
+        </div>`).join('');
+    }
+    if (msMatches.length) {
+      rows += msMatches.map((c, i) => `
+        <div class="teams-ac-row" data-teams-pick="${i}">
+          <div class="teams-ac-name">${escapeHtml(c.displayName)}</div>
+          <div class="teams-ac-meta kb-subtle">${escapeHtml(c.email)}${c.company ? ' · ' + escapeHtml(c.company) : ''}${c.jobTitle ? ' · ' + escapeHtml(c.jobTitle) : ''}</div>
+        </div>`).join('');
+    }
+    if (!prospectMatches.length && !msMatches.length && !apolloMatches.length) {
+      if (/@/.test(q)) {
+        rows += `<div class="teams-ac-row teams-ac-freeform" data-teams-pick-freeform="${escapeHtml(q)}">Add <strong>${escapeHtml(q)}</strong> as a guest</div>`;
+      } else {
+        rows += `<div class="kb-subtle teams-ac-empty">No matches in your contacts${msError ? ` (Microsoft search failed: ${escapeHtml(msError)})` : ''}.</div>`;
+      }
+    } else if (/@/.test(q) && !prospectMatches.some((c) => c.email.toLowerCase() === q.toLowerCase())
+            && !msMatches.some((c) => c.email.toLowerCase() === q.toLowerCase())) {
+      rows += `<div class="teams-ac-row teams-ac-freeform" data-teams-pick-freeform="${escapeHtml(q)}">Add <strong>${escapeHtml(q)}</strong> as a guest</div>`;
+    }
+
+    host.innerHTML = rows;
+
+    host.querySelectorAll('[data-teams-prospect-pick]').forEach((el) =>
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const c = prospectMatches[parseInt(el.dataset.teamsProspectPick, 10)];
+        if (c) pickAttendee({ email: c.email, displayName: c.name, company: c.company_name || null });
+      }));
+    host.querySelectorAll('[data-teams-apollo-pick]').forEach((el) =>
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const p = apolloMatches[parseInt(el.dataset.teamsApolloPick, 10)];
+        if (p && p.email) pickAttendee({ email: p.email, displayName: p.name || p.email, company: p.company || null });
+      }));
+    host.querySelectorAll('[data-teams-pick]').forEach((el) =>
+      el.addEventListener('mousedown', (e) => { e.preventDefault(); pickAttendee(_teamsContactsCache[parseInt(el.dataset.teamsPick, 10)]); }));
+    host.querySelectorAll('[data-teams-pick-freeform]').forEach((el) =>
+      el.addEventListener('mousedown', (e) => { e.preventDefault(); pickAttendee({ email: el.dataset.teamsPickFreeform, displayName: el.dataset.teamsPickFreeform }); }));
+  }
+
+  function onAttendeeKeyDown(e) {
+    // Enter on a parseable email → add as a freeform attendee (no contact match needed).
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = $('teams-attendee-input').value.trim();
+      if (/@/.test(v)) pickAttendee({ email: v, displayName: v });
+    }
+  }
+
+  function pickAttendee(c) {
+    if (!c || !c.email) return;
+    const exists = _teamsAttendees.some((a) => a.email.toLowerCase() === c.email.toLowerCase());
+    if (!exists) _teamsAttendees.push({ email: c.email, displayName: c.displayName || c.email, company: c.company || null });
+    $('teams-attendee-input').value = '';
+    $('teams-ac-results').classList.add('hidden');
+    renderTeamsChips();
+    $('teams-attendee-input').focus();
+  }
+
+  async function submitGenerateTeams() {
+    const subject = $('teams-subject').value.trim();
+    const startStr = $('teams-start').value;
+    const dur = parseInt($('teams-duration').value, 10) || 30;
+    const body = $('teams-body').value.trim();
+    const result = $('teams-modal-result');
+    result.classList.remove('hidden', 'error', 'success');
+    if (!subject) { result.classList.add('error'); result.textContent = 'Subject is required.'; return; }
+    if (!startStr) { result.classList.add('error'); result.textContent = 'Start time is required.'; return; }
+    const startDate = new Date(startStr);
+    if (isNaN(startDate.getTime())) { result.classList.add('error'); result.textContent = "Couldn't parse the start time."; return; }
+    const endDate = new Date(startDate.getTime() + dur * 60_000);
+    const submitBtn = $('teams-submit-btn');
+    submitBtn.disabled = true; const orig = submitBtn.textContent;
+    submitBtn.textContent = _teamsEditContext ? 'Saving…' : 'Creating…';
+    try {
+      const editing = !!_teamsEditContext;
+      const url = editing
+        ? `/api/integrations/microsoft/meetings/${encodeURIComponent(_teamsEditContext.eventId)}`
+        : '/api/integrations/microsoft/meetings';
+      const r = await fetch(url, {
+        method: editing ? 'PATCH' : 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject,
+          startISO: startDate.toISOString(),
+          endISO:   endDate.toISOString(),
+          attendees: _teamsAttendees.map((a) => ({ email: a.email, name: a.displayName })),
+          body,
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        if (j.code === 'CONSENT_REQUIRED') {
+          // Build a richer error UI: message + a one-click reconnect button.
+          result.classList.add('error');
+          result.innerHTML = `
+            <strong>Reconnect Microsoft 365 to grant the new permissions.</strong>
+            Your existing connection was made before meeting creation was enabled, so the stored token doesn't include
+            <code>Calendars.ReadWrite</code> / <code>OnlineMeetings.ReadWrite</code>.
+            <div style="margin-top:8px"><button type="button" class="primary-cta" id="teams-reconnect-btn">Disconnect &amp; reconnect now →</button></div>`;
+          const rc = $('teams-reconnect-btn');
+          if (rc) rc.addEventListener('click', () => microsoftReconnect(rc));
+          return;
+        }
+        throw new Error(j.error || `HTTP ${r.status}`);
+      }
+      // Write back into the parent schedule form (create mode only).
+      if (!editing) {
+        const urlEl = $('missions-url');
+        if (urlEl) {
+          urlEl.value = j.joinUrl;
+          // Stash the Graph identifiers so the mission form's submit handler
+          // can forward them to the API, letting Edit / Cancel work later.
+          urlEl.dataset.msEventId        = j.eventId || '';
+          urlEl.dataset.msIcalUid        = j.iCalUId || '';
+          urlEl.dataset.msOrganizerEmail = j.organizerEmail || '';
+        }
+      }
+      if (!editing && $('missions-scheduled-at') && !$('missions-scheduled-at').value) {
+        // Only fill the When field if it was empty — don't clobber what the rep typed.
+        const local = new Date(j.startISO || startDate.toISOString());
+        const pad = (n) => String(n).padStart(2, '0');
+        $('missions-scheduled-at').value =
+          `${local.getFullYear()}-${pad(local.getMonth()+1)}-${pad(local.getDate())}T${pad(local.getHours())}:${pad(local.getMinutes())}`;
+      }
+      // Merge picked attendees into the prospect emails textarea (de-dup).
+      if (!editing && $('missions-emails')) {
+        const existing = $('missions-emails').value.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
+        const merged = [...new Set([...existing, ..._teamsAttendees.map((a) => a.email)])];
+        $('missions-emails').value = merged.join('\n');
+      }
+      // Render the outcome. The invite step is separate from meeting
+      // creation — the meeting is on the rep's calendar regardless; if any
+      // invite failed we surface per-recipient status so the rep can resend.
+      const inv = j.invite || { sent: [], totalAttempted: 0, branding: {} };
+      const ok = inv.sent.filter((x) => x.ok);
+      const failed = inv.sent.filter((x) => !x.ok);
+      const fromLine = inv.branding && inv.branding.fromEmail
+        ? `from <strong>${escapeHtml(inv.branding.fromEmail)}</strong>`
+        : 'via SendGrid';
+      if (failed.length === 0 && ok.length > 0) {
+        result.classList.add('success');
+        result.innerHTML = `
+          ✅ Teams meeting created · invite delivered to ${ok.length} attendee${ok.length === 1 ? '' : 's'} ${fromLine}.
+          <a href="${escapeHtml(j.joinUrl)}" target="_blank" rel="noopener">Open meeting ↗</a>`;
+      } else if (failed.length > 0 && ok.length > 0) {
+        result.classList.add('error');
+        result.innerHTML = `
+          ⚠️ Meeting created and ${ok.length} invite${ok.length === 1 ? '' : 's'} sent, but ${failed.length} failed:
+          <ul style="margin:6px 0 0 18px;font-size:12.5px">
+            ${failed.map((f) => `<li><code>${escapeHtml(f.email)}</code> — ${escapeHtml(f.reason || 'unknown')}</li>`).join('')}
+          </ul>`;
+      } else if (failed.length > 0) {
+        result.classList.add('error');
+        result.innerHTML = `
+          ⚠️ Meeting created but no invites could be sent:
+          <ul style="margin:6px 0 0 18px;font-size:12.5px">
+            ${failed.map((f) => `<li><code>${escapeHtml(f.email)}</code> — ${escapeHtml(f.reason || 'unknown')}</li>`).join('')}
+          </ul>
+          The meeting URL is in the form below; you can share it manually.`;
+      } else {
+        // No attendees were provided — meeting exists for the rep only.
+        result.classList.add('success');
+        result.innerHTML = `
+          ✅ Teams meeting created on your calendar.
+          <a href="${escapeHtml(j.joinUrl)}" target="_blank" rel="noopener">Open meeting ↗</a>`;
+      }
+      // Only auto-close if everything succeeded; otherwise keep the modal
+      // open so the rep can read the failure list. In edit mode, refresh
+      // the mission detail view so updated values render.
+      if (failed.length === 0) {
+        if (editing && _teamsEditContext.missionId) {
+          const mid = _teamsEditContext.missionId;
+          setTimeout(() => { closeGenerateTeamsModal(); openMissionDetail(mid); }, 1500);
+        } else {
+          setTimeout(closeGenerateTeamsModal, 1800);
+        }
+      }
+    } catch (err) {
+      result.classList.add('error');
+      result.textContent = `Couldn't create the meeting: ${err.message}`;
+    } finally {
+      submitBtn.disabled = false; submitBtn.textContent = orig;
+    }
+  }
+
+  // Toggle the "Generate Teams meeting" button based on Microsoft connection.
+  async function refreshGenerateTeamsButton(msConn) {
+    const b = $('missions-generate-teams-btn');
+    if (!b) return;
+    if (msConn && msConn.connected) {
+      b.disabled = false;
+      b.title = `Create a Teams meeting on your Microsoft 365 calendar (${msConn.email || 'connected'})`;
+    } else {
+      b.disabled = true;
+      b.title = 'Connect Microsoft 365 (direct) in Integrations first';
     }
   }
 
@@ -607,16 +3825,13 @@
   // Compact card showing both Omni-Sync provider statuses inline so it
   // occupies one stat-card slot instead of two.
   function providerStatCard(providers) {
-    const fc = providers.firecrawl
-      ? '<span class="pill pill-ok">live</span>'
-      : '<span class="pill pill-warn">no key</span>';
-    const ph = providers.phyllo
+    const pill = (ok) => ok
       ? '<span class="pill pill-ok">live</span>'
       : '<span class="pill pill-warn">no key</span>';
     return `<div class="stat-card provider-card">
       <div class="stat-label">Providers</div>
-      <div class="provider-row"><span class="provider-name">Firecrawl</span>${fc}</div>
-      <div class="provider-row"><span class="provider-name">Phyllo</span>${ph}</div>
+      <div class="provider-row"><span class="provider-name">Firecrawl</span>${pill(providers.firecrawl)}</div>
+      <div class="provider-row"><span class="provider-name">Brave Search</span>${pill(providers.brave)}</div>
     </div>`;
   }
 
@@ -650,7 +3865,9 @@
     wireMissionsTabs();
     wireMissionsForm();
     document.getElementById('missions-detail-back').addEventListener('click', () => switchMissionsTab(missionsCurrentTab));
-    await switchMissionsTab('upcoming');
+    // Schedule is the primary action, so it's the first/default tab. (A
+    // "Brief an engagement" prefill also lands here and is consumed by the form.)
+    await switchMissionsTab('schedule');
   }
 
   function wireMissionsTabs() {
@@ -681,24 +3898,26 @@
     const data = await fetchJson(`/api/missions?when=${when}`);
     const rows = data.missions || [];
     const host = $(`missions-${when}-table`);
+    if (when === 'past') loadUnlinkedRecordings();
     if (rows.length === 0) {
-      host.innerHTML = `<div class="empty">No ${when} missions. Go to Schedule to add one.</div>`;
+      host.innerHTML = `<div class="empty">No ${when} engagements. Go to Schedule to add one.</div>`;
       return;
     }
     host.innerHTML = `
       <table class="dt">
         <thead><tr>
-          <th>Company</th><th>Scheduled</th><th>Engagement</th><th>Brief</th><th>Status</th><th></th>
+          <th>Company</th><th>Scheduled</th><th>Focus</th><th>Brief</th><th>Recording</th><th>Status</th><th></th>
         </tr></thead>
         <tbody>${rows.map(missionRow).join('')}</tbody>
       </table>`;
     host.querySelectorAll('[data-mission-open]').forEach((el) => {
       el.addEventListener('click', () => openMissionDetail(el.dataset.missionOpen));
     });
+    host.querySelectorAll('[data-rec-open]').forEach((a) => a.addEventListener('click', (e) => e.stopPropagation()));
     host.querySelectorAll('[data-mission-cancel]').forEach((btn) => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        if (!confirm('Cancel this mission? Any generated brief is preserved.')) return;
+        if (!confirm('Cancel this engagement? Any generated brief is preserved.')) return;
         const r = await fetch(`/api/missions/${btn.dataset.missionCancel}`, { method: 'DELETE', credentials: 'include' });
         if (!r.ok) {
           const b = await r.json().catch(() => ({}));
@@ -727,6 +3946,9 @@
         ? `<span class="pill pill-warn" title="${escapeHtml(m.brief_error)}">failed</span>`
         : '<span class="pill pill-inline">pending</span>';
     const when = m.scheduled_at ? new Date(m.scheduled_at).toLocaleString() : '—';
+    const recordingCell = m.portal_id
+      ? `<a class="kb-link-btn" data-rec-open href="/portal/?id=${escapeHtml(m.portal_id)}" target="_blank" rel="noopener">▶ Open ↗</a>`
+      : '<span class="kb-subtle">—</span>';
     return `
       <tr class="missions-row" data-mission-open="${escapeHtml(m.id)}">
         <td>
@@ -736,11 +3958,98 @@
         <td>${escapeHtml(when)}</td>
         <td class="mono kb-row-sub">${escapeHtml(engagement.join(' · ') || '—')}</td>
         <td>${briefBadge}</td>
+        <td>${recordingCell}</td>
         <td><span class="pill ${pillClass}">${escapeHtml(status)}</span></td>
         <td>${status === 'COMPLETED' || status === 'CANCELLED' ? '' :
           `<button class="kb-link-btn" data-mission-cancel="${escapeHtml(m.id)}">Cancel</button>`}
         </td>
       </tr>`;
+  }
+
+  // The post-call half of an engagement: its recording + AI analysis (the
+  // "portal"). Resolves the portal from the engagement's portal_id (written when
+  // the call completes) or, for older calls, via the calls store by missionId.
+  async function renderEngagementRecording(m, missionId) {
+    const host = $('missions-recording');
+    if (!host) return;
+    let portalId = m.portal_id || null;
+    if (!portalId) {
+      try {
+        const cl = await fetchJson(`/api/admin/calls?mission_id=${encodeURIComponent(missionId)}&limit=10`);
+        const ready = (cl.calls || []).find((c) => c.status === 'ready' && c.portal && c.portal.id);
+        if (ready) portalId = ready.portal.id;
+      } catch { /* ignore */ }
+    }
+    if (!portalId) {
+      host.innerHTML = m.status === 'COMPLETED'
+        ? '<div class="missions-recording-card kb-subtle">Recording is processing — check back shortly.</div>'
+        : '';
+      return;
+    }
+    host.innerHTML = '<div class="missions-recording-card kb-subtle">Loading recording…</div>';
+    let p;
+    try { const r = await fetchJson(`/api/portals/${encodeURIComponent(portalId)}`); p = r.portal; }
+    catch {
+      host.innerHTML = `<div class="missions-recording-card"><div class="missions-recording-h">📊 Recording & analysis</div><div class="rec-actions"><a class="primary-cta" href="/portal/?id=${escapeHtml(portalId)}" target="_blank" rel="noopener">▶ Open recording ↗</a></div></div>`;
+      return;
+    }
+    const objection = p && p.moments && p.moments.objection && p.moments.objection.quote;
+    const sow = p && p.sowSummary;
+    const participants = ((p && p.participants) || []).map((x) => x.name || x.role).filter(Boolean);
+    host.innerHTML = `
+      <div class="missions-recording-card">
+        <div class="missions-recording-h">📊 Recording & analysis</div>
+        ${participants.length ? `<div class="kb-subtle rec-participants">${participants.map(escapeHtml).join(' · ')}</div>` : ''}
+        ${objection ? `<div class="rec-moment"><span class="rec-label">Top objection</span> “${escapeHtml(objection)}”</div>` : ''}
+        ${sow ? `<div class="rec-moment"><span class="rec-label">SOW</span> ${escapeHtml(String(sow).slice(0, 240))}${String(sow).length > 240 ? '…' : ''}</div>` : ''}
+        <div class="rec-actions">
+          <a class="primary-cta" href="/portal/?id=${escapeHtml(portalId)}" target="_blank" rel="noopener">▶ Open full recording ↗</a>
+          <button class="kb-secondary-btn" id="missions-arena-btn">🎭 Practice in Arena</button>
+        </div>
+      </div>`;
+    const arenaBtn = $('missions-arena-btn');
+    if (arenaBtn) arenaBtn.addEventListener('click', async () => {
+      arenaBtn.disabled = true; const o = arenaBtn.textContent; arenaBtn.textContent = 'Starting…';
+      try {
+        const r = await fetchJson('/api/arena/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ portalId }) });
+        const url = (r && r.arenaUrl) || (r && r.sessionId ? `/arena/?id=${encodeURIComponent(r.sessionId)}` : null);
+        if (url) window.open(url, '_blank', 'noopener');
+      } catch (err) { alert(`Couldn't start Arena: ${err.message}`); }
+      finally { arenaBtn.disabled = false; arenaBtn.textContent = o; }
+    });
+  }
+
+  // Recordings with no scheduled engagement (ad-hoc bots, calendar imports). Shown
+  // under the Past tab so nothing is lost when Calls folds into Engagements.
+  async function loadUnlinkedRecordings() {
+    const host = $('missions-unlinked-recordings');
+    if (!host) return;
+    let calls = [];
+    try { const r = await fetchJson('/api/admin/calls?limit=25'); calls = (r.calls || []).filter((c) => !(c.meeting && c.meeting.missionId)); }
+    catch { host.innerHTML = ''; return; }
+    if (!calls.length) { host.innerHTML = ''; return; }
+    host.innerHTML = `
+      <div class="card" style="margin-top:14px">
+        <div class="card-h">Unlinked recordings <span class="pf-hint">Recordings that aren't tied to a scheduled call — from ad-hoc notetakers or calendar imports.</span></div>
+        <div class="card-b table-wrap">
+          <table class="dt">
+            <thead><tr><th>Title</th><th>Source</th><th>Status</th><th>Duration</th><th>Created</th><th></th></tr></thead>
+            <tbody>${calls.map((c) => {
+              const portal = c.portal || null;
+              const title = (portal && portal.title) || (c.meeting && (c.meeting.title || c.meeting.meetingUrl)) || c.id;
+              const action = (c.status === 'ready' && portal) ? `<a href="/portal/?id=${encodeURIComponent(portal.id)}" target="_blank" rel="noopener">Open ↗</a>` : '<span class="kb-subtle">—</span>';
+              return `<tr>
+                <td class="truncate" title="${escapeHtml(title)}">${escapeHtml(title)}</td>
+                <td><span class="pill">${escapeHtml(c.source || '—')}</span></td>
+                <td><span class="pill">${escapeHtml(c.status || 'pending')}</span></td>
+                <td class="mono">${fmtDuration((c.meeting || {}).durationSeconds)}</td>
+                <td>${escapeHtml(fmtDate(c.createdAt))}</td>
+                <td>${action}</td>
+              </tr>`;
+            }).join('')}</tbody>
+          </table>
+        </div>
+      </div>`;
   }
 
   async function openMissionDetail(id) {
@@ -762,7 +4071,7 @@
     }
     const m = data.mission;
     const brief = data.brief;
-    $('missions-detail-title').textContent = `${m.company_name || 'Mission'} — ${m.scheduled_at ? new Date(m.scheduled_at).toLocaleString() : '(no time)'}`;
+    $('missions-detail-title').textContent = `${m.company_name || 'Engagement'} — ${m.scheduled_at ? new Date(m.scheduled_at).toLocaleString() : '(no time)'}`;
 
     const hasBrief = !!brief;
     const hasBot   = !!m.recall_bot_id;
@@ -780,7 +4089,7 @@
         <div class="k">Company</div><div class="v">${escapeHtml(m.company_name || '—')}${m.company_domain ? ` <span class="kb-subtle">(${escapeHtml(m.company_domain)})</span>` : ''}</div>
         <div class="k">Meeting URL</div><div class="v">${m.meeting_url ? `<a href="${escapeHtml(m.meeting_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(m.meeting_url)} ↗</a>` : '—'}</div>
         <div class="k">Prospect emails</div><div class="v">${(m.prospect_emails || []).map(escapeHtml).join(', ') || '—'}</div>
-        <div class="k">Engagement</div><div class="v mono">${[
+        <div class="k">Focus</div><div class="v mono">${[
           (m.product_ids    || []).map((x) => `product=${x}`).join(','),
           (m.persona_ids    || []).map((x) => `persona=${x}`).join(','),
           (m.competitor_ids || []).map((x) => `competitor=${x}`).join(','),
@@ -793,7 +4102,10 @@
       <div class="missions-detail-actions">
         <button class="primary-cta" id="missions-brief-now-btn">${hasBrief ? 'Re-generate brief' : 'Generate brief now'}</button>
         <button class="kb-secondary-btn" id="missions-bot-now-btn" ${recallReady ? '' : 'disabled'} title="${recallReady ? '' : 'Need a meet.google.com / zoom.us / teams URL on the mission'}">${hasBot ? 'Re-send bot now' : 'Send bot now'}</button>
-        <span class="kb-action-hint">Brief: Firecrawl + Gemini Pro. Bot: spawns Recall.ai notetaker (~30s to join).</span>
+        ${m.ms_event_id ? `
+          <button class="kb-secondary-btn" id="missions-edit-teams-btn" title="Update the Outlook event + re-send invites">🎥 Edit Teams meeting</button>
+          <button class="kb-secondary-btn" id="missions-cancel-teams-btn" title="Cancel the Outlook event + notify attendees">🛑 Cancel Teams meeting</button>` : ''}
+        <span class="kb-action-hint">Generate brief: researches the web and writes your prep notes. Send bot: sends an AI notetaker to join the call (~30s).</span>
       </div>
       ${hasBrief ? `
         <div class="missions-brief-frame">
@@ -801,13 +4113,15 @@
           <article class="missions-brief-content" id="missions-brief-render"></article>
         </div>
       ` : `<div class="empty">No brief generated yet.</div>`}
+      <div id="missions-recording" class="missions-recording"></div>
     `;
     if (hasBrief) {
       $('missions-brief-render').innerHTML = renderMarkdown(brief.content_md);
     }
+    renderEngagementRecording(m, id);
     document.getElementById('missions-brief-now-btn').addEventListener('click', async () => {
       const btn = document.getElementById('missions-brief-now-btn');
-      btn.disabled = true; btn.textContent = 'Generating (calls Gemini)…';
+      btn.disabled = true; btn.textContent = 'Generating…';
       try {
         const r = await fetch(`/api/missions/${id}/brief`, { method: 'POST', credentials: 'include' });
         const b = await r.json().catch(() => ({}));
@@ -821,7 +4135,7 @@
         // Quota / billing errors get a friendlier formatting with an action
         // link — everything else falls back to plain text in the alert.
         if (err.code === 'GEMINI_QUOTA') {
-          alert(`Brief failed — Gemini quota exhausted.\n\n${err.message}\n\nThe mission has been marked FAILED with this reason; click "Re-generate brief" once the quota resets or a new key is in place.`);
+          alert(`Brief failed — AI quota exhausted.\n\n${err.message}\n\nThe engagement has been marked FAILED with this reason; click "Re-generate brief" once the quota resets or a new key is in place.`);
         } else {
           alert(`Brief failed: ${err.message}`);
         }
@@ -835,7 +4149,7 @@
       botBtn.addEventListener('click', async () => {
         // Re-dispatch only if a bot already exists — gate that behind a confirm
         // so an accidental click doesn't put two bots in the same room.
-        if (hasBot && !confirm('A Recall bot has already been dispatched for this mission. Send another one?')) return;
+        if (hasBot && !confirm('A Recall bot has already been dispatched for this engagement. Send another one?')) return;
         botBtn.disabled = true;
         botBtn.textContent = hasBot ? 'Re-dispatching…' : 'Dispatching bot…';
         try {
@@ -848,14 +4162,14 @@
             throw e;
           }
           if (b.alreadyDispatched) {
-            alert(`A bot was already dispatched for this mission (${b.botId}). Use the Meetings page to view its status.`);
+            alert(`A bot was already dispatched for this engagement (${b.botId}). Use the Meetings page to view its status.`);
           } else {
             alert(`Recall.ai bot dispatched.\nBot id: ${b.botId}\nStatus: ${b.botStatus || 'pending'}\n\nIt should join within ~30s. Tracking row created on the Meetings page.`);
           }
           await openMissionDetail(id);
         } catch (err) {
           if (err.code === 'BAD_MEETING_URL') {
-            alert(`Bot dispatch rejected: ${err.message}\n\nFix the meeting URL on this mission (must be meet.google.com / zoom.us / teams) and retry.`);
+            alert(`Bot dispatch rejected: ${err.message}\n\nFix the meeting URL on this engagement (must be meet.google.com / zoom.us / teams) and retry.`);
           } else if (err.code === 'RECALL_NOT_CONFIGURED') {
             alert(`Recall.ai isn't configured. Set RECALL_AI_API_KEY in .env and restart the api container.`);
           } else {
@@ -866,6 +4180,105 @@
         }
       });
     }
+
+    // Edit Teams meeting — reopens the same modal in edit mode, prefilled
+    // from this mission. Only rendered when ms_event_id is set.
+    const editTeamsBtn = document.getElementById('missions-edit-teams-btn');
+    if (editTeamsBtn) {
+      editTeamsBtn.addEventListener('click', () => {
+        openGenerateTeamsModal({ eventId: m.ms_event_id, missionId: id, mission: m });
+      });
+    }
+    // Cancel Teams meeting — deletes the Outlook event + sends a CANCEL .ics
+    // to every attendee on the original invite (ms_attendee_emails).
+    const cancelTeamsBtn = document.getElementById('missions-cancel-teams-btn');
+    if (cancelTeamsBtn) {
+      cancelTeamsBtn.addEventListener('click', async () => {
+        const attendeeCount = (m.ms_attendee_emails || []).length;
+        if (!confirm(`Cancel this Teams meeting? The Outlook event will be deleted and ${attendeeCount} attendee${attendeeCount === 1 ? '' : 's'} will receive a cancellation notice from meetings@eel-global.com.`)) return;
+        cancelTeamsBtn.disabled = true; cancelTeamsBtn.textContent = 'Cancelling…';
+        try {
+          const r = await fetch(`/api/integrations/microsoft/meetings/${encodeURIComponent(m.ms_event_id)}`, {
+            method: 'DELETE', credentials: 'include',
+          });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+          const inv = j.invite || { sent: [] };
+          const ok = inv.sent.filter((x) => x.ok).length;
+          const failed = inv.sent.filter((x) => !x.ok);
+          let summary = `Teams meeting cancelled. ${ok} cancellation notice${ok === 1 ? '' : 's'} sent.`;
+          if (failed.length) summary += `\n\nFailed for: ${failed.map((f) => `${f.email} (${f.reason})`).join(', ')}`;
+          alert(summary);
+          await openMissionDetail(id);
+        } catch (err) {
+          alert(`Couldn't cancel: ${err.message}`);
+          cancelTeamsBtn.disabled = false;
+          cancelTeamsBtn.textContent = '🛑 Cancel Teams meeting';
+        }
+      });
+    }
+  }
+
+  // Reflow PDF-style hard-wrapped prose into proper paragraphs without
+  // touching deliberate markdown structure. Heuristic: detect strong
+  // markdown signals (headings / lists / fenced code / numbered items /
+  // very strong heading-like UPPERCASE lines) and leave structure intact;
+  // otherwise treat single \n as a soft-wrap (PDF column break) and join
+  // it into the surrounding sentence. Double \n is always a paragraph
+  // break. Promote short, all-caps standalone lines to H3 headings so the
+  // common "SECTION TITLE" pattern in scanned reports comes out structured.
+  function normalizeProseText(text) {
+    if (!text) return '';
+    // Normalise weird whitespace + Windows line endings first.
+    let t = String(text).replace(/\r\n?/g, '\n').replace(/[\t ]/g, ' ');
+    // Strip excess blank lines (3+ → 2).
+    t = t.replace(/\n{3,}/g, '\n\n');
+
+    const lines = t.split('\n');
+    const out = [];
+    let buf = []; // accumulating soft-wrapped paragraph
+    const flush = () => { if (buf.length) { out.push(buf.join(' ').replace(/\s+/g, ' ').trim()); buf = []; } };
+
+    const isHeading        = (s) => /^#{1,6}\s/.test(s);
+    const isListItem       = (s) => /^\s*([-*•]\s|\d+\.\s|>\s)/.test(s);
+    const isCodeFence      = (s) => /^```/.test(s);
+    const isHr             = (s) => /^---+\s*$/.test(s);
+    // All-caps short standalone "section header" pattern (TOC entries, chapter
+    // titles in scanned PDFs). 60-char cap keeps it from misfiring on
+    // sentences that happen to start uppercase.
+    const isShoutyHeading  = (s) => /^[A-Z0-9][A-Z0-9 \-:&/(),.]{2,60}$/.test(s.trim()) && !/[.?!]$/.test(s.trim());
+
+    let inCode = false;
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      const trimmed = raw.trim();
+
+      if (isCodeFence(trimmed)) { flush(); out.push(raw); inCode = !inCode; continue; }
+      if (inCode)               { out.push(raw); continue; }
+
+      if (trimmed === '') { flush(); out.push(''); continue; }
+
+      if (isHeading(trimmed) || isListItem(raw) || isHr(trimmed)) {
+        flush(); out.push(raw); continue;
+      }
+
+      if (isShoutyHeading(trimmed)) {
+        flush();
+        // Promote to a level-3 heading so the styling picks it up.
+        out.push(`### ${toTitleCase(trimmed)}`);
+        continue;
+      }
+
+      // Soft-wrap continuation — join with surrounding text.
+      buf.push(trimmed);
+    }
+    flush();
+    // Collapse repeated blank lines that the joins may have produced.
+    return out.join('\n').replace(/\n{3,}/g, '\n\n');
+  }
+
+  function toTitleCase(s) {
+    return s.toLowerCase().replace(/(^|[\s\-:&/(])(\p{L})/gu, (_, p, c) => p + c.toUpperCase());
   }
 
   // Tiny markdown renderer — enough for the brief format (headings, bold,
@@ -925,6 +4338,20 @@
       fillTagSelect($('missions-competitor'), co.competitors || [], 'No competitors');
     } catch (err) {
       console.warn('schedule form population failed:', err.message);
+    }
+    // Consume a "Brief a mission" prefill from a prospect opportunity: company +
+    // the opportunity's mapped products (snap-autofill fills domain/contacts/last-
+    // mission tags first, then our opportunity products win).
+    if (window._prefillMission) {
+      const pf = window._prefillMission; window._prefillMission = null;
+      const cn = $('missions-company'); if (cn && pf.companyName) cn.value = pf.companyName;
+      try { await snapAutofillForCompany(pf.companyName || ''); } catch { /* ignore */ }
+      const dom = $('missions-domain'); if (dom && pf.companyDomain && !dom.value) dom.value = pf.companyDomain;
+      if (pf.note) { const nt = $('missions-notes'); if (nt && !nt.value) nt.value = pf.note; }
+      if (Array.isArray(pf.productIds) && pf.productIds.length) {
+        const sel = $('missions-product');
+        if (sel) Array.from(sel.options).forEach((opt) => { if (pf.productIds.includes(opt.value)) opt.selected = true; });
+      }
     }
     // Enable / wire the "Import from calendar" button if a calendar is connected.
     refreshCalendarImportButton();
@@ -988,6 +4415,212 @@
     }
   }
 
+  // ── Mission schedule form: attendee chip picker ──────────────────────────
+  // Replaces the old free-text prospect_emails textarea. Sources two pools:
+  //   1. Contacts on file for the selected company (prospect_contacts)
+  //   2. Free-text typed entries (with an inline quick-add modal that creates
+  //      a real prospect_contacts row so they're remembered next time)
+  // Syncs into the hidden #missions-emails textarea so the submit handler
+  // and Teams modal continue to work unchanged.
+
+  let _missionAttendees = []; // [{ email, name, role, contactId? }]
+  let _missionCandidates = []; // prefetched contacts for the picked company
+  let _missionCandidateCompanyId = null;
+
+  function syncAttendeesToHiddenField() {
+    const ta = $('missions-emails');
+    if (!ta) return;
+    ta.value = _missionAttendees.map((a) => a.email).join('\n');
+  }
+
+  function renderMissionChips() {
+    const host = $('missions-attendees-chips');
+    if (!host) return;
+    if (_missionAttendees.length === 0) {
+      host.innerHTML = '<span class="kb-subtle ma-chips-empty">No attendees yet — type or pick below.</span>';
+    } else {
+      host.innerHTML = _missionAttendees.map((a, i) => `
+        <span class="teams-chip" title="${escapeHtml(a.email)}${a.role ? ' · ' + escapeHtml(a.role) : ''}">
+          <span>${escapeHtml(a.name || a.email)}${a.role ? ` <span class="kb-subtle">(${escapeHtml(a.role)})</span>` : ''}</span>
+          <button type="button" class="teams-chip-x" data-mission-attendee-remove="${i}" aria-label="Remove">✕</button>
+        </span>`).join('');
+      host.querySelectorAll('[data-mission-attendee-remove]').forEach((b) =>
+        b.addEventListener('click', () => {
+          _missionAttendees.splice(parseInt(b.dataset.missionAttendeeRemove, 10), 1);
+          renderMissionChips();
+          syncAttendeesToHiddenField();
+        }));
+    }
+  }
+
+  function pickMissionAttendee({ email, name, role, contactId }) {
+    if (!email || !/@/.test(email)) return;
+    const exists = _missionAttendees.some((a) => a.email.toLowerCase() === email.toLowerCase());
+    if (!exists) _missionAttendees.push({
+      email: email.trim(),
+      name: name || email,
+      role: role || null,
+      contactId: contactId || null,
+    });
+    renderMissionChips();
+    syncAttendeesToHiddenField();
+    $('missions-attendees-input').value = '';
+    $('missions-attendees-results').classList.add('hidden');
+    $('missions-attendees-input').focus();
+  }
+
+  // Look up the picked company so we know which contacts to surface. Matched
+  // by exact (case-insensitive) name first; we don't need the id otherwise —
+  // free-text contacts can still be added without it (they're company-less
+  // until the mission is saved, at which point the backend creates the
+  // company row + links them).
+  async function loadAttendeeCandidatesForCompany(name) {
+    const cleaned = String(name || '').trim();
+    if (!cleaned) {
+      _missionCandidates = [];
+      _missionCandidateCompanyId = null;
+      return;
+    }
+    try {
+      const r = await fetchJson('/api/companies');
+      const list = r.companies || [];
+      const match = list.find((c) => c.name.toLowerCase() === cleaned.toLowerCase());
+      if (!match) {
+        _missionCandidates = [];
+        _missionCandidateCompanyId = null;
+        return;
+      }
+      _missionCandidateCompanyId = match.id;
+      const cr = await fetchJson(`/api/contacts?companyId=${encodeURIComponent(match.id)}`);
+      _missionCandidates = cr.contacts || [];
+    } catch {
+      _missionCandidates = [];
+      _missionCandidateCompanyId = null;
+    }
+  }
+
+  function showMissionAutocomplete(q) {
+    const host = $('missions-attendees-results');
+    if (!host) return;
+    host.classList.remove('hidden');
+    const needle = String(q || '').toLowerCase();
+    const matches = _missionCandidates.filter((c) => {
+      if (!needle) return true;
+      return c.name.toLowerCase().includes(needle)
+          || c.email.toLowerCase().includes(needle)
+          || (c.role || '').toLowerCase().includes(needle);
+    }).slice(0, 8);
+
+    let rows = matches.map((c, i) => `
+      <div class="teams-ac-row" data-mission-ac-pick="${i}">
+        <div class="teams-ac-name">${escapeHtml(c.name)} <span class="pill pill-info" title="On file for this prospect">contact</span></div>
+        <div class="teams-ac-meta kb-subtle">${escapeHtml(c.email)} · ${escapeHtml(c.role)}</div>
+      </div>`).join('');
+
+    // Free-text fallback: if the query parses as an email and isn't already
+    // in the candidate list, offer to add it on the spot. The mission save
+    // path will create the contact stub.
+    if (needle.includes('@')) {
+      const already = matches.some((c) => c.email.toLowerCase() === needle);
+      if (!already) {
+        rows += `<div class="teams-ac-row teams-ac-freeform" data-mission-ac-freeform="${escapeHtml(q)}">
+          Add <strong>${escapeHtml(q)}</strong> as a guest
+        </div>`;
+      }
+    }
+
+    // Quick-add affordance: opens the inline form for a richer add (name +
+    // role + email persisted as a contact for next time).
+    rows += `<div class="teams-ac-row teams-ac-freeform" data-mission-ac-quickadd>
+      ➕ Add a new contact (name + email + role)
+    </div>`;
+
+    host.innerHTML = rows;
+
+    host.querySelectorAll('[data-mission-ac-pick]').forEach((el) =>
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const c = matches[parseInt(el.dataset.missionAcPick, 10)];
+        if (c) pickMissionAttendee({ email: c.email, name: c.name, role: c.role, contactId: c.id });
+      }));
+    host.querySelectorAll('[data-mission-ac-freeform]').forEach((el) =>
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        pickMissionAttendee({ email: el.dataset.missionAcFreeform });
+      }));
+    host.querySelectorAll('[data-mission-ac-quickadd]').forEach((el) =>
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const qa = $('missions-attendees-quickadd');
+        if (qa) qa.classList.remove('hidden');
+        const qaName = $('missions-qa-name');
+        if (qaName) { qaName.value = ''; qaName.focus(); }
+        $('missions-qa-email').value = $('missions-attendees-input').value.includes('@') ? $('missions-attendees-input').value : '';
+        $('missions-qa-role').value  = '';
+      }));
+  }
+
+  function wireAttendeePicker() {
+    const input = $('missions-attendees-input');
+    if (!input || input.dataset.wired === '1') return;
+    input.dataset.wired = '1';
+    input.addEventListener('input', () => showMissionAutocomplete(input.value));
+    input.addEventListener('focus', () => showMissionAutocomplete(input.value));
+    input.addEventListener('blur', () => setTimeout(() => $('missions-attendees-results').classList.add('hidden'), 150));
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const v = input.value.trim();
+        if (/@/.test(v)) pickMissionAttendee({ email: v });
+      }
+    });
+
+    // Quick-add inline form: persists a real contact row, then picks it.
+    const saveBtn = $('missions-qa-save-btn');
+    const cancelBtn = $('missions-qa-cancel-btn');
+    if (saveBtn) saveBtn.addEventListener('click', async () => {
+      const name = $('missions-qa-name').value.trim();
+      const email = $('missions-qa-email').value.trim();
+      const role  = $('missions-qa-role').value.trim() || 'Unknown';
+      if (!name || !email) return alert('Name and email are required.');
+      // If we already know the company id (rep typed an existing prospect),
+      // persist server-side. Otherwise just add as a free-text attendee —
+      // the mission save will create both the company and the contact.
+      if (_missionCandidateCompanyId) {
+        try {
+          const r = await fetchJson('/api/contacts', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ companyId: _missionCandidateCompanyId, name, email, role }),
+          });
+          const c = r.contact;
+          pickMissionAttendee({ email: c.email, name: c.name, role: c.role, contactId: c.id });
+          // Refresh candidates so the new contact appears in autocomplete from now on.
+          _missionCandidates = [c, ..._missionCandidates.filter((x) => x.id !== c.id)];
+        } catch (err) {
+          alert(`Couldn't add contact: ${err.message}`);
+          return;
+        }
+      } else {
+        pickMissionAttendee({ email, name, role });
+      }
+      $('missions-attendees-quickadd').classList.add('hidden');
+    });
+    if (cancelBtn) cancelBtn.addEventListener('click', () => {
+      $('missions-attendees-quickadd').classList.add('hidden');
+    });
+
+    renderMissionChips();
+  }
+
+  // Wipe the chip state and hidden field when the form is reset / opened
+  // for a new mission. Called from places that previously cleared the
+  // textarea directly.
+  function clearMissionAttendees() {
+    _missionAttendees = [];
+    renderMissionChips();
+    syncAttendeesToHiddenField();
+  }
+
   // Select <option>s whose value is in `ids`. Multi-selects retain any
   // already-selected options outside the set (the rep's manual additions are
   // preserved); for the Snap path that's a no-op on a fresh form.
@@ -1013,20 +4646,35 @@
       let snapTimer = null;
       companyInput.addEventListener('input', () => {
         if (snapTimer) clearTimeout(snapTimer);
-        snapTimer = setTimeout(() => snapAutofillForCompany(companyInput.value), 200);
+        snapTimer = setTimeout(() => {
+          snapAutofillForCompany(companyInput.value);
+          loadAttendeeCandidatesForCompany(companyInput.value);
+        }, 200);
       });
-      companyInput.addEventListener('change', () => snapAutofillForCompany(companyInput.value));
+      companyInput.addEventListener('change', () => {
+        snapAutofillForCompany(companyInput.value);
+        loadAttendeeCandidatesForCompany(companyInput.value);
+      });
     }
+    wireAttendeePicker();
 
     // Schedule-import buttons — wired once; enabled/disabled per connection
     // state by refreshCalendarImportButton() (called from populateScheduleForm).
+    // Single aggregated import button. Three modes — see _calImportMode docs.
     const importBtn = $('missions-import-btn');
     if (importBtn) importBtn.addEventListener('click', () => {
-      if (_calImportMode === 'connect') { window.location.href = '/api/integrations/calendar/connect'; return; }
-      if (_calImportMode === 'import') openEventPicker('calendar');
+      if (_calImportMode === 'connect') {
+        // No source connected yet — bounce to Integrations so the rep
+        // chooses which to connect. Routing direct to any one provider's
+        // OAuth would be presumptuous (and wrong for Microsoft users now).
+        window.location.hash = '#integrations';
+        return;
+      }
+      if (_calImportMode === 'import') openAggregatedPicker();
     });
-    const calendlyBtn = $('missions-calendly-btn');
-    if (calendlyBtn) calendlyBtn.addEventListener('click', () => openEventPicker('calendly'));
+    // "🎥 Generate Teams meeting" — opens the create-meeting modal.
+    const gtBtn = $('missions-generate-teams-btn');
+    if (gtBtn) gtBtn.addEventListener('click', openGenerateTeamsModal);
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1037,6 +4685,7 @@
       btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Scheduling…';
 
       try {
+        const urlInput = $('missions-url');
         const body = {
           companyName:    $('missions-company').value.trim(),
           companyDomain:  $('missions-domain').value.trim() || null,
@@ -1044,13 +4693,22 @@
           // datetime-local emits a naive local string; toISOString converts
           // to UTC so the scheduler queries it consistently.
           scheduledAt:    new Date($('missions-scheduled-at').value).toISOString(),
-          meetingUrl:     $('missions-url').value.trim() || null,
+          meetingUrl:     urlInput.value.trim() || null,
           prospectEmails: $('missions-emails').value.split(/\n+/).map((s) => s.trim()).filter(Boolean),
           productIds:     readSelectedValues($('missions-product')),
           personaIds:     readSelectedValues($('missions-persona')),
           competitorIds:  readSelectedValues($('missions-competitor')),
           notes:          $('missions-notes').value.trim() || null,
         };
+        // If the rep generated this meeting through 🎥 Generate Teams meeting,
+        // the modal stamped the resulting Graph identifiers onto the URL input
+        // as dataset attributes — forward them so the mission row carries the
+        // linkage and the detail UI can offer Edit / Cancel.
+        if (urlInput && urlInput.dataset.msEventId) {
+          body.msEventId        = urlInput.dataset.msEventId;
+          body.msIcalUid        = urlInput.dataset.msIcalUid || null;
+          body.msOrganizerEmail = urlInput.dataset.msOrganizerEmail || null;
+        }
         const r = await fetch('/api/missions', {
           method: 'POST', credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
@@ -1062,6 +4720,7 @@
         result.classList.add('success');
         result.innerHTML = `<strong>Scheduled.</strong> Mission ID: <span class="mono">${escapeHtml(payload.mission.id.slice(0,8))}</span>. <a href="#" id="missions-go-detail">View detail</a>`;
         form.reset();
+        clearMissionAttendees();
         document.getElementById('missions-go-detail').addEventListener('click', (ev) => {
           ev.preventDefault();
           openMissionDetail(payload.mission.id);
@@ -1083,104 +4742,440 @@
   // intel). Product lines are the same `products` rows the upload forms file
   // documents under.
 
+  // ── Company foundation (Profile / Products / Personas / Intel) ────────────
+  // The source-of-truth workspace: positioning/objectives (which ground every
+  // battlecard, prospect research run, and brief via tenantContextText), our
+  // products (with drill-down), buyer personas, and the Basis intel library.
+  let _companyData = { tenant: {}, products: [], personas: [], profile: {} };
+  let _companyTab = 'intel';
+  let _companyProductOpen = null;
+  let _companyIntelAutoOpen = null; // {productId} → open the Add-intel flow on the Intel tab
+  let _companyWelcome = false;        // armed by ?welcome=1 → auto-run the website pull once
+  let _companyBootstrapTried = false; // guards the auto-pull so re-renders don't re-trigger it
+  let _companyPullSummary = null;     // {mission, audience} from the last pull → grounds the AI on confirm
+  const INTEL_EXPLAINER = 'Everything your AI reads about you — files, web pages, and notes. The more you add, the sharper your briefs, battlecards, and research.';
+
+  // Jump to the Intel tab and open the Add-intel flow, optionally pre-scoped to a
+  // product line (productId null = company-wide).
+  function openCompanyAddIntel(productId) {
+    _companyTab = 'intel';
+    _companyIntelAutoOpen = { productId: productId || null };
+    renderCompanyWorkspace();
+  }
+
   async function loadCompany() {
-    wireCompanyForm();
     await refreshCompany();
   }
 
-  function wireCompanyForm() {
-    const form = $('company-product-form');
-    if (!form || form.dataset.wired === '1') return;
-    form.dataset.wired = '1';
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const name = $('company-product-name').value.trim();
-      const description = $('company-product-desc').value.trim() || null;
-      if (!name) return;
-      try {
-        // Slugify the name into the TEXT pk — same as the upload-form picker.
-        const id = slugify(name);
-        const r = await fetch('/api/portfolio/products', {
-          method: 'POST', credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id, name, description }),
-        });
-        const body = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
-        form.reset();
-        loaded.knowledge = false; // upload-form product datalists are now stale
-        await refreshCompany();
-      } catch (err) {
-        alert(`Add failed: ${err.message}`);
-      }
-    });
-  }
-
   async function refreshCompany() {
-    let tenant = {}, products = [], docs = [];
     try {
-      const [t, p, d] = await Promise.all([
+      const [t, p, pe, pf] = await Promise.all([
         fetchJson('/api/tenant'),
         fetchJson('/api/portfolio/products'),
-        fetchJson('/api/knowledge/documents?scope=TENANT'),
+        fetchJson('/api/portfolio/personas'),
+        fetchJson('/api/portfolio/company-profile'),
       ]);
-      tenant = t.tenant || {};
-      products = p.products || [];
-      docs = d.documents || [];
+      _companyData = { tenant: t.tenant || {}, products: p.products || [], personas: pe.personas || [], profile: pf.profile || {} };
     } catch (err) {
-      $('company-header').innerHTML = `<div class="empty">Couldn't load company profile: ${escapeHtml(err.message)}</div>`;
+      $('company-header').innerHTML = `<div class="empty">Couldn't load company: ${escapeHtml(err.message)}</div>`;
       return;
     }
-
-    // ---- header ----
+    const tenant = _companyData.tenant;
     const planLabel = String(tenant.subscription_status || 'TRIAL').toUpperCase();
     const planOk = planLabel === 'ACTIVE' || planLabel === 'INTERNAL';
-    const planPill = `<span class="pill ${planOk ? 'pill-ok' : 'pill-warn'}">${escapeHtml(planLabel)}</span>`;
     $('company-header').innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
         <div>
           <div style="font-size:20px;font-weight:700">${escapeHtml(tenant.name || 'Your company')}</div>
           <div style="margin-top:3px">${tenant.domain ? escapeHtml(tenant.domain) : '<span class="kb-subtle">no domain set</span>'} <span class="kb-subtle">· joined ${escapeHtml(fmtDate(tenant.created_at))}</span></div>
         </div>
-        <div>${planPill}</div>
+        <div><span class="pill ${planOk ? 'pill-ok' : 'pill-warn'}">${escapeHtml(planLabel)}</span></div>
       </div>`;
+    renderCompanyWorkspace();
+  }
 
-    // ---- stat cards (stream breakdown from the TENANT-scoped docs only) ----
-    const byStream = { FILE: 0, WEB: 0, SOCIAL: 0 };
-    for (const d of docs) {
-      const st = String(d.stream_type || 'FILE').toUpperCase();
-      byStream[st] = (byStream[st] || 0) + 1;
+  function renderCompanyWorkspace() {
+    const host = $('company-workspace');
+    if (!host) return;
+    const { products, personas } = _companyData;
+    host.innerHTML = `
+      <div class="prospect-tabs">
+        <button type="button" class="kb-tab${_companyTab === 'intel' ? ' active' : ''}" data-company-tab="intel">📁 Intel</button>
+        <button type="button" class="kb-tab${_companyTab === 'products' ? ' active' : ''}" data-company-tab="products">📦 Products (${products.length})</button>
+        <button type="button" class="kb-tab${_companyTab === 'personas' ? ' active' : ''}" data-company-tab="personas">👥 Personas (${personas.length})</button>
+      </div>
+      <div class="prospect-tab-pane" id="company-tab-body"></div>`;
+    host.querySelectorAll('[data-company-tab]').forEach((t) => t.addEventListener('click', () => {
+      _companyTab = t.dataset.companyTab; _companyProductOpen = null; renderCompanyWorkspace();
+    }));
+    const body = $('company-tab-body');
+    if (_companyTab === 'products') renderCompanyProductsTab(body);
+    else if (_companyTab === 'personas') renderCompanyPersonasTab(body);
+    else renderCompanyIntelTab(body);
+  }
+
+  // ── Pull-from-website bootstrap (post-onboarding "confirm what we found") ──
+  // Reads the tenant's own homepage, summarises it, and lets the owner confirm —
+  // filing the homepage as their first Basis intel and picking up product lines.
+  function renderCompanyBootstrap(host) {
+    if (!host) return;
+    host.innerHTML = `
+      <div class="company-bootstrap">
+        <div class="company-bootstrap-head">
+          <div>
+            <div class="company-field-label">Pull from your website</div>
+            <p class="kb-subtle" style="margin:2px 0 0">We read your homepage and pick up your products so you can confirm what we found.</p>
+          </div>
+          <button class="kb-secondary-btn" id="company-pull-btn">🔄 Pull from website</button>
+        </div>
+        <div id="company-pull-card"></div>
+      </div>`;
+    $('company-pull-btn').addEventListener('click', () => runCompanyPull());
+    // Auto-run once for a freshly-onboarded owner (?welcome=1). Re-renders won't
+    // re-trigger it (the welcome flag is consumed and a guard is set).
+    if (_companyWelcome && !_companyBootstrapTried) {
+      _companyWelcome = false;
+      runCompanyPull();
     }
-    $('company-stat-cards').innerHTML = [
-      statCard('Product lines', fmtNum(products.length)),
-      statCard('Company-intel docs', fmtNum(docs.length)),
-      streamStatCard('Files', byStream.FILE, 'file'),
-      streamStatCard('Web pages', byStream.WEB, 'web'),
-      streamStatCard('Social posts', byStream.SOCIAL, 'social'),
-    ].join('');
+  }
 
-    // ---- product lines table ----
-    const host = $('company-product-list');
-    if (products.length === 0) {
-      host.innerHTML = `<div class="empty">No product lines yet. Add one above, or create one inline while uploading a document.</div>`;
-    } else {
-      host.innerHTML = `
-        <table class="dt">
-          <thead><tr><th>Product line</th><th>Description</th><th>Filed docs</th><th></th></tr></thead>
-          <tbody>${products.map((p) => `
-            <tr>
-              <td class="pf-name-cell">${escapeHtml(p.name)} <span class="mono kb-subtle">${escapeHtml(p.id)}</span></td>
-              <td class="pf-desc-cell truncate">${escapeHtml(p.description || '—')}</td>
-              <td>${fmtNum(p.doc_count)}</td>
-              <td class="pf-actions-cell"><button class="kb-link-btn" data-company-del-product="${escapeHtml(p.id)}">Delete</button></td>
-            </tr>`).join('')}</tbody>
-        </table>`;
-      host.querySelectorAll('[data-company-del-product]').forEach((b) =>
-        b.addEventListener('click', () => companyDeleteProduct(b.dataset.companyDelProduct)));
+  async function runCompanyPull() {
+    _companyBootstrapTried = true;
+    const card = $('company-pull-card');
+    const btn = $('company-pull-btn');
+    if (!card) return;
+    if (btn) btn.disabled = true;
+    card.innerHTML = `<div class="kb-subtle" style="padding:10px 0">⏳ Reading your website…</div>`;
+    try {
+      const r = await fetchJson('/api/portfolio/company-bootstrap/pull', { method: 'POST' });
+      if (!r.ok) {
+        card.innerHTML = `<div class="company-pull-warn">${escapeHtml(r.error || "Couldn't read your website.")} You can still add intel manually below.</div>`;
+        return;
+      }
+      renderCompanyPullCard(card, r);
+    } catch (err) {
+      card.innerHTML = `<div class="company-pull-warn">${escapeHtml(err.message)}</div>`;
+    } finally {
+      if (btn) btn.disabled = false;
     }
+  }
 
-    // ---- intel grouped by product line ----
-    $('company-intel').innerHTML = renderCompanyIntel(docs, products);
+  function renderCompanyPullCard(card, r) {
+    const sum = r.summary || {};
+    _companyPullSummary = { mission: sum.mission || null, audience: sum.audience || null };
+    const prods = Array.isArray(r.suggestedProducts) ? r.suggestedProducts : [];
+    card.innerHTML = `
+      <div class="company-pull-result">
+        <div class="company-pull-head">✅ Here's what we found${r.sourceUrl ? ` on <a href="${escapeHtml(r.sourceUrl)}" target="_blank" rel="noopener">your site</a>` : ''} — confirm it looks right.</div>
+        ${sum.mission ? `<div class="company-pull-row"><span class="company-field-label">What you do</span><div>${escapeHtml(sum.mission)}</div></div>` : ''}
+        ${sum.audience ? `<div class="company-pull-row"><span class="company-field-label">Who you sell to</span><div>${escapeHtml(sum.audience)}</div></div>` : ''}
+        <div class="company-pull-row">
+          <span class="company-field-label">Products we picked up <span class="kb-subtle">— add the ones that fit, then attach a deck or page</span></span>
+          ${prods.length ? `<div class="company-pull-prods" id="company-pull-prods"></div>` : '<div class="kb-subtle">None detected — you can add product lines on the Products tab.</div>'}
+        </div>
+        <label class="company-pull-toggle"><input type="checkbox" id="company-pull-ingest" checked> File my homepage as company intel</label>
+        <div class="company-pull-actions">
+          <button class="primary-cta" id="company-pull-confirm">Confirm &amp; finish</button>
+          <span class="kb-result hidden" id="company-pull-result-msg"></span>
+        </div>
+        <div class="company-pull-progress kb-subtle" id="company-pull-progress"></div>
+      </div>`;
+    if (prods.length) renderSuggestedProducts($('company-pull-prods'), prods);
+    $('company-pull-confirm').addEventListener('click', confirmCompanyPull);
+  }
+
+  // Suggested products are NOT auto-created. "Add product" creates the line and
+  // reveals an inline intel menu (deck file + website link) on the same page;
+  // the actual fetch/ingest runs later, on Confirm & finish.
+  function renderSuggestedProducts(host, prods) {
+    if (!host) return;
+    host.innerHTML = prods.map((p, i) => `
+      <div class="company-sugg" data-sugg="${i}">
+        <div class="company-sugg-row">
+          <span class="company-sugg-name">${escapeHtml(p.name)}</span>
+          <button class="kb-link-btn" data-sugg-add="${i}">＋ Add product</button>
+        </div>
+        <div class="company-sugg-intel hidden" data-intel="${i}"></div>
+      </div>`).join('');
+    host.querySelectorAll('[data-sugg-add]').forEach((b) =>
+      b.addEventListener('click', () => addSuggestedProduct(host, prods, Number(b.dataset.suggAdd))));
+  }
+
+  async function addSuggestedProduct(host, prods, i) {
+    const p = prods[i];
+    const row = host.querySelector(`[data-sugg="${i}"]`);
+    if (!row) return;
+    const btn = row.querySelector('[data-sugg-add]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
+    try {
+      const resp = await fetchJson('/api/portfolio/products', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: slugify(p.name), name: p.name, description: p.description || null }),
+      });
+      const pid = (resp && resp.product && resp.product.id) || slugify(p.name);
+      loaded.knowledge = false;
+      // Refresh the cached product list so the Products tab + library reflect it.
+      try { const pr = await fetchJson('/api/portfolio/products'); _companyData.products = pr.products || _companyData.products; } catch { /* keep stale */ }
+      row.classList.add('added');
+      row.dataset.pid = pid;
+      const head = row.querySelector('.company-sugg-row');
+      if (head) head.innerHTML = `<span class="company-sugg-name">✓ ${escapeHtml(p.name)}</span><span class="kb-subtle">added</span>`;
+      const menu = row.querySelector(`[data-intel="${i}"]`);
+      if (menu) {
+        menu.classList.remove('hidden');
+        menu.innerHTML = `
+          <div class="company-sugg-intel-label">Add intel for this product <span class="kb-subtle">(optional — fetched when you finish)</span></div>
+          <div class="company-sugg-intel-fields">
+            <label class="company-sugg-file">📄 Deck / file <input type="file" accept=".pdf,.md,.txt,.docx" data-pfile="${i}"></label>
+            <input type="url" class="company-sugg-url" placeholder="https://product-page…" data-purl="${i}">
+          </div>
+          <div class="company-sugg-status" data-pstatus="${i}"></div>`;
+      }
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '＋ Add product'; }
+      alert(`Couldn't add "${p.name}": ${err.message}`);
+    }
+  }
+
+  // Confirm & finish: (1) save the pulled company info (positioning) + file the
+  // homepage so it grounds every battlecard / prospect research / pre-call brief;
+  // (2) fetch each product's queued deck/link one by one until all are done.
+  async function confirmCompanyPull() {
+    const btn = $('company-pull-confirm');
+    const ingest = $('company-pull-ingest');
+    const msg = $('company-pull-result-msg');
+    const progress = $('company-pull-progress');
+    btn.disabled = true; const o = btn.textContent; btn.textContent = 'Saving…';
+    if (msg) msg.classList.add('hidden');
+    try {
+      // 1. Company info → tenant_profiles (grounds the AI) + homepage as Basis intel.
+      const body = { ingestHomepage: ingest ? !!ingest.checked : false };
+      const s = _companyPullSummary || {};
+      const positioning = [s.mission, s.audience ? `Primary audience: ${s.audience}` : '']
+        .filter(Boolean).join('\n').trim();
+      if (positioning) body.positioning = positioning;
+      await fetchJson('/api/portfolio/company-bootstrap/confirm', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      // 2. Build the per-product intel job list from the inline menus.
+      const jobs = [];
+      document.querySelectorAll('.company-sugg.added').forEach((row) => {
+        const pid = row.dataset.pid;
+        if (!pid) return;
+        const fileEl = row.querySelector('[data-pfile]');
+        const urlEl = row.querySelector('[data-purl]');
+        const file = (fileEl && fileEl.files || [])[0] || null;
+        const url = (urlEl && urlEl.value || '').trim();
+        if (file) jobs.push({ pid, row, kind: 'file', file });
+        if (/^https?:\/\//i.test(url)) jobs.push({ pid, row, kind: 'url', url });
+      });
+
+      // 3. Fetch the product intel one by one until all are done.
+      if (jobs.length) {
+        let done = 0;
+        btn.textContent = `Fetching intel (0/${jobs.length})…`;
+        for (const job of jobs) {
+          const statusEl = job.row.querySelector('[data-pstatus]');
+          if (statusEl) statusEl.textContent = '⏳ fetching…';
+          try {
+            if (job.kind === 'file') {
+              const fd = new FormData();
+              fd.append('file', job.file);
+              fd.append('scope', 'TENANT');
+              fd.append('category', 'PRODUCT_INTEL');
+              fd.append('title', (job.file.name || 'Untitled').replace(/\.[^.]+$/, '') || job.file.name);
+              fd.append('productIds', job.pid);
+              const rr = await fetch('/api/knowledge/upload', { method: 'POST', credentials: 'include', body: fd });
+              const jj = await rr.json().catch(() => ({}));
+              if (!rr.ok) throw new Error(jj.error || `HTTP ${rr.status}`);
+            } else {
+              const rr = await fetch('/api/knowledge/web-sync', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: job.url, scope: 'TENANT', category: 'PRODUCT_INTEL', productIds: [job.pid] }),
+              });
+              const jj = await rr.json().catch(() => ({}));
+              if (!rr.ok) throw new Error(jj.error || `HTTP ${rr.status}`);
+            }
+            if (statusEl) statusEl.textContent = '✓ indexed';
+          } catch (err) {
+            if (statusEl) statusEl.textContent = `✗ ${err.message}`;
+          }
+          done++;
+          if (progress) progress.textContent = `Fetched intel for ${done} of ${jobs.length}…`;
+          btn.textContent = `Fetching intel (${done}/${jobs.length})…`;
+        }
+      }
+
+      // Done → reload the workspace (new docs show in the library; card collapses).
+      loaded.company = false; loaded.knowledge = false;
+      await refreshCompany();
+    } catch (err) {
+      if (msg) { msg.classList.remove('hidden'); msg.classList.add('error'); msg.textContent = err.message; }
+      btn.disabled = false; btn.textContent = o;
+    }
+  }
+
+  function renderCompanyProductsTab(body) {
+    if (_companyProductOpen) { renderCompanyProductDetail(body, _companyProductOpen); return; }
+    const products = _companyData.products;
+    const rows = products.length
+      ? products.map((p) => `
+          <tr>
+            <td><strong>${escapeHtml(p.name)}</strong> <span class="mono kb-subtle">${escapeHtml(p.id)}</span></td>
+            <td class="truncate">${escapeHtml(p.description || '—')}</td>
+            <td>${fmtNum(p.doc_count)}</td>
+            <td class="pf-actions-cell">
+              <button class="kb-link-btn" data-prod-open="${escapeHtml(p.id)}">Open</button>
+              <button class="kb-link-btn" data-prod-edit="${escapeHtml(p.id)}">Edit</button>
+              <button class="kb-link-btn danger" data-prod-del="${escapeHtml(p.id)}">Delete</button>
+            </td>
+          </tr>`).join('')
+      : '<tr><td colspan="4" class="kb-subtle" style="padding:10px">No product lines yet.</td></tr>';
+    body.innerHTML = `
+      <table class="dt"><thead><tr><th>Product line</th><th>Description</th><th>Docs</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="comp-node-add" style="margin-top:12px">
+        <input id="company-new-product-name" type="text" placeholder="New product — e.g. Fraud Solution" maxlength="200">
+        <input id="company-new-product-desc" type="text" placeholder="Description (optional)">
+        <button class="kb-secondary-btn" id="company-add-product-btn">＋ Add product</button>
+      </div>
+      <div class="kb-result hidden" id="company-product-result"></div>`;
+    body.querySelectorAll('[data-prod-open]').forEach((b) => b.addEventListener('click', () => { _companyProductOpen = b.dataset.prodOpen; renderCompanyWorkspace(); }));
+    body.querySelectorAll('[data-prod-edit]').forEach((b) => b.addEventListener('click', () => companyEditEntity('products', b.dataset.prodEdit)));
+    body.querySelectorAll('[data-prod-del]').forEach((b) => b.addEventListener('click', () => companyDeleteProduct(b.dataset.prodDel)));
+    $('company-add-product-btn').addEventListener('click', () => companyAddEntity('products', 'company-new-product-name', 'company-new-product-desc', 'company-product-result'));
+  }
+
+  async function renderCompanyProductDetail(body, productId) {
+    const p = (_companyData.products || []).find((x) => x.id === productId) || { id: productId, name: productId };
+    body.innerHTML = `
+      <button class="kb-link-btn" id="company-prod-back">← All products</button>
+      <h3 style="margin:8px 0 2px">${escapeHtml(p.name)} <span class="mono kb-subtle">${escapeHtml(p.id)}</span></h3>
+      <div class="kb-subtle" style="margin-bottom:12px">${escapeHtml(p.description || 'No description.')}</div>
+      <div class="company-prod-section"><div class="company-field-label">Competitors it faces</div><div id="company-prod-competitors" class="kb-subtle">Loading…</div></div>
+      <div class="company-prod-section"><div class="company-field-label">AI product analysis</div><div id="company-prod-analysis" class="kb-subtle">Loading…</div></div>
+      <div class="company-prod-section">
+        <div class="company-field-label">Filed intel <button class="kb-secondary-btn company-prod-add-intel-btn" id="company-prod-add-intel">📁 Create intel for this product</button></div>
+        <p class="kb-subtle" style="margin:0 0 8px">${INTEL_EXPLAINER}</p>
+        <div id="company-prod-docs" class="intel-lib-list company-intel-grid">Loading…</div>
+      </div>`;
+    $('company-prod-back').addEventListener('click', () => { _companyProductOpen = null; renderCompanyWorkspace(); });
+    $('company-prod-add-intel').addEventListener('click', () => openCompanyAddIntel(productId));
+    fetchJson(`/api/portfolio/products/${encodeURIComponent(productId)}/competitors`).then((c) => {
+      const comps = c.competitors || [];
+      $('company-prod-competitors').innerHTML = comps.length
+        ? comps.map((x) => `<a class="kb-stream-pill stream-file" href="#competitors">⚔ ${escapeHtml(x.name)}</a>`).join(' ')
+        : '<span class="kb-subtle">None pinned — pin this product to a competitor on the Competitors page.</span>';
+    }).catch(() => { $('company-prod-competitors').textContent = '—'; });
+    try {
+      const d = await fetchJson(`/api/knowledge/documents?scope=TENANT&productId=${encodeURIComponent(productId)}`);
+      const docs = d.documents || [];
+      const withAnalysis = docs.find((x) => (x.metadata || {}).productAnalysis);
+      $('company-prod-analysis').innerHTML = withAnalysis ? renderProductAnalysis(withAnalysis.metadata.productAnalysis) : '<span class="kb-subtle">No analysis yet — file product intel below to generate one.</span>';
+      const grid = $('company-prod-docs');
+      grid.innerHTML = docs.length ? docs.map((x) => companyIntelCard(x, { deletable: true, keyPointsAction: true })).join('') : '<span class="kb-subtle">No intel filed under this product yet — use the Intel tab.</span>';
+      grid.querySelectorAll('[data-intel-card-open]').forEach((card) => card.addEventListener('click', () => {
+        const doc = docs.find((y) => y.id === card.dataset.docId);
+        if (doc) openIntelDocModal(doc, { onChange: () => refreshCompany() });
+      }));
+    } catch (err) { const g = $('company-prod-docs'); if (g) g.textContent = err.message; }
+  }
+
+  function renderCompanyPersonasTab(body) {
+    const personas = _companyData.personas;
+    const rows = personas.length
+      ? personas.map((p) => `
+          <tr>
+            <td><strong>${escapeHtml(p.name)}</strong> <span class="mono kb-subtle">${escapeHtml(p.id)}</span></td>
+            <td class="truncate">${escapeHtml(p.description || '—')}</td>
+            <td>${fmtNum(p.doc_count)}</td>
+            <td class="pf-actions-cell">
+              <button class="kb-link-btn" data-persona-edit="${escapeHtml(p.id)}">Edit</button>
+              <button class="kb-link-btn danger" data-persona-del="${escapeHtml(p.id)}">Delete</button>
+            </td>
+          </tr>`).join('')
+      : '<tr><td colspan="4" class="kb-subtle" style="padding:10px">No personas yet.</td></tr>';
+    body.innerHTML = `
+      <p class="kb-subtle">The types of buyer you sell to (e.g. CFO, IT lead). They shape your pre-call briefs and link automatically to contacts with a matching role.</p>
+      <table class="dt"><thead><tr><th>Persona</th><th>Description</th><th>Docs</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="comp-node-add" style="margin-top:12px">
+        <input id="company-new-persona-name" type="text" placeholder="New persona — e.g. CFO" maxlength="200">
+        <input id="company-new-persona-desc" type="text" placeholder="Traits / what they care about (optional)">
+        <button class="kb-secondary-btn" id="company-add-persona-btn">＋ Add persona</button>
+      </div>
+      <div class="kb-result hidden" id="company-persona-result"></div>`;
+    body.querySelectorAll('[data-persona-edit]').forEach((b) => b.addEventListener('click', () => companyEditEntity('personas', b.dataset.personaEdit)));
+    body.querySelectorAll('[data-persona-del]').forEach((b) => b.addEventListener('click', () => companyDeleteEntity('personas', b.dataset.personaDel)));
+    $('company-add-persona-btn').addEventListener('click', () => companyAddEntity('personas', 'company-new-persona-name', 'company-new-persona-desc', 'company-persona-result'));
+  }
+
+  async function renderCompanyIntelTab(body) {
+    body.innerHTML = `
+      <div class="company-bootstrap-block" id="company-bootstrap-host"></div>
+      <div class="company-field-label" style="margin-top:18px">Intel library</div>
+      <p class="kb-subtle">${INTEL_EXPLAINER} Optionally file a doc under a product line.</p>
+      <div id="company-intel-host"></div>`;
+    renderCompanyBootstrap($('company-bootstrap-host'));
+    await renderIntelLibrary({ container: $('company-intel-host'), scope: 'TENANT', products: _companyData.products, onChange: () => { loaded.company = false; } });
+    // If we arrived here via a "Create intel" button, open the Add-intel pane
+    // (pre-scoped to a product line when given) and scroll it into view.
+    if (_companyIntelAutoOpen) {
+      const { productId } = _companyIntelAutoOpen;
+      _companyIntelAutoOpen = null;
+      const root = $('company-intel-host');
+      const pane = root && root.querySelector('#intel-lib-add-pane');
+      if (pane) pane.classList.remove('hidden');
+      if (productId && root) {
+        const a = root.querySelector('#intel-lib-product'); if (a) a.value = productId;
+        const b = root.querySelector('#intel-lib-url-product'); if (b) b.value = productId;
+      }
+      if (pane) pane.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
+
+  // Shared add/edit/delete for products + personas (generic /portfolio/:resource).
+  async function companyAddEntity(resource, nameId, descId, resultId) {
+    const name = ($(nameId).value || '').trim();
+    const description = ($(descId).value || '').trim() || null;
+    if (!name) return;
+    try {
+      const resp = await fetchJson(`/api/portfolio/${resource}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: slugify(name), name, description }),
+      });
+      loaded.knowledge = false;
+      // For a new product, drop straight into its detail — where "Create intel
+      // for this product" lives — so the rep can enrich it right away.
+      if (resource === 'products') {
+        _companyTab = 'products';
+        _companyProductOpen = (resp && resp.product && resp.product.id) || slugify(name);
+      }
+      await refreshCompany();
+    } catch (err) { const r = $(resultId); if (r) { r.classList.remove('hidden'); r.classList.add('error'); r.textContent = err.message; } }
+  }
+  async function companyEditEntity(resource, id) {
+    const list = resource === 'products' ? _companyData.products : _companyData.personas;
+    const e = (list || []).find((x) => x.id === id); if (!e) return;
+    const name = prompt('Name:', e.name); if (name === null) return;
+    const description = prompt('Description:', e.description || ''); if (description === null) return;
+    try {
+      await fetchJson(`/api/portfolio/${resource}/${encodeURIComponent(id)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), description: description.trim() || null }),
+      });
+      loaded.knowledge = false;
+      await refreshCompany();
+    } catch (err) { alert(`Couldn't update: ${err.message}`); }
+  }
+  async function companyDeleteEntity(resource, id) {
+    if (!confirm(`Delete this ${resource.replace(/s$/, '')}? Docs tagged with it must be re-tagged first.`)) return;
+    try {
+      await fetchJson(`/api/portfolio/${resource}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      loaded.knowledge = false;
+      await refreshCompany();
+    } catch (err) { alert(`Couldn't delete: ${err.message}`); }
   }
 
   // Group scope=TENANT docs by their (single) product line into card grids;
@@ -1273,25 +5268,493 @@
         ? `<div class="ci-brief">${escapeHtml(brief)}</div>`
         : `<div class="ci-brief is-empty">No preview text available.</div>`;
     }
+    const scoreboardHtml = renderScoreboard(md.assessment);
+    // Collapsible full-document view — lazy-loads the indexed text on first open
+    // (see wireDocDetails). Every doc has text, so it's always offered.
+    const detailHtml = `
+      <details class="ci-detail">
+        <summary>📄 View full document</summary>
+        <div class="ci-detail-body" data-doc-fulltext="${escapeHtml(d.id)}"></div>
+      </details>`;
     const actions = [];
     if (opts.keyPointsAction) {
-      actions.push(`<button class="kb-link-btn ci-kp-btn" data-kb-keypoints="${escapeHtml(d.id)}">${points.length ? '↻ refresh key points' : '✨ generate key points'}</button>`);
+      actions.push(`<button class="kb-link-btn ci-kp-btn" data-kb-keypoints="${escapeHtml(d.id)}">${points.length ? '↻ refresh analysis' : '✨ generate analysis'}</button>`);
     }
     if (opts.deletable) {
       actions.push(`<button class="kb-link-btn" data-kb-delete="${escapeHtml(d.id)}">Delete</button>`);
     }
+    // Short one-line preview shown on the compact card. Prefer the first
+    // key point (already AI-curated) over the raw brief — it's the single
+    // most informative sentence we have on a doc.
+    const oneLiner = points.length
+      ? String(points[0]).slice(0, 140) + (String(points[0]).length > 140 ? '…' : '')
+      : (intelBrief(d) ? intelBrief(d).slice(0, 140) + (intelBrief(d).length > 140 ? '…' : '') : '');
+    // The card is a flat, clickable row. Click opens the full-view modal —
+    // see openIntelDocModal — which renders the body + key points +
+    // scoreboard + full document text in one place, covering the screen.
+    // Cards no longer expand inline (that produced a wall of text).
     return `
-      <div class="company-intel-card stream-${streamType.toLowerCase()}">
-        <div class="ci-title">${title}</div>
-        <div class="ci-meta">
-          ${streamPill}
-          <span>${escapeHtml(prettyCategory(d.category))}</span>
-          <span>${fmtNum(d.chunk_count)} chunk${d.chunk_count === 1 ? '' : 's'}</span>
-          <span>${escapeHtml(fmtDate(d.effective_date || d.created_at))}</span>
+      <div class="company-intel-card ci-card stream-${streamType.toLowerCase()}" data-doc-id="${escapeHtml(d.id)}" data-intel-card-open role="button" tabindex="0">
+        <div class="ci-summary">
+          <div class="ci-title">${title}</div>
+          <div class="ci-meta">
+            ${streamPill}
+            ${opts.compProductName ? `<span class="kb-stream-pill ci-comp-product" title="Filed under their product">⚔ ${escapeHtml(opts.compProductName)}</span>` : ''}
+            ${(d.metadata || {}).relevanceVerified === false ? `<span class="kb-stream-pill warning ci-unverified" title="${escapeHtml((d.metadata || {}).relevanceReason || 'Flagged as a possible mismatch — open to review &amp; confirm')}">⚠ Unverified</span>` : ''}
+            <span>${escapeHtml(prettyCategory(d.category))}</span>
+            <span>${fmtNum(d.chunk_count)} chunk${d.chunk_count === 1 ? '' : 's'}</span>
+            <span>${escapeHtml(fmtDate(d.effective_date || d.created_at))}</span>
+          </div>
+          ${oneLiner ? `<div class="ci-oneliner kb-subtle">${escapeHtml(oneLiner)}</div>` : ''}
         </div>
-        ${contentHtml}
-        ${actions.length ? `<div class="ci-actions">${actions.join('')}</div>` : ''}
       </div>`;
+  }
+
+  // Full-view modal for one intel doc — opens when the rep clicks a compact
+  // card. Shows title, meta, key points (or preview brief), competitive
+  // scoreboard, AND the full indexed text inline. Action buttons (refresh
+  // analysis · delete) are at the bottom; close X + Esc + click-outside
+  // dismiss the overlay.
+  //
+  // opts: { onChange } — fired after delete or keypoints-regen so the parent
+  // list refreshes (closes the modal too).
+  function openIntelDocModal(doc, opts = {}) {
+    const { onChange } = opts;
+    let overlay = $('intel-doc-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'intel-doc-overlay';
+      overlay.className = 'cal-picker-overlay';
+      overlay.innerHTML = `
+        <div class="intel-doc-modal">
+          <div class="cal-picker-h"><span class="cal-picker-title intel-doc-title"></span><button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
+          <div class="intel-doc-body"></div>
+          <div class="intel-doc-actions"></div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) closeIntelDocModal(); });
+      overlay.querySelector('.cal-picker-close').addEventListener('click', closeIntelDocModal);
+      document.addEventListener('keydown', _intelDocEsc);
+    }
+    overlay.querySelector('.intel-doc-title').textContent = doc.title || '(untitled)';
+    const body = overlay.querySelector('.intel-doc-body');
+    const actions = overlay.querySelector('.intel-doc-actions');
+
+    const md = doc.metadata || {};
+    const points = Array.isArray(md.keyPoints) ? md.keyPoints.filter(Boolean) : [];
+    const streamType = String(doc.stream_type || 'FILE').toUpperCase();
+    const streamPill = `<span class="kb-stream-pill stream-${streamType.toLowerCase()}">${escapeHtml(streamType)}</span>`;
+    let contentHtml;
+    // TENANT docs get the rich structured analysis — branched by category:
+    //   - PRODUCT_INTEL → productAnalysis (capabilities, competing products,
+    //     pitch angles for THIS product)
+    //   - ORG_INTELLIGENCE → companyAnalysis (services portfolio, market
+    //     position, similar competitors at the company level)
+    // Falls back to keyPoints / brief if neither was generated yet — the rep
+    // can click "Refresh analysis" to backfill.
+    if (md.productAnalysis) {
+      contentHtml = renderProductAnalysis(md.productAnalysis);
+    } else if (md.companyAnalysis) {
+      contentHtml = renderCompanyAnalysis(md.companyAnalysis);
+    } else if (points.length) {
+      const kindLabel = md.keyPointsKind === 'competitive' ? 'Competitive points'
+                      : md.keyPointsKind === 'opportunity' ? 'Opportunity points'
+                      : 'Key points';
+      contentHtml = `<div class="ci-keypoints">
+          <div class="ci-keypoints-h">${escapeHtml(kindLabel)}</div>
+          <ul>${points.map((p) => `<li>${escapeHtml(p)}</li>`).join('')}</ul>
+        </div>`;
+    } else {
+      const brief = intelBrief(doc);
+      contentHtml = brief
+        ? `<div class="ci-brief">${escapeHtml(brief)}</div>`
+        : `<div class="ci-brief is-empty">No preview text available — open the original or run analysis below.</div>`;
+    }
+
+    body.innerHTML = `
+      <div class="intel-doc-meta">
+        ${streamPill}
+        <span>${escapeHtml(prettyCategory(doc.category))}</span>
+        <span>${fmtNum(doc.chunk_count)} chunk${doc.chunk_count === 1 ? '' : 's'}</span>
+        <span>${escapeHtml(fmtDate(doc.effective_date || doc.created_at))}</span>
+        ${doc.source_url ? `<a href="${escapeHtml(doc.source_url)}" target="_blank" rel="noopener noreferrer">Open source ↗</a>` : ''}
+      </div>
+      ${(doc.metadata || {}).relevanceVerified === false ? `<div class="kb-result warning intel-doc-quarantine">⚠ <strong>Quarantined — possible mismatch.</strong> ${escapeHtml((doc.metadata || {}).relevanceReason || 'The content may not be about this competitor.')} It's excluded from the battlecard until you confirm it below.</div>` : ''}
+      ${contentHtml}
+      ${renderScoreboard(md.assessment)}
+      <div class="intel-doc-fulltext-h">📄 Full indexed text</div>
+      <div class="intel-doc-fulltext" data-doc-fulltext="${escapeHtml(doc.id)}">
+        <div class="kb-subtle">Loading full document…</div>
+      </div>
+    `;
+
+    const isUnverified = (doc.metadata || {}).relevanceVerified === false;
+    actions.innerHTML = `
+      ${isUnverified ? `<button class="kb-secondary-btn" data-intel-doc-confirm="${escapeHtml(doc.id)}">✓ Confirm it's about this competitor</button>` : ''}
+      <button class="kb-secondary-btn" data-intel-doc-keypoints="${escapeHtml(doc.id)}">${points.length ? '↻ Refresh analysis' : '✨ Generate analysis'}</button>
+      <button class="kb-secondary-btn danger" data-intel-doc-delete="${escapeHtml(doc.id)}">Delete</button>
+    `;
+
+    // Lazy-load the full indexed text. PDF extraction emits text with
+    // hard-wrapped lines (one per visual row from the source PDF), which
+    // makes the rendered output look like a wall of short paragraph
+    // fragments. normalizeProseText reflows those hard wraps into proper
+    // paragraphs before rendering, while leaving real markdown structure
+    // (headings, lists, code) alone.
+    (async () => {
+      const fullBody = body.querySelector('[data-doc-fulltext]');
+      try {
+        const r = await fetch(`/api/knowledge/documents/${encodeURIComponent(doc.id)}/text`, { credentials: 'include' });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+        const note = data.truncated
+          ? '<div class="ci-detail-note">⚠ Large document — showing the first portion only.</div>' : '';
+        const normalized = normalizeProseText(data.text || '');
+        const rendered = normalized ? renderMarkdown(normalized) : '<em class="kb-subtle">No text extracted.</em>';
+        fullBody.innerHTML = note + `<div class="intel-doc-prose">${rendered}</div>`;
+      } catch (err) {
+        fullBody.innerHTML = `<div class="kb-result error">Couldn't load document text: ${escapeHtml(err.message)}</div>`;
+      }
+    })();
+
+    // Wire action buttons.
+    actions.querySelector('[data-intel-doc-keypoints]').addEventListener('click', async (e) => {
+      const b = e.currentTarget;
+      b.disabled = true; const orig = b.textContent; b.textContent = '… analyzing';
+      try {
+        const r = await fetch(`/api/knowledge/documents/${encodeURIComponent(doc.id)}/keypoints`, { method: 'POST', credentials: 'include' });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          throw new Error(j.error || `HTTP ${r.status}`);
+        }
+        if (typeof onChange === 'function') onChange();
+        closeIntelDocModal();
+      } catch (err) {
+        alert(`Couldn't generate key points: ${err.message}`);
+        b.disabled = false; b.textContent = orig;
+      }
+    });
+    const confirmBtn = actions.querySelector('[data-intel-doc-confirm]');
+    if (confirmBtn) confirmBtn.addEventListener('click', async (e) => {
+      const b = e.currentTarget;
+      b.disabled = true; const orig = b.textContent; b.textContent = '… confirming';
+      try {
+        const r = await fetch(`/api/knowledge/documents/${encodeURIComponent(doc.id)}/confirm-relevance`, { method: 'POST', credentials: 'include' });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          throw new Error(j.error || `HTTP ${r.status}`);
+        }
+        if (typeof onChange === 'function') onChange();
+        closeIntelDocModal();
+      } catch (err) {
+        alert(`Couldn't confirm: ${err.message}`);
+        b.disabled = false; b.textContent = orig;
+      }
+    });
+    actions.querySelector('[data-intel-doc-delete]').addEventListener('click', async () => {
+      if (!confirm('Delete this document and all its chunks? This cannot be undone.')) return;
+      try {
+        const r = await fetch(`/api/knowledge/documents/${encodeURIComponent(doc.id)}`, { method: 'DELETE', credentials: 'include' });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          throw new Error(j.error || `HTTP ${r.status}`);
+        }
+        if (typeof onChange === 'function') onChange();
+        closeIntelDocModal();
+      } catch (err) { alert(`Couldn't delete: ${err.message}`); }
+    });
+
+    overlay.classList.remove('hidden');
+  }
+
+  // Render the structured Company analysis payload (TENANT-scope docs only).
+  // Shape produced by api/src/knowledge/keypoints.js#extractCompanyAnalysis.
+  function renderCompanyAnalysis(a) {
+    if (!a || typeof a !== 'object') return '';
+    const parts = [];
+
+    if (a.executiveSummary) {
+      parts.push(`
+        <div class="ca-summary">
+          <div class="ca-label">Executive summary</div>
+          <p>${escapeHtml(a.executiveSummary)}</p>
+        </div>`);
+    }
+
+    if (Array.isArray(a.services) && a.services.length) {
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">Services in this doc</div>
+          <div class="ca-services">
+            ${a.services.map((s) => `
+              <div class="ca-service">
+                <div class="ca-service-name">${escapeHtml(s.name || '')}</div>
+                <div class="ca-service-desc">${escapeHtml(s.description || '')}</div>
+                ${s.audience ? `<div class="ca-service-audience">For: ${escapeHtml(s.audience)}</div>` : ''}
+              </div>`).join('')}
+          </div>
+        </div>`);
+    }
+
+    if (Array.isArray(a.strengths) && a.strengths.length) {
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">Strengths</div>
+          <div class="ca-strengths">
+            ${a.strengths.map((s) => `
+              <div class="ca-strength">
+                <div class="ca-strength-claim">${escapeHtml(s.claim || '')}</div>
+                ${s.evidence ? `<div class="ca-strength-evidence">"${escapeHtml(s.evidence)}"</div>` : ''}
+              </div>`).join('')}
+          </div>
+        </div>`);
+    }
+
+    if (a.marketPosition && (a.marketPosition.category || a.marketPosition.differentiator || (a.marketPosition.weaknesses || []).length)) {
+      const mp = a.marketPosition;
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">Market position</div>
+          <div class="ca-market">
+            ${mp.category       ? `<div class="ca-market-row"><strong>Category:</strong> ${escapeHtml(mp.category)}</div>` : ''}
+            ${mp.differentiator ? `<div class="ca-market-row"><strong>Why we win:</strong> ${escapeHtml(mp.differentiator)}</div>` : ''}
+            ${Array.isArray(mp.weaknesses) && mp.weaknesses.length
+              ? `<div class="ca-market-row"><strong>Honest gaps:</strong>
+                  <ul>${mp.weaknesses.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}</ul></div>`
+              : ''}
+          </div>
+        </div>`);
+    }
+
+    if (Array.isArray(a.competitors) && a.competitors.length) {
+      const ovColor = (o) => o === 'high' ? 'ca-overlap-high' : o === 'medium' ? 'ca-overlap-med' : 'ca-overlap-low';
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">Similar competitors</div>
+          <div class="ca-competitors">
+            ${a.competitors.map((c) => `
+              <div class="ca-competitor">
+                <span class="ca-competitor-name">${escapeHtml(c.name || '')}</span>
+                <span class="ca-overlap ${ovColor(c.overlap)}">${escapeHtml(c.overlap || 'low')}</span>
+                <div class="ca-competitor-reason">${escapeHtml(c.reason || '')}</div>
+              </div>`).join('')}
+          </div>
+        </div>`);
+    }
+
+    if (a.idealCustomerProfile) {
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">Ideal customer profile</div>
+          <p class="ca-icp">${escapeHtml(a.idealCustomerProfile)}</p>
+        </div>`);
+    }
+
+    if (Array.isArray(a.salesAngles) && a.salesAngles.length) {
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">How to use this doc</div>
+          <ul class="ca-angles">
+            ${a.salesAngles.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}
+          </ul>
+        </div>`);
+    }
+
+    if (a.generatedAt) {
+      parts.push(`<div class="ca-meta kb-subtle">AI analysis · ${escapeHtml(fmtDate(a.generatedAt))}${a.model ? ` · ${escapeHtml(a.model)}` : ''}</div>`);
+    }
+
+    return `<div class="ca-analysis">${parts.join('')}</div>`;
+  }
+
+  // Render the structured Product analysis payload (TENANT-scope docs filed
+  // under a product line). Shape produced by extractProductAnalysis.
+  function renderProductAnalysis(a) {
+    if (!a || typeof a !== 'object') return '';
+    const parts = [];
+
+    if (a.executiveSummary) {
+      parts.push(`
+        <div class="ca-summary ca-summary-product">
+          <div class="ca-label">Product summary</div>
+          <p>${escapeHtml(a.executiveSummary)}</p>
+        </div>`);
+    }
+
+    if (Array.isArray(a.capabilities) && a.capabilities.length) {
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">What it does</div>
+          <div class="ca-capabilities">
+            ${a.capabilities.map((c) => `
+              <div class="ca-capability">
+                <div class="ca-capability-name">${escapeHtml(c.capability || '')}</div>
+                <div class="ca-capability-benefit">${escapeHtml(c.benefit || '')}</div>
+              </div>`).join('')}
+          </div>
+        </div>`);
+    }
+
+    if (Array.isArray(a.problemsSolved) && a.problemsSolved.length) {
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">Problems it solves</div>
+          <ul class="ca-problems">
+            ${a.problemsSolved.map((p) => `<li>${escapeHtml(p)}</li>`).join('')}
+          </ul>
+        </div>`);
+    }
+
+    if (a.whoBuysIt) {
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">Who buys it</div>
+          <p class="ca-icp">${escapeHtml(a.whoBuysIt)}</p>
+        </div>`);
+    }
+
+    if (Array.isArray(a.integrations) && a.integrations.length) {
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">Integrates with</div>
+          <div class="ca-tech-stack">
+            ${a.integrations.map((t) => `<span class="ca-tech-chip">${escapeHtml(t)}</span>`).join('')}
+          </div>
+        </div>`);
+    }
+
+    if (a.pricingPosture) {
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">Pricing posture</div>
+          <p class="ca-icp">${escapeHtml(a.pricingPosture)}</p>
+        </div>`);
+    }
+
+    if (Array.isArray(a.competingProducts) && a.competingProducts.length) {
+      const ovColor = (o) => o === 'high' ? 'ca-overlap-high' : o === 'medium' ? 'ca-overlap-med' : 'ca-overlap-low';
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">Competing products</div>
+          <div class="ca-competitors">
+            ${a.competingProducts.map((c) => `
+              <div class="ca-competitor">
+                <span class="ca-competitor-name">${escapeHtml(c.name || '')}</span>
+                <span class="ca-overlap ${ovColor(c.overlap)}">${escapeHtml(c.overlap || 'low')}</span>
+                <div class="ca-competitor-reason">${escapeHtml(c.reason || '')}</div>
+              </div>`).join('')}
+          </div>
+        </div>`);
+    }
+
+    if (Array.isArray(a.pitchAngles) && a.pitchAngles.length) {
+      parts.push(`
+        <div class="ca-section">
+          <div class="ca-label">How to pitch it</div>
+          <ul class="ca-angles">
+            ${a.pitchAngles.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}
+          </ul>
+        </div>`);
+    }
+
+    if (a.generatedAt) {
+      parts.push(`<div class="ca-meta kb-subtle">Product analysis · ${escapeHtml(fmtDate(a.generatedAt))}${a.model ? ` · ${escapeHtml(a.model)}` : ''}</div>`);
+    }
+
+    return `<div class="ca-analysis">${parts.join('')}</div>`;
+  }
+
+  function _intelDocEsc(e) { if (e.key === 'Escape') closeIntelDocModal(); }
+  function closeIntelDocModal() {
+    const o = $('intel-doc-overlay');
+    if (o) o.classList.add('hidden');
+  }
+
+  // Lazy-load wiring for the "View full document" collapse on intel cards.
+  // The `toggle` event doesn't bubble, so we attach per-<details> after each
+  // render. First open fetches /documents/:id/text; subsequent opens are cached.
+  function wireDocDetails(root) {
+    if (!root) return;
+    root.querySelectorAll('details.ci-detail').forEach((det) => {
+      if (det.dataset.wired === '1') return;
+      det.dataset.wired = '1';
+      det.addEventListener('toggle', async () => {
+        if (!det.open) return;
+        const body = det.querySelector('[data-doc-fulltext]');
+        if (!body || body.dataset.loaded === '1' || body.dataset.loading === '1') return;
+        body.dataset.loading = '1';
+        body.innerHTML = '<div class="kb-subtle">Loading full document…</div>';
+        try {
+          const id = body.dataset.docFulltext;
+          const r = await fetch(`/api/knowledge/documents/${encodeURIComponent(id)}/text`, { credentials: 'include' });
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+          const note = data.truncated
+            ? '<div class="ci-detail-note">⚠ Large document — showing the first portion only.</div>'
+            : '';
+          body.innerHTML = note + `<pre class="ci-detail-text">${escapeHtml(data.text || '(no text extracted)')}</pre>`;
+          body.dataset.loaded = '1';
+        } catch (err) {
+          body.innerHTML = `<div class="kb-result error">Couldn't load document text: ${escapeHtml(err.message)}</div>`;
+        } finally {
+          delete body.dataset.loading;
+        }
+      });
+    });
+  }
+
+  // Competitive scoreboard renderer. `a` is metadata.assessment as produced by
+  // api/src/knowledge/assessment.js — { summary, axes[8], topImprovements,
+  // weightedAdvantage }. Returns '' when there's no assessment.
+  function renderScoreboard(a) {
+    if (!a || !Array.isArray(a.axes) || !a.axes.length) return '';
+    const adv = Number(a.weightedAdvantage) || 0;
+    const verdictClass = adv > 5 ? 'win' : adv < -5 ? 'lose' : 'tie';
+    const verdictLabel = adv > 5 ? `We lead by ${adv}%`
+                       : adv < -5 ? `We trail by ${Math.abs(adv)}%`
+                       : `Roughly tied (${adv >= 0 ? '+' : ''}${adv}%)`;
+    const winnerPill = (w) => {
+      const map = { us: ['ours', 'We win'], them: ['theirs', 'They win'], tie: ['tie', 'Tie'], unknown: ['unknown', 'No data'] };
+      const [cls, label] = map[w] || map.unknown;
+      return `<span class="sb-winner sb-${cls}">${label}</span>`;
+    };
+    const rows = a.axes.map((ax) => {
+      const our = Math.max(0, Math.min(10, Number(ax.ourScore) || 0));
+      const their = Math.max(0, Math.min(10, Number(ax.theirScore) || 0));
+      const gap = ax.gapToOvercome ? `<div class="sb-gap">▲ ${escapeHtml(ax.gapToOvercome)}</div>` : '';
+      return `
+        <div class="sb-row">
+          <div class="sb-axis">
+            <span class="sb-axis-name">${escapeHtml(ax.label || ax.key)}</span>
+            <span class="sb-weight">${Number(ax.weight) || 0}%</span>
+          </div>
+          <div class="sb-bars">
+            <div class="sb-bar sb-bar-ours"><span style="width:${our * 10}%"></span><em>${our}</em></div>
+            <div class="sb-bar sb-bar-theirs"><span style="width:${their * 10}%"></span><em>${their}</em></div>
+          </div>
+          ${winnerPill(ax.winner)}
+          ${gap}
+        </div>`;
+    }).join('');
+    const improvements = Array.isArray(a.topImprovements) && a.topImprovements.length
+      ? `<div class="sb-improvements">
+           <div class="sb-improvements-h">Areas to overcome</div>
+           <ol>${a.topImprovements.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ol>
+         </div>`
+      : '';
+    return `
+      <details class="ci-scoreboard">
+        <summary>
+          <span class="sb-title">⚔ Competitive scoreboard</span>
+          <span class="sb-verdict sb-${verdictClass}">${escapeHtml(verdictLabel)}</span>
+        </summary>
+        <div class="sb-body">
+          ${a.summary ? `<div class="sb-summary">${escapeHtml(a.summary)}</div>` : ''}
+          <div class="sb-legend"><span class="sb-dot sb-bar-ours"></span>Us &nbsp; <span class="sb-dot sb-bar-theirs"></span>Them &nbsp; · &nbsp; weight = importance in this matchup</div>
+          <div class="sb-rows">${rows}</div>
+          ${improvements}
+        </div>
+      </details>`;
   }
 
   async function kbRegenKeyPoints(id, btn) {
@@ -1336,7 +5799,6 @@
     wireKbSourceCards();
     wireKbUploadForm();
     wireKbWebForm();
-    wireKbSocialForm();
     wireKbEntitySelectors();
     await populateUploadTagSelects();
   }
@@ -1375,7 +5837,7 @@
       _kbProductByName    = new Map(productList.map((p) => [p.name.toLowerCase(), p]));
       _kbPersonaByName    = new Map(personaList.map((p) => [p.name.toLowerCase(), p]));
 
-      for (const lane of ['file', 'web', 'social']) {
+      for (const lane of ['file', 'web']) {
         // Product line: a free-text picker (datalist of existing lines, typing
         // a new one find-or-creates it on submit). Buyer persona: same, but it
         // lives inside the PROSPECT detail panel (persona = a property of the
@@ -1388,6 +5850,8 @@
         if (pdl) pdl.innerHTML = companyList.map((c) => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.domain || '')}</option>`).join('');
         const cdl = document.getElementById(`kb-${lane}-competitor-list`);
         if (cdl) cdl.innerHTML = competitorList.map((c) => `<option value="${escapeHtml(c.name)}"></option>`).join('');
+        // Battlecard "applies to which products" checkbox list (COMPETITOR lane).
+        renderAppliesList(lane, productList);
         // Tenant detail: superadmins get a dropdown of all tenants; everyone
         // else just sees the static "workspace intel" label already in the HTML.
         const tsel = document.getElementById(`kb-${lane}-tenant-select`);
@@ -1398,6 +5862,7 @@
           if (lbl) lbl.textContent = 'Workspace (pick which tenant this Basis doc belongs to):';
         }
       }
+      wireAppliesAllToggles();
     } catch (err) {
       console.warn('upload-form population failed:', err.message);
     }
@@ -1437,6 +5902,7 @@
     const p = $(`kb-${lane}-prospect`); if (p) p.value = '';
     const c = $(`kb-${lane}-competitor`); if (c) c.value = '';
     const pe = $(`kb-${lane}-persona`); if (pe) pe.value = '';
+    resetAppliesTo(lane);
   }
 
   // Resolve a typed prospect name → companies row id (find-or-create).
@@ -1586,6 +6052,66 @@
     return Array.from(el.selectedOptions).map((o) => o.value).filter(Boolean);
   }
 
+  // ---- Battlecard "Which of our products does this cover?" multi-select ----
+  // Three lanes (file/web/social) each have one [data-applies-list] inside
+  // their COMPETITOR detail block + one [data-applies-all] master checkbox.
+  // When master is checked, the list is hidden + all selections cleared
+  // (semantics: empty = covers all products). When master is unchecked, the
+  // user picks the specific product lines.
+  function renderAppliesList(lane, products) {
+    const host = document.querySelector(`[data-applies-list][data-lane="${lane}"]`);
+    if (!host) return;
+    if (!products.length) {
+      host.innerHTML = `<div class="kb-subtle">No product lines yet — add one from the Company page first.</div>`;
+      return;
+    }
+    host.innerHTML = products.map((p) =>
+      `<label class="kb-checkbox kb-applies-item">
+        <input type="checkbox" data-applies-product value="${escapeHtml(p.id)}">
+        <span>${escapeHtml(p.name)}</span>
+      </label>`
+    ).join('');
+  }
+
+  function wireAppliesAllToggles() {
+    document.querySelectorAll('[data-applies-all]').forEach((box) => {
+      if (box.dataset.wired === '1') return;
+      box.dataset.wired = '1';
+      box.addEventListener('change', () => {
+        const lane = box.dataset.lane;
+        const list = document.querySelector(`[data-applies-list][data-lane="${lane}"]`);
+        if (!list) return;
+        if (box.checked) {
+          list.hidden = true;
+          list.querySelectorAll('[data-applies-product]').forEach((cb) => { cb.checked = false; });
+        } else {
+          list.hidden = false;
+        }
+      });
+    });
+  }
+
+  // Returns the productIds the battlecard covers. Empty array = "all products"
+  // (master checkbox is on, OR no individual boxes ticked). Caller decides
+  // whether to send the field at all when empty.
+  function readAppliesToProductIds(lane) {
+    const master = document.querySelector(`[data-applies-all][data-lane="${lane}"]`);
+    if (!master || master.checked) return [];
+    const list = document.querySelector(`[data-applies-list][data-lane="${lane}"]`);
+    if (!list) return [];
+    return Array.from(list.querySelectorAll('[data-applies-product]:checked')).map((cb) => cb.value);
+  }
+
+  function resetAppliesTo(lane) {
+    const master = document.querySelector(`[data-applies-all][data-lane="${lane}"]`);
+    if (master) master.checked = true;
+    const list = document.querySelector(`[data-applies-list][data-lane="${lane}"]`);
+    if (list) {
+      list.hidden = true;
+      list.querySelectorAll('[data-applies-product]').forEach((cb) => { cb.checked = false; });
+    }
+  }
+
   function wireKbTabs() {
     document.querySelectorAll('#kb-tabs .kb-tab').forEach((btn) => {
       btn.addEventListener('click', () => switchKbTab(btn.dataset.kbTab));
@@ -1601,7 +6127,7 @@
       card.addEventListener('click', () => {
         const target = card.dataset.kbSource;
         document.querySelectorAll('#kb-source-cards .kb-source-card').forEach((c) => c.classList.toggle('active', c === card));
-        ['file', 'web', 'social'].forEach((t) => {
+        ['file', 'web'].forEach((t) => {
           const el = $(`kb-subpane-${t}`);
           if (el) el.classList.toggle('hidden', t !== target);
         });
@@ -1623,6 +6149,53 @@
     if (tab === 'status')  await loadKbStatus();
     if (tab === 'library') await loadKbLibrary();
     if (tab === 'search')  wireKbSearchForm();
+  }
+
+  // After an upload, jump to wherever the new document actually lives and
+  // highlight it. TENANT intel lives on the Company page; COMPETITOR / PROSPECT
+  // intel lives in the Library (under its entity tile). `doc` is the document
+  // object returned by the upload endpoint.
+  async function revealDocument(doc) {
+    if (!doc) return;
+    const scope = String(doc.scope || 'TENANT').toUpperCase();
+    if (scope === 'COMPETITOR' || scope === 'PROSPECT') {
+      // Pre-select the owning entity tile so the Library opens on its detail
+      // view (where the doc card is rendered) rather than the tile grid.
+      if (scope === 'COMPETITOR') {
+        const cid = Array.isArray(doc.competitor_ids) ? doc.competitor_ids[0] : null;
+        if (cid) _libSelected.competitor = cid;
+      } else if (doc.company_id) {
+        _libSelected.prospect = doc.company_id;
+      }
+      loaded.knowledge = false;
+      await switchSection('knowledge');
+      history.replaceState(null, '', '#knowledge');
+      await switchKbTab('library');
+    } else {
+      loaded.company = false;
+      await switchSection('company');
+      history.replaceState(null, '', '#company');
+    }
+    // Social syncs ingest many posts with no single target — navigate only.
+    if (doc.id) flashDocCard(doc.id);
+  }
+
+  // Scroll to a doc card by id and pulse it. The card may render a frame or
+  // two after the section loader resolves, so retry briefly before giving up.
+  function flashDocCard(id) {
+    const sel = `[data-doc-id="${(window.CSS && CSS.escape) ? CSS.escape(id) : id}"]`;
+    let tries = 0;
+    const tick = () => {
+      const card = document.querySelector(sel);
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.add('doc-flash');
+        setTimeout(() => card.classList.remove('doc-flash'), 2600);
+        return;
+      }
+      if (++tries < 25) setTimeout(tick, 80);
+    };
+    tick();
   }
 
   function wireKbSearchForm() {
@@ -1709,7 +6282,7 @@
     `;
 
     const cats = s.byCategory || {};
-    const streams = s.byStreamType || { FILE: 0, WEB: 0, SOCIAL: 0 };
+    const streams = s.byStreamType || { FILE: 0, WEB: 0 };
     $('kb-stat-cards').innerHTML = [
       // Top row: category split
       statCard('Product Intel',   `${fmtNum(cats.PRODUCT_INTEL?.documents)} docs`),
@@ -1717,9 +6290,8 @@
       statCard('Battlecards',     `${fmtNum(cats.BATTLECARDS?.documents)} docs`),
       statCard('Total Chunks',    fmtNum(s.totals.chunks)),
       // Bottom row: Omni-Sync source split
-      streamStatCard('Files',         streams.FILE,   'file'),
-      streamStatCard('Web Pages',     streams.WEB,    'web'),
-      streamStatCard('Social Posts',  streams.SOCIAL, 'social'),
+      streamStatCard('Files',     streams.FILE, 'file'),
+      streamStatCard('Web Pages', streams.WEB,  'web'),
       providerStatCard(s.providers || {}),
     ].join('');
 
@@ -1890,6 +6462,7 @@
       b.addEventListener('click', () => kbDeleteDoc(b.dataset.kbDelete)));
     host.querySelectorAll('[data-kb-keypoints]').forEach((b) =>
       b.addEventListener('click', () => kbRegenKeyPoints(b.dataset.kbKeypoints, b)));
+    wireDocDetails(host);
     host.querySelectorAll('[data-research-start],[data-research-rerun]').forEach((b) =>
       b.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -2174,6 +6747,11 @@
         if (ent.competitorIds) body.competitorIds = ent.competitorIds;
         if (ent.tenantId) body.tenantId = ent.tenantId;
         if (ent._competitorName) body.competitorName = ent._competitorName;
+        // Battlecard product scope — COMPETITOR intel only; empty = all products.
+        if (ent.scope === 'COMPETITOR') {
+          const applies = readAppliesToProductIds('web');
+          if (applies.length) body.appliesToProductIds = applies;
+        }
         // Buyer persona — only when this is prospect intel; find-or-created on
         // a real ingest (skipped on dry run, which makes no DB writes).
         if (ent.scope === 'PROSPECT' && !dryRun) {
@@ -2199,99 +6777,18 @@
           result.innerHTML = `
             <strong>Indexed.</strong> ${escapeHtml(d.title || '—')} — <span class="kb-row-scope scope-${String(d.scope || 'tenant').toLowerCase()}">${escapeHtml(d.scope || 'TENANT')}</span> · ${fmtNum(d.chunk_count)} chunks,
             ${fmtNum(d.token_count)} tokens · <span class="kb-stream-pill stream-web">WEB</span>.
-            <a href="#" id="kb-web-go-library">Open Library</a>
+            <a href="#" id="kb-web-go-doc">View document →</a>
           `;
           form.reset();
           $('kb-web-dryrun').checked = true;
           resetEntitySelector('web');
-          const go = document.getElementById('kb-web-go-library');
-          if (go) go.addEventListener('click', (ev) => {
-            ev.preventDefault();
-            switchKbTab('library');
-          });
           loaded.knowledge = false;
           loaded.company = false; // a TENANT page changes the Company profile
-        }
-      } catch (err) {
-        result.classList.remove('hidden');
-        result.classList.add('error');
-        result.textContent = err.message;
-      } finally {
-        btn.disabled = false; btn.textContent = 'Fetch & index';
-      }
-    });
-  }
-
-  function wireKbSocialForm() {
-    const form = $('kb-social-form');
-    if (!form || form.dataset.wired === '1') return;
-    form.dataset.wired = '1';
-
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const btn = $('kb-social-btn');
-      const result = $('kb-social-result');
-      const dryRun = $('kb-social-dryrun').checked;
-      result.classList.add('hidden');
-      result.classList.remove('error', 'success');
-      btn.disabled = true; btn.textContent = dryRun ? 'Fetching preview…' : 'Fetching & indexing…';
-
-      try {
-        const body = {
-          accountId: $('kb-social-account').value.trim(),
-          category: $('kb-social-category').value,
-          dryRun,
-        };
-        // Product line: free-typed names get find-or-created — but only on a
-        // real ingest, not a dry run (which makes no DB writes). Empty = none.
-        const socialProductLine = ($('kb-social-product').value || '').trim();
-        if (socialProductLine && !dryRun) body.productIds = [await resolveProductName(socialProductLine)];
-        const since = $('kb-social-since').value;
-        if (since) body.since = new Date(since).toISOString();
-        const limit = parseInt($('kb-social-limit').value, 10);
-        if (!Number.isNaN(limit)) body.limit = limit;
-        const ent = await resolveEntityForLane('social', { dryRun });
-        body.scope = ent.scope;
-        if (ent.companyId) body.companyId = ent.companyId;
-        if (ent.competitorIds) body.competitorIds = ent.competitorIds;
-        if (ent.tenantId) body.tenantId = ent.tenantId;
-        // Buyer persona — only when this is prospect intel; find-or-created on
-        // a real ingest (skipped on dry run, which makes no DB writes).
-        if (ent.scope === 'PROSPECT' && !dryRun) {
-          const pid = await resolvePersonaName(($('kb-social-persona').value || '').trim());
-          if (pid) body.personaIds = [pid];
-        }
-
-        const r = await fetch('/api/knowledge/social-sync', {
-          method: 'POST', credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const payload = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(payload.error || `HTTP ${r.status}`);
-
-        result.classList.remove('hidden');
-        result.classList.add('success');
-        if (dryRun) {
-          result.innerHTML = renderSocialPreview(payload.preview || {});
-        } else {
-          const res = payload.result || {};
-          result.innerHTML = `
-            <strong>Indexed.</strong> ${fmtNum(res.ingested)} of ${fmtNum(res.fetched)} posts ingested
-            (${fmtNum(res.skipped)} skipped) · stream: <span class="kb-stream-pill stream-social">SOCIAL</span>.
-            <a href="#" id="kb-social-go-library">Open Library</a>
-          `;
-          form.reset();
-          $('kb-social-dryrun').checked = true;
-          $('kb-social-limit').value = '25';
-          resetEntitySelector('social');
-          const go = document.getElementById('kb-social-go-library');
+          const go = document.getElementById('kb-web-go-doc');
           if (go) go.addEventListener('click', (ev) => {
             ev.preventDefault();
-            switchKbTab('library');
+            revealDocument(d);
           });
-          loaded.knowledge = false;
-          loaded.company = false; // TENANT posts change the Company profile
         }
       } catch (err) {
         result.classList.remove('hidden');
@@ -2389,40 +6886,6 @@
       </div>`;
   }
 
-  // ---- Social dry-run preview (multi-post) ----
-  function renderSocialPreview(p) {
-    const posts = (p && p.sample) || [];
-    const engStr = (e) => {
-      if (!e || typeof e !== 'object') return '';
-      const bits = [];
-      if (e.like_count != null) bits.push(`${fmtNum(e.like_count)} likes`);
-      if (e.comment_count != null) bits.push(`${fmtNum(e.comment_count)} comments`);
-      if (e.share_count != null) bits.push(`${fmtNum(e.share_count)} shares`);
-      if (e.view_count != null) bits.push(`${fmtNum(e.view_count)} views`);
-      return bits.length ? ` · ${bits.join(' · ')}` : '';
-    };
-    const items = posts.map((s) => {
-      const when = s.publishedAt ? fmtDate(s.publishedAt) : 'unknown date';
-      const meta = [s.platform, s.handle && '@' + s.handle, s.type].filter(Boolean).join(' · ');
-      const link = s.url ? `<a href="${escapeHtml(s.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(when)} ↗</a>` : escapeHtml(when);
-      return `
-        <div class="kb-preview-sec" style="padding:8px 12px">
-          <div style="font-size:12px;color:var(--muted)">${link}${meta ? ' · ' + escapeHtml(meta) : ''}${escapeHtml(engStr(s.engagement))}</div>
-          <div style="font-size:13px;margin-top:4px;white-space:pre-wrap">${escapeHtml((s.text || '').trim())}${s.textTruncated ? ' …' : ''}</div>
-        </div>`;
-    }).join('');
-    return `
-      <div class="kb-preview">
-        <div class="kb-preview-badges">
-          <span class="kb-preview-badge doctype">SOCIAL preview</span>
-          <span class="kb-preview-badge">${fmtNum(p && p.fetched)} post${(p && p.fetched) === 1 ? '' : 's'} fetched</span>
-          ${p && p.fromDate ? `<span class="kb-preview-badge">since ${escapeHtml(fmtDate(p.fromDate))}</span>` : ''}
-        </div>
-        ${items || '<div class="kb-preview-note">No posts in this window.</div>'}
-        <div class="kb-preview-note">Nothing indexed yet — uncheck "Preview only" and resubmit to ingest each post as its own KB entry.</div>
-      </div>`;
-  }
-
   function wireKbUploadForm() {
     const form = $('kb-upload-form');
     if (!form || form.dataset.wired === '1') return;
@@ -2489,6 +6952,11 @@
         if (ent.companyId) fd.append('companyId', ent.companyId);
         for (const id of (ent.competitorIds || [])) fd.append('competitorIds', id);
         if (ent.tenantId) fd.append('tenantId', ent.tenantId);
+        // Battlecard product scope — only meaningful for COMPETITOR intel.
+        // Empty = "all products" (master checkbox on); field is omitted then.
+        if (ent.scope === 'COMPETITOR') {
+          for (const id of readAppliesToProductIds('file')) fd.append('appliesToProductIds', id);
+        }
         // Buyer persona — only meaningful for prospect intel; find-or-created.
         if (ent.scope === 'PROSPECT') {
           const pid = await resolvePersonaName(($('kb-file-persona').value || '').trim());
@@ -2506,19 +6974,19 @@
         const d = body.document;
         result.innerHTML = `
           <strong>Indexed.</strong> ${escapeHtml(d.title)} — <span class="kb-row-scope scope-${String(d.scope || 'tenant').toLowerCase()}">${escapeHtml(d.scope || 'TENANT')}</span> · ${fmtNum(d.chunk_count)} chunks,
-          ${fmtNum(d.token_count)} tokens. Switch to <a href="#" id="kb-go-library">Library</a> to view.
+          ${fmtNum(d.token_count)} tokens. <a href="#" id="kb-go-doc">View document →</a>
         `;
         form.reset();
         resetEntitySelector('file');
-        const goLibrary = document.getElementById('kb-go-library');
-        if (goLibrary) goLibrary.addEventListener('click', (ev) => {
-          ev.preventDefault();
-          switchKbTab('library');
-        });
         // Invalidate the Knowledge status cache (hero number) and the Company
         // profile (its intel grouping + doc counts change on a TENANT upload).
         loaded.knowledge = false;
         loaded.company = false;
+        const goDoc = document.getElementById('kb-go-doc');
+        if (goDoc) goDoc.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          revealDocument(d);
+        });
       } catch (err) {
         result.classList.remove('hidden');
         result.classList.add('error');
@@ -2527,5 +6995,1086 @@
         btn.disabled = false; btn.textContent = 'Upload & index';
       }
     });
+  }
+
+  // ===========================================================================
+  // SETTINGS — API tokens for non-browser clients (MCP clients, AI agents, scripts).
+  // See api/src/auth-tokens.js and docs/rfcs/0001-lili-integration.md §5.
+  // ===========================================================================
+
+  async function loadSettings() {
+    await Promise.all([
+      loadApiTokensTable(),
+      loadSettingsKbStatus(),
+    ]);
+    wireApiTokensForm();
+    wireSettingsKbTools();
+  }
+
+  // ── Profile (the signed-in user's own account) ────────────────────────────
+  // Read view with inline edit: each field shows its current value with an
+  // Edit affordance; the input only appears while editing.
+  let _profile = null;
+
+  function initialsOf(name, fallbackEmail) {
+    const n = (name || '').trim();
+    if (n) return n.split(/\s+/).map((p) => p[0]).slice(0, 2).join('').toUpperCase();
+    return (fallbackEmail || '?')[0].toUpperCase();
+  }
+
+  async function loadProfile() {
+    try { ({ profile: _profile } = await fetchJson('/api/auth/profile')); }
+    catch (err) {
+      $('name-display').textContent = `Couldn't load profile: ${err.message}`;
+      return;
+    }
+    renderProfile();
+    wireProfileForms();
+    renderProfileSubscription();
+    renderProfileDevices();
+  }
+
+  // Friendly-ish browser/OS label from a raw User-Agent string.
+  function uaLabel(ua) {
+    if (!ua) return 'Unknown device';
+    const browser = /Edg\//.test(ua) ? 'Edge'
+      : /OPR\/|Opera/.test(ua) ? 'Opera'
+      : /Chrome\//.test(ua) ? 'Chrome'
+      : /Firefox\//.test(ua) ? 'Firefox'
+      : /Safari\//.test(ua) ? 'Safari' : 'Browser';
+    const os = /Windows/.test(ua) ? 'Windows'
+      : /iPhone|iPad|iOS/.test(ua) ? 'iOS'
+      : /Mac OS X|Macintosh/.test(ua) ? 'macOS'
+      : /Android/.test(ua) ? 'Android'
+      : /Linux/.test(ua) ? 'Linux' : '';
+    return os ? `${browser} on ${os}` : browser;
+  }
+
+  async function renderProfileDevices() {
+    const host = $('profile-devices-body');
+    if (!host) return;
+    let list;
+    try { ({ devices: list } = await fetchJson('/api/auth/devices')); }
+    catch (err) { host.innerHTML = `<div class="empty">Couldn't load devices: ${escapeHtml(err.message)}</div>`; return; }
+    if (!list || !list.length) {
+      host.innerHTML = '<div class="kb-subtle">No trusted devices yet — sign in and tick "Trust this device" to add one.</div>';
+      return;
+    }
+    host.innerHTML = `<table class="dt">
+      <thead><tr><th>Device</th><th>Network</th><th>Last used</th><th>Trusted until</th><th></th></tr></thead>
+      <tbody>${list.map((d) => `
+        <tr data-device-row="${escapeHtml(d.id)}">
+          <td>${escapeHtml(uaLabel(d.userAgent))}${d.current ? ' <span class="pill pill-ok">This device</span>' : ''}</td>
+          <td class="kb-subtle">${escapeHtml(d.ipPrefix || '—')}</td>
+          <td class="kb-subtle">${d.lastSeenAt ? fmtDate(d.lastSeenAt) : '—'}</td>
+          <td class="kb-subtle">${d.expiresAt ? fmtDate(d.expiresAt) : '—'}</td>
+          <td><button class="kb-link-btn danger" data-device-revoke="${escapeHtml(d.id)}">Revoke</button></td>
+        </tr>`).join('')}
+      </tbody></table>`;
+    host.querySelectorAll('[data-device-revoke]').forEach((b) => b.addEventListener('click', () => revokeDevice(b.dataset.deviceRevoke)));
+  }
+
+  async function revokeDevice(id) {
+    try {
+      await fetchJson(`/api/auth/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      toast('Device revoked — it will need a new code next sign-in.');
+      renderProfileDevices();
+    } catch (err) { toast(err.message || 'Could not revoke device', 'warn'); }
+  }
+
+  // Subscription summary + Manage-billing inside the profile page (full plan
+  // grid + usage live on the Billing page).
+  async function renderProfileSubscription() {
+    const host = $('profile-sub-body');
+    if (!host) return;
+    let b;
+    try { ({ billing: b } = await fetchJson('/api/billing')); }
+    catch (err) { host.innerHTML = `<div class="empty">Couldn't load subscription: ${escapeHtml(err.message)}</div>`; return; }
+    const statusPill = b.active
+      ? `<span class="pill pill-ok">${escapeHtml(b.status || 'ACTIVE')}</span>`
+      : `<span class="pill pill-warn">${escapeHtml(b.status || 'INACTIVE')}</span>`;
+    let sub = '';
+    if (b.status === 'TRIAL' && b.daysLeft != null) sub = `${b.daysLeft} day${b.daysLeft === 1 ? '' : 's'} left in your free trial.`;
+    else if (b.currentPeriodEnd) sub = `Renews ${fmtDate(b.currentPeriodEnd)}.`;
+    else if (!b.active) sub = 'Read-only — choose a plan to resume.';
+    const manage = b.manageable ? '<button class="kb-secondary-btn" id="profile-manage-btn">Manage billing</button>' : '';
+    host.innerHTML = `
+      <div class="bill-summary-row">
+        <div>
+          <div class="bill-plan-name">${escapeHtml(b.planName || '—')} plan ${statusPill}</div>
+          ${sub ? `<div class="bill-sub">${escapeHtml(sub)}</div>` : ''}
+        </div>
+        <div class="bill-summary-actions">
+          ${manage}
+          <button class="kb-secondary-btn" id="profile-plans-btn">View plans &amp; usage →</button>
+        </div>
+      </div>`;
+    if (b.manageable) $('profile-manage-btn').addEventListener('click', () => openBillingPortal($('profile-manage-btn')));
+    $('profile-plans-btn').addEventListener('click', () => { location.hash = '#billing'; });
+  }
+
+  function renderProfile() {
+    const p = _profile || {};
+    const roleLabel = (p.role || '').replace(/^\w/, (c) => c.toUpperCase());
+    $('profile-avatar').textContent = initialsOf(p.name, p.email);
+    $('profile-hero-name').textContent = p.name || '—';
+    $('profile-hero-email').textContent = p.email || '';
+    $('profile-hero-role').textContent = roleLabel;
+    $('name-display').textContent = p.name || 'Not set';
+    $('email-display').textContent = p.email || '—';
+    $('role-display').textContent = roleLabel;
+    $('created-display').textContent = p.createdAt ? fmtDate(p.createdAt) : '—';
+  }
+
+  function setMsg(id, text, kind) {
+    const el = $(id);
+    el.textContent = text || '';
+    el.className = `profile-msg ${kind || ''}` + (text ? '' : ' hidden');
+  }
+
+  function setNameEditing(on) {
+    $('name-display').classList.toggle('hidden', on);
+    $('name-edit').classList.toggle('hidden', !on);
+    $('name-edit-btn').classList.toggle('hidden', on);
+    $('name-editing-actions').classList.toggle('hidden', !on);
+    if (on) {
+      $('profile-first-name').value = (_profile && _profile.firstName) || '';
+      $('profile-last-name').value = (_profile && _profile.lastName) || '';
+      $('profile-first-name').focus();
+    } else {
+      setMsg('profile-msg', '');
+    }
+  }
+
+  function setPasswordEditing(on) {
+    $('password-form').classList.toggle('hidden', !on);
+    $('pw-edit-btn').classList.toggle('hidden', on);
+    if (on) { $('pw-current').focus(); }
+    else { $('password-form').reset(); setMsg('password-msg', ''); }
+  }
+
+  function wireProfileForms() {
+    const root = $('section-profile');
+    if (root.dataset.wired === '1') return;
+    root.dataset.wired = '1';
+
+    // ── Name: inline edit ──
+    $('name-edit-btn').addEventListener('click', () => setNameEditing(true));
+    $('name-cancel-btn').addEventListener('click', () => setNameEditing(false));
+    $('name-save-btn').addEventListener('click', async () => {
+      const firstName = $('profile-first-name').value.trim();
+      const lastName = $('profile-last-name').value.trim();
+      if (!firstName || !lastName) { setMsg('profile-msg', 'Please enter your first and last name.', 'err'); return; }
+      const btn = $('name-save-btn');
+      btn.disabled = true;
+      try {
+        const r = await fetch('/api/auth/me', {
+          method: 'PATCH', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ firstName, lastName }),
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+        _profile = { ..._profile, ...body.profile };
+        renderProfile();
+        setNameEditing(false);
+        refreshSidebarName(body.profile && body.profile.name);
+        toast('Profile updated.');
+      } catch (err) {
+        setMsg('profile-msg', err.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // ── Password: reveal-on-demand changer ──
+    $('pw-edit-btn').addEventListener('click', () => setPasswordEditing(true));
+    $('pw-cancel-btn').addEventListener('click', () => setPasswordEditing(false));
+    $('password-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const currentPassword = $('pw-current').value;
+      const newPassword = $('pw-new').value;
+      const confirm = $('pw-new2').value;
+      if (newPassword.length < 12) { setMsg('password-msg', 'New password must be at least 12 characters.', 'err'); return; }
+      if (newPassword !== confirm) { setMsg('password-msg', "The new passwords don't match.", 'err'); return; }
+      if (newPassword === currentPassword) { setMsg('password-msg', 'New password must be different from the current one.', 'err'); return; }
+      const btn = $('password-save-btn');
+      btn.disabled = true;
+      try {
+        const r = await fetch('/api/auth/change-password', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentPassword, newPassword }),
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+        setPasswordEditing(false);
+        setMsg('password-msg', '');
+        toast('Password updated.');
+      } catch (err) {
+        setMsg('password-msg', err.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
+  // Update the sidebar name + avatar in place after a profile save (the JWT
+  // cookie was re-issued server-side, so no reload is needed).
+  function refreshSidebarName(name) {
+    if (!name) return;
+    const nameEl = $('user-name');
+    nameEl.textContent = name;
+    nameEl.classList.remove('hidden');
+    $('user-avatar').textContent = initialsOf(name);
+  }
+
+  // ── Subscription / Billing ────────────────────────────────────────────────
+  const FEATURE_LABELS = {
+    discovery: 'AI prospect discovery',
+    competitor_research: 'AI competitor research',
+    engagements: 'AI-joined engagements',
+    arena: 'Arena practice + scorecards',
+    crm: 'CRM integrations',
+    api_tokens: 'API / MCP access',
+    calendly: 'Calendly auto-booking',
+  };
+  const METER_LABELS = {
+    discovery: 'Prospect discovery runs',
+    competitor_research: 'Competitor research runs',
+    engagements: 'Engagements scheduled',
+  };
+
+  // Top-of-page banner: trial countdown, or a paywall when inactive.
+  // Sidebar plan chip, directly under the name/email/role. Mirrors the banner's
+  // state machine but stays visible for active plans too (banner hides those).
+  function renderUserPlan(ent) {
+    const el = $('user-plan');
+    if (!el) return;
+    if (!ent) { el.classList.add('hidden'); return; }
+    let text = '';
+    let cls = 'user-plan';
+    if (!ent.active) {
+      text = 'Read-only — upgrade';
+      cls += ' is-danger';
+    } else if (ent.status === 'TRIAL' && ent.daysLeft != null) {
+      text = `Trial — ${ent.daysLeft} day${ent.daysLeft === 1 ? '' : 's'} left`;
+      cls += ent.daysLeft <= 3 ? ' is-warn' : ' is-trial';
+    } else if (ent.reason === 'internal') {
+      text = ent.planName || 'Internal';
+    } else {
+      text = `${ent.planName || ent.plan || 'Plan'} plan`;
+    }
+    el.textContent = text;
+    el.className = cls;
+    el.classList.remove('hidden');
+  }
+
+  function renderSubBanner(ent) {
+    renderUserPlan(ent);
+    const el = $('sub-banner');
+    if (!el || !ent) { if (el) el.classList.add('hidden'); return; }
+    const goBilling = `onclick="location.hash='#billing'"`;
+    if (!ent.active) {
+      const why = ent.reason === 'trial_expired' ? 'Your free trial has ended.'
+        : ent.reason === 'past_due' ? 'Your payment is past due.'
+        : ent.reason === 'cancelled' ? 'Your subscription was cancelled.'
+        : 'Your subscription is inactive.';
+      el.className = 'sub-banner danger';
+      el.innerHTML = `<span>${why} You have read-only access until you upgrade.</span>
+        <button class="sub-banner-cta" ${goBilling}>Upgrade now →</button>`;
+      el.classList.remove('hidden');
+      return;
+    }
+    if (ent.status === 'TRIAL' && ent.daysLeft != null) {
+      el.className = ent.daysLeft <= 3 ? 'sub-banner warn' : 'sub-banner info';
+      el.innerHTML = `<span><strong>${ent.daysLeft} day${ent.daysLeft === 1 ? '' : 's'} left</strong> in your free trial${ent.planName ? ` · ${ent.planName} features` : ''}.</span>
+        <button class="sub-banner-cta" ${goBilling}>Choose a plan →</button>`;
+      el.classList.remove('hidden');
+      return;
+    }
+    el.classList.add('hidden'); // ACTIVE / INTERNAL — no banner
+  }
+
+  // 402 responses → toast + nudge to Billing.
+  let _lastPaywallAt = 0;
+  function handlePaywall(body) {
+    const msg = (body && body.error) || 'Upgrade required to do that.';
+    toast(msg, 'warn');
+    // Avoid yanking the user to Billing repeatedly; only on a hard sub block.
+    if (body && body.code === 'SUBSCRIPTION_REQUIRED' && Date.now() - _lastPaywallAt > 3000) {
+      _lastPaywallAt = Date.now();
+      location.hash = '#billing';
+    }
+  }
+
+  async function loadBilling(query) {
+    if (query && query.checkout === 'success') {
+      toast('Subscription activated — welcome aboard!');
+      history.replaceState(null, '', '#billing');
+    } else if (query && query.checkout === 'cancel') {
+      toast('Checkout cancelled.', 'warn');
+      history.replaceState(null, '', '#billing');
+    }
+    let data;
+    try { data = await fetchJson('/api/billing'); }
+    catch (err) { $('bill-summary').innerHTML = `<div class="empty">Couldn't load billing: ${escapeHtml(err.message)}</div>`; return; }
+    renderBillingSummary(data.billing);
+    renderBillingUsage(data.billing);
+    renderBillingPlans(data.billing, data.plans || []);
+    // Keep the top banner in sync with the freshest state.
+    renderSubBanner(data.billing);
+  }
+
+  function renderBillingSummary(b) {
+    const statusPill = b.active
+      ? `<span class="pill pill-ok">${escapeHtml(b.status || 'ACTIVE')}</span>`
+      : `<span class="pill pill-warn">${escapeHtml(b.status || 'INACTIVE')}</span>`;
+    let line2 = '';
+    if (b.status === 'TRIAL' && b.daysLeft != null) {
+      line2 = `${b.daysLeft} day${b.daysLeft === 1 ? '' : 's'} left in your free trial.`;
+    } else if (b.currentPeriodEnd) {
+      line2 = `Renews ${fmtDate(b.currentPeriodEnd)}.`;
+    } else if (!b.active) {
+      line2 = 'Read-only access — upgrade to resume creating and running AI actions.';
+    }
+    const manageBtn = b.manageable
+      ? `<button class="kb-secondary-btn" id="bill-manage-btn">Manage billing</button>` : '';
+    $('bill-summary').innerHTML = `
+      <div class="bill-summary-row">
+        <div>
+          <div class="bill-plan-name">${escapeHtml(b.planName || '—')} plan ${statusPill}</div>
+          ${line2 ? `<div class="bill-sub">${escapeHtml(line2)}</div>` : ''}
+        </div>
+        <div class="bill-summary-actions">${manageBtn}</div>
+      </div>`;
+    if (b.manageable) {
+      $('bill-manage-btn').addEventListener('click', () => openBillingPortal($('bill-manage-btn')));
+    }
+  }
+
+  function renderBillingUsage(b) {
+    const meters = ['discovery', 'competitor_research', 'engagements'];
+    $('bill-usage').innerHTML = meters.map((m) => {
+      const used = (b.usage && b.usage[m]) || 0;
+      const cap = b.caps ? b.caps[m] : null;
+      const capLabel = cap == null ? '∞' : cap;
+      const pct = cap == null || cap === 0 ? 0 : Math.min(100, Math.round((used / cap) * 100));
+      const over = cap != null && used >= cap;
+      return `
+        <div class="usage-row">
+          <div class="usage-top"><span>${escapeHtml(METER_LABELS[m] || m)}</span><span class="${over ? 'usage-over' : ''}">${used} / ${capLabel}</span></div>
+          <div class="usage-bar"><i style="width:${pct}%" class="${over ? 'over' : ''}"></i></div>
+        </div>`;
+    }).join('') + '<div class="bill-sub" style="margin-top:10px">Resets on the 1st of each month (UTC).</div>';
+  }
+
+  function renderBillingPlans(b, catalog) {
+    $('bill-plans').innerHTML = catalog.map((p) => {
+      const isCurrent = b.plan === p.key;
+      const feats = (p.features || []).map((f) => `<li>${escapeHtml(FEATURE_LABELS[f] || f)}</li>`).join('');
+      let btn;
+      if (isCurrent) {
+        btn = `<button class="primary-cta" disabled>Current plan</button>`;
+      } else if (p.contactSales) {
+        btn = `<a class="kb-secondary-btn" href="mailto:sales@ghoststream.exact-it.net?subject=Enterprise%20plan">Contact sales</a>`;
+      } else if (p.selfServe) {
+        const disabled = (!b.stripeConfigured || !p.hasPrice) ? 'disabled title="Billing not set up yet"' : '';
+        btn = `<button class="primary-cta" data-upgrade="${escapeHtml(p.key)}" ${disabled}>Upgrade to ${escapeHtml(p.name)}</button>`;
+      } else {
+        btn = '';
+      }
+      const price = p.monthly != null ? `<div class="plan-price">$${p.monthly}<span>/mo</span></div>` : '<div class="plan-price">Custom</div>';
+      return `
+        <div class="plan-card ${isCurrent ? 'current' : ''}">
+          <div class="plan-name">${escapeHtml(p.name)}${isCurrent ? ' <span class="pill pill-ok">Current</span>' : ''}</div>
+          ${price}
+          <div class="plan-blurb">${escapeHtml(p.blurb || '')}</div>
+          <ul class="plan-feats">${feats}</ul>
+          <div class="plan-cta">${btn}</div>
+        </div>`;
+    }).join('');
+    $('bill-plans').querySelectorAll('[data-upgrade]').forEach((btn) => {
+      btn.addEventListener('click', () => startCheckout(btn.dataset.upgrade, btn));
+    });
+  }
+
+  async function startCheckout(plan, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Redirecting…'; }
+    try {
+      const r = await fetch('/api/billing/checkout', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok || !body.url) throw new Error(body.error || `HTTP ${r.status}`);
+      window.location.href = body.url;
+    } catch (err) {
+      toast(`Couldn't start checkout: ${err.message}`, 'warn');
+      if (btn) { btn.disabled = false; btn.textContent = `Upgrade`; loadBilling(); }
+    }
+  }
+
+  async function openBillingPortal(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Opening…'; }
+    try {
+      const r = await fetch('/api/billing/portal', { method: 'POST', credentials: 'include' });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok || !body.url) throw new Error(body.error || `HTTP ${r.status}`);
+      window.location.href = body.url;
+    } catch (err) {
+      toast(`Couldn't open billing portal: ${err.message}`, 'warn');
+      if (btn) { btn.disabled = false; btn.textContent = 'Manage billing'; }
+    }
+  }
+
+  // Transient bottom-right confirmation toast (reusable).
+  function toast(msg, kind) {
+    let host = document.getElementById('gs-toast-host');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'gs-toast-host';
+      host.className = 'gs-toast-host';
+      document.body.appendChild(host);
+    }
+    const t = document.createElement('div');
+    t.className = `gs-toast ${kind || 'ok'}`;
+    t.textContent = msg;
+    host.appendChild(t);
+    requestAnimationFrame(() => t.classList.add('show'));
+    setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 2600);
+  }
+
+  // ── KB system (moved from the old Knowledge tab) ──────────────────────────
+  async function loadSettingsKbStatus() {
+    const host = $('settings-kb-status');
+    if (!host) return;
+    try {
+      const s = await fetchJson('/api/knowledge/status');
+      const totals = s.totals || {};
+      const streams = s.byStreamType || {};
+      host.innerHTML = `
+        <div class="prospect-quick-row" style="grid-template-columns: repeat(4, 1fr); gap: 8px">
+          ${statCard('Documents',     fmtNum(totals.documents))}
+          ${statCard('Chunks indexed', fmtNum(totals.chunks))}
+          ${statCard('Files',     `${fmtNum(streams.FILE   || 0)} doc${(streams.FILE   || 0) === 1 ? '' : 's'}`)}
+          ${statCard('Web pages', `${fmtNum(streams.WEB    || 0)} doc${(streams.WEB    || 0) === 1 ? '' : 's'}`)}
+        </div>`;
+    } catch (err) {
+      host.innerHTML = `<div class="empty">Couldn't load status: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function wireSettingsKbTools() {
+    const probeBtn = $('settings-kb-search-btn');
+    if (probeBtn && probeBtn.dataset.wired !== '1') {
+      probeBtn.dataset.wired = '1';
+      probeBtn.addEventListener('click', async () => {
+        const q = $('settings-kb-search-q').value.trim();
+        const k = parseInt($('settings-kb-search-k').value, 10) || 8;
+        const out = $('settings-kb-search-results');
+        if (!q) { out.innerHTML = '<div class="kb-subtle">Type a query first.</div>'; return; }
+        probeBtn.disabled = true; const orig = probeBtn.textContent; probeBtn.textContent = 'Probing…';
+        try {
+          const r = await fetchJson('/api/knowledge/search', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: q, k }),
+          });
+          const hits = r.hits || r.chunks || [];
+          if (hits.length === 0) {
+            out.innerHTML = '<div class="empty">No chunks matched. The KB might be empty or the query too narrow.</div>';
+          } else {
+            out.innerHTML = `<div style="font-size:13px">Top ${hits.length} match${hits.length === 1 ? '' : 'es'}:</div>` +
+              hits.map((h, i) => `
+                <div class="intel-lib-row" style="margin-top:6px">
+                  <div class="intel-lib-row-main">
+                    <div class="intel-lib-title">${escapeHtml(h.document_title || h.title || '(untitled)')} <span class="kb-subtle">· distance ${(h.distance != null ? h.distance.toFixed(3) : '?')}</span></div>
+                    <div class="intel-lib-meta">${escapeHtml((h.text || h.content || '').slice(0, 200))}${(h.text || h.content || '').length > 200 ? '…' : ''}</div>
+                  </div>
+                </div>`).join('');
+          }
+        } catch (err) {
+          out.innerHTML = `<div class="kb-result error">${escapeHtml(err.message)}</div>`;
+        } finally { probeBtn.disabled = false; probeBtn.textContent = orig; }
+      });
+    }
+    const rebuildBtn = $('settings-kb-cache-rebuild-btn');
+    if (rebuildBtn && rebuildBtn.dataset.wired !== '1') {
+      rebuildBtn.dataset.wired = '1';
+      rebuildBtn.addEventListener('click', async () => {
+        const out = $('settings-kb-cache-result');
+        if (!confirm('Force a rebuild of the AI context cache for this workspace? Costs one AI call; safe to skip unless you suspect drift.')) return;
+        rebuildBtn.disabled = true; const orig = rebuildBtn.textContent; rebuildBtn.textContent = 'Rebuilding…';
+        out.classList.add('hidden'); out.classList.remove('error', 'success');
+        try {
+          await fetchJson('/api/knowledge/global-cache/rebuild', { method: 'POST' });
+          out.classList.remove('hidden'); out.classList.add('success');
+          out.textContent = 'Context cache rebuilt.';
+          await loadSettingsKbStatus();
+        } catch (err) {
+          out.classList.remove('hidden'); out.classList.add('error');
+          out.textContent = err.message;
+        } finally { rebuildBtn.disabled = false; rebuildBtn.textContent = orig; }
+      });
+    }
+  }
+
+  async function loadApiTokensTable() {
+    let tokens;
+    try { tokens = await fetchJson('/api/auth/tokens'); }
+    catch (err) {
+      $('api-tokens-table').innerHTML =
+        `<div class="empty">Couldn't load tokens: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    const tbl = $('api-tokens-table');
+    if (!tokens || tokens.length === 0) {
+      tbl.innerHTML = '<div class="empty">No API tokens yet. Create one above to connect an MCP client, AI agent, or script.</div>';
+      return;
+    }
+    tbl.innerHTML = `
+      <table class="dt">
+        <thead><tr>
+          <th>Label</th><th>Prefix</th><th>Created</th><th>Last used</th>
+          <th>Expires</th><th>Status</th><th></th>
+        </tr></thead>
+        <tbody>${tokens.map(apiTokenRow).join('')}</tbody>
+      </table>`;
+    tbl.querySelectorAll('[data-revoke]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Revoke this token? Any client using it will be locked out immediately.')) return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/auth/tokens/${encodeURIComponent(btn.dataset.revoke)}`, {
+            method: 'DELETE', credentials: 'include',
+          });
+          if (!r.ok && r.status !== 404) throw new Error(`HTTP ${r.status}`);
+          await loadApiTokensTable();
+        } catch (err) {
+          alert('Failed to revoke: ' + err.message);
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  function apiTokenRow(t) {
+    const isActive = !t.revoked_at && (!t.expires_at || new Date(t.expires_at) > new Date());
+    const status = isActive
+      ? '<span class="pill pill-ok">active</span>'
+      : t.revoked_at
+        ? '<span class="pill pill-warn">revoked</span>'
+        : '<span class="pill pill-warn">expired</span>';
+    const action = isActive
+      ? `<button type="button" data-revoke="${escapeHtml(t.id)}">Revoke</button>`
+      : '<span class="muted">—</span>';
+    return `
+      <tr>
+        <td>${escapeHtml(t.label || '')}</td>
+        <td><code>${escapeHtml(t.prefix)}</code></td>
+        <td>${fmtDate(t.created_at)}</td>
+        <td>${t.last_used_at ? fmtDate(t.last_used_at) : '<span class="muted">—</span>'}</td>
+        <td>${t.expires_at ? fmtDate(t.expires_at) : '<span class="muted">never</span>'}</td>
+        <td>${status}</td>
+        <td>${action}</td>
+      </tr>`;
+  }
+
+  function wireApiTokensForm() {
+    const form = $('api-tokens-create-form');
+    if (!form || form.dataset.wired === '1') return;
+    form.dataset.wired = '1';
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const label = $('api-token-label').value.trim();
+      const expirySel = $('api-token-expiry').value;
+      if (!label) return;
+      const body = { label };
+      if (expirySel !== '') body.expires_in_days = parseInt(expirySel, 10);
+      const btn = $('api-token-create-btn');
+      btn.disabled = true;
+      try {
+        const r = await fetch('/api/auth/tokens', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err.detail || err.error || `HTTP ${r.status}`);
+        }
+        const created = await r.json();
+        revealNewToken(created.plaintext_token);
+        form.reset();
+        await loadApiTokensTable();
+      } catch (err) {
+        alert('Failed to create: ' + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    const copyBtn = $('api-token-copy');
+    if (copyBtn && copyBtn.dataset.wired !== '1') {
+      copyBtn.dataset.wired = '1';
+      copyBtn.addEventListener('click', async () => {
+        const text = $('api-token-plaintext').textContent;
+        try {
+          await navigator.clipboard.writeText(text);
+          const orig = copyBtn.textContent;
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+        } catch { alert('Copy failed — select the token and copy manually.'); }
+      });
+    }
+
+    const doneBtn = $('api-token-reveal-done');
+    if (doneBtn && doneBtn.dataset.wired !== '1') {
+      doneBtn.dataset.wired = '1';
+      doneBtn.addEventListener('click', () => {
+        hide('api-token-reveal-card');
+        $('api-token-plaintext').textContent = '';
+      });
+    }
+  }
+
+  function revealNewToken(plaintext) {
+    $('api-token-plaintext').textContent = plaintext;
+    show('api-token-reveal-card');
+  }
+
+  // ── Calls page ─────────────────────────────────────────────────────────────
+  // ADR-003 Phase-2 unified replacement for Portals + Meetings. Talks to the
+  // additive GET /admin/calls endpoint shipped in PR #9. State lives in the
+  // closure so re-entering the section via hash-link picks up the previous
+  // tab/search/facets, but a fresh page load starts clean. The API uses
+  // cursor pagination — we keep a forward stack so Prev works without a
+  // re-query.
+
+  const _callsState = {
+    cursor: null,           // current page cursor; null = first page
+    cursorStack: [],        // previous cursors, for Prev
+    nextCursor: null,       // cursor for Next (from pageInfo)
+    limit: 25,
+    status: '',
+    q: '',
+    // Facets map directly onto API query params:
+    //   source     → CSV
+    //   mission_id → CSV
+    //   company_id → CSV
+    //   has_gaps   → 'none' | 'any' | 'high'
+    //   has_portal → 'true' | 'false'
+    facets: {},
+    includeSamples: false,
+    tenant: '',             // superadmin only — empty = own tenant (or all if no filter)
+    inflight: 0,
+    searchDebounce: null,
+  };
+
+  function applyCallsQuery(query) {
+    if (!query) return;
+    if (typeof query.status === 'string') _callsState.status = query.status;
+    if (typeof query.q === 'string') _callsState.q = query.q;
+    if (query.include_samples === '1' || query.include_samples === 'true') _callsState.includeSamples = true;
+    ['source', 'mission_id', 'company_id'].forEach((k) => {
+      if (typeof query[k] === 'string' && query[k]) {
+        _callsState.facets[k] = query[k].split(',').filter(Boolean);
+      }
+    });
+    if (typeof query.has_gaps === 'string' && query.has_gaps) _callsState.facets.has_gaps = query.has_gaps;
+    if (typeof query.has_portal === 'string' && query.has_portal) _callsState.facets.has_portal = query.has_portal;
+    if (typeof query.tenant === 'string') _callsState.tenant = query.tenant;
+    _callsState.cursor = null;
+    _callsState.cursorStack = [];
+
+    const tabBtns = document.querySelectorAll('#calls-tabs .calls-tab');
+    tabBtns.forEach((b) => b.classList.toggle('active', (b.dataset.status || '') === _callsState.status));
+    const searchInput = $('calls-search');
+    if (searchInput) searchInput.value = _callsState.q;
+    const samplesToggle = $('calls-samples-toggle');
+    if (samplesToggle) samplesToggle.checked = _callsState.includeSamples;
+    refreshCalls();
+  }
+
+  async function loadCalls(query) {
+    // Wire controls once; idempotent guard via dataset flag.
+    const tabsHost = $('calls-tabs');
+    if (tabsHost && tabsHost.dataset.wired !== '1') {
+      tabsHost.dataset.wired = '1';
+      tabsHost.querySelectorAll('.calls-tab').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          _callsState.status = btn.dataset.status || '';
+          _callsState.cursor = null;
+          _callsState.cursorStack = [];
+          tabsHost.querySelectorAll('.calls-tab').forEach((b) => b.classList.toggle('active', b === btn));
+          pushCallsHash();
+          refreshCalls();
+        });
+      });
+    }
+
+    const searchInput = $('calls-search');
+    if (searchInput && searchInput.dataset.wired !== '1') {
+      searchInput.dataset.wired = '1';
+      searchInput.addEventListener('input', () => {
+        clearTimeout(_callsState.searchDebounce);
+        _callsState.searchDebounce = setTimeout(() => {
+          _callsState.q = searchInput.value.trim();
+          _callsState.cursor = null;
+          _callsState.cursorStack = [];
+          pushCallsHash();
+          refreshCalls();
+        }, 250);
+      });
+    }
+
+    const samplesToggle = $('calls-samples-toggle');
+    if (samplesToggle && samplesToggle.dataset.wired !== '1') {
+      samplesToggle.dataset.wired = '1';
+      samplesToggle.addEventListener('change', () => {
+        _callsState.includeSamples = samplesToggle.checked;
+        _callsState.cursor = null;
+        _callsState.cursorStack = [];
+        pushCallsHash();
+        refreshCalls();
+      });
+    }
+
+    // Tenant selector — only superadmins can switch.
+    if (isSuperadmin) {
+      const row = $('calls-tenant-row');
+      if (row) row.classList.remove('hidden');
+      const select = $('calls-tenant-select');
+      if (select && select.dataset.wired !== '1') {
+        select.dataset.wired = '1';
+        try {
+          const { tenants } = await fetchJson('/api/admin/tenants');
+          select.innerHTML =
+            '<option value="">All tenants</option>' +
+            tenants.map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name || t.id)}</option>`).join('');
+        } catch (err) {
+          console.warn('tenant list failed', err);
+          select.innerHTML = '<option value="">All tenants</option>';
+        }
+        select.addEventListener('change', () => {
+          _callsState.tenant = select.value;
+          _callsState.cursor = null;
+          _callsState.cursorStack = [];
+          pushCallsHash();
+          refreshCalls();
+        });
+      }
+    }
+
+    if (query) {
+      applyCallsQuery(query);
+    } else {
+      refreshCalls();
+    }
+  }
+
+  function pushCallsHash() {
+    // Persistent URL parts only — cursor is page-local navigation state and
+    // would just clutter shared links.
+    const params = new URLSearchParams();
+    if (_callsState.status) params.set('status', _callsState.status);
+    if (_callsState.q) params.set('q', _callsState.q);
+    if (_callsState.includeSamples) params.set('include_samples', '1');
+    if (_callsState.tenant) params.set('tenant', _callsState.tenant);
+    Object.entries(_callsState.facets).forEach(([k, v]) => {
+      if (Array.isArray(v) && v.length) params.set(k, v.join(','));
+      else if (typeof v === 'string' && v) params.set(k, v);
+    });
+    const qs = params.toString();
+    history.replaceState(null, '', qs ? `#calls?${qs}` : '#calls');
+  }
+
+  function _buildCallsQuery() {
+    const params = new URLSearchParams();
+    if (_callsState.status) params.set('status', _callsState.status);
+    if (_callsState.q) params.set('q', _callsState.q);
+    params.set('limit', String(_callsState.limit));
+    if (_callsState.cursor) params.set('cursor', _callsState.cursor);
+    if (_callsState.includeSamples) params.set('include_samples', '1');
+    if (_callsState.tenant) params.set('tenant', _callsState.tenant);
+    Object.entries(_callsState.facets).forEach(([k, v]) => {
+      if (Array.isArray(v) && v.length) params.set(k, v.join(','));
+      else if (typeof v === 'string' && v) params.set(k, v);
+    });
+    return params;
+  }
+
+  async function refreshCalls() {
+    const token = ++_callsState.inflight;
+    const params = _buildCallsQuery();
+
+    const tableHost = $('calls-table');
+    if (tableHost && !tableHost.dataset.everLoaded) tableHost.innerHTML = '<div class="kb-subtle">Loading…</div>';
+
+    let body;
+    try {
+      body = await fetchJson(`/api/admin/calls?${params.toString()}`);
+    } catch (err) {
+      if (token !== _callsState.inflight) return;
+      if (tableHost) tableHost.innerHTML = `<div class="empty">Couldn't load calls: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    if (token !== _callsState.inflight) return;
+
+    updateCallsTable(body);
+    if (tableHost) tableHost.dataset.everLoaded = '1';
+  }
+
+  function updateCallsTable(body) {
+    const calls = body.calls || [];
+    const facets = body.facets || {};
+    const pageInfo = body.pageInfo || { hasMore: false, cursor: null, total: calls.length };
+    _callsState.nextCursor = pageInfo.cursor || null;
+    const statusCounts = (facets && facets.status) || { pending: 0, analysing: 0, ready: 0, failed: 0 };
+
+    // Tab counts come from the status facet — which is computed over the
+    // tenant-scoped full set, BEFORE the active status filter, so the badges
+    // remain meaningful when a tab is selected.
+    document.querySelectorAll('#calls-tabs .calls-tab-count').forEach((el) => {
+      const key = el.dataset.count;
+      const n = key === 'all'
+        ? ((statusCounts.pending || 0) + (statusCounts.analysing || 0) + (statusCounts.ready || 0) + (statusCounts.failed || 0))
+        : (statusCounts[key] || 0);
+      el.textContent = n > 0 ? n : '';
+    });
+
+    // Active filter chips.
+    _renderCallsChips();
+
+    // Table body.
+    const tableHost = $('calls-table');
+    if (tableHost) {
+      tableHost.innerHTML = calls.length === 0
+        ? '<div class="empty">No calls match the current filters.</div>'
+        : `
+          <table class="dt">
+            <thead><tr>
+              <th>Title</th><th>Source</th><th>Status</th><th>Mission</th>
+              <th>Duration</th><th>Created</th><th></th>
+            </tr></thead>
+            <tbody>${calls.map(callsRow).join('')}</tbody>
+          </table>`;
+    }
+
+    // Right-rail facets + pagination.
+    _renderCallsFacets(facets);
+    _renderCallsPagination(pageInfo);
+  }
+
+  function callsRow(c) {
+    const meeting = c.meeting || {};
+    const portal = c.portal || null;
+    const duration = meeting.durationSeconds;
+    const statusPill = `<span class="pill pill-${escapeHtml(c.status || 'pending')}">${escapeHtml(c.status || 'pending')}</span>`;
+    const sourcePill = c.source
+      ? `<span class="pill pill-${escapeHtml(c.source)}">${escapeHtml(c.source)}</span>`
+      : '<span class="muted">—</span>';
+    const missionId = meeting.missionId;
+    const missionCell = missionId
+      ? `<span class="mono muted" title="mission ${escapeHtml(missionId)}">${escapeHtml(missionId.slice(0, 8))}…</span>`
+      : '<span class="muted">—</span>';
+    const title = (portal && portal.title) || meeting.title || meeting.meetingUrl || c.id;
+    // Action column — buckets dictate options:
+    //   ready  → Open ↗ to the portal viewer
+    //   others → no action (pending/analysing finish on their own; failed
+    //            requires capture re-run, not a UI button)
+    const action = (c.status === 'ready' && portal)
+      ? `<a href="/portal/?id=${encodeURIComponent(portal.id)}" target="_blank">Open ↗</a>`
+      : '<span class="muted">—</span>';
+    return `
+      <tr>
+        <td class="truncate" title="${escapeHtml(title)}">${escapeHtml(title)}</td>
+        <td>${sourcePill}</td>
+        <td>${statusPill}</td>
+        <td>${missionCell}</td>
+        <td class="mono">${fmtDuration(duration)}</td>
+        <td>${fmtDate(c.createdAt)}</td>
+        <td>${action}</td>
+      </tr>`;
+  }
+
+  async function callsReanalyze(portalId, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Reanalyzing…'; }
+    try {
+      const r = await fetch(`/api/portals/${encodeURIComponent(portalId)}/reanalyze`, {
+        method: 'POST', credentials: 'include',
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      refreshCalls();
+    } catch (err) {
+      alert(`Reanalyze failed: ${err.message}`);
+      if (btn) { btn.disabled = false; btn.textContent = 'Reanalyze'; }
+    }
+  }
+
+  function _renderCallsChips() {
+    const host = $('calls-chips');
+    if (!host) return;
+    const chips = [];
+    if (_callsState.q) chips.push({ k: 'q', label: `“${_callsState.q}”` });
+    Object.entries(_callsState.facets).forEach(([k, v]) => {
+      if (Array.isArray(v)) v.forEach((val) => chips.push({ k, val, label: `${k}: ${val}` }));
+      else if (v) chips.push({ k, label: `${k}: ${v}` });
+    });
+    if (_callsState.includeSamples) chips.push({ k: 'samples', label: 'showing samples' });
+    if (chips.length === 0) { host.innerHTML = ''; return; }
+    host.innerHTML = chips.map((c, i) =>
+      `<button type="button" class="calls-chip" data-chip-idx="${i}" data-chip-k="${escapeHtml(c.k)}" data-chip-val="${escapeHtml(c.val || '')}">${escapeHtml(c.label)} ✕</button>`
+    ).join('') + ' <button type="button" class="calls-chip calls-chip-clear" data-chip-clear="1">Clear all ✕</button>';
+    host.querySelectorAll('[data-chip-clear]').forEach((b) => b.addEventListener('click', () => {
+      _callsState.q = ''; _callsState.facets = {}; _callsState.includeSamples = false;
+      _callsState.cursor = null; _callsState.cursorStack = [];
+      $('calls-search').value = '';
+      $('calls-samples-toggle').checked = false;
+      pushCallsHash(); refreshCalls();
+    }));
+    host.querySelectorAll('.calls-chip[data-chip-k]').forEach((b) => b.addEventListener('click', () => {
+      const k = b.dataset.chipK;
+      const val = b.dataset.chipVal;
+      if (k === 'q') { _callsState.q = ''; $('calls-search').value = ''; }
+      else if (k === 'samples') { _callsState.includeSamples = false; $('calls-samples-toggle').checked = false; }
+      else if (Array.isArray(_callsState.facets[k])) {
+        _callsState.facets[k] = _callsState.facets[k].filter((v) => v !== val);
+        if (_callsState.facets[k].length === 0) delete _callsState.facets[k];
+      } else {
+        delete _callsState.facets[k];
+      }
+      _callsState.cursor = null;
+      _callsState.cursorStack = [];
+      pushCallsHash(); refreshCalls();
+    }));
+  }
+
+  function _renderCallsFacets(facets) {
+    const host = $('calls-facets');
+    if (!host) return;
+    // Right-rail (§3.2). API returns facets.source as { value: count } map.
+    // Mission/Company facets aren't surfaced by the API yet — they're driven
+    // by direct deep-links from the Missions page (?mission_id=…) instead.
+    const groups = [];
+
+    const sourceItems = Object.entries(facets.source || {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([value, count]) => ({ value, count }));
+    if (sourceItems.length) groups.push({ key: 'source', label: 'Source', items: sourceItems, multi: true });
+
+    // Has-gaps & Has-portal — tri-state toggles. Buttons cycle off/'any'/'none'
+    // for gaps; off/'true'/'false' for portal. Tap to apply, tap again to clear.
+    groups.push({ key: 'has_gaps', label: 'Has gaps', items: [
+      { value: 'any',  label: 'Has gaps' },
+      { value: 'high', label: 'High-severity gaps' },
+      { value: 'none', label: 'No gaps' },
+    ], multi: false });
+    groups.push({ key: 'has_portal', label: 'Portal', items: [
+      { value: 'true',  label: 'Has portal' },
+      { value: 'false', label: 'No portal' },
+    ], multi: false });
+
+    host.innerHTML = groups.map((g) => {
+      const items = (g.items || []).map((it) => {
+        const value = it.value;
+        const label = it.label || value;
+        const count = it.count;
+        const active = g.multi
+          ? (_callsState.facets[g.key] || []).includes(value)
+          : _callsState.facets[g.key] === value;
+        return `<button type="button" class="facet-item${active ? ' active' : ''}" data-facet-k="${escapeHtml(g.key)}" data-facet-v="${escapeHtml(value)}" data-facet-multi="${g.multi ? '1' : '0'}">
+          <span>${escapeHtml(label)}</span>${count != null ? `<span class="facet-count">${count}</span>` : ''}
+        </button>`;
+      }).join('');
+      return `<div class="facet-group"><h4>${escapeHtml(g.label)}</h4>${items}</div>`;
+    }).join('');
+
+    host.querySelectorAll('.facet-item').forEach((b) => b.addEventListener('click', () => {
+      const k = b.dataset.facetK;
+      const v = b.dataset.facetV;
+      const multi = b.dataset.facetMulti === '1';
+      if (multi) {
+        const cur = _callsState.facets[k] || [];
+        if (cur.includes(v)) {
+          _callsState.facets[k] = cur.filter((x) => x !== v);
+          if (_callsState.facets[k].length === 0) delete _callsState.facets[k];
+        } else {
+          _callsState.facets[k] = [...cur, v];
+        }
+      } else {
+        if (_callsState.facets[k] === v) delete _callsState.facets[k];
+        else _callsState.facets[k] = v;
+      }
+      _callsState.cursor = null;
+      _callsState.cursorStack = [];
+      pushCallsHash(); refreshCalls();
+    }));
+  }
+
+  function _renderCallsPagination(pageInfo) {
+    const host = $('calls-pagination');
+    if (!host) return;
+    const hasMore = !!pageInfo.hasMore;
+    const hasPrev = _callsState.cursorStack.length > 0;
+    const total = pageInfo.total || 0;
+    if (!hasMore && !hasPrev) {
+      host.innerHTML = total > 0 ? `<span class="muted">${total} call${total === 1 ? '' : 's'}</span>` : '';
+      return;
+    }
+    host.innerHTML = `
+      <button type="button" class="kb-secondary-btn" data-page-prev="1" ${hasPrev ? '' : 'disabled'}>← Prev</button>
+      <span class="muted">${total} total</span>
+      <button type="button" class="kb-secondary-btn" data-page-next="1" ${hasMore ? '' : 'disabled'}>Next →</button>`;
+    const prev = host.querySelector('[data-page-prev]');
+    if (prev) prev.addEventListener('click', () => {
+      const c = _callsState.cursorStack.pop() || null;
+      _callsState.cursor = c;
+      refreshCalls();
+    });
+    const next = host.querySelector('[data-page-next]');
+    if (next) next.addEventListener('click', () => {
+      if (!_callsState.nextCursor) return;
+      _callsState.cursorStack.push(_callsState.cursor);
+      _callsState.cursor = _callsState.nextCursor;
+      refreshCalls();
+    });
+  }
+
+  // ── Calls operations (superadmin) — failed/stuck queue surface ─────────────
+  // No replay UI yet: a failed capture run isn't fixable from a button (the
+  // upstream Recall bot has to be restarted server-side). This is a read-only
+  // triage table — sort failed calls newest-first and link to capture logs.
+  async function loadCallsOps() {
+    if (!isSuperadmin) {
+      $('calls-ops-table').innerHTML = '<div class="empty">Superadmin only.</div>';
+      return;
+    }
+    let data;
+    try {
+      data = await fetchJson('/api/admin/calls?status=failed&limit=50&include_samples=1');
+    } catch (err) {
+      $('calls-ops-table').innerHTML = `<div class="empty">Couldn't load: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    const calls = data.calls || [];
+    $('calls-ops-table').innerHTML = calls.length === 0
+      ? '<div class="empty">No failed calls.</div>'
+      : `
+        <table class="dt">
+          <thead><tr>
+            <th>ID</th><th>Source</th><th>Raw status</th><th>Created</th>
+          </tr></thead>
+          <tbody>${calls.map((c) => `
+            <tr>
+              <td class="mono">${escapeHtml(c.id)}</td>
+              <td>${escapeHtml(c.source || '—')}</td>
+              <td class="mono">${escapeHtml(c.rawStatus || '—')}</td>
+              <td>${fmtDate(c.createdAt)}</td>
+            </tr>`).join('')}</tbody>
+        </table>`;
   }
 })();
