@@ -82,7 +82,7 @@ img { max-width: 100%; display: block; }
 
 /* ---------- hero ---------- */
 .hero { padding: 84px 0 64px; border-bottom: 1px solid var(--line); }
-.hero-grid { display: grid; grid-template-columns: 1fr 1.2fr; gap: 48px; align-items: center; }
+.hero-grid { display: grid; grid-template-columns: 1fr 1.2fr; gap: 48px; align-items: start; }
 .hero-pill {
   display: inline-flex; align-items: center; gap: 9px; font-family: var(--font);
   font-size: 12.5px; letter-spacing: .04em; font-weight: 500;
@@ -107,6 +107,65 @@ img { max-width: 100%; display: block; }
 .frame-bar .grow { flex: 1; }
 .hero-frame img { display: block; width: 100%; height: auto; }
 .frame-foot { display: flex; gap: 16px; padding: 10px 14px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 11px; color: var(--faint); }
+
+/* In-frame product showcase: Company · Prospects · Competitors */
+.hero-showcase { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); background: var(--bg-3); }
+.hs-card { padding: 14px 14px 16px; border-right: 1px solid var(--line); min-width: 0; }
+.hs-card:last-child { border-right: 0; }
+.hs-h {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 11px;
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--signal-ink);
+}
+.hs-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--signal-ink); flex: 0 0 6px; }
+
+/* Company */
+.hs-co { font-family: var(--display); font-weight: 700; font-size: 14.5px; color: var(--text); line-height: 1.15; }
+.hs-sub { font-size: 11.5px; color: var(--dim); margin: 3px 0 9px; }
+.hs-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 11px; }
+.hs-chips span { font-size: 10.5px; color: var(--text); background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 3px; padding: 2px 7px; }
+.hs-chips .more { color: var(--faint); }
+.hs-personas { display: flex; align-items: center; gap: 0; }
+.hs-personas i {
+  width: 22px; height: 22px; border-radius: 50%; margin-right: -6px; font-style: normal;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; color: var(--signal-ink);
+  background: var(--signal-soft); border: 1.5px solid var(--bg-3);
+}
+.hs-personas span { margin-left: 12px; font-size: 11px; color: var(--faint); }
+
+/* Prospects */
+.hs-prospects { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+.hs-prospects li { display: grid; grid-template-columns: auto 1fr; column-gap: 9px; align-items: center; }
+.hs-score {
+  grid-row: span 2; width: 28px; height: 28px; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 12px; color: var(--dim);
+  background: var(--bg-2); border: 1px solid var(--line-2);
+}
+.hs-score.hot { background: var(--signal); color: #15171c; border-color: transparent; }
+.hs-score.warm { background: var(--signal-soft); color: var(--signal-ink); border-color: transparent; }
+.hs-pname { font-weight: 600; font-size: 12.5px; color: var(--text); align-self: end; line-height: 1.1; }
+.hs-sig { font-size: 10.5px; color: var(--dim); align-self: start; line-height: 1.2; }
+
+/* Competitors */
+.hs-vs { display: flex; align-items: center; gap: 7px; margin-bottom: 10px; }
+.hs-vs .you { font-weight: 700; font-size: 12px; color: var(--signal-ink); background: var(--signal-soft); border-radius: 3px; padding: 2px 8px; }
+.hs-vs .vsep { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
+.hs-vs .them { font-weight: 600; font-size: 12px; color: var(--dim); }
+.hs-battle { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.hs-battle li { position: relative; padding-left: 17px; font-size: 11.5px; line-height: 1.3; color: var(--text); }
+.hs-battle li::before { position: absolute; left: 0; top: 0; font-weight: 700; }
+.hs-battle .win { color: var(--text); }
+.hs-battle .win::before { content: '✓'; color: var(--signal-ink); }
+.hs-battle .risk { color: var(--dim); }
+.hs-battle .risk::before { content: '!'; color: #b4791f; }
+
+@media (max-width: 560px) {
+  .hero-showcase { grid-template-columns: 1fr; }
+  .hs-card { border-right: 0; border-bottom: 1px solid var(--line); }
+  .hs-card:last-child { border-bottom: 0; }
+}
 .frame-foot .on { color: var(--signal-ink); }
 
 /* ---------- generic section ---------- */
