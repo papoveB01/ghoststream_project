@@ -55,22 +55,30 @@ function entitlementsFor(tenant, opts = {}) {
   let features = plan.features;
   let caps = plan.caps;
   let lifetimeCaps = !!plan.lifetimeCaps;
+  let active = state.active;
+  let reason = state.reason;
 
   if (isSub) {
-    // Children never get the sub_accounts capability (no nesting).
+    // Sub-accounts are a Pro/Enterprise capability. If the parent downgraded to a
+    // plan that no longer includes it (or cancelled → Free), its sub-tenants go
+    // read-only until the parent re-upgrades. This is pure derivation — no row
+    // mutation, and it reverses automatically when the parent upgrades again.
+    const parentEntitled = plan.features.includes(plans.FEATURES.SUB_ACCOUNTS);
+    // Children never get the sub_accounts capability themselves (no nesting).
     const ceiling = plan.features.filter((f) => f !== plans.FEATURES.SUB_ACCOUNTS);
     const mask = Array.isArray(tenant.feature_overrides) ? tenant.feature_overrides : ceiling;
-    features = ceiling.filter((f) => mask.includes(f));
+    features = parentEntitled ? ceiling.filter((f) => mask.includes(f)) : [];
     // Parent-allocated caps override the plan caps per meter; unspecified meters
     // fall back to the plan cap.
     caps = (tenant.cap_overrides && typeof tenant.cap_overrides === 'object')
       ? { ...plan.caps, ...tenant.cap_overrides } : plan.caps;
     lifetimeCaps = false; // a sub-tenant under a paid parent uses monthly caps
+    if (!parentEntitled) { active = false; reason = 'account_downgraded'; }
   }
 
   return {
-    active: state.active,
-    reason: state.reason,
+    active,
+    reason,
     status: (billingTenant || tenant).subscription_status,
     planKey: plan.key,
     planName: plan.name,

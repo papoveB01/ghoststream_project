@@ -8296,12 +8296,48 @@
   }
 
   // ── Sub-accounts (parent → child workspaces) ───────────────────────────────
+  let _saData = null;
   async function loadSubaccounts() {
     let d;
     try { d = await fetchJson('/api/account/subaccounts'); }
     catch (err) { $('subaccounts-body').innerHTML = `<div class="empty">Couldn't load sub-accounts: ${escapeHtml(err.message)}</div>`; return; }
+    _saData = d;
     renderSubaccounts(d);
     loadSubaccountMonitor();
+  }
+
+  // Feature checkbox + (for metered features) cap-input rows, shared by the invite
+  // and edit modals. `selected`/`caps` prefill the current grant when editing.
+  function saFeatureRows(grant, selected, caps) {
+    selected = selected || []; caps = caps || {};
+    return (grant.features || []).map((f) => {
+      const metered = METERED_FEATURES.has(f);
+      const max = grant.caps && Number.isFinite(grant.caps[f]) ? grant.caps[f] : null;
+      const checked = selected.includes(f);
+      const capVal = caps[f] != null ? caps[f] : '';
+      const capInput = metered
+        ? `<input type="number" min="0" ${max != null ? `max="${max}"` : ''} class="sa-cap" data-meter="${f}" placeholder="${max != null ? max : '∞'}" value="${checked ? escapeHtml(String(capVal)) : ''}" ${checked ? '' : 'disabled'}>`
+        : '';
+      return `<label class="sa-feat">
+        <input type="checkbox" class="sa-feat-cb" value="${f}" ${checked ? 'checked' : ''}>
+        <span class="sa-feat-label">${escapeHtml(FEATURE_LABELS[f] || f)}</span>
+        ${capInput}</label>`;
+    }).join('');
+  }
+  // Collect ticked features + their cap inputs from a feature-rows container.
+  function saCollect(containerId) {
+    const features = []; const caps = {};
+    document.querySelectorAll(`#${containerId} .sa-feat-cb:checked`).forEach((cb) => features.push(cb.value));
+    document.querySelectorAll(`#${containerId} .sa-cap`).forEach((ci) => { if (!ci.disabled && ci.value !== '') caps[ci.dataset.meter] = ci.value; });
+    return { features, caps };
+  }
+  // Enable a feature's cap input only while its checkbox is ticked.
+  function saWireToggle(container) {
+    container.addEventListener('change', (e) => {
+      if (!e.target.classList.contains('sa-feat-cb')) return;
+      const cap = e.target.parentElement.querySelector('.sa-cap');
+      if (cap) { cap.disabled = !e.target.checked; if (!e.target.checked) cap.value = ''; }
+    });
   }
 
   async function loadSubaccountMonitor() {
@@ -8337,7 +8373,7 @@
       return `<div class="sa-row">
         <div class="sa-info"><div class="sa-name">${escapeHtml(c.name)} ${pill}</div>
           <div class="sa-sub">${escapeHtml(c.domain)} · ${escapeHtml(featNames(c.features))}</div></div>
-        <div class="sa-actions">${action}</div></div>`;
+        <div class="sa-actions"><button class="kb-secondary-btn" data-edit="${escapeHtml(c.id)}">Edit</button>${action}</div></div>`;
     }).join('');
     const invites = (d.invites || []).map((iv) => `<div class="sa-row">
         <div class="sa-info"><div class="sa-name">${escapeHtml(iv.company_name)} <span class="pill">Invite pending</span></div>
@@ -8351,6 +8387,7 @@
       </div>
       <div class="sa-list">${children}${invites}${empty}</div>`;
     if (!atLimit) $('sa-invite-btn').addEventListener('click', () => openInviteModal(d.grantOptions || { features: [], caps: {} }));
+    $('subaccounts-body').querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => openEditChildModal(b.dataset.edit)));
     $('subaccounts-body').querySelectorAll('[data-suspend]').forEach((b) => b.addEventListener('click', () => subaccountAction(`${b.dataset.suspend}/suspend`, b)));
     $('subaccounts-body').querySelectorAll('[data-unsuspend]').forEach((b) => b.addEventListener('click', () => subaccountAction(`${b.dataset.unsuspend}/unsuspend`, b)));
     $('subaccounts-body').querySelectorAll('[data-revoke]').forEach((b) => b.addEventListener('click', () => revokeInvite(b.dataset.revoke, b)));
@@ -8378,18 +8415,7 @@
 
   function openInviteModal(grant) {
     let ov = $('sa-modal-overlay');
-    // Feature rows: a checkbox per grantable feature; metered ones get a cap input.
-    const featureRows = (grant.features || []).map((f) => {
-      const metered = METERED_FEATURES.has(f);
-      const max = grant.caps && Number.isFinite(grant.caps[f]) ? grant.caps[f] : null;
-      const capInput = metered
-        ? `<input type="number" min="0" ${max != null ? `max="${max}"` : ''} class="sa-cap" data-meter="${f}" placeholder="${max != null ? max : '∞'}" disabled>`
-        : '';
-      return `<label class="sa-feat">
-        <input type="checkbox" class="sa-feat-cb" value="${f}">
-        <span class="sa-feat-label">${escapeHtml(FEATURE_LABELS[f] || f)}</span>
-        ${capInput}</label>`;
-    }).join('');
+    const featureRows = saFeatureRows(grant, [], {});
     if (!ov) {
       ov = document.createElement('div');
       ov.id = 'sa-modal-overlay'; ov.className = 'cal-picker-overlay';
@@ -8422,12 +8448,7 @@
       $('sa-cancel').addEventListener('click', closeInviteModal);
       $('sa-submit').addEventListener('click', submitInvite);
       document.addEventListener('keydown', _saEsc);
-      // Enable a feature's cap input only when its checkbox is ticked.
-      $('sa-feats').addEventListener('change', (e) => {
-        if (!e.target.classList.contains('sa-feat-cb')) return;
-        const cap = e.target.parentElement.querySelector('.sa-cap');
-        if (cap) { cap.disabled = !e.target.checked; if (!e.target.checked) cap.value = ''; }
-      });
+      saWireToggle($('sa-feats'));
     } else {
       $('sa-feats').innerHTML = featureRows;
       $('sa-company').value = ''; $('sa-domain').value = ''; $('sa-email').value = '';
@@ -8439,10 +8460,7 @@
 
   async function submitInvite() {
     const result = $('sa-result');
-    const features = [];
-    $('sa-feats').querySelectorAll('.sa-feat-cb:checked').forEach((cb) => features.push(cb.value));
-    const caps = {};
-    $('sa-feats').querySelectorAll('.sa-cap').forEach((ci) => { if (!ci.disabled && ci.value !== '') caps[ci.dataset.meter] = ci.value; });
+    const { features, caps } = saCollect('sa-feats');
     const body = {
       companyName: $('sa-company').value.trim(),
       domain: $('sa-domain').value.trim(),
@@ -8465,6 +8483,69 @@
     } catch (err) {
       result.textContent = err.message; result.className = 'kb-result error';
     } finally { btn.disabled = false; btn.textContent = 'Send invite'; }
+  }
+
+  // Edit an existing sub-account's feature mask / cap allocation (PATCH).
+  function closeEditChildModal() { const o = $('sa-edit-overlay'); if (o) o.classList.add('hidden'); }
+  function _saEditEsc(e) { if (e.key === 'Escape') closeEditChildModal(); }
+  function openEditChildModal(childId) {
+    const child = (_saData && _saData.children || []).find((c) => String(c.id) === String(childId));
+    const grant = (_saData && _saData.grantOptions) || { features: [], caps: {} };
+    if (!child) return;
+    let ov = $('sa-edit-overlay');
+    const rows = saFeatureRows(grant, child.features || [], child.caps || {});
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'sa-edit-overlay'; ov.className = 'cal-picker-overlay';
+      ov.innerHTML = `
+        <div class="cal-picker sa-modal">
+          <div class="cal-picker-h"><span class="cal-picker-title">Edit sub-account</span>
+            <button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
+          <div class="cal-picker-body">
+            <div class="kb-form">
+              <p class="bill-sub" id="sa-edit-name" style="margin-top:0"></p>
+              <div class="field"><label>Features this sub-account can use</label>
+                <div class="sa-feats" id="sa-edit-feats"></div>
+                <div class="field-hint">Tick a feature to enable it; set a monthly cap (blank = your plan's full pool). Changes apply immediately.</div>
+              </div>
+              <div class="teams-modal-actions">
+                <button type="button" class="kb-secondary-btn" id="sa-edit-cancel">Cancel</button>
+                <button type="button" class="primary-cta" id="sa-edit-save">Save changes</button>
+              </div>
+              <div class="kb-result hidden" id="sa-edit-result"></div>
+            </div>
+          </div>
+        </div>`;
+      document.body.appendChild(ov);
+      ov.addEventListener('click', (e) => { if (e.target === ov) closeEditChildModal(); });
+      ov.querySelector('.cal-picker-close').addEventListener('click', closeEditChildModal);
+      $('sa-edit-cancel').addEventListener('click', closeEditChildModal);
+      $('sa-edit-save').addEventListener('click', () => submitEditChild(ov.dataset.childId));
+      document.addEventListener('keydown', _saEditEsc);
+      saWireToggle($('sa-edit-feats'));
+    }
+    ov.dataset.childId = child.id;
+    $('sa-edit-name').textContent = `${child.name} · ${child.domain}`;
+    $('sa-edit-feats').innerHTML = rows;
+    $('sa-edit-result').classList.add('hidden');
+    ov.classList.remove('hidden');
+  }
+  async function submitEditChild(childId) {
+    const result = $('sa-edit-result');
+    const { features, caps } = saCollect('sa-edit-feats');
+    const btn = $('sa-edit-save'); btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const r = await fetch(`/api/account/subaccounts/${childId}`, {
+        method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ features, caps }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      closeEditChildModal();
+      toast('Sub-account updated.');
+      loadSubaccounts();
+    } catch (err) {
+      result.textContent = err.message; result.className = 'kb-result error';
+    } finally { btn.disabled = false; btn.textContent = 'Save changes'; }
   }
 
   // Transient bottom-right confirmation toast (reusable).

@@ -88,6 +88,11 @@ async function eraseTenant(tenantId, { dryRun = false } = {}) {
   const t = await db.query('SELECT id, name FROM tenants WHERE id = $1', [tenantId]);
   if (t.rowCount === 0) { const e = new Error('tenant not found'); e.status = 404; throw e; }
 
+  // Sub-tenants — the parent_tenant_id FK is ON DELETE RESTRICT, so a parent
+  // can't be deleted while children exist. Erasing a parent erases its whole
+  // tree: each child is fully purged first (recursively), then the parent.
+  const childIds = (await db.query('SELECT id FROM tenants WHERE parent_tenant_id = $1', [tenantId])).rows.map((r) => r.id);
+
   // ---- reads (before the cascade removes the pointers) ----
   const userIds = (await db.query('SELECT id FROM users WHERE tenant_id = $1', [tenantId])).rows.map((r) => r.id);
   const kbKeys = (await db.query(
@@ -116,6 +121,7 @@ async function eraseTenant(tenantId, { dryRun = false } = {}) {
 
   const manifest = {
     tenantId, name: t.rows[0].name, dryRun,
+    subTenants: childIds.length,
     postgres: { users: userIds.length, kbDocuments: kbKeys.length, botIds: rd.botIds.size },
     r2: { kbObjects: kbKeys.length, recordingObjects: recordingKeys.length, configured: r2.isConfigured() },
     stream: { clips: rd.streamUids.size, configured: stream.isConfigured() },
@@ -126,7 +132,15 @@ async function eraseTenant(tenantId, { dryRun = false } = {}) {
     },
   };
 
-  if (dryRun) return manifest;
+  if (dryRun) {
+    manifest.children = [];
+    for (const cid of childIds) manifest.children.push(await eraseTenant(cid, { dryRun: true }));
+    return manifest;
+  }
+
+  // Erase children first so the parent's tenant DELETE doesn't hit the FK RESTRICT.
+  manifest.children = [];
+  for (const cid of childIds) manifest.children.push(await eraseTenant(cid, { dryRun: false }));
 
   // ---- deletes (best-effort per store; never abort the cascade on a side-store miss) ----
   if (r2.isConfigured()) {
