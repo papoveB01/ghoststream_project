@@ -3436,6 +3436,18 @@ details.schedule-advanced > .schedule-advanced-body {
 /* =================== COMPANY · foundation workspace ======================= */
 .company-field-label { display: block; font-weight: 600; font-size: 13px; margin: 14px 0 4px; color: var(--text); }
 .company-prod-section .company-field-label { margin-top: 0; }
+
+/* Company foundation editor (positioning / ICP / objectives) */
+.cf-editor .company-field-label:first-child { margin-top: 0; }
+.cf-editor textarea {
+  width: 100%; box-sizing: border-box; display: block;
+  padding: 9px 11px; border: 1px solid var(--border-2); border-radius: var(--radius-sm);
+  font: inherit; font-size: 13.5px; line-height: 1.5; color: var(--text); background: #fff;
+  resize: vertical; min-height: 44px;
+}
+.cf-editor textarea::placeholder { color: var(--muted); }
+.cf-editor textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+.cf-actions { margin-top: 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 #company-positioning, #company-objectives {
   width: 100%; padding: 9px 11px; font: inherit; font-size: 13.5px; resize: vertical;
   border: 1px solid var(--border-2); border-radius: var(--radius-sm); background: #fff;

@@ -5211,14 +5211,14 @@
         <div class="card-h">Company foundation
           <span class="pf-hint">Grounds every brief, battlecard, and prospect/competitor search. Be specific about who you sell to.</span>
         </div>
-        <div class="card-b">
+        <div class="card-b cf-editor">
           <label class="company-field-label">What you do (positioning)</label>
           <textarea id="cf-positioning" rows="3" placeholder="What your product is + your differentiator">${escapeHtml(p.positioning || '')}</textarea>
-          <label class="company-field-label" style="display:block;margin-top:10px">Ideal customer profile — who you sell to</label>
+          <label class="company-field-label">Ideal customer profile — who you sell to</label>
           <textarea id="cf-icp" rows="2" placeholder="The businesses that BUY from you — e.g. independent bars, nightclubs and late-night restaurants; buyers are owners / GMs / marketing managers">${escapeHtml(p.ideal_customer_profile || '')}</textarea>
-          <label class="company-field-label" style="display:block;margin-top:10px">Goals (objectives)</label>
+          <label class="company-field-label">Goals (objectives)</label>
           <textarea id="cf-objectives" rows="2" placeholder="What you're trying to achieve">${escapeHtml(p.objectives || '')}</textarea>
-          <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <div class="cf-actions">
             <button class="primary-cta" id="cf-save">Save foundation</button>
             <button class="kb-secondary-btn" id="cf-draft">✨ Draft with AI</button>
             <span class="kb-subtle" id="cf-result"></span>
