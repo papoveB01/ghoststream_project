@@ -3619,3 +3619,7 @@ details.schedule-advanced > .schedule-advanced-body {
 .watch-finding-foot { display: flex; align-items: center; gap: 6px; font-size: 12px; flex-wrap: wrap; }
 .watch-finding-foot a { color: var(--accent-hover); }
 .watch-finding-actions { margin-left: auto; display: flex; gap: 10px; }
+
+/* Market Watch schedule row — cadence + day side by side. */
+.watch-schedule { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+.watch-schedule .watch-field { max-width: 200px; }

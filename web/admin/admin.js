@@ -7149,6 +7149,21 @@
   // a rep accepts a finding (which promotes it to a kb_documents row).
 
   const WATCH_FREQ_LABEL = { daily: 'Every day', weekly: 'Every week', monthly: 'Every month' };
+  const WATCH_WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const ordinal = (n) => { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
+
+  // <option> list for the day picker, keyed to the cadence.
+  function watchDayOptions(freq, selected) {
+    if (freq === 'weekly') {
+      return WATCH_WEEKDAYS.map((name, i) => `<option value="${i}" ${Number(selected) === i ? 'selected' : ''}>${name}</option>`).join('');
+    }
+    if (freq === 'monthly') {
+      let html = '';
+      for (let d = 1; d <= 28; d++) html += `<option value="${d}" ${Number(selected) === d ? 'selected' : ''}>${ordinal(d)}</option>`;
+      return html;
+    }
+    return '';
+  }
 
   // Reusable ⭐ toggle for the prospect/competitor detail header.
   function watchToggleBtn(scope, id, enabled) {
@@ -7199,6 +7214,7 @@
     }
     const enabled = !!cfg.watch_enabled;
     const freq = String(cfg.watch_frequency || 'weekly');
+    const day = cfg.watch_day == null ? 1 : Number(cfg.watch_day);
     const next = cfg.watch_next_run_at ? new Date(cfg.watch_next_run_at).toLocaleString() : null;
     const last = cfg.watch_last_run_at ? new Date(cfg.watch_last_run_at).toLocaleString() : null;
     host.innerHTML = `
@@ -7207,13 +7223,19 @@
           <input type="checkbox" id="watch-enabled" ${enabled ? 'checked' : ''}>
           <span>Enable Market Watch <span class="kb-subtle">— monitor the entities you've marked "Watch".</span></span>
         </label>
-        <label class="watch-field">How often
-          <select id="watch-frequency">
-            <option value="daily"   ${freq === 'daily' ? 'selected' : ''}>Every day</option>
-            <option value="weekly"  ${freq === 'weekly' ? 'selected' : ''}>Every week</option>
-            <option value="monthly" ${freq === 'monthly' ? 'selected' : ''}>Every month</option>
-          </select>
-        </label>
+        <div class="watch-schedule">
+          <label class="watch-field">How often
+            <select id="watch-frequency">
+              <option value="daily"   ${freq === 'daily' ? 'selected' : ''}>Every day</option>
+              <option value="weekly"  ${freq === 'weekly' ? 'selected' : ''}>Every week</option>
+              <option value="monthly" ${freq === 'monthly' ? 'selected' : ''}>Every month</option>
+            </select>
+          </label>
+          <label class="watch-field${freq === 'daily' ? ' hidden' : ''}" id="watch-day-field">
+            <span id="watch-day-label">${freq === 'monthly' ? 'On day' : 'On'}</span>
+            <select id="watch-day">${watchDayOptions(freq, day)}</select>
+          </label>
+        </div>
         <label class="watch-row">
           <input type="checkbox" id="watch-email-digest" ${cfg.watch_email_digest === false ? '' : 'checked'}>
           <span>Email me a digest when new signals are found</span>
@@ -7229,17 +7251,32 @@
         </div>
       </div>`;
 
+    // Frequency change → rebuild the day picker for the new cadence.
+    $('watch-frequency').addEventListener('change', (e) => {
+      const f = e.target.value;
+      const field = $('watch-day-field');
+      const sel = $('watch-day');
+      if (f === 'daily') { field.classList.add('hidden'); return; }
+      field.classList.remove('hidden');
+      $('watch-day-label').textContent = f === 'monthly' ? 'On day' : 'On';
+      // Default to Monday (1) / 1st when switching cadence.
+      sel.innerHTML = watchDayOptions(f, f === 'monthly' ? 1 : 1);
+    });
+
     $('watch-config-save').addEventListener('click', async (e) => {
       const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Saving…';
       const res = $('watch-config-result');
       try {
+        const fr = $('watch-frequency').value;
+        const payload = {
+          enabled: $('watch-enabled').checked,
+          frequency: fr,
+          emailDigest: $('watch-email-digest').checked,
+        };
+        if (fr !== 'daily') payload.day = parseInt($('watch-day').value, 10);
         const out = await fetchJson('/api/watch/config', {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            enabled: $('watch-enabled').checked,
-            frequency: $('watch-frequency').value,
-            emailDigest: $('watch-email-digest').checked,
-          }),
+          body: JSON.stringify(payload),
         });
         renderWatchSettings(host, { featureAvailable: true, config: out.config });
         const r2 = $('watch-config-result');

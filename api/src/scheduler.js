@@ -129,7 +129,7 @@ async function watchTick() {
     // The per-tenant entitlement/active re-check lives inside runTenant.
     const due = (await db.query(
       `SELECT t.id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end,
-              p.watch_frequency, p.watch_email_digest, true AS watch_enabled
+              p.watch_frequency, p.watch_day, p.watch_email_digest, true AS watch_enabled
          FROM tenant_profiles p
          JOIN tenants t ON t.id = p.tenant_id
         WHERE p.watch_enabled = true
@@ -140,13 +140,12 @@ async function watchTick() {
     if (!due.length) return;
     console.log(`[scheduler] ${due.length} tenant(s) due for Market Watch`);
     for (const t of due) {
-      // Claim the tenant up-front: push watch_next_run_at forward by one
-      // cadence so a long-running pass isn't re-picked by the next tick.
-      // runTenant re-sets it precisely (now + cadence) when it completes.
-      const days = { daily: 1, weekly: 7, monthly: 30 }[String(t.watch_frequency || 'weekly').toLowerCase()] || 7;
+      // Claim the tenant up-front: push watch_next_run_at to the next scheduled
+      // slot so a long-running pass isn't re-picked by the next tick. runTenant
+      // re-sets it precisely when it completes.
       await db.query(
-        `UPDATE tenant_profiles SET watch_next_run_at = now() + ($2 || ' days')::interval WHERE tenant_id = $1`,
-        [t.id, String(days)]
+        `UPDATE tenant_profiles SET watch_next_run_at = $2 WHERE tenant_id = $1`,
+        [t.id, watch.nextRunISO(t.watch_frequency, t.watch_day)]
       ).catch(() => {});
       // Fire-and-forget — never block the tick on web/LLM work.
       watch.runTenant(t).catch((err) => console.error(`[scheduler] market watch failed for tenant ${t.id}: ${(err && err.message) || err}`));

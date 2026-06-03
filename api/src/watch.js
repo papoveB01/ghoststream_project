@@ -172,9 +172,35 @@ async function runEntity(tenantId, scope, subject) {
   return inserted;
 }
 
-function nextRunISO(frequency) {
-  const days = FREQ_DAYS[String(frequency || 'weekly').toLowerCase()] || 7;
-  return new Date(Date.now() + days * 86400000).toISOString();
+// Next run timestamp for a cadence + chosen day, landing at RUN_HOUR UTC:
+//   daily   → tomorrow
+//   weekly  → next occurrence of day-of-week `day` (0=Sun … 6=Sat)
+//   monthly → next occurrence of day-of-month `day` (1..28)
+const RUN_HOUR_UTC = 8;
+function nextRunISO(frequency, day) {
+  const freq = String(frequency || 'weekly').toLowerCase();
+  const now = new Date();
+  if (freq === 'daily') {
+    const d = new Date(now);
+    d.setUTCDate(d.getUTCDate() + 1);
+    d.setUTCHours(RUN_HOUR_UTC, 0, 0, 0);
+    return d.toISOString();
+  }
+  if (freq === 'monthly') {
+    const dom = Math.max(1, Math.min(28, parseInt(day, 10) || 1));
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), dom, RUN_HOUR_UTC, 0, 0, 0));
+    if (d <= now) d.setUTCMonth(d.getUTCMonth() + 1);
+    return d.toISOString();
+  }
+  // weekly
+  let dow = parseInt(day, 10); if (!Number.isInteger(dow)) dow = 1; // default Monday
+  dow = Math.max(0, Math.min(6, dow));
+  const d = new Date(now);
+  d.setUTCHours(RUN_HOUR_UTC, 0, 0, 0);
+  let delta = (dow - d.getUTCDay() + 7) % 7;
+  if (delta === 0 && d <= now) delta = 7; // today's slot already passed → next week
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString();
 }
 
 // Run the watch for every watched entity of a tenant. `tenant` is a row with at
@@ -183,7 +209,7 @@ async function runTenant(tenant) {
   const ent = entitlements.entitlementsFor(tenant);
   const advance = async () => db.query(
     `UPDATE tenant_profiles SET watch_last_run_at = now(), watch_next_run_at = $2 WHERE tenant_id = $1`,
-    [tenant.id, nextRunISO(tenant.watch_frequency)]
+    [tenant.id, nextRunISO(tenant.watch_frequency, tenant.watch_day)]
   ).catch(() => {});
 
   if (!ent.active || !entitlements.hasFeature(ent, plans.FEATURES.MARKET_MONITORING)) { await advance(); return { skipped: 'not_entitled' }; }
@@ -304,37 +330,67 @@ router.post('/findings/:id/accept', async (req, res, next) => {
 router.get('/config', async (req, res, next) => {
   try {
     const r = await db.query(
-      `SELECT watch_enabled, watch_frequency, watch_email_digest, watch_last_run_at, watch_next_run_at FROM tenant_profiles WHERE tenant_id = $1`,
+      `SELECT watch_enabled, watch_frequency, watch_day, watch_email_digest, watch_last_run_at, watch_next_run_at FROM tenant_profiles WHERE tenant_id = $1`,
       [req.tenantId]
     );
     const ent = req.entitlements;
     res.json({
-      config: r.rows[0] || { watch_enabled: false, watch_frequency: 'weekly', watch_email_digest: true, watch_last_run_at: null, watch_next_run_at: null },
+      config: r.rows[0] || { watch_enabled: false, watch_frequency: 'weekly', watch_day: 1, watch_email_digest: true, watch_last_run_at: null, watch_next_run_at: null },
       featureAvailable: !!(ent && Array.isArray(ent.features) && ent.features.includes(plans.FEATURES.MARKET_MONITORING)),
     });
   } catch (err) { next(err); }
 });
 
+// Validate/normalize a watch_day for a given frequency. weekly → 0..6,
+// monthly → 1..28, daily → 1 (ignored). Returns null if out of range.
+function normalizeWatchDay(freq, day) {
+  const n = parseInt(day, 10);
+  if (!Number.isInteger(n)) return null;
+  if (freq === 'weekly') return n >= 0 && n <= 6 ? n : null;
+  if (freq === 'monthly') return n >= 1 && n <= 28 ? n : null;
+  return 1; // daily — day is irrelevant
+}
+
 router.patch('/config', auth.requireRole('owner'), gating.requireFeature(plans.FEATURES.MARKET_MONITORING), async (req, res, next) => {
   try {
     const b = req.body || {};
-    const enabled = b.enabled !== undefined ? !!b.enabled : undefined;
-    const freq = b.frequency !== undefined ? String(b.frequency).toLowerCase() : undefined;
-    if (freq !== undefined && !FREQ_DAYS[freq]) return res.status(400).json({ error: 'frequency must be daily, weekly or monthly' });
-    const digest = b.emailDigest !== undefined ? !!b.emailDigest : undefined;
-    // Compute next_run_at when (re)enabling.
-    const nextRun = enabled ? nextRunISO(freq || 'weekly') : null;
+    if (b.frequency !== undefined && !FREQ_DAYS[String(b.frequency).toLowerCase()]) {
+      return res.status(400).json({ error: 'frequency must be daily, weekly or monthly' });
+    }
+    // Merge incoming fields over the current row, then recompute the schedule
+    // in one place — so changing the day/frequency re-schedules even when the
+    // enable toggle isn't touched.
+    const cur = (await db.query(
+      `SELECT watch_enabled, watch_frequency, watch_day, watch_email_digest FROM tenant_profiles WHERE tenant_id = $1`,
+      [req.tenantId]
+    )).rows[0] || { watch_enabled: false, watch_frequency: 'weekly', watch_day: 1, watch_email_digest: true };
+
+    const enabled = b.enabled !== undefined ? !!b.enabled : cur.watch_enabled;
+    const freq = b.frequency !== undefined ? String(b.frequency).toLowerCase() : cur.watch_frequency;
+    const digest = b.emailDigest !== undefined ? !!b.emailDigest : cur.watch_email_digest;
+    let day = cur.watch_day;
+    if (b.day !== undefined) {
+      day = normalizeWatchDay(freq, b.day);
+      if (day === null) return res.status(400).json({ error: freq === 'monthly' ? 'day must be 1–28 for monthly' : 'day must be 0 (Sun) – 6 (Sat) for weekly' });
+    } else if (b.frequency !== undefined) {
+      // frequency changed but no explicit day → keep current if valid for the
+      // new cadence, else fall back to a sane default (Mon / 1st).
+      const reuse = normalizeWatchDay(freq, cur.watch_day);
+      day = reuse === null ? (freq === 'monthly' ? 1 : 1) : reuse;
+    }
+    const nextRun = enabled ? nextRunISO(freq, day) : null;
     const r = await db.query(
-      `INSERT INTO tenant_profiles (tenant_id, watch_enabled, watch_frequency, watch_email_digest, watch_next_run_at, updated_at)
-            VALUES ($1, COALESCE($2,false), COALESCE($3,'weekly'), COALESCE($4,true), $5, now())
+      `INSERT INTO tenant_profiles (tenant_id, watch_enabled, watch_frequency, watch_day, watch_email_digest, watch_next_run_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, now())
        ON CONFLICT (tenant_id) DO UPDATE SET
-            watch_enabled      = COALESCE($2, tenant_profiles.watch_enabled),
-            watch_frequency    = COALESCE($3, tenant_profiles.watch_frequency),
-            watch_email_digest = COALESCE($4, tenant_profiles.watch_email_digest),
-            watch_next_run_at  = CASE WHEN $2 IS TRUE THEN $5 ELSE tenant_profiles.watch_next_run_at END,
+            watch_enabled      = $2,
+            watch_frequency    = $3,
+            watch_day          = $4,
+            watch_email_digest = $5,
+            watch_next_run_at  = $6,
             updated_at = now()
-       RETURNING watch_enabled, watch_frequency, watch_email_digest, watch_last_run_at, watch_next_run_at`,
-      [req.tenantId, enabled === undefined ? null : enabled, freq === undefined ? null : freq, digest === undefined ? null : digest, nextRun]
+       RETURNING watch_enabled, watch_frequency, watch_day, watch_email_digest, watch_last_run_at, watch_next_run_at`,
+      [req.tenantId, enabled, freq, day, digest, nextRun]
     );
     res.json({ config: r.rows[0] });
   } catch (err) { next(err); }
@@ -346,7 +402,7 @@ router.post('/run', auth.requireRole('owner'), gating.requireFeature(plans.FEATU
     const t = (await db.query(
       `SELECT t.id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end,
               COALESCE(p.watch_enabled,false) AS watch_enabled, COALESCE(p.watch_frequency,'weekly') AS watch_frequency,
-              COALESCE(p.watch_email_digest,true) AS watch_email_digest
+              COALESCE(p.watch_day,1) AS watch_day, COALESCE(p.watch_email_digest,true) AS watch_email_digest
          FROM tenants t LEFT JOIN tenant_profiles p ON p.tenant_id = t.id WHERE t.id = $1`,
       [req.tenantId]
     )).rows[0];
@@ -356,4 +412,4 @@ router.post('/run', auth.requireRole('owner'), gating.requireFeature(plans.FEATU
   } catch (err) { next(err); }
 });
 
-module.exports = { router, runTenant, runEntity };
+module.exports = { router, runTenant, runEntity, nextRunISO };
