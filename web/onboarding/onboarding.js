@@ -23,13 +23,16 @@
   const PLAN = new URLSearchParams(window.location.search).get('plan') === 'pro' ? 'pro' : 'starter';
   (function tuneCopyForPlan() {
     const setText = (id, t) => { const el = $(id); if (el && t) el.textContent = t; };
-    if (PLAN === 'pro') {
-      document.title = 'Get started with Pro · GhostStream';
-      setText('ob-identity-sub', 'Create your workspace and set a password. We\'ll email a confirmation link, then take you to checkout to activate Pro ($149/mo).');
-      setText('ob-check-sub-text', 'Click it to continue to checkout and activate your Pro plan.');
+    if (PLAN === 'pro' || PLAN === 'starter') {
+      const name = PLAN === 'pro' ? 'Pro' : 'Starter';
+      const price = PLAN === 'pro' ? '$149/mo' : '$49/mo';
+      document.title = `Get started with ${name} · GhostStream`;
+      setText('ob-identity-sub', `Create your workspace and set a password. We'll email a confirmation link, then take you to checkout to activate ${name} (${price}).`);
+      setText('ob-check-sub-text', `Click it to continue to checkout and activate your ${name} plan.`);
     } else {
-      setText('ob-identity-sub', 'Create your workspace and set a password. We\'ll email a confirmation link, then start your 14-day free trial — $0 today, cancel anytime.');
-      setText('ob-check-sub-text', 'Click it to continue and start your 14-day free trial — no charge today.');
+      document.title = 'Start free · GhostStream';
+      setText('ob-identity-sub', 'Create your workspace and set a password. We\'ll email a confirmation link, then you\'re in — free forever, no credit card required.');
+      setText('ob-check-sub-text', 'Click it to finish — your free workspace is ready, no card needed.');
     }
   })();
 

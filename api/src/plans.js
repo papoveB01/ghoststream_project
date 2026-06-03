@@ -37,15 +37,21 @@ const PLANS = {
   // Caps below follow ADR-0003 "Option B": generous limits on the cheap meters
   // (discovery/competitor/arena/market — near-zero marginal cost) and disciplined
   // caps on the expensive, inelastic engagement meter (a ~$1.20 Recall bot each).
+  // Free, perpetual entry tier (key kept as 'trial' for back-compat). No card,
+  // no expiry. The caps are LIFETIME, not monthly (lifetimeCaps) — a one-time
+  // sample sized to protect COGS: discovery is near-free so it's generous (5),
+  // but each engagement is a ~$1.20 Recall bot so it's a single lifetime call.
+  // More than the sample = upgrade to Starter, or buy add-on credits (allowed
+  // on free → effectively pay-as-you-go).
   trial: {
-    key: 'trial', name: 'Trial', selfServe: false,
-    blurb: '14-day free trial — explore the Pro feature set with a small monthly allowance.',
-    features: ALL,
-    caps: { discovery: 15, competitor_research: 15, engagements: 5, market_monitoring: 0, arena: 5 },
+    key: 'trial', name: 'Free', selfServe: false, monthly: 0,
+    blurb: 'Free forever, no card. Try discovery and one AI-joined call — upgrade or buy credits when you need more.',
+    features: [FEATURES.DISCOVERY, FEATURES.ENGAGEMENTS],
+    caps: { discovery: 5, competitor_research: 0, engagements: 1, market_monitoring: 0, arena: 0 },
+    lifetimeCaps: true, // caps count over the lifetime of the account, never reset
   },
   starter: {
     key: 'starter', name: 'Starter', selfServe: true, priceEnv: 'STRIPE_PRICE_STARTER', monthly: 49,
-    trialDays: parseInt(process.env.STARTER_TRIAL_DAYS || '14', 10), // free trial lives on Starter only
     blurb: 'Foundation, prospect discovery, competitors, engagements and light Arena practice for a small team.',
     features: [...CORE, FEATURES.ARENA], // CORE + a limited Arena allowance (capped below)
     caps: { discovery: 75, competitor_research: 75, engagements: 15, market_monitoring: 0, arena: 40 },
@@ -95,13 +101,14 @@ function capForJson(v) { return Number.isFinite(v) ? v : null; }
 
 // Public, client-safe catalog for the Billing UI (no env/internal fields).
 function catalog() {
-  return ['starter', 'pro', 'enterprise'].map((k) => {
+  return ['trial', 'starter', 'pro', 'enterprise'].map((k) => {
     const p = PLANS[k];
     return {
       key: p.key, name: p.name, blurb: p.blurb,
-      monthly: p.monthly || null,
+      monthly: p.monthly != null ? p.monthly : null, // 0 = free, null = custom (Enterprise)
       selfServe: !!p.selfServe,
       contactSales: !!p.contactSales,
+      lifetimeCaps: !!p.lifetimeCaps,
       hasPrice: !!priceIdFor(p.key),
       features: p.features,
       caps: {

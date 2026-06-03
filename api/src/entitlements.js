@@ -14,8 +14,11 @@ function accessState(tenant) {
   if (status === 'INTERNAL') return { active: true, reason: 'internal' };
   if (status === 'ACTIVE') return { active: true, reason: 'active' };
   if (status === 'TRIAL') {
-    const ends = tenant.trial_ends_at ? new Date(tenant.trial_ends_at).getTime() : 0;
-    return ends > Date.now()
+    // The free tier is TRIAL with NO end date — perpetually active (no card, no
+    // expiry). A non-null end date is a legacy time-boxed trial: active until it
+    // passes, then read-only. New signups never set one.
+    if (!tenant.trial_ends_at) return { active: true, reason: 'free' };
+    return new Date(tenant.trial_ends_at).getTime() > Date.now()
       ? { active: true, reason: 'trial' }
       : { active: false, reason: 'trial_expired' };
   }
@@ -32,7 +35,7 @@ function trialDaysLeft(tenant) {
 // Full entitlement snapshot for a tenant row.
 function entitlementsFor(tenant) {
   if (!tenant) {
-    return { active: false, reason: 'no_tenant', planKey: null, planName: null, features: [], caps: {}, daysLeft: null };
+    return { active: false, reason: 'no_tenant', planKey: null, planName: null, features: [], caps: {}, lifetimeCaps: false, daysLeft: null };
   }
   const state = accessState(tenant);
   const plan = plans.planFor(tenant.plan);
@@ -44,6 +47,7 @@ function entitlementsFor(tenant) {
     planName: plan.name,
     features: plan.features,
     caps: plan.caps,
+    lifetimeCaps: !!plan.lifetimeCaps,
     daysLeft: trialDaysLeft(tenant),
     currentPeriodEnd: tenant.current_period_end || null,
   };
@@ -69,6 +73,7 @@ function toJson(ent) {
       market_monitoring: plans.capForJson(ent.caps.market_monitoring),
       arena: plans.capForJson(ent.caps.arena),
     },
+    lifetimeCaps: !!ent.lifetimeCaps,
     daysLeft: ent.daysLeft,
     currentPeriodEnd: ent.currentPeriodEnd || null,
   };

@@ -170,8 +170,9 @@ async function startSession({ portalId, persona = DEFAULT_PERSONA, repUserId = n
     const err = new Error('Arena practice is a Pro feature. Ask your admin to upgrade.'); err.status = 402; throw err;
   }
   // Meter the session against the plan's monthly Arena cap (Infinity = no-op for
-  // Pro+; Starter gets a limited allowance). consume() throws 402 at the cap.
-  await usage.consume(tenantId, 'arena', ent.caps ? ent.caps.arena : 0);
+  // Pro+; Starter gets a limited allowance). consume() throws 402 at the cap,
+  // falling through to purchased research credits first (user-initiated).
+  await usage.consume(tenantId, 'arena', ent.caps ? ent.caps.arena : 0, { useCredits: true, lifetime: ent.lifetimeCaps });
 
   const cacheRecord = await ensurePersonaCache(persona);
 

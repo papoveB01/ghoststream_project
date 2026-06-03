@@ -44,6 +44,7 @@
       const payload = await r.json();
       me = payload.user;
       if (me && payload.entitlements) me.entitlements = payload.entitlements;
+      if (me) me.credits = payload.credits || null;
     } catch {
       window.location.href = '/admin/login.html';
       return;
@@ -81,6 +82,7 @@
     }
 
     renderSubBanner(me.entitlements);
+    renderUserCredits(me.credits);
 
     // Reveal superadmin-only nav entries before rendering the initial section
     // so deep-linking to e.g. #calls-ops on a fresh load works.
@@ -7685,6 +7687,25 @@
     el.classList.remove('hidden');
   }
 
+  // Sidebar credit chip, under the plan chip. Shows the tenant's live add-on
+  // balance (engagement + research) so it's visible everywhere, not just on
+  // Billing. Hidden entirely when the tenant holds no credits.
+  function renderUserCredits(credits) {
+    const el = $('user-credits');
+    if (!el) return;
+    const c = credits || {};
+    const eng = (c.engagements && c.engagements.remaining) || 0;
+    const research = (c.research && c.research.remaining) || 0;
+    if (!eng && !research) { el.classList.add('hidden'); el.textContent = ''; return; }
+    const parts = [];
+    if (eng) parts.push(`${eng} call`);
+    if (research) parts.push(`${research} research`);
+    el.innerHTML = `<span class="uc-dot">◆</span> ${parts.join(' · ')} credit${eng + research === 1 ? '' : 's'}`;
+    el.title = 'Add-on credits available — click to manage';
+    el.classList.remove('hidden');
+    el.onclick = () => { location.hash = '#billing'; };
+  }
+
   function renderSubBanner(ent) {
     renderUserPlan(ent);
     const el = $('sub-banner');
@@ -7730,15 +7751,23 @@
     } else if (query && query.checkout === 'cancel') {
       toast('Checkout cancelled.', 'warn');
       history.replaceState(null, '', '#billing');
+    } else if (query && query.credits === 'success') {
+      toast('Credits added — they’re ready to use.');
+      history.replaceState(null, '', '#billing');
+    } else if (query && query.credits === 'cancel') {
+      toast('Credit purchase cancelled.', 'warn');
+      history.replaceState(null, '', '#billing');
     }
     let data;
     try { data = await fetchJson('/api/billing'); }
     catch (err) { $('bill-summary').innerHTML = `<div class="empty">Couldn't load billing: ${escapeHtml(err.message)}</div>`; return; }
     renderBillingSummary(data.billing);
     renderBillingUsage(data.billing);
+    renderBillingCredits(data.billing, data.creditPacks || []);
     renderBillingPlans(data.billing, data.plans || []);
-    // Keep the top banner in sync with the freshest state.
+    // Keep the top banner + sidebar credit chip in sync with the freshest state.
     renderSubBanner(data.billing);
+    renderUserCredits(data.billing.credits);
   }
 
   function renderBillingSummary(b) {
@@ -7784,13 +7813,101 @@
           <div class="usage-top"><span>${escapeHtml(METER_LABELS[m] || m)}</span><span class="${over ? 'usage-over' : ''}">${used} / ${capLabel}</span></div>
           <div class="usage-bar"><i style="width:${pct}%" class="${over ? 'over' : ''}"></i></div>
         </div>`;
-    }).join('') + '<div class="bill-sub" style="margin-top:10px">Resets on the 1st of each month (UTC).</div>';
+    }).join('') + `<div class="bill-sub" style="margin-top:10px">${
+      b.lifetimeCaps
+        ? 'One-time allowance on the Free plan — upgrade for monthly limits, or buy credits to keep going.'
+        : 'Resets on the 1st of each month (UTC).'
+    }</div>`;
+  }
+
+  // Add-on credits — top-ups that kick in once a monthly cap is spent. Engagement
+  // credits cover AI-joined calls; research credits cover discovery / competitor /
+  // Market Watch / Arena. Bought as one-time payments; expire 90 days after purchase.
+  const CREDIT_KIND_META = {
+    engagements: { label: 'Engagement credits', icon: '🎧', desc: 'Extra AI-joined calls beyond your monthly plan allowance.' },
+    research:    { label: 'Research credits',   icon: '🔍', desc: 'Cover discovery, competitor research, Market Watch &amp; Arena practice.' },
+  };
+  function fmtCreditDate(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  function renderBillingCredits(b, packs) {
+    const bal = b.credits || {};
+    const haveAny = ['engagements', 'research'].some((k) => bal[k] && bal[k].remaining > 0);
+
+    // ── Balance band — prominent tiles for whatever the tenant currently holds.
+    let balance;
+    if (haveAny) {
+      const tiles = ['engagements', 'research'].map((k) => {
+        const c = bal[k] || { remaining: 0, nextExpiry: null };
+        if (!c.remaining) return '';
+        const m = CREDIT_KIND_META[k];
+        const exp = c.nextExpiry ? `<div class="cbt-exp">Expires ${fmtCreditDate(c.nextExpiry)}</div>` : '';
+        return `
+          <div class="credit-bal-tile">
+            <div class="cbt-icon">${m.icon}</div>
+            <div class="cbt-body">
+              <div class="cbt-num">${c.remaining}</div>
+              <div class="cbt-label">${m.label}</div>
+              ${exp}
+            </div>
+          </div>`;
+      }).join('');
+      balance = `<div class="credit-bal-band">${tiles}</div>`;
+    } else {
+      balance = `<div class="credit-bal-empty">
+        <div class="cbe-icon">＋</div>
+        <div>
+          <div class="cbe-title">No add-on credits yet</div>
+          <div class="cbe-sub">Top-up packs extend your monthly limits — buy one below and it’s ready instantly.</div>
+        </div>
+      </div>`;
+    }
+
+    // ── Pack grid — grouped by kind, each pack a tappable card.
+    const stripeOff = !b.stripeConfigured;
+    const card = (p) => {
+      const dis = stripeOff ? 'disabled title="Billing not set up yet"' : '';
+      return `
+        <button class="credit-pack" data-credit-pack="${escapeHtml(p.key)}" ${dis}>
+          <div class="cp-credits">${p.credits}<span>credits</span></div>
+          <div class="cp-price">$${p.priceUsd}</div>
+          <div class="cp-cta">Buy</div>
+        </button>`;
+    };
+    const group = (kind, list) => {
+      if (!list.length) return '';
+      const m = CREDIT_KIND_META[kind];
+      return `
+        <div class="credit-group">
+          <div class="credit-group-h">
+            <span class="cg-icon">${m.icon}</span>
+            <span class="cg-title">${m.label}</span>
+            <span class="cg-desc">${m.desc}</span>
+          </div>
+          <div class="credit-pack-grid">${list.map(card).join('')}</div>
+        </div>`;
+    };
+
+    $('bill-credits').innerHTML = `
+      ${balance}
+      <div class="credit-groups">
+        ${group('engagements', packs.filter((p) => p.kind === 'engagements'))}
+        ${group('research', packs.filter((p) => p.kind === 'research'))}
+      </div>
+      <div class="bill-sub credit-foot">Credits are drawn only after your monthly plan allowance is used up, and expire 90 days after purchase. One-time payment — separate from your subscription.</div>`;
+
+    $('bill-credits').querySelectorAll('[data-credit-pack]').forEach((btn) => {
+      btn.addEventListener('click', () => startCreditCheckout(btn.dataset.creditPack, btn));
+    });
   }
 
   // Features that carry a monthly cap — show the per-plan allowance inline so the
   // value ladder (25 vs 50 discovery, limited vs unlimited Arena) is visible.
   const METERED_FEATURES = new Set(['discovery', 'competitor_research', 'engagements', 'market_monitoring', 'arena']);
-  function capBadge(v) { return v == null ? 'unlimited' : `${v}/mo`; }
+  function capBadge(v, lifetime) { return v == null ? 'unlimited' : `${v}${lifetime ? ' total' : '/mo'}`; }
 
   // Table-stakes capabilities included on every plan (not gated, so they're not
   // in the catalog's feature list). Calendar connect is listed because AI-joined
@@ -7808,7 +7925,7 @@
         // Skip a feature the plan can't actually use (cap 0, e.g. Market Watch on Starter).
         if (METERED_FEATURES.has(f) && p.caps && p.caps[f] === 0) return '';
         const cap = (!isEnterprise && METERED_FEATURES.has(f) && p.caps && f in p.caps)
-          ? ` <span class="plan-cap">${capBadge(p.caps[f])}</span>` : '';
+          ? ` <span class="plan-cap">${capBadge(p.caps[f], p.lifetimeCaps)}</span>` : '';
         return `<li>${label}${cap}</li>`;
       }).join('');
       const included = ALWAYS_INCLUDED.map((l) => `<li>${l}</li>`).join('');
@@ -7825,7 +7942,11 @@
       } else {
         btn = '';
       }
-      const price = p.monthly != null ? `<div class="plan-price">$${p.monthly}<span>/mo</span></div>` : '<div class="plan-price">Custom</div>';
+      const price = p.monthly === 0
+        ? '<div class="plan-price">Free</div>'
+        : p.monthly != null
+          ? `<div class="plan-price">$${p.monthly}<span>/mo</span></div>`
+          : '<div class="plan-price">Custom</div>';
       return `
         <div class="plan-card ${isCurrent ? 'current' : ''}">
           <div class="plan-name">${escapeHtml(p.name)}${isCurrent ? ' <span class="pill pill-ok">Current</span>' : ''}</div>
@@ -7964,6 +8085,24 @@
     } catch (err) {
       toast(`Couldn't start checkout: ${err.message}`, 'warn');
       if (btn) { btn.disabled = false; btn.textContent = `Upgrade`; loadBilling(); }
+    }
+  }
+
+  async function startCreditCheckout(pack, btn) {
+    const label = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Redirecting…'; }
+    try {
+      const r = await fetch('/api/billing/credits/checkout', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pack }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok || !body.url) throw new Error(body.error || `HTTP ${r.status}`);
+      window.location.href = body.url;
+    } catch (err) {
+      toast(`Couldn't start checkout: ${err.message}`, 'warn');
+      if (btn) { btn.disabled = false; btn.innerHTML = label; }
     }
   }
 

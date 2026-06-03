@@ -26,6 +26,7 @@ const plans = require('./plans');
 const gating = require('./gating');
 const billing = require('./billing');
 const entitlements = require('./entitlements');
+const credits = require('./credits');
 const devices = require('./devices');
 const loginGuard = require('./loginGuard');
 const sessions = require('./sessions');
@@ -696,20 +697,27 @@ app.delete('/auth/devices/:id', auth.authMiddleware, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.get('/auth/me', auth.authMiddleware, (req, res) => {
-  res.json({
-    user: {
-      id: req.user.sub,
-      email: req.user.email,
-      name: req.user.name || null,
-      role: req.user.role,
-      tenantId: req.user.tid,
-      isAdmin: !!req.user.adm,
-    },
-    // Set by the global billingGate — lets the SPA render the trial banner and
-    // gate UI affordances without an extra round-trip.
-    entitlements: req.entitlements ? entitlements.toJson(req.entitlements) : null,
-  });
+app.get('/auth/me', auth.authMiddleware, async (req, res, next) => {
+  try {
+    // Live add-on credit balance, so the sidebar can show it next to the plan
+    // without a separate /billing round-trip (best-effort — never block /me).
+    let creditBalance = null;
+    try { creditBalance = await credits.summary(req.user.tid); } catch { /* ignore */ }
+    res.json({
+      user: {
+        id: req.user.sub,
+        email: req.user.email,
+        name: req.user.name || null,
+        role: req.user.role,
+        tenantId: req.user.tid,
+        isAdmin: !!req.user.adm,
+      },
+      // Set by the global billingGate — lets the SPA render the trial banner and
+      // gate UI affordances without an extra round-trip.
+      entitlements: req.entitlements ? entitlements.toJson(req.entitlements) : null,
+      credits: creditBalance,
+    });
+  } catch (err) { next(err); }
 });
 
 // GET /auth/profile — the full profile record (from the DB, so it includes the

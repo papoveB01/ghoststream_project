@@ -15,6 +15,7 @@ const email = require('./email');
 const tenants = require('./tenants');
 const plans = require('./plans');
 const usage = require('./usage');
+const credits = require('./credits');
 const entitlements = require('./entitlements');
 
 // Where Enterprise "Contact sales" inquiries are emailed. Falls back to the
@@ -42,7 +43,9 @@ router.get('/', async (req, res, next) => {
   try {
     const tenant = await tenants.get(req.tenantId, { fresh: true });
     const ent = entitlements.entitlementsFor(tenant);
-    const used = await usage.summary(req.tenantId);
+    // Free tier meters are lifetime; paid tiers are monthly. Read the matching bucket.
+    const used = await usage.summary(req.tenantId, { lifetime: ent.lifetimeCaps });
+    const creditBalance = await credits.summary(req.tenantId);
     res.json({
       billing: {
         ...entitlements.toJson(ent),
@@ -53,10 +56,12 @@ router.get('/', async (req, res, next) => {
           market_monitoring: used.market_monitoring || 0,
           arena: used.arena || 0,
         },
+        credits: creditBalance,
         stripeConfigured: isConfigured(),
         manageable: !!(tenant && tenant.stripe_subscription_id),
       },
       plans: plans.catalog(),
+      creditPacks: credits.catalog(),
     });
   } catch (err) { next(err); }
 });
@@ -124,6 +129,61 @@ router.post('/checkout', async (req, res, next) => {
   }
 });
 
+// POST /billing/credits/checkout { pack } — buy an add-on credit pack. A
+// one-time payment (mode:'payment'), separate from the recurring subscription,
+// billed with inline price_data so no pre-created Stripe product is needed. The
+// grant happens on payment success (webhook / confirm), never here.
+router.post('/credits/checkout', async (req, res, next) => {
+  try {
+    if (!isConfigured()) return res.status(503).json({ error: 'Billing is not configured yet.', code: 'BILLING_NOT_CONFIGURED' });
+    const pack = credits.packFor(String((req.body && req.body.pack) || ''));
+    if (!pack) return res.status(400).json({ error: 'Unknown credit pack.' });
+
+    const customerId = await ensureCustomerFor(req.tenantId, req.user && req.user.email);
+    const meta = { tenantId: req.tenantId, kind: 'credits', packKey: pack.key, creditKind: pack.kind, credits: String(pack.credits) };
+    const session = await stripe().checkout.sessions.create({
+      mode: 'payment',
+      customer: customerId,
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          unit_amount: pack.unitAmount,
+          product_data: { name: `GhostStream — ${pack.name}`, description: `${pack.credits} credits · expire ${credits.CREDIT_TTL_DAYS} days after purchase` },
+        },
+        quantity: 1,
+      }],
+      success_url: `${APP_BASE_URL}/admin/?cs={CHECKOUT_SESSION_ID}#billing?credits=success`,
+      cancel_url: `${APP_BASE_URL}/admin/#billing?credits=cancel`,
+      allow_promotion_codes: true,
+      metadata: meta,
+      payment_intent_data: { metadata: meta },
+    });
+    res.json({ url: session.url });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message, code: err.code });
+    next(err);
+  }
+});
+
+// Grant the credits a paid one-time Checkout Session bought. Idempotent (the
+// grant row is unique on session id), and a no-op for non-credit sessions or
+// payments that haven't actually settled.
+async function grantCreditsFromSession(session) {
+  const m = session.metadata || {};
+  if (m.kind !== 'credits' || !m.tenantId) return null;
+  if (session.payment_status && session.payment_status !== 'paid') return null; // not settled yet
+  const pack = credits.packFor(m.packKey);
+  const kind = (pack && pack.kind) || m.creditKind;
+  const qty = pack ? pack.credits : parseInt(m.credits, 10);
+  if (!kind || !(qty > 0)) return null;
+  const g = await credits.grant({
+    tenantId: m.tenantId, kind, qty, source: 'stripe',
+    packKey: m.packKey, sessionId: session.id, paymentIntent: session.payment_intent || null,
+  });
+  if (g) console.log(`[billing] granted ${qty} ${kind} credits to tenant ${m.tenantId} (session ${session.id})`);
+  return g;
+}
+
 // POST /billing/confirm { sessionId } — apply a completed Checkout Session's
 // subscription immediately so the app reflects the new plan without waiting for
 // the webhook. Tenant-scoped.
@@ -141,9 +201,17 @@ router.post('/confirm', async (req, res, next) => {
       const sub = await stripe().subscriptions.retrieve(session.subscription);
       if (session.metadata && session.metadata.tenantId) sub.metadata = { ...(sub.metadata || {}), ...session.metadata };
       await applySubscription(sub);
+    } else if (session.metadata && session.metadata.kind === 'credits') {
+      // One-time credit purchase — grant immediately so the UI reflects it
+      // without waiting for the webhook (idempotent with it).
+      await grantCreditsFromSession(session);
     }
     const tenant = await tenants.get(req.tenantId, { fresh: true });
-    res.json({ ok: true, entitlements: entitlements.toJson(entitlements.entitlementsFor(tenant)) });
+    res.json({
+      ok: true,
+      entitlements: entitlements.toJson(entitlements.entitlementsFor(tenant)),
+      credits: await credits.summary(req.tenantId),
+    });
   } catch (err) { next(err); }
 });
 
@@ -343,9 +411,15 @@ async function webhook(req, res) {
             sub.metadata = { ...(sub.metadata || {}), ...session.metadata };
           }
           await applySubscription(sub);
+        } else if (session.metadata && session.metadata.kind === 'credits') {
+          await grantCreditsFromSession(session); // synchronous (card) payment
         }
         break;
       }
+      // Delayed payment methods settle after the session completes — grant then.
+      case 'checkout.session.async_payment_succeeded':
+        await grantCreditsFromSession(event.data.object);
+        break;
       case 'customer.subscription.created':
       case 'customer.subscription.updated':
         await applySubscription(event.data.object);

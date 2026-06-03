@@ -98,7 +98,10 @@ function requireCapacity(meter) {
         return res.status(402).json({ error: 'Your subscription is inactive.', code: 'SUBSCRIPTION_REQUIRED', reason: ent.reason });
       }
       const cap = ent.caps ? ent.caps[meter] : 0;
-      await usage.consume(req.tenantId, meter, cap);
+      // User-initiated action: spill over to purchased add-on credits once the
+      // plan allowance is spent (credits.js). 402 only if neither has room.
+      // lifetime: free-tier caps are lifetime (never reset), not monthly.
+      await usage.consume(req.tenantId, meter, cap, { useCredits: true, lifetime: ent.lifetimeCaps });
       next();
     } catch (err) {
       if (err.code === 'USAGE_LIMIT') {

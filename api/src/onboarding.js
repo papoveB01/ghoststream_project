@@ -31,14 +31,15 @@ const email = require('./email');
 const billing = require('./billing');
 const plans = require('./plans');
 
-// Plans a new signup can pick from the public funnel. Starter carries the free
-// trial; Pro is paid immediately. (Enterprise = contact sales, not here.)
+// Paid plans a new signup can opt straight into from the public funnel (an
+// immediate upsell). Everyone starts on the free tier regardless; picking one of
+// these just routes them to Checkout after the account is created. (Enterprise =
+// contact sales, not here.)
 const SIGNUP_PLANS = new Set(['starter', 'pro']);
 
 const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net').replace(/\/+$/, '');
 const SESSION_TTL_SEC = parseInt(process.env.ONBOARDING_SESSION_TTL_SEC || '1800', 10); // 30 min
 const VERIFY_TTL_SEC = parseInt(process.env.ONBOARDING_VERIFY_TTL_SEC || '86400', 10); // 24h to click the email link
-const TRIAL_DAYS = parseInt(process.env.ONBOARDING_TRIAL_DAYS || '14', 10);
 const MIN_PASSWORD_LEN = parseInt(process.env.ONBOARDING_MIN_PASSWORD_LEN || '12', 10);
 
 // Where a freshly-verified owner lands: the Company → Intel tab in "welcome"
@@ -342,20 +343,18 @@ router.post('/verify', async (req, res, next) => {
       return res.status(409).json({ error: 'A workspace for this company domain already exists. Ask a teammate to invite you.', code: 'TENANT_EXISTS' });
     }
 
-    // When Stripe is live, the subscription drives the trial: create the tenant
-    // INACTIVE (TRIAL with no end date) + on the chosen plan, then send them to
-    // Checkout. The webhook/confirm flips it active. Without Stripe configured,
-    // fall back to the legacy in-app 14-day DB trial so dev still works.
-    const plan = SIGNUP_PLANS.has(s.plan) ? s.plan : 'starter';
-    const useStripe = billing.isConfigured();
-    const initialPlan = useStripe ? plan : 'starter';
-    const trialEndsAt = useStripe ? null : new Date(Date.now() + TRIAL_DAYS * 86400000).toISOString();
+    // Everyone starts on the free tier: an active TRIAL tenant with NO end date
+    // (perpetual, no card — see entitlements.accessState). If they opted into a
+    // paid plan we still create them free, then route to Checkout below as an
+    // immediate upsell; the webhook upgrades them on success. Abandoning Checkout
+    // simply leaves them on the free tier — never accidental paid access.
+    const paidChoice = SIGNUP_PLANS.has(s.plan) ? s.plan : null;
 
     const tenantRow = (await db.query(
       `INSERT INTO tenants (name, domain, subscription_status, plan, trial_ends_at)
-       VALUES ($1, $2, 'TRIAL', $3, $4::timestamptz)
+       VALUES ($1, $2, 'TRIAL', 'trial', NULL)
        RETURNING id, name, domain, subscription_status, plan, trial_ends_at`,
-      [s.companyName, s.websiteDomain, initialPlan, trialEndsAt]
+      [s.companyName, s.websiteDomain]
     )).rows[0];
     const owner = await users.create({
       tenantId: tenantRow.id,
@@ -368,24 +367,24 @@ router.post('/verify', async (req, res, next) => {
       emailVerified: true,
     });
 
-    // Decide where to send them: Stripe Checkout (trial for Starter, paid for
-    // Pro) → on success lands in the in-app welcome setup; or straight to the
-    // welcome setup on the legacy path.
+    // Free signups land straight in the in-app welcome setup (no card). A paid
+    // opt-in goes to Stripe Checkout (paid immediately, no trial); on success it
+    // lands in the same welcome setup and the webhook upgrades the plan.
     let redirectTo = WELCOME_REDIRECT;
-    if (useStripe) {
+    if (paidChoice && billing.isConfigured()) {
       try {
         const checkout = await billing.createCheckout({
           tenantId: tenantRow.id,
           email: s.email,
-          plan,
-          trial: plan === 'starter',
+          plan: paidChoice,
+          trial: false, // no trial on paid plans anymore
           successUrl: `${APP_BASE_URL}/admin/?cs={CHECKOUT_SESSION_ID}#company?tab=intel&welcome=1`,
           cancelUrl: `${APP_BASE_URL}/admin/#billing?checkout=cancel`,
         });
         redirectTo = checkout.url;
       } catch (e) {
         console.warn('[onboarding] checkout creation failed:', e.message);
-        redirectTo = '/admin/#billing'; // land on Billing so they can start the plan manually
+        redirectTo = '/admin/#billing'; // land on Billing so they can upgrade manually
       }
     }
 
