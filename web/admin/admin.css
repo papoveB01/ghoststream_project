@@ -398,6 +398,30 @@ body {
 }
 .cancel-actions .grow { flex: 1; }
 
+/* The cancel modal isn't inside a .kb-form, so style its text fields explicitly
+   (and keep them sans-serif — the .kb-form textarea rule forces monospace). */
+.cancel-modal .field { margin-bottom: 16px; }
+.cancel-modal .field label { display: block; margin-bottom: 6px; }
+.cancel-modal .field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  background: #fff;
+  resize: vertical;
+}
+.cancel-modal .field textarea::placeholder { color: var(--muted); }
+.cancel-modal .field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-light);
+}
+
 .plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
 .plan-card {
   border: 1px solid var(--border); border-radius: var(--radius, 12px); padding: 20px;
