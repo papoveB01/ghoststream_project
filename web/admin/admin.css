@@ -398,6 +398,29 @@ body {
 }
 .cancel-actions .grow { flex: 1; }
 
+/* ── Sub-accounts ───────────────────────────────────────────────────────── */
+.sa-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.sa-list { display: flex; flex-direction: column; gap: 10px; }
+.sa-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius, 12px); background: var(--bg);
+}
+.sa-info { min-width: 0; }
+.sa-name { font-size: 14px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.sa-sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.sa-actions { flex: 0 0 auto; }
+.sa-modal { max-width: 520px; }
+.sa-feats { display: flex; flex-direction: column; gap: 8px; }
+.sa-feat {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px; cursor: pointer; font-size: 13.5px;
+}
+.sa-feat:has(input:checked) { border-color: var(--accent); background: var(--accent-light); }
+.sa-feat-label { flex: 1; }
+.sa-feat input[type="checkbox"] { accent-color: var(--accent); }
+.sa-cap { width: 84px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; text-align: right; }
+.sa-cap:disabled { opacity: .45; }
+
 /* The cancel modal isn't inside a .kb-form, so style its text fields explicitly
    (and keep them sans-serif — the .kb-form textarea rule forces monospace). */
 .cancel-modal .field { margin-bottom: 16px; }

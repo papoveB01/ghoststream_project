@@ -3,7 +3,7 @@
   const show = (id) => $(id).classList.remove('hidden');
   const hide = (id) => $(id).classList.add('hidden');
 
-  const sections = ['overview', 'company', 'missions', 'prospects', 'competitors', 'market-signals', 'calendar', 'calls', 'calls-ops', 'platform', 'instances', 'platform-audit', 'platform-keys', 'sessions', 'integrations', 'billing', 'settings', 'profile'];
+  const sections = ['overview', 'company', 'missions', 'prospects', 'competitors', 'market-signals', 'calendar', 'calls', 'calls-ops', 'platform', 'instances', 'platform-audit', 'platform-keys', 'sessions', 'integrations', 'billing', 'subaccounts', 'settings', 'profile'];
   const loaders = {
     overview: loadOverview,
     company: loadCompany,
@@ -21,6 +21,7 @@
     sessions: loadSessions,
     integrations: loadIntegrations,
     billing: loadBilling,
+    subaccounts: loadSubaccounts,
     settings: loadSettings,
     profile: loadProfile,
   };
@@ -88,6 +89,12 @@
     // so deep-linking to e.g. #calls-ops on a fresh load works.
     if (isSuperadmin) {
       document.querySelectorAll('.superadmin-only').forEach((el) => el.classList.remove('hidden'));
+    }
+    // Sub-accounts nav is shown only when the plan includes it (Pro/Enterprise),
+    // and never for a sub-tenant (children can't nest).
+    const feats = (me.entitlements && me.entitlements.features) || [];
+    if (feats.includes('sub_accounts') && !(me.entitlements && me.entitlements.isSubtenant)) {
+      document.querySelectorAll('.subaccounts-only').forEach((el) => el.classList.remove('hidden'));
     }
 
     wireNav();
@@ -282,6 +289,7 @@
       sessions: 'Arena Practice',
       integrations: 'Integrations',
       billing: 'Billing',
+      subaccounts: 'Sub-accounts',
       settings: 'Settings',
       profile: 'Your profile',
     }[sec];
@@ -8285,6 +8293,156 @@
       result.className = 'kb-result error';
       btn.disabled = false; btn.textContent = 'Cancel subscription';
     }
+  }
+
+  // ── Sub-accounts (parent → child workspaces) ───────────────────────────────
+  async function loadSubaccounts() {
+    let d;
+    try { d = await fetchJson('/api/account/subaccounts'); }
+    catch (err) { $('subaccounts-body').innerHTML = `<div class="empty">Couldn't load sub-accounts: ${escapeHtml(err.message)}</div>`; return; }
+    renderSubaccounts(d);
+  }
+
+  function renderSubaccounts(d) {
+    const limitTxt = d.limit == null ? '∞' : d.limit;
+    const atLimit = d.limit != null && d.used >= d.limit;
+    const featNames = (arr) => (arr || []).map((f) => FEATURE_LABELS[f] || f).join(', ') || 'no features';
+    const children = (d.children || []).map((c) => {
+      const pill = c.suspended ? '<span class="pill pill-warn">Suspended</span>' : `<span class="pill pill-ok">${escapeHtml(c.status || 'Active')}</span>`;
+      const action = c.suspended
+        ? `<button class="kb-secondary-btn" data-unsuspend="${escapeHtml(c.id)}">Resume</button>`
+        : `<button class="kb-danger-btn" data-suspend="${escapeHtml(c.id)}">Suspend</button>`;
+      return `<div class="sa-row">
+        <div class="sa-info"><div class="sa-name">${escapeHtml(c.name)} ${pill}</div>
+          <div class="sa-sub">${escapeHtml(c.domain)} · ${escapeHtml(featNames(c.features))}</div></div>
+        <div class="sa-actions">${action}</div></div>`;
+    }).join('');
+    const invites = (d.invites || []).map((iv) => `<div class="sa-row">
+        <div class="sa-info"><div class="sa-name">${escapeHtml(iv.company_name)} <span class="pill">Invite pending</span></div>
+          <div class="sa-sub">${escapeHtml(iv.email)} · expires ${fmtDate(iv.expires_at)}</div></div>
+        <div class="sa-actions"><button class="kb-secondary-btn" data-revoke="${escapeHtml(iv.id)}">Revoke</button></div></div>`).join('');
+    const empty = (!children && !invites) ? '<div class="kb-subtle">No sub-accounts yet — invite one to get started.</div>' : '';
+    $('subaccounts-body').innerHTML = `
+      <div class="sa-head">
+        <div class="bill-sub" style="margin:0"><strong>${d.used}</strong> of <strong>${limitTxt}</strong> sub-accounts used</div>
+        <button class="primary-cta" id="sa-invite-btn" ${atLimit ? 'disabled title="Limit reached — remove one or upgrade"' : ''}>+ Invite sub-account</button>
+      </div>
+      <div class="sa-list">${children}${invites}${empty}</div>`;
+    if (!atLimit) $('sa-invite-btn').addEventListener('click', () => openInviteModal(d.grantOptions || { features: [], caps: {} }));
+    $('subaccounts-body').querySelectorAll('[data-suspend]').forEach((b) => b.addEventListener('click', () => subaccountAction(`${b.dataset.suspend}/suspend`, b)));
+    $('subaccounts-body').querySelectorAll('[data-unsuspend]').forEach((b) => b.addEventListener('click', () => subaccountAction(`${b.dataset.unsuspend}/unsuspend`, b)));
+    $('subaccounts-body').querySelectorAll('[data-revoke]').forEach((b) => b.addEventListener('click', () => revokeInvite(b.dataset.revoke, b)));
+  }
+
+  async function subaccountAction(path, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetch(`/api/account/subaccounts/${path}`, { method: 'POST', credentials: 'include' });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      loadSubaccounts();
+    } catch (err) { toast(err.message, 'warn'); if (btn) btn.disabled = false; }
+  }
+  async function revokeInvite(id, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetch(`/api/account/subaccounts/invites/${id}`, { method: 'DELETE', credentials: 'include' });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      toast('Invite revoked.'); loadSubaccounts();
+    } catch (err) { toast(err.message, 'warn'); if (btn) btn.disabled = false; }
+  }
+
+  function _saEsc(e) { if (e.key === 'Escape') closeInviteModal(); }
+  function closeInviteModal() { const o = $('sa-modal-overlay'); if (o) o.classList.add('hidden'); }
+
+  function openInviteModal(grant) {
+    let ov = $('sa-modal-overlay');
+    // Feature rows: a checkbox per grantable feature; metered ones get a cap input.
+    const featureRows = (grant.features || []).map((f) => {
+      const metered = METERED_FEATURES.has(f);
+      const max = grant.caps && Number.isFinite(grant.caps[f]) ? grant.caps[f] : null;
+      const capInput = metered
+        ? `<input type="number" min="0" ${max != null ? `max="${max}"` : ''} class="sa-cap" data-meter="${f}" placeholder="${max != null ? max : '∞'}" disabled>`
+        : '';
+      return `<label class="sa-feat">
+        <input type="checkbox" class="sa-feat-cb" value="${f}">
+        <span class="sa-feat-label">${escapeHtml(FEATURE_LABELS[f] || f)}</span>
+        ${capInput}</label>`;
+    }).join('');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'sa-modal-overlay'; ov.className = 'cal-picker-overlay';
+      ov.innerHTML = `
+        <div class="cal-picker sa-modal">
+          <div class="cal-picker-h"><span class="cal-picker-title">Invite a sub-account</span>
+            <button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
+          <div class="cal-picker-body">
+            <div class="kb-form">
+              <div class="field"><label for="sa-company">Company name</label><input id="sa-company" type="text" maxlength="200"></div>
+              <div class="field kb-inline-pair">
+                <div><label for="sa-domain">Company domain</label><input id="sa-domain" type="text" placeholder="acme.com"></div>
+                <div><label for="sa-email">Owner email</label><input id="sa-email" type="email" placeholder="owner@acme.com"></div>
+              </div>
+              <div class="field"><label>Features this sub-account can use</label>
+                <div class="sa-feats" id="sa-feats">${featureRows}</div>
+                <div class="field-hint">Tick a feature to enable it; set a monthly cap (blank = your plan's full pool).</div>
+              </div>
+              <div class="teams-modal-actions">
+                <button type="button" class="kb-secondary-btn" id="sa-cancel">Cancel</button>
+                <button type="button" class="primary-cta" id="sa-submit">Send invite</button>
+              </div>
+              <div class="kb-result hidden" id="sa-result"></div>
+            </div>
+          </div>
+        </div>`;
+      document.body.appendChild(ov);
+      ov.addEventListener('click', (e) => { if (e.target === ov) closeInviteModal(); });
+      ov.querySelector('.cal-picker-close').addEventListener('click', closeInviteModal);
+      $('sa-cancel').addEventListener('click', closeInviteModal);
+      $('sa-submit').addEventListener('click', submitInvite);
+      document.addEventListener('keydown', _saEsc);
+      // Enable a feature's cap input only when its checkbox is ticked.
+      $('sa-feats').addEventListener('change', (e) => {
+        if (!e.target.classList.contains('sa-feat-cb')) return;
+        const cap = e.target.parentElement.querySelector('.sa-cap');
+        if (cap) { cap.disabled = !e.target.checked; if (!e.target.checked) cap.value = ''; }
+      });
+    } else {
+      $('sa-feats').innerHTML = featureRows;
+      $('sa-company').value = ''; $('sa-domain').value = ''; $('sa-email').value = '';
+      $('sa-result').classList.add('hidden');
+    }
+    ov.classList.remove('hidden');
+    setTimeout(() => $('sa-company').focus(), 50);
+  }
+
+  async function submitInvite() {
+    const result = $('sa-result');
+    const features = [];
+    $('sa-feats').querySelectorAll('.sa-feat-cb:checked').forEach((cb) => features.push(cb.value));
+    const caps = {};
+    $('sa-feats').querySelectorAll('.sa-cap').forEach((ci) => { if (!ci.disabled && ci.value !== '') caps[ci.dataset.meter] = ci.value; });
+    const body = {
+      companyName: $('sa-company').value.trim(),
+      domain: $('sa-domain').value.trim(),
+      email: $('sa-email').value.trim(),
+      features, caps,
+    };
+    if (!body.companyName || !body.domain || !body.email) {
+      result.textContent = 'Company, domain and owner email are all required.'; result.className = 'kb-result error'; return;
+    }
+    const btn = $('sa-submit'); btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      const r = await fetch('/api/account/subaccounts/invite', {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      closeInviteModal();
+      toast(j.emailSent ? 'Invite sent — they\'ll get an email to set up.' : 'Invite created (email not configured — share the link from the invites list).');
+      loadSubaccounts();
+    } catch (err) {
+      result.textContent = err.message; result.className = 'kb-result error';
+    } finally { btn.disabled = false; btn.textContent = 'Send invite'; }
   }
 
   // Transient bottom-right confirmation toast (reusable).

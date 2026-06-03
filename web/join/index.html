@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Join your workspace · GhostStream</title>
+  <meta name="robots" content="noindex">
+  <style>
+    :root { --indigo:#4f46e5; --ink:#0f172a; --muted:#64748b; --line:#e2e8f0; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:#f1f5f9; color:var(--ink); }
+    .wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+    .card { width:100%; max-width:440px; background:#fff; border-radius:14px; overflow:hidden; box-shadow:0 10px 40px -12px rgba(15,23,42,.25); }
+    .head { background:linear-gradient(135deg,#4f46e5,#7c3aed); color:#fff; padding:26px 28px; }
+    .head .kicker { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:#c7d2fe; font-weight:700; }
+    .head h1 { font-size:21px; margin:6px 0 0; font-weight:700; }
+    .head p { margin:6px 0 0; color:#e0e7ff; font-size:13.5px; }
+    .body { padding:24px 28px 28px; }
+    label { display:block; font-size:12.5px; font-weight:600; color:var(--muted); margin:14px 0 5px; }
+    input { width:100%; padding:11px 13px; border:1px solid var(--line); border-radius:9px; font-size:14.5px; font-family:inherit; }
+    input:focus { outline:none; border-color:var(--indigo); box-shadow:0 0 0 3px rgba(79,70,229,.15); }
+    input:disabled { background:#f8fafc; color:var(--muted); }
+    .row { display:flex; gap:12px; }
+    .row > div { flex:1; }
+    .hint { font-size:12px; color:var(--muted); margin-top:5px; }
+    button { width:100%; margin-top:20px; padding:12px; border:0; border-radius:9px; background:var(--indigo); color:#fff; font-size:15px; font-weight:600; cursor:pointer; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .msg { margin-top:14px; font-size:13px; padding:10px 12px; border-radius:8px; display:none; }
+    .msg.err { background:#fef2f2; color:#b91c1c; display:block; }
+    .state { padding:40px 28px; text-align:center; color:var(--muted); }
+    a { color:var(--indigo); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="head">
+        <div class="kicker">GhostStream</div>
+        <h1 id="title">Set up your workspace</h1>
+        <p id="subtitle">Loading your invite…</p>
+      </div>
+      <div class="body">
+        <div id="state" class="state">Checking your invite…</div>
+        <form id="form" style="display:none">
+          <label>Work email</label>
+          <input id="email" type="email" disabled>
+          <div class="row">
+            <div><label>First name</label><input id="first" type="text" autocomplete="given-name"></div>
+            <div><label>Last name</label><input id="last" type="text" autocomplete="family-name"></div>
+          </div>
+          <label>Choose a password</label>
+          <input id="password" type="password" autocomplete="new-password" minlength="12">
+          <div class="hint">At least 12 characters.</div>
+          <button type="submit" id="submit">Create my workspace</button>
+          <div class="msg" id="msg"></div>
+        </form>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var token = new URLSearchParams(location.search).get('token');
+      var $ = function (id) { return document.getElementById(id); };
+      function fail(text) { $('state').textContent = text; $('subtitle').textContent = 'Invite unavailable'; }
+      if (!token) { fail('This link is missing its invite token.'); return; }
+
+      fetch('/api/subaccounts/invite/' + encodeURIComponent(token))
+        .then(function (r) { return r.ok ? r.json() : r.json().then(function (j) { throw new Error(j.error || 'Invite not found'); }); })
+        .then(function (inv) {
+          $('state').style.display = 'none';
+          $('form').style.display = 'block';
+          $('title').textContent = 'Set up ' + inv.companyName;
+          $('subtitle').textContent = "You're invited to run this workspace.";
+          $('email').value = inv.email;
+          setTimeout(function () { $('first').focus(); }, 50);
+        })
+        .catch(function (e) { fail(e.message); });
+
+      $('form').addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        var msg = $('msg'); msg.className = 'msg';
+        var pw = $('password').value;
+        if (pw.length < 12) { msg.className = 'msg err'; msg.textContent = 'Password must be at least 12 characters.'; return; }
+        var btn = $('submit'); btn.disabled = true; btn.textContent = 'Creating…';
+        fetch('/api/subaccounts/invite/' + encodeURIComponent(token) + '/accept', {
+          method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ firstName: $('first').value.trim(), lastName: $('last').value.trim(), password: pw })
+        }).then(function (r) {
+          return r.ok ? r.json() : r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
+        }).then(function () { window.location.href = '/admin/#company?tab=intel&welcome=1'; })
+          .catch(function (e) { msg.className = 'msg err'; msg.textContent = e.message; btn.disabled = false; btn.textContent = 'Create my workspace'; });
+      });
+    })();
+  </script>
+</body>
+</html>

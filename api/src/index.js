@@ -33,6 +33,7 @@ const sessions = require('./sessions');
 const audit = require('./audit');
 const erasure = require('./erasure');
 const platformAdmin = require('./platformAdmin');
+const subaccounts = require('./subaccounts');
 const tenants = require('./tenants');
 const watch = require('./watch');
 
@@ -1098,6 +1099,12 @@ app.use('/dashboard', auth.authMiddleware, require('./dashboard').router);
 // before the authMiddleware'd billing router so Stripe (no cookie) can reach it.
 app.post('/billing/webhook', billing.webhook);
 app.use('/billing', auth.authMiddleware, auth.requireRoleWrite('owner'), billing.router);
+
+// Sub-accounts: parent-owner provisioning (gated by the sub_accounts feature) +
+// the public token-accept flow (self-onboard). Public router mounted before any
+// auth so the invitee can accept without an account.
+app.use('/subaccounts', subaccounts.publicRouter);
+app.use('/account/subaccounts', auth.authMiddleware, gating.requireFeature(plans.FEATURES.SUB_ACCOUNTS), auth.requireRole('owner'), subaccounts.router);
 
 // =========================================================================
 // Companies + Missions (sales scheduler).
