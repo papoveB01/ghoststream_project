@@ -37,7 +37,7 @@ async function assertNotOwnCompany(tenantId, domain) {
 
 async function list(tenantId) {
   const r = await db.query(
-    `SELECT id, name, domain, primary_contact, notes, country, city, address, phone, email, created_at,
+    `SELECT id, name, domain, primary_contact, notes, country, city, address, phone, email, watch_enabled, created_at,
             (SELECT COUNT(*)::int FROM scheduled_meetings
               WHERE company_id = c.id AND tenant_id = $1) AS meeting_count
        FROM companies c
@@ -104,7 +104,7 @@ async function findByDomain(tenantId, domain) {
   return r.rows[0] || null;
 }
 
-async function update(tenantId, id, { name, domain, primaryContact, notes, country, city, address, phone, email }) {
+async function update(tenantId, id, { name, domain, primaryContact, notes, country, city, address, phone, email, watchEnabled }) {
   if (domain !== undefined) await assertNotOwnCompany(tenantId, domain);
   const sets = [];
   const params = [];
@@ -117,6 +117,7 @@ async function update(tenantId, id, { name, domain, primaryContact, notes, count
   if (address !== undefined)        { params.push(address);        sets.push(`address = $${params.length}`); }
   if (phone !== undefined)          { params.push(phone);          sets.push(`phone = $${params.length}`); }
   if (email !== undefined)          { params.push(email);          sets.push(`email = $${params.length}`); }
+  if (watchEnabled !== undefined)   { params.push(!!watchEnabled);  sets.push(`watch_enabled = $${params.length}`); }
   if (sets.length === 0) return get(tenantId, id);
   sets.push(`updated_at = now()`);
   params.push(id);

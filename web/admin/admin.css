@@ -3570,3 +3570,52 @@ details.schedule-advanced > .schedule-advanced-body {
   text-shadow: none; border-radius: var(--radius-sm); font-size: 13px;
 }
 .driver-popover.gs-tour .driver-popover-close-btn { color: var(--muted); font-size: 18px; }
+
+/* ── Market Watch ───────────────────────────────────────────────────────── */
+/* Sidebar unread badge on the Market signals nav entry. */
+.nav-badge {
+  display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px;
+  font-size: 11px; line-height: 18px; text-align: center; font-weight: 600;
+  background: var(--accent); color: #fff; border-radius: 9px; vertical-align: middle;
+}
+
+/* ⭐ Watch toggle on prospect/competitor detail headers. */
+.watch-toggle-btn.on { background: var(--accent-light); color: var(--accent-hover); border-color: var(--accent-soft); }
+
+/* Upsell note (feature not on plan). */
+.upsell-note {
+  padding: 12px 14px; background: var(--accent-light); border: 1px solid var(--accent-soft);
+  border-radius: var(--radius); color: var(--text-2); font-size: 13px;
+}
+.upsell-note a { color: var(--accent-hover); font-weight: 600; }
+
+/* Status pills used by the review queue. */
+.pill-new     { background: var(--accent); color: #fff; }
+.pill-success { background: #ecfdf5; color: var(--success); }
+.pill-muted   { background: var(--surface-2); color: var(--text-2); }
+
+/* Settings → Market Watch card. */
+.watch-settings { display: flex; flex-direction: column; gap: 12px; max-width: 520px; }
+.watch-row { display: flex; align-items: flex-start; gap: 9px; font-size: 13.5px; cursor: pointer; }
+.watch-row input { margin-top: 2px; }
+.watch-field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; max-width: 220px; }
+.watch-field select { padding: 7px 9px; border: 1px solid var(--border-2); border-radius: var(--radius-sm); font: inherit; }
+.watch-meta { font-size: 12px; }
+.watch-actions { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+
+/* Review queue — grouped findings. */
+.watch-group { margin-bottom: 22px; }
+.watch-group-h { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.watch-finding {
+  border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius);
+  padding: 11px 13px; margin-bottom: 9px; background: #fff;
+}
+.watch-finding.is-stale { border-left-color: var(--border-2); opacity: 0.72; }
+.watch-finding-h { display: flex; align-items: center; gap: 8px; }
+.watch-cat { font-size: 14px; }
+.watch-finding-title { font-weight: 600; flex: 1; }
+.watch-mat { color: var(--accent); letter-spacing: -1px; font-size: 9px; }
+.watch-finding-body { margin: 6px 0 8px; font-size: 13px; color: var(--text-2); line-height: 1.45; }
+.watch-finding-foot { display: flex; align-items: center; gap: 6px; font-size: 12px; flex-wrap: wrap; }
+.watch-finding-foot a { color: var(--accent-hover); }
+.watch-finding-actions { margin-left: auto; display: flex; gap: 10px; }

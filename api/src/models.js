@@ -35,6 +35,7 @@ const TASKS = {
   // FLASH — reasoning / synthesis
   research:     { tier: 'flash',   env: 'GEMINI_RESEARCH_MODEL' },
   discovery:    { tier: 'flash',   env: 'GEMINI_DISCOVERY_MODEL' },
+  marketWatch:  { tier: 'flash',   env: 'GEMINI_MARKETWATCH_MODEL' },
   brief:        { tier: 'flash',   env: 'GEMINI_BRIEF_MODEL' },
   compare:      { tier: 'flash',   env: 'GEMINI_COMPARE_MODEL' },
   personas:     { tier: 'flash',   env: 'GEMINI_PERSONAS_MODEL' },

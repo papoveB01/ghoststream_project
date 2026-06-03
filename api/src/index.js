@@ -33,6 +33,7 @@ const audit = require('./audit');
 const erasure = require('./erasure');
 const platformAdmin = require('./platformAdmin');
 const tenants = require('./tenants');
+const watch = require('./watch');
 
 const app = express();
 
@@ -1103,6 +1104,9 @@ app.use('/missions',  auth.authMiddleware, missions.router);
 // =========================================================================
 
 app.use('/knowledge', auth.authMiddleware, knowledge.router);
+
+// Market Watch — agentic monitoring of watched prospects/competitors (premium).
+app.use('/watch', auth.authMiddleware, watch.router);
 
 // =========================================================================
 // Free-trial onboarding — PUBLIC (no auth; these endpoints are how a

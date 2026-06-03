@@ -28,6 +28,7 @@
         <a href="#company" data-section="company">Company</a>
         <a href="#prospects" data-section="prospects">Prospects</a>
         <a href="#competitors" data-section="competitors">Competitors</a>
+        <a href="#market-signals" data-section="market-signals">Market signals<span class="nav-badge hidden" id="watch-badge">0</span></a>
         <a href="#missions" data-section="missions">Engagements</a>
         <a href="#calendar" data-section="calendar">Calendar</a>
         <a href="#calls-ops" data-section="calls-ops" class="superadmin-only hidden">Calls (operations)</a>
@@ -577,6 +578,22 @@
           </div>
         </section>
 
+        <!-- MARKET SIGNALS — agentic Market Watch review queue -->
+        <section id="section-market-signals" class="section hidden">
+          <div class="card">
+            <div class="card-h">Market signals
+              <span class="pf-hint">New developments the AI spotted on the prospects and competitors you're watching — funding, launches, leadership moves, partnerships. Review each one, then accept it into that company's intel or dismiss it.</span>
+              <span class="card-h-actions">
+                <button type="button" class="kb-link-btn" id="watch-run-btn" title="Run a watch pass now">⚡ Run now</button>
+                <button type="button" class="kb-link-btn" id="watch-refresh-btn" title="Reload">↻ Refresh</button>
+              </span>
+            </div>
+            <div class="card-b">
+              <div id="market-signals-body"><div class="kb-subtle">Loading…</div></div>
+            </div>
+          </div>
+        </section>
+
         <!-- CALENDAR -->
         <section id="section-calendar" class="section hidden">
           <div class="card">
@@ -644,6 +661,15 @@
               </div>
             </div>
           </div>
+          <div class="card">
+            <div class="card-h">Market Watch
+              <span class="pf-hint">Have the AI monitor the prospects and competitors you mark "Watch" and alert you to material developments. Findings land in Market signals (and an optional email digest) for your review — never straight into intel.</span>
+            </div>
+            <div class="card-b">
+              <div id="settings-watch-body"><div class="kb-subtle">Loading…</div></div>
+            </div>
+          </div>
+
           <div class="card">
             <div class="card-h">API tokens</div>
             <div class="card-b">

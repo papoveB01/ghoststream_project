@@ -18,45 +18,52 @@ const FEATURES = {
   CRM:                  'crm',                   // CRM integrations
   API_TOKENS:           'api_tokens',            // MCP / API tokens
   CALENDLY:             'calendly',              // Calendly auto-booking
+  MARKET_MONITORING:    'market_monitoring',     // agentic Market Watch (premium)
 };
 
-const ALL = Object.values(FEATURES);
+// "Standard" features (everything except the premium Market Watch). Pro+ tiers
+// add MARKET_MONITORING explicitly so trial/starter don't inherit it.
+const ALL = [
+  FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS,
+  FEATURES.ARENA, FEATURES.CRM, FEATURES.API_TOKENS, FEATURES.CALENDLY,
+];
+const PREMIUM = [...ALL, FEATURES.MARKET_MONITORING];
 const CORE = [FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS];
 
 // Metered actions (monthly caps). Keys match FEATURES so caps[meter] is direct.
-const METERS = [FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS];
+const METERS = [FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS, FEATURES.MARKET_MONITORING];
 
 const PLANS = {
   trial: {
     key: 'trial', name: 'Trial', selfServe: false,
     blurb: '14-day free trial — full Pro features, Starter usage caps.',
     features: ALL,
-    caps: { discovery: 10, competitor_research: 10, engagements: 20 },
+    caps: { discovery: 10, competitor_research: 10, engagements: 20, market_monitoring: 0 },
   },
   starter: {
     key: 'starter', name: 'Starter', selfServe: true, priceEnv: 'STRIPE_PRICE_STARTER', monthly: 49,
     trialDays: parseInt(process.env.STARTER_TRIAL_DAYS || '14', 10), // free trial lives on Starter only
     blurb: 'Foundation, prospect discovery, competitors and engagements for a small team.',
     features: CORE,
-    caps: { discovery: 10, competitor_research: 10, engagements: 20 },
+    caps: { discovery: 10, competitor_research: 10, engagements: 20, market_monitoring: 0 },
   },
   pro: {
     key: 'pro', name: 'Pro', selfServe: true, priceEnv: 'STRIPE_PRICE_PRO', monthly: 149,
-    blurb: 'Everything in Starter plus CRM, Arena practice, Calendly and API access — with higher limits.',
-    features: ALL,
-    caps: { discovery: 50, competitor_research: 50, engagements: 100 },
+    blurb: 'Everything in Starter plus CRM, Arena practice, Calendly, API access and Market Watch — with higher limits.',
+    features: PREMIUM,
+    caps: { discovery: 50, competitor_research: 50, engagements: 100, market_monitoring: 150 },
   },
   enterprise: {
     key: 'enterprise', name: 'Enterprise', selfServe: false, contactSales: true,
     blurb: 'Custom limits, more seats, and onboarding support. Talk to us.',
-    features: ALL,
-    caps: { discovery: Infinity, competitor_research: Infinity, engagements: Infinity },
+    features: PREMIUM,
+    caps: { discovery: Infinity, competitor_research: Infinity, engagements: Infinity, market_monitoring: Infinity },
   },
   internal: {
     key: 'internal', name: 'Internal', selfServe: false,
     blurb: 'Platform/staff tenant — ungated.',
-    features: ALL,
-    caps: { discovery: Infinity, competitor_research: Infinity, engagements: Infinity },
+    features: PREMIUM,
+    caps: { discovery: Infinity, competitor_research: Infinity, engagements: Infinity, market_monitoring: Infinity },
   },
 };
 

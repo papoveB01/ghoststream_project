@@ -568,4 +568,4 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
   }
 }
 
-module.exports = { discoverCompetitorProducts, discoverCompetitors, discoverProspects, generateSearchQueries, buildContext };
+module.exports = { discoverCompetitorProducts, discoverCompetitors, discoverProspects, generateSearchQueries, buildContext, gatherFromQueries };

@@ -3,13 +3,14 @@
   const show = (id) => $(id).classList.remove('hidden');
   const hide = (id) => $(id).classList.add('hidden');
 
-  const sections = ['overview', 'company', 'missions', 'prospects', 'competitors', 'calendar', 'calls', 'calls-ops', 'platform', 'instances', 'platform-audit', 'platform-keys', 'sessions', 'integrations', 'billing', 'settings', 'profile'];
+  const sections = ['overview', 'company', 'missions', 'prospects', 'competitors', 'market-signals', 'calendar', 'calls', 'calls-ops', 'platform', 'instances', 'platform-audit', 'platform-keys', 'sessions', 'integrations', 'billing', 'settings', 'profile'];
   const loaders = {
     overview: loadOverview,
     company: loadCompany,
     missions: loadMissions,
     prospects: loadProspects,
     competitors: loadCompetitors,
+    'market-signals': loadMarketSignals,
     calendar: loadCalendar,
     calls: loadCalls,
     'calls-ops': loadCallsOps,
@@ -101,6 +102,10 @@
 
     hide('content-loading');
     show('content-body');
+
+    // Market Watch unread badge — poll on load + every 5 min.
+    refreshWatchBadge();
+    setInterval(refreshWatchBadge, 300000);
 
     // Product tour: wire the "？ Guide" replay button + auto-run once for new users.
     const tourBtn = $('tour-btn');
@@ -262,6 +267,7 @@
       missions: 'Engagements',
       prospects: 'Prospects',
       competitors: 'Competitors',
+      'market-signals': 'Market signals',
       calendar: 'Calendar',
       calls: 'Calls',
       'calls-ops': 'Calls — Operations',
@@ -1038,6 +1044,7 @@
       <div class="prospect-detail-h">
         <input id="prospect-name" type="text" class="prospect-name-input" value="${escapeHtml(c.name)}" maxlength="200">
         <div class="prospect-detail-actions">
+          ${watchToggleBtn('PROSPECT', c.id, c.watch_enabled)}
           <button class="kb-secondary-btn" id="prospect-save-btn">Save</button>
           <button class="kb-secondary-btn danger" id="prospect-delete-btn">Delete prospect</button>
         </div>
@@ -1116,6 +1123,7 @@
   }
 
   function wireProspectDetail(host, company) {
+    wireWatchToggle(host, 'PROSPECT', company, () => { loaded.prospects = false; });
     $('prospect-save-btn').addEventListener('click', async (e) => {
       const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Saving…';
       try {
@@ -1652,6 +1660,7 @@
       <div class="prospect-detail-h comp-section-anchor" id="competitor-section-view">
         <input id="competitor-name" type="text" class="prospect-name-input" value="${escapeHtml(c.name)}" maxlength="200">
         <div class="prospect-detail-actions">
+          ${watchToggleBtn('COMPETITOR', c.id, c.watch_enabled)}
           <button class="kb-secondary-btn" id="competitor-save-btn">Save</button>
           <button class="kb-secondary-btn danger" id="competitor-delete-btn">Delete</button>
         </div>
@@ -1858,6 +1867,7 @@
   }
 
   async function wireCompetitorDetail(host, competitor) {
+    wireWatchToggle(host, 'COMPETITOR', competitor, () => { loaded.competitors = false; });
     // Product-centric view: reset the matchup to "company-wide vs whole
     // portfolio" whenever a competitor opens, then load the portfolio (which
     // renders the matchup node list + opens the default matchup workspace).
@@ -7126,9 +7136,239 @@
     await Promise.all([
       loadApiTokensTable(),
       loadSettingsKbStatus(),
+      loadWatchSettings(),
     ]);
     wireApiTokensForm();
     wireSettingsKbTools();
+  }
+
+  // ── Market Watch ──────────────────────────────────────────────────────────
+  // Premium agentic monitoring: rep marks prospects/competitors "Watch", a
+  // tenant-wide cadence runs the agent, findings land in the review queue
+  // (Market signals) + an optional email digest. Separate from intel until
+  // a rep accepts a finding (which promotes it to a kb_documents row).
+
+  const WATCH_FREQ_LABEL = { daily: 'Every day', weekly: 'Every week', monthly: 'Every month' };
+
+  // Reusable ⭐ toggle for the prospect/competitor detail header.
+  function watchToggleBtn(scope, id, enabled) {
+    const on = !!enabled;
+    return `<button class="kb-secondary-btn watch-toggle-btn${on ? ' on' : ''}" id="watch-toggle-btn"
+              data-watch-scope="${scope}" data-watch-id="${escapeHtml(String(id))}" data-watch-on="${on ? '1' : '0'}"
+              title="${on ? 'This entity is being monitored by Market Watch. Click to stop.' : 'Add to Market Watch — the AI will monitor it for new developments.'}">${on ? '★ Watching' : '☆ Watch'}</button>`;
+  }
+
+  function wireWatchToggle(host, scope, entity, invalidate) {
+    const btn = host.querySelector('#watch-toggle-btn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      const turningOn = btn.dataset.watchOn !== '1';
+      btn.disabled = true; const orig = btn.textContent; btn.textContent = '…';
+      const url = scope === 'PROSPECT'
+        ? `/api/companies/${encodeURIComponent(entity.id)}`
+        : `/api/portfolio/competitors/${encodeURIComponent(entity.id)}`;
+      try {
+        await fetchJson(url, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ watchEnabled: turningOn }),
+        });
+        entity.watch_enabled = turningOn;
+        btn.dataset.watchOn = turningOn ? '1' : '0';
+        btn.classList.toggle('on', turningOn);
+        btn.textContent = turningOn ? '★ Watching' : '☆ Watch';
+        if (typeof invalidate === 'function') invalidate();
+      } catch (err) { alert(`Couldn't update watch: ${err.message}`); btn.textContent = orig; }
+      finally { btn.disabled = false; }
+    });
+  }
+
+  async function loadWatchSettings() {
+    const host = $('settings-watch-body');
+    if (!host) return;
+    let data;
+    try { data = await fetchJson('/api/watch/config'); }
+    catch (err) { host.innerHTML = `<div class="kb-subtle">Couldn't load: ${escapeHtml(err.message)}</div>`; return; }
+    renderWatchSettings(host, data);
+  }
+
+  function renderWatchSettings(host, data) {
+    const cfg = (data && data.config) || {};
+    if (!data.featureAvailable) {
+      host.innerHTML = `<div class="upsell-note">Market Watch is a <strong>Pro</strong> feature. <a href="#billing">Upgrade your plan</a> to have the AI monitor your watched prospects and competitors.</div>`;
+      return;
+    }
+    const enabled = !!cfg.watch_enabled;
+    const freq = String(cfg.watch_frequency || 'weekly');
+    const next = cfg.watch_next_run_at ? new Date(cfg.watch_next_run_at).toLocaleString() : null;
+    const last = cfg.watch_last_run_at ? new Date(cfg.watch_last_run_at).toLocaleString() : null;
+    host.innerHTML = `
+      <div class="watch-settings">
+        <label class="watch-row">
+          <input type="checkbox" id="watch-enabled" ${enabled ? 'checked' : ''}>
+          <span>Enable Market Watch <span class="kb-subtle">— monitor the entities you've marked "Watch".</span></span>
+        </label>
+        <label class="watch-field">How often
+          <select id="watch-frequency">
+            <option value="daily"   ${freq === 'daily' ? 'selected' : ''}>Every day</option>
+            <option value="weekly"  ${freq === 'weekly' ? 'selected' : ''}>Every week</option>
+            <option value="monthly" ${freq === 'monthly' ? 'selected' : ''}>Every month</option>
+          </select>
+        </label>
+        <label class="watch-row">
+          <input type="checkbox" id="watch-email-digest" ${cfg.watch_email_digest === false ? '' : 'checked'}>
+          <span>Email me a digest when new signals are found</span>
+        </label>
+        <div class="watch-meta kb-subtle">
+          ${enabled && next ? `Next run: ${escapeHtml(next)}. ` : (enabled ? 'Next run: shortly. ' : 'Currently off. ')}
+          ${last ? `Last run: ${escapeHtml(last)}.` : 'Never run yet.'}
+        </div>
+        <div class="watch-actions">
+          <button class="primary-cta" id="watch-config-save">Save</button>
+          <button class="kb-secondary-btn" id="watch-run-now" ${enabled ? '' : 'disabled'} title="${enabled ? 'Run a watch pass right now' : 'Enable and save first'}">⚡ Run now</button>
+          <span class="kb-result hidden" id="watch-config-result"></span>
+        </div>
+      </div>`;
+
+    $('watch-config-save').addEventListener('click', async (e) => {
+      const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Saving…';
+      const res = $('watch-config-result');
+      try {
+        const out = await fetchJson('/api/watch/config', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            enabled: $('watch-enabled').checked,
+            frequency: $('watch-frequency').value,
+            emailDigest: $('watch-email-digest').checked,
+          }),
+        });
+        renderWatchSettings(host, { featureAvailable: true, config: out.config });
+        const r2 = $('watch-config-result');
+        if (r2) { r2.classList.remove('hidden', 'error'); r2.classList.add('success'); r2.textContent = 'Saved.'; }
+      } catch (err) {
+        res.classList.remove('hidden', 'success'); res.classList.add('error'); res.textContent = err.message;
+        btn.disabled = false; btn.textContent = 'Save';
+      }
+    });
+
+    const runBtn = $('watch-run-now');
+    if (runBtn) runBtn.addEventListener('click', () => triggerWatchRun(runBtn));
+  }
+
+  async function triggerWatchRun(btn) {
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Starting…';
+    try {
+      await fetchJson('/api/watch/run', { method: 'POST' });
+      btn.textContent = '✓ Running — check back soon';
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 4000);
+      setTimeout(refreshWatchBadge, 20000);
+    } catch (err) { alert(`Couldn't start: ${err.message}`); btn.textContent = orig; btn.disabled = false; }
+  }
+
+  // Unread-signals badge on the sidebar nav. Polled on load + after actions.
+  async function refreshWatchBadge() {
+    const badge = $('watch-badge');
+    if (!badge) return;
+    try {
+      const { count } = await fetchJson('/api/watch/findings/count');
+      if (count > 0) { badge.textContent = count > 99 ? '99+' : String(count); badge.classList.remove('hidden'); }
+      else badge.classList.add('hidden');
+    } catch { /* non-fatal — leave badge as-is */ }
+  }
+
+  const WATCH_CAT_ICON = { funding: '💰', product: '🚀', leadership: '👤', partnership: '🤝', 'm&a': '🏛️', regulatory: '⚖️', expansion: '🌐', hiring: '📈', incident: '⚠️', other: '•' };
+
+  async function loadMarketSignals() {
+    const host = $('market-signals-body');
+    if (!host) return;
+    const runBtn = $('watch-run-btn');
+    const refreshBtn = $('watch-refresh-btn');
+    if (runBtn && runBtn.dataset.wired !== '1') {
+      runBtn.dataset.wired = '1';
+      runBtn.addEventListener('click', () => triggerWatchRun(runBtn));
+    }
+    if (refreshBtn && refreshBtn.dataset.wired !== '1') {
+      refreshBtn.dataset.wired = '1';
+      refreshBtn.addEventListener('click', () => { loaded['market-signals'] = false; switchSection('market-signals'); });
+    }
+    let data;
+    try { data = await fetchJson('/api/watch/findings?limit=200'); }
+    catch (err) { host.innerHTML = `<div class="kb-subtle">Couldn't load: ${escapeHtml(err.message)}</div>`; return; }
+    renderMarketSignals(host, (data && data.findings) || []);
+    refreshWatchBadge();
+  }
+
+  function renderMarketSignals(host, findings) {
+    if (!findings.length) {
+      host.innerHTML = `<div class="empty" style="padding:20px 0">
+        No market signals yet. Mark a <a href="#prospects">prospect</a> or <a href="#competitors">competitor</a> as
+        <strong>☆ Watch</strong>, enable Market Watch in <a href="#settings">Settings</a>, and the AI will start surfacing
+        developments here.</div>`;
+      return;
+    }
+    // Group by entity; NEW first (the list is already ordered NEW→materiality→date).
+    const groups = new Map();
+    for (const f of findings) {
+      const key = `${f.scope}:${f.subject_id}`;
+      if (!groups.has(key)) groups.set(key, { name: f.subject_name, scope: f.scope, items: [] });
+      groups.get(key).items.push(f);
+    }
+    const card = (f) => {
+      const stale = f.status !== 'NEW';
+      const dt = f.published_at ? new Date(f.published_at).toLocaleDateString() : '';
+      const statusPill = {
+        NEW: '<span class="pill pill-new">New</span>',
+        REVIEWED: '<span class="pill">Reviewed</span>',
+        ACCEPTED: '<span class="pill pill-success">In intel</span>',
+        DISMISSED: '<span class="pill pill-muted">Dismissed</span>',
+      }[f.status] || '';
+      return `
+        <div class="watch-finding${stale ? ' is-stale' : ''}" data-finding="${f.id}">
+          <div class="watch-finding-h">
+            <span class="watch-cat" title="${escapeHtml(f.category || '')}">${WATCH_CAT_ICON[f.category] || '•'}</span>
+            <span class="watch-finding-title">${escapeHtml(f.title)}</span>
+            <span class="watch-mat" title="Materiality">${'●'.repeat(Math.max(1, Math.min(5, f.materiality || 3)))}</span>
+            ${statusPill}
+          </div>
+          <div class="watch-finding-body">${escapeHtml(f.summary || '')}</div>
+          <div class="watch-finding-foot">
+            ${f.source_url ? `<a href="${escapeHtml(f.source_url)}" target="_blank" rel="noopener">${escapeHtml(f.source_title || 'Source')} ↗</a>` : '<span class="kb-subtle">No source link</span>'}
+            ${dt ? `<span class="kb-subtle"> · ${escapeHtml(dt)}</span>` : ''}
+            ${f.status === 'NEW' || f.status === 'REVIEWED' ? `
+              <span class="watch-finding-actions">
+                <button class="kb-link-btn" data-watch-accept="${f.id}" title="File this into the company's intel">✓ Accept to intel</button>
+                <button class="kb-link-btn" data-watch-dismiss="${f.id}">Dismiss</button>
+              </span>` : ''}
+          </div>
+        </div>`;
+    };
+    host.innerHTML = [...groups.values()].map((g) => `
+      <div class="watch-group">
+        <div class="watch-group-h">
+          <span class="pill ${g.scope === 'PROSPECT' ? 'pill-info' : 'pill-warn'}">${g.scope === 'PROSPECT' ? 'Prospect' : 'Competitor'}</span>
+          <strong>${escapeHtml(g.name)}</strong>
+          <span class="kb-subtle">${g.items.length} signal${g.items.length === 1 ? '' : 's'}</span>
+        </div>
+        ${g.items.map(card).join('')}
+      </div>`).join('');
+
+    host.querySelectorAll('[data-watch-accept]').forEach((b) => b.addEventListener('click', async () => {
+      const id = b.dataset.watchAccept;
+      b.disabled = true; b.textContent = 'Filing…';
+      try {
+        await fetchJson(`/api/watch/findings/${id}/accept`, { method: 'POST' });
+        loaded['market-signals'] = false; await loadMarketSignals();
+      } catch (err) { alert(`Couldn't accept: ${err.message}`); b.disabled = false; b.textContent = '✓ Accept to intel'; }
+    }));
+    host.querySelectorAll('[data-watch-dismiss]').forEach((b) => b.addEventListener('click', async () => {
+      const id = b.dataset.watchDismiss;
+      try {
+        await fetchJson(`/api/watch/findings/${id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'DISMISSED' }),
+        });
+        loaded['market-signals'] = false; await loadMarketSignals();
+      } catch (err) { alert(`Couldn't dismiss: ${err.message}`); }
+    }));
   }
 
   // ── Profile (the signed-in user's own account) ────────────────────────────

@@ -27,7 +27,7 @@ for (const [resource, conf] of Object.entries(TABLES)) {
   // (impossible today, but defensive) doesn't inflate the count.
   // Competitors carry location + contact columns (migration 0030); products/
   // personas don't — so only widen the select/patch for competitors.
-  const contactCols = resource === 'competitors' ? ', e.website, e.country, e.city, e.address, e.phone, e.email' : '';
+  const contactCols = resource === 'competitors' ? ', e.website, e.country, e.city, e.address, e.phone, e.email, e.watch_enabled' : '';
   router.get(`/${resource}`, async (req, res, next) => {
     try {
       const r = await db.query(
@@ -82,6 +82,7 @@ for (const [resource, conf] of Object.entries(TABLES)) {
         for (const f of ['website', 'country', 'city', 'address', 'phone', 'email']) {
           if (b[f] !== undefined) { params.push(b[f] || null); sets.push(`${f} = $${params.length}`); }
         }
+        if (b.watchEnabled !== undefined) { params.push(!!b.watchEnabled); sets.push(`watch_enabled = $${params.length}`); }
       }
       if (sets.length === 0) return res.status(400).json({ error: 'nothing to update' });
       params.push(req.params.id);

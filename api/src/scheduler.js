@@ -13,6 +13,12 @@ const cron = require('node-cron');
 const db = require('./db');
 const brief = require('./missions/brief');
 const dispatch = require('./missions/dispatch');
+const watch = require('./watch');
+
+// Market Watch — separate low-frequency pass (default hourly). Picks tenants
+// whose cadence has come due (watch_next_run_at <= now) and fires runTenant
+// fire-and-forget so the web/LLM work never blocks the tick.
+const WATCH_CRON = process.env.WATCH_CRON || '0 * * * *';
 
 const CRON_EXPR = process.env.MISSIONS_CRON || '* * * * *'; // every minute
 const LOOKAHEAD_START_HOURS = parseFloat(process.env.BRIEF_LOOKAHEAD_START_HOURS || '23');
@@ -113,9 +119,50 @@ async function tick() {
   }
 }
 
-function start() {
-  cron.schedule(CRON_EXPR, tick);
-  console.log(`[scheduler] mission cron started (expression: "${CRON_EXPR}", brief window: T-${LOOKAHEAD_END_HOURS}h to T-${LOOKAHEAD_START_HOURS}h, bot lead: ${BOT_LEAD_MINUTES > 0 ? `T-${BOT_LEAD_MINUTES}min` : 'disabled'})`);
+let watchRunning = false;
+
+async function watchTick() {
+  if (watchRunning) return; // single-instance guard
+  watchRunning = true;
+  try {
+    // Cross-tenant: any tenant that's enabled Market Watch and is now due.
+    // The per-tenant entitlement/active re-check lives inside runTenant.
+    const due = (await db.query(
+      `SELECT t.id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end,
+              p.watch_frequency, p.watch_email_digest, true AS watch_enabled
+         FROM tenant_profiles p
+         JOIN tenants t ON t.id = p.tenant_id
+        WHERE p.watch_enabled = true
+          AND (p.watch_next_run_at IS NULL OR p.watch_next_run_at <= now())
+        ORDER BY p.watch_next_run_at ASC NULLS FIRST
+        LIMIT 10`
+    )).rows;
+    if (!due.length) return;
+    console.log(`[scheduler] ${due.length} tenant(s) due for Market Watch`);
+    for (const t of due) {
+      // Claim the tenant up-front: push watch_next_run_at forward by one
+      // cadence so a long-running pass isn't re-picked by the next tick.
+      // runTenant re-sets it precisely (now + cadence) when it completes.
+      const days = { daily: 1, weekly: 7, monthly: 30 }[String(t.watch_frequency || 'weekly').toLowerCase()] || 7;
+      await db.query(
+        `UPDATE tenant_profiles SET watch_next_run_at = now() + ($2 || ' days')::interval WHERE tenant_id = $1`,
+        [t.id, String(days)]
+      ).catch(() => {});
+      // Fire-and-forget — never block the tick on web/LLM work.
+      watch.runTenant(t).catch((err) => console.error(`[scheduler] market watch failed for tenant ${t.id}: ${(err && err.message) || err}`));
+    }
+  } catch (err) {
+    console.error('[scheduler] watch tick failed:', err.message);
+  } finally {
+    watchRunning = false;
+  }
 }
 
-module.exports = { start, tick, findDueMissions, findMissionsDueForBot };
+function start() {
+  cron.schedule(CRON_EXPR, tick);
+  cron.schedule(WATCH_CRON, watchTick);
+  console.log(`[scheduler] mission cron started (expression: "${CRON_EXPR}", brief window: T-${LOOKAHEAD_END_HOURS}h to T-${LOOKAHEAD_START_HOURS}h, bot lead: ${BOT_LEAD_MINUTES > 0 ? `T-${BOT_LEAD_MINUTES}min` : 'disabled'})`);
+  console.log(`[scheduler] market watch cron started (expression: "${WATCH_CRON}")`);
+}
+
+module.exports = { start, tick, watchTick, findDueMissions, findMissionsDueForBot };
