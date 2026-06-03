@@ -23,10 +23,10 @@ const auth = require('./auth');
 const discovery = require('./knowledge/discovery');
 const keypoints = require('./knowledge/keypoints');
 const knowledge = require('./knowledge/service');
+const schedule = require('./watchSchedule');
 
 const MODEL = require('./models').modelFor('marketWatch');
 const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net').replace(/\/+$/, '');
-const FREQ_DAYS = { daily: 1, weekly: 7, monthly: 30 };
 
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 
@@ -172,134 +172,81 @@ async function runEntity(tenantId, scope, subject) {
   return inserted;
 }
 
-// Schedule runs at 08:00 in the tenant's OWN timezone (IANA name; 'UTC' = legacy).
-const RUN_HOUR = 8;
+// ── Per-entity scheduling ────────────────────────────────────────────────
+// Each watched prospect/competitor carries its OWN schedule (watch_frequency,
+// watch_day, watch_timezone, watch_email_digest, watch_next_run_at) on its own
+// row. The scheduler scans both tables for entities whose next_run is due and
+// calls runEntityScheduled() for each.
 
-function isValidTz(tz) {
-  if (!tz || typeof tz !== 'string') return false;
-  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; }
-}
+const TBL = { PROSPECT: 'companies', COMPETITOR: 'competitors' };
 
-// Offset (ms) of `tz` at `instant`, i.e. localWallClock - UTC.
-function tzOffsetMs(instant, tz) {
-  const dtf = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz, hourCycle: 'h23',
-    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
-  });
-  const p = {};
-  for (const part of dtf.formatToParts(instant)) p[part.type] = part.value;
-  const asIfUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
-  return asIfUTC - instant.getTime();
-}
-
-// A wall-clock (y, m=1..12, d, h) in `tz` → the corresponding UTC Date.
-function zonedWallToUtc(y, m, d, h, tz) {
-  const guess = Date.UTC(y, m - 1, d, h, 0, 0);
-  const off = tzOffsetMs(new Date(guess), tz);
-  return new Date(guess - off);
-}
-
-// Current wall-clock in `tz` as plain fields (weekday 0=Sun … 6=Sat).
-function wallNow(tz) {
-  const now = new Date();
-  const dtf = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz, hourCycle: 'h23', weekday: 'short',
-    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-  });
-  const p = {};
-  for (const part of dtf.formatToParts(now)) p[part.type] = part.value;
-  const wd = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[p.weekday];
-  return { now, year: +p.year, month: +p.month, day: +p.day, weekday: wd };
-}
-
-// Next run timestamp (ISO) for a cadence + chosen day, at RUN_HOUR local time:
-//   daily   → tomorrow
-//   weekly  → next occurrence of day-of-week `day` (0=Sun … 6=Sat)
-//   monthly → next occurrence of day-of-month `day` (1..28)
-function nextRunISO(frequency, day, timezone) {
-  const tz = isValidTz(timezone) ? timezone : 'UTC';
-  const freq = String(frequency || 'weekly').toLowerCase();
-  const w = wallNow(tz);
-  // A UTC Date used purely as a calendar holder for y/m/d arithmetic.
-  const cal = new Date(Date.UTC(w.year, w.month - 1, w.day));
-  const at = () => zonedWallToUtc(cal.getUTCFullYear(), cal.getUTCMonth() + 1, cal.getUTCDate(), RUN_HOUR, tz);
-
-  if (freq === 'daily') {
-    cal.setUTCDate(cal.getUTCDate() + 1);
-    return at().toISOString();
-  }
-  if (freq === 'monthly') {
-    const dom = Math.max(1, Math.min(28, parseInt(day, 10) || 1));
-    let y = w.year, m = w.month;
-    let cand = zonedWallToUtc(y, m, dom, RUN_HOUR, tz);
-    if (cand <= w.now) { m += 1; if (m > 12) { m = 1; y += 1; } cand = zonedWallToUtc(y, m, dom, RUN_HOUR, tz); }
-    return cand.toISOString();
-  }
-  // weekly
-  let dow = parseInt(day, 10); if (!Number.isInteger(dow)) dow = 1; // default Monday
-  dow = Math.max(0, Math.min(6, dow));
-  const delta = (dow - w.weekday + 7) % 7;
-  cal.setUTCDate(cal.getUTCDate() + delta);
-  let cand = at();
-  if (delta === 0 && cand <= w.now) { cal.setUTCDate(cal.getUTCDate() + 7); cand = at(); }
-  return cand.toISOString();
-}
-
-// Run the watch for every watched entity of a tenant. `tenant` is a row with at
-// least { id, plan, watch_enabled, watch_frequency, watch_email_digest }.
-async function runTenant(tenant) {
-  const ent = entitlements.entitlementsFor(tenant);
-  const advance = async () => db.query(
-    `UPDATE tenant_profiles SET watch_last_run_at = now(), watch_next_run_at = $2 WHERE tenant_id = $1`,
-    [tenant.id, nextRunISO(tenant.watch_frequency, tenant.watch_day, tenant.watch_timezone)]
+// Advance one entity's schedule: stamp last_run + compute the next slot.
+// `e` is the entity row (snake_case watch_* schedule fields).
+async function advanceEntity(scope, id, tenantId, e) {
+  const next = schedule.nextRunISO(e.watch_frequency, e.watch_day, e.watch_timezone);
+  await db.query(
+    `UPDATE ${TBL[scope]} SET watch_last_run_at = now(), watch_next_run_at = $3 WHERE id = $1 AND tenant_id = $2`,
+    [id, tenantId, next]
   ).catch(() => {});
-
-  if (!ent.active || !entitlements.hasFeature(ent, plans.FEATURES.MARKET_MONITORING)) { await advance(); return { skipped: 'not_entitled' }; }
-  if (!tenant.watch_enabled) { await advance(); return { skipped: 'disabled' }; }
-
-  const cap = plans.planFor(tenant.plan).caps.market_monitoring ?? 0;
-  const prospects = (await db.query(`SELECT id::text AS id, name FROM companies   WHERE tenant_id = $1 AND watch_enabled`, [tenant.id])).rows;
-  const competitors = (await db.query(`SELECT id, name FROM competitors WHERE tenant_id = $1 AND watch_enabled`, [tenant.id])).rows;
-  const entities = [
-    ...prospects.map((p) => ({ scope: 'PROSPECT', subject: p })),
-    ...competitors.map((c) => ({ scope: 'COMPETITOR', subject: c })),
-  ];
-
-  const allNew = [];
-  let cappedAt = 0;
-  for (const e of entities) {
-    try { await usage.consume(tenant.id, 'market_monitoring', cap); }
-    catch (err) { if (err && err.code === 'USAGE_LIMIT') { cappedAt++; continue; } throw err; }
-    try { allNew.push(...await runEntity(tenant.id, e.scope, e.subject)); }
-    catch (err) { console.warn(`[watch] entity ${e.scope}/${e.subject.id} failed: ${(err && err.message) || err}`); }
-  }
-  await advance();
-  if (cappedAt) console.warn(`[watch] tenant ${tenant.id}: ${cappedAt} watched entit(ies) skipped — monthly cap (${cap}) reached`);
-  if (tenant.watch_email_digest && allNew.length) {
-    try { await sendDigest(tenant, allNew); } catch (err) { console.warn(`[watch] digest failed for ${tenant.id}: ${err.message}`); }
-  }
-  console.log(`[watch] tenant ${tenant.id}: ${allNew.length} new finding(s) across ${entities.length} watched entit(ies)`);
-  return { newCount: allNew.length, entities: entities.length, cappedAt };
+  return next;
 }
 
-// Email digest of new findings to the tenant's owner(s).
-async function sendDigest(tenant, findings) {
+// Run the watch for ONE entity. `e` carries the entity + its schedule + the
+// tenant fields needed to check entitlement/cap:
+//   { scope, id, name, tenant_id, plan, subscription_status, trial_ends_at,
+//     current_period_end, watch_frequency, watch_day, watch_timezone, watch_email_digest }
+// `opts.advance` (default true) re-arms the cadence; manual "run now" passes false.
+async function runEntityScheduled(e, opts = {}) {
+  const advance = opts.advance !== false;
+  const ent = entitlements.entitlementsFor({
+    plan: e.plan, subscription_status: e.subscription_status,
+    trial_ends_at: e.trial_ends_at, current_period_end: e.current_period_end,
+  });
+  const reArm = async () => { if (advance) await advanceEntity(e.scope, e.id, e.tenant_id, e); };
+
+  if (!ent.active || !entitlements.hasFeature(ent, plans.FEATURES.MARKET_MONITORING)) {
+    await reArm();
+    return { skipped: 'not_entitled', newCount: 0 };
+  }
+
+  const cap = plans.planFor(e.plan).caps.market_monitoring ?? 0;
+  try { await usage.consume(e.tenant_id, 'market_monitoring', cap); }
+  catch (err) {
+    if (err && err.code === 'USAGE_LIMIT') {
+      console.warn(`[watch] ${e.scope}/${e.id}: monthly cap (${cap}) reached — skipped`);
+      await reArm();
+      return { skipped: 'capped', newCount: 0 };
+    }
+    throw err;
+  }
+
+  let found = [];
+  try { found = await runEntity(e.tenant_id, e.scope, { id: e.id, name: e.name }); }
+  catch (err) { console.warn(`[watch] ${e.scope}/${e.id} failed: ${(err && err.message) || err}`); }
+
+  await reArm();
+  if (e.watch_email_digest && found.length) {
+    try { await sendDigest(e.tenant_id, e.name, found); }
+    catch (err) { console.warn(`[watch] digest failed for ${e.tenant_id}: ${err.message}`); }
+  }
+  console.log(`[watch] ${e.scope}/${e.id} (${e.name}): ${found.length} new finding(s)`);
+  return { newCount: found.length };
+}
+
+// Email digest of one entity's new findings to the tenant's owner(s)/admins.
+async function sendDigest(tenantId, entityName, findings) {
   if (!email.isConfigured() || !findings.length) return false;
   const owners = (await db.query(
-    `SELECT email FROM users WHERE tenant_id = $1 AND (role = 'owner' OR is_admin) AND email IS NOT NULL`, [tenant.id]
+    `SELECT email FROM users WHERE tenant_id = $1 AND (role = 'owner' OR is_admin) AND email IS NOT NULL`, [tenantId]
   )).rows.map((r) => r.email);
   if (!owners.length) return false;
-  const byEntity = {};
-  for (const f of findings) (byEntity[f.subjectName] = byEntity[f.subjectName] || []).push(f);
-  const sections = Object.entries(byEntity).map(([name, items]) => `
-    <h3 style="margin:16px 0 6px">${name}</h3>
-    <ul style="margin:0;padding-left:18px">${items.map((f) => `<li style="margin-bottom:6px"><strong>${f.title}</strong> <span style="color:#6b7280">· ${f.category} · ${f.materiality}/5</span><br>${f.summary || ''}${f.sourceUrl ? ` <a href="${f.sourceUrl}">source</a>` : ''}</li>`).join('')}</ul>`).join('');
+  const items = findings.map((f) => `<li style="margin-bottom:6px"><strong>${f.title}</strong> <span style="color:#6b7280">· ${f.category} · ${f.materiality}/5</span><br>${f.summary || ''}${f.sourceUrl ? ` <a href="${f.sourceUrl}">source</a>` : ''}</li>`).join('');
   await email.send({
     to: owners,
-    subject: `Market Watch — ${findings.length} new signal${findings.length === 1 ? '' : 's'}`,
+    subject: `Market Watch — ${findings.length} new signal${findings.length === 1 ? '' : 's'} for ${entityName}`,
     categories: ['market-watch'],
-    html: `<p>New developments on the prospects/competitors you're watching:</p>${sections}<p style="margin-top:18px"><a href="${APP_BASE_URL}/admin/#market-signals">Review in GhostStream →</a></p>`,
-    text: findings.map((f) => `• ${f.subjectName}: ${f.title} (${f.category}, ${f.materiality}/5)`).join('\n') + `\n\nReview: ${APP_BASE_URL}/admin/#market-signals`,
+    html: `<p>New developments on <strong>${entityName}</strong>, which you're watching:</p><ul style="margin:0;padding-left:18px">${items}</ul><p style="margin-top:18px"><a href="${APP_BASE_URL}/admin/#market-signals">Review in GhostStream →</a></p>`,
+    text: findings.map((f) => `• ${f.title} (${f.category}, ${f.materiality}/5)`).join('\n') + `\n\nReview: ${APP_BASE_URL}/admin/#market-signals`,
   });
   return true;
 }
@@ -368,96 +315,47 @@ router.post('/findings/:id/accept', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// Tenant watch config (read open; write owner + feature-gated).
+// Lightweight: does the caller's plan include Market Watch? The per-entity
+// schedule UI keys off this (the schedule itself now lives on each entity, set
+// via PATCH /companies/:id and /portfolio/competitors/:id).
 router.get('/config', async (req, res, next) => {
   try {
-    const r = await db.query(
-      `SELECT watch_enabled, watch_frequency, watch_day, watch_timezone, watch_email_digest, watch_last_run_at, watch_next_run_at FROM tenant_profiles WHERE tenant_id = $1`,
-      [req.tenantId]
-    );
     const ent = req.entitlements;
     res.json({
-      config: r.rows[0] || { watch_enabled: false, watch_frequency: 'weekly', watch_day: 1, watch_timezone: 'UTC', watch_email_digest: true, watch_last_run_at: null, watch_next_run_at: null },
       featureAvailable: !!(ent && Array.isArray(ent.features) && ent.features.includes(plans.FEATURES.MARKET_MONITORING)),
     });
   } catch (err) { next(err); }
 });
 
-// Validate/normalize a watch_day for a given frequency. weekly → 0..6,
-// monthly → 1..28, daily → 1 (ignored). Returns null if out of range.
-function normalizeWatchDay(freq, day) {
-  const n = parseInt(day, 10);
-  if (!Number.isInteger(n)) return null;
-  if (freq === 'weekly') return n >= 0 && n <= 6 ? n : null;
-  if (freq === 'monthly') return n >= 1 && n <= 28 ? n : null;
-  return 1; // daily — day is irrelevant
+// Load one watched entity + the tenant fields needed to gate/run it.
+async function loadEntityForRun(tenantId, scope, id) {
+  const tbl = TBL[scope];
+  if (!tbl) return null;
+  const r = await db.query(
+    `SELECT '${scope}'::text AS scope, e.id::text AS id, e.name,
+            e.watch_frequency, e.watch_day, e.watch_timezone, e.watch_email_digest,
+            t.id AS tenant_id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end
+       FROM ${tbl} e JOIN tenants t ON t.id = e.tenant_id
+      WHERE e.id = $1 AND e.tenant_id = $2`,
+    [id, tenantId]
+  );
+  return r.rows[0] || null;
 }
 
-router.patch('/config', auth.requireRole('owner'), gating.requireFeature(plans.FEATURES.MARKET_MONITORING), async (req, res, next) => {
-  try {
-    const b = req.body || {};
-    if (b.frequency !== undefined && !FREQ_DAYS[String(b.frequency).toLowerCase()]) {
-      return res.status(400).json({ error: 'frequency must be daily, weekly or monthly' });
-    }
-    // Merge incoming fields over the current row, then recompute the schedule
-    // in one place — so changing the day/frequency re-schedules even when the
-    // enable toggle isn't touched.
-    if (b.timezone !== undefined && !isValidTz(String(b.timezone))) {
-      return res.status(400).json({ error: 'timezone must be a valid IANA name (e.g. America/New_York)' });
-    }
-    const cur = (await db.query(
-      `SELECT watch_enabled, watch_frequency, watch_day, watch_timezone, watch_email_digest FROM tenant_profiles WHERE tenant_id = $1`,
-      [req.tenantId]
-    )).rows[0] || { watch_enabled: false, watch_frequency: 'weekly', watch_day: 1, watch_timezone: 'UTC', watch_email_digest: true };
-
-    const enabled = b.enabled !== undefined ? !!b.enabled : cur.watch_enabled;
-    const freq = b.frequency !== undefined ? String(b.frequency).toLowerCase() : cur.watch_frequency;
-    const digest = b.emailDigest !== undefined ? !!b.emailDigest : cur.watch_email_digest;
-    const tz = b.timezone !== undefined ? String(b.timezone) : (cur.watch_timezone || 'UTC');
-    let day = cur.watch_day;
-    if (b.day !== undefined) {
-      day = normalizeWatchDay(freq, b.day);
-      if (day === null) return res.status(400).json({ error: freq === 'monthly' ? 'day must be 1–28 for monthly' : 'day must be 0 (Sun) – 6 (Sat) for weekly' });
-    } else if (b.frequency !== undefined) {
-      // frequency changed but no explicit day → keep current if valid for the
-      // new cadence, else fall back to a sane default (Mon / 1st).
-      const reuse = normalizeWatchDay(freq, cur.watch_day);
-      day = reuse === null ? (freq === 'monthly' ? 1 : 1) : reuse;
-    }
-    const nextRun = enabled ? nextRunISO(freq, day, tz) : null;
-    const r = await db.query(
-      `INSERT INTO tenant_profiles (tenant_id, watch_enabled, watch_frequency, watch_day, watch_timezone, watch_email_digest, watch_next_run_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, now())
-       ON CONFLICT (tenant_id) DO UPDATE SET
-            watch_enabled      = $2,
-            watch_frequency    = $3,
-            watch_day          = $4,
-            watch_timezone     = $5,
-            watch_email_digest = $6,
-            watch_next_run_at  = $7,
-            updated_at = now()
-       RETURNING watch_enabled, watch_frequency, watch_day, watch_timezone, watch_email_digest, watch_last_run_at, watch_next_run_at`,
-      [req.tenantId, enabled, freq, day, tz, digest, nextRun]
-    );
-    res.json({ config: r.rows[0] });
-  } catch (err) { next(err); }
-});
-
-// Manual "run now". Loads the tenant row + runs in the background (web/LLM heavy).
+// Manual "run now" for ONE entity. Body: { scope: 'PROSPECT'|'COMPETITOR', id }.
+// Does NOT re-arm the cadence (advance:false) — a manual run shouldn't shift the
+// scheduled slot. Runs in the background (web/LLM heavy).
 router.post('/run', auth.requireRole('owner'), gating.requireFeature(plans.FEATURES.MARKET_MONITORING), async (req, res, next) => {
   try {
-    const t = (await db.query(
-      `SELECT t.id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end,
-              COALESCE(p.watch_enabled,false) AS watch_enabled, COALESCE(p.watch_frequency,'weekly') AS watch_frequency,
-              COALESCE(p.watch_day,1) AS watch_day, COALESCE(p.watch_timezone,'UTC') AS watch_timezone,
-              COALESCE(p.watch_email_digest,true) AS watch_email_digest
-         FROM tenants t LEFT JOIN tenant_profiles p ON p.tenant_id = t.id WHERE t.id = $1`,
-      [req.tenantId]
-    )).rows[0];
-    if (!t) return res.status(404).json({ error: 'tenant not found' });
-    runTenant(t).catch((err) => console.warn(`[watch] manual run failed for ${t.id}: ${(err && err.message) || err}`));
+    const scope = String((req.body && req.body.scope) || '').toUpperCase();
+    const id = req.body && req.body.id;
+    if (!TBL[scope] || !id) return res.status(400).json({ error: 'scope (PROSPECT|COMPETITOR) and id are required' });
+    const e = await loadEntityForRun(req.tenantId, scope, String(id));
+    if (!e) return res.status(404).json({ error: 'watched entity not found' });
+    runEntityScheduled(e, { advance: false })
+      .catch((err) => console.warn(`[watch] manual run failed for ${scope}/${id}: ${(err && err.message) || err}`));
     res.status(202).json({ started: true });
   } catch (err) { next(err); }
 });
 
-module.exports = { router, runTenant, runEntity, nextRunISO };
+module.exports = { router, runEntityScheduled, runEntity };

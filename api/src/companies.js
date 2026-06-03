@@ -11,6 +11,7 @@ const web = require('./knowledge/web');
 const discovery = require('./knowledge/discovery');
 const gating = require('./gating');
 const auth = require('./auth');
+const watchSchedule = require('./watchSchedule');
 
 // Strip protocol / www / path → bare host, for comparing a prospect domain
 // against the tenant's own domain.
@@ -37,7 +38,9 @@ async function assertNotOwnCompany(tenantId, domain) {
 
 async function list(tenantId) {
   const r = await db.query(
-    `SELECT id, name, domain, primary_contact, notes, country, city, address, phone, email, watch_enabled, created_at,
+    `SELECT id, name, domain, primary_contact, notes, country, city, address, phone, email,
+            watch_enabled, watch_frequency, watch_day, watch_timezone, watch_email_digest,
+            watch_next_run_at, watch_last_run_at, created_at,
             (SELECT COUNT(*)::int FROM scheduled_meetings
               WHERE company_id = c.id AND tenant_id = $1) AS meeting_count
        FROM companies c
@@ -104,7 +107,8 @@ async function findByDomain(tenantId, domain) {
   return r.rows[0] || null;
 }
 
-async function update(tenantId, id, { name, domain, primaryContact, notes, country, city, address, phone, email, watchEnabled }) {
+async function update(tenantId, id, patch) {
+  const { name, domain, primaryContact, notes, country, city, address, phone, email } = patch;
   if (domain !== undefined) await assertNotOwnCompany(tenantId, domain);
   const sets = [];
   const params = [];
@@ -117,7 +121,15 @@ async function update(tenantId, id, { name, domain, primaryContact, notes, count
   if (address !== undefined)        { params.push(address);        sets.push(`address = $${params.length}`); }
   if (phone !== undefined)          { params.push(phone);          sets.push(`phone = $${params.length}`); }
   if (email !== undefined)          { params.push(email);          sets.push(`email = $${params.length}`); }
-  if (watchEnabled !== undefined)   { params.push(!!watchEnabled);  sets.push(`watch_enabled = $${params.length}`); }
+  // Per-entity Market Watch schedule — merge over the current row (so changing
+  // one field re-arms watch_next_run_at consistently).
+  if (['watchEnabled', 'watchFrequency', 'watchDay', 'watchTimezone', 'watchEmailDigest'].some((k) => patch[k] !== undefined)) {
+    const cur = await get(tenantId, id);
+    if (!cur) return null;
+    const wm = watchSchedule.mergeWatchSchedule(cur, patch);
+    if (wm.error) { const e = new Error(wm.error); e.status = 400; throw e; }
+    for (const [col, val] of Object.entries(wm.values)) { params.push(val); sets.push(`${col} = $${params.length}`); }
+  }
   if (sets.length === 0) return get(tenantId, id);
   sets.push(`updated_at = now()`);
   params.push(id);

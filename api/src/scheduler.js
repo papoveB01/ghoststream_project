@@ -14,6 +14,7 @@ const db = require('./db');
 const brief = require('./missions/brief');
 const dispatch = require('./missions/dispatch');
 const watch = require('./watch');
+const watchSchedule = require('./watchSchedule');
 
 // Market Watch — separate low-frequency pass (default hourly). Picks tenants
 // whose cadence has come due (watch_next_run_at <= now) and fires runTenant
@@ -125,30 +126,39 @@ async function watchTick() {
   if (watchRunning) return; // single-instance guard
   watchRunning = true;
   try {
-    // Cross-tenant: any tenant that's enabled Market Watch and is now due.
-    // The per-tenant entitlement/active re-check lives inside runTenant.
+    // Per-entity: any watched prospect/competitor whose own schedule is due,
+    // across all tenants. The entitlement/active/cap re-check lives inside
+    // watch.runEntityScheduled. Both tables joined to their tenant.
     const due = (await db.query(
-      `SELECT t.id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end,
-              p.watch_frequency, p.watch_day, p.watch_timezone, p.watch_email_digest, true AS watch_enabled
-         FROM tenant_profiles p
-         JOIN tenants t ON t.id = p.tenant_id
-        WHERE p.watch_enabled = true
-          AND (p.watch_next_run_at IS NULL OR p.watch_next_run_at <= now())
-        ORDER BY p.watch_next_run_at ASC NULLS FIRST
-        LIMIT 10`
+      `SELECT * FROM (
+         SELECT 'PROSPECT'::text AS scope, c.id::text AS id, c.name,
+                c.watch_frequency, c.watch_day, c.watch_timezone, c.watch_email_digest, c.watch_next_run_at,
+                t.id AS tenant_id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end
+           FROM companies c JOIN tenants t ON t.id = c.tenant_id
+          WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
+         UNION ALL
+         SELECT 'COMPETITOR'::text AS scope, c.id::text AS id, c.name,
+                c.watch_frequency, c.watch_day, c.watch_timezone, c.watch_email_digest, c.watch_next_run_at,
+                t.id AS tenant_id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end
+           FROM competitors c JOIN tenants t ON t.id = c.tenant_id
+          WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
+       ) q
+       ORDER BY watch_next_run_at ASC NULLS FIRST
+       LIMIT 25`
     )).rows;
     if (!due.length) return;
-    console.log(`[scheduler] ${due.length} tenant(s) due for Market Watch`);
-    for (const t of due) {
-      // Claim the tenant up-front: push watch_next_run_at to the next scheduled
-      // slot so a long-running pass isn't re-picked by the next tick. runTenant
+    console.log(`[scheduler] ${due.length} watched entit(ies) due for Market Watch`);
+    const TBL = { PROSPECT: 'companies', COMPETITOR: 'competitors' };
+    for (const e of due) {
+      // Claim up-front: push this entity's watch_next_run_at to its next slot so
+      // a long-running pass isn't re-picked by the next tick. runEntityScheduled
       // re-sets it precisely when it completes.
       await db.query(
-        `UPDATE tenant_profiles SET watch_next_run_at = $2 WHERE tenant_id = $1`,
-        [t.id, watch.nextRunISO(t.watch_frequency, t.watch_day, t.watch_timezone)]
+        `UPDATE ${TBL[e.scope]} SET watch_next_run_at = $3 WHERE id = $1 AND tenant_id = $2`,
+        [e.id, e.tenant_id, watchSchedule.nextRunISO(e.watch_frequency, e.watch_day, e.watch_timezone)]
       ).catch(() => {});
       // Fire-and-forget — never block the tick on web/LLM work.
-      watch.runTenant(t).catch((err) => console.error(`[scheduler] market watch failed for tenant ${t.id}: ${(err && err.message) || err}`));
+      watch.runEntityScheduled(e).catch((err) => console.error(`[scheduler] market watch failed for ${e.scope}/${e.id}: ${(err && err.message) || err}`));
     }
   } catch (err) {
     console.error('[scheduler] watch tick failed:', err.message);

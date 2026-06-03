@@ -11,6 +11,7 @@
 const express = require('express');
 const db = require('./db');
 const auth = require('./auth');
+const watchSchedule = require('./watchSchedule');
 
 const TABLES = {
   products:    { table: 'products',    junction: 'kb_document_products',    column: 'product_id' },
@@ -27,7 +28,9 @@ for (const [resource, conf] of Object.entries(TABLES)) {
   // (impossible today, but defensive) doesn't inflate the count.
   // Competitors carry location + contact columns (migration 0030); products/
   // personas don't — so only widen the select/patch for competitors.
-  const contactCols = resource === 'competitors' ? ', e.website, e.country, e.city, e.address, e.phone, e.email, e.watch_enabled' : '';
+  const contactCols = resource === 'competitors'
+    ? ', e.website, e.country, e.city, e.address, e.phone, e.email, e.watch_enabled, e.watch_frequency, e.watch_day, e.watch_timezone, e.watch_email_digest, e.watch_next_run_at, e.watch_last_run_at'
+    : '';
   router.get(`/${resource}`, async (req, res, next) => {
     try {
       const r = await db.query(
@@ -82,7 +85,14 @@ for (const [resource, conf] of Object.entries(TABLES)) {
         for (const f of ['website', 'country', 'city', 'address', 'phone', 'email']) {
           if (b[f] !== undefined) { params.push(b[f] || null); sets.push(`${f} = $${params.length}`); }
         }
-        if (b.watchEnabled !== undefined) { params.push(!!b.watchEnabled); sets.push(`watch_enabled = $${params.length}`); }
+        // Per-entity Market Watch schedule — merge over the current row.
+        if (['watchEnabled', 'watchFrequency', 'watchDay', 'watchTimezone', 'watchEmailDigest'].some((k) => b[k] !== undefined)) {
+          const cur = (await db.query(`SELECT watch_enabled, watch_frequency, watch_day, watch_timezone, watch_email_digest FROM competitors WHERE id = $1 AND tenant_id = $2`, [req.params.id, req.tenantId])).rows[0];
+          if (!cur) return res.status(404).json({ error: 'not found' });
+          const wm = watchSchedule.mergeWatchSchedule(cur, b);
+          if (wm.error) return res.status(400).json({ error: wm.error });
+          for (const [col, val] of Object.entries(wm.values)) { params.push(val); sets.push(`${col} = $${params.length}`); }
+        }
       }
       if (sets.length === 0) return res.status(400).json({ error: 'nothing to update' });
       params.push(req.params.id);

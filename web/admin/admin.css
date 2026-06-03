@@ -3626,3 +3626,19 @@ details.schedule-advanced > .schedule-advanced-body {
 
 /* Timezone picker is wider than the day/cadence selects. */
 .watch-schedule .watch-tz-field { max-width: 260px; }
+
+/* Per-entity Market Watch panel (prospect/competitor detail). */
+.watch-panel {
+  margin: 14px 0; padding: 12px 14px;
+  border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: var(--radius); background: var(--surface);
+}
+.watch-panel-h {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  font-weight: 600; font-size: 13.5px;
+}
+.watch-switch {
+  display: inline-flex; align-items: center; gap: 7px; margin-left: auto;
+  font-weight: 500; font-size: 13px; cursor: pointer;
+}
+.watch-panel-body { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }

@@ -29,6 +29,7 @@
   let kbCurrentTab = 'status';
   let missionsCurrentTab = 'upcoming';
   let isSuperadmin = false; // platform admin (Founders tenant) — set in init()
+  let marketWatchAvailable = false; // plan includes Market Watch — set in init()
 
   init();
 
@@ -60,6 +61,7 @@
       $('user-avatar').textContent = (me.email || '?')[0].toUpperCase();
     }
     isSuperadmin = !!me.isAdmin;
+    marketWatchAvailable = !!(me.entitlements && Array.isArray(me.entitlements.features) && me.entitlements.features.includes('market_monitoring'));
 
     // Returning from Stripe Checkout (?cs=<session>) — confirm the subscription
     // synchronously so the plan is live before the welcome flow (and gate) run.
@@ -1044,7 +1046,6 @@
       <div class="prospect-detail-h">
         <input id="prospect-name" type="text" class="prospect-name-input" value="${escapeHtml(c.name)}" maxlength="200">
         <div class="prospect-detail-actions">
-          ${watchToggleBtn('PROSPECT', c.id, c.watch_enabled)}
           <button class="kb-secondary-btn" id="prospect-save-btn">Save</button>
           <button class="kb-secondary-btn danger" id="prospect-delete-btn">Delete prospect</button>
         </div>
@@ -1059,6 +1060,8 @@
         <label>Email<input id="prospect-email" type="text" value="${escapeHtml(c.email || '')}" placeholder="contact@acme.com"></label>
         <label>Notes<textarea id="prospect-notes" rows="2" placeholder="Anything worth remembering across engagements">${escapeHtml(c.notes || '')}</textarea></label>
       </div>
+
+      <div id="prospect-watch-panel"></div>
 
       <div class="prospect-tabs">
         <button type="button" class="kb-tab active" data-prospect-tab="signals">🔎 Signals</button>
@@ -1123,7 +1126,7 @@
   }
 
   function wireProspectDetail(host, company) {
-    wireWatchToggle(host, 'PROSPECT', company, () => { loaded.prospects = false; });
+    mountWatchPanel('prospect-watch-panel', 'PROSPECT', company, () => { loaded.prospects = false; });
     $('prospect-save-btn').addEventListener('click', async (e) => {
       const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Saving…';
       try {
@@ -1660,7 +1663,6 @@
       <div class="prospect-detail-h comp-section-anchor" id="competitor-section-view">
         <input id="competitor-name" type="text" class="prospect-name-input" value="${escapeHtml(c.name)}" maxlength="200">
         <div class="prospect-detail-actions">
-          ${watchToggleBtn('COMPETITOR', c.id, c.watch_enabled)}
           <button class="kb-secondary-btn" id="competitor-save-btn">Save</button>
           <button class="kb-secondary-btn danger" id="competitor-delete-btn">Delete</button>
         </div>
@@ -1675,6 +1677,8 @@
         <label>Email<input id="competitor-email" type="text" value="${escapeHtml(c.email || '')}" placeholder="contact@acme.com"></label>
         <label>Description<textarea id="competitor-description" rows="3" placeholder="What's their pitch? Where do they win and where do they lose?">${escapeHtml(c.description || '')}</textarea></label>
       </div>
+
+      <div id="competitor-watch-panel"></div>
 
       <div class="prospect-intel-panel">
         <h4 style="margin:14px 0 6px 0">Matchups</h4>
@@ -1867,7 +1871,7 @@
   }
 
   async function wireCompetitorDetail(host, competitor) {
-    wireWatchToggle(host, 'COMPETITOR', competitor, () => { loaded.competitors = false; });
+    mountWatchPanel('competitor-watch-panel', 'COMPETITOR', competitor, () => { loaded.competitors = false; });
     // Product-centric view: reset the matchup to "company-wide vs whole
     // portfolio" whenever a competitor opens, then load the portfolio (which
     // renders the matchup node list + opens the default matchup workspace).
@@ -7136,7 +7140,6 @@
     await Promise.all([
       loadApiTokensTable(),
       loadSettingsKbStatus(),
-      loadWatchSettings(),
     ]);
     wireApiTokensForm();
     wireSettingsKbTools();
@@ -7148,7 +7151,6 @@
   // (Market signals) + an optional email digest. Separate from intel until
   // a rep accepts a finding (which promotes it to a kb_documents row).
 
-  const WATCH_FREQ_LABEL = { daily: 'Every day', weekly: 'Every week', monthly: 'Every month' };
   const WATCH_WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const ordinal = (n) => { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
 
@@ -7188,145 +7190,132 @@
     return '';
   }
 
-  // Reusable ⭐ toggle for the prospect/competitor detail header.
-  function watchToggleBtn(scope, id, enabled) {
-    const on = !!enabled;
-    return `<button class="kb-secondary-btn watch-toggle-btn${on ? ' on' : ''}" id="watch-toggle-btn"
-              data-watch-scope="${scope}" data-watch-id="${escapeHtml(String(id))}" data-watch-on="${on ? '1' : '0'}"
-              title="${on ? 'This entity is being monitored by Market Watch. Click to stop.' : 'Add to Market Watch — the AI will monitor it for new developments.'}">${on ? '★ Watching' : '☆ Watch'}</button>`;
-  }
+  // ── Per-entity Market Watch panel ─────────────────────────────────────────
+  // Each watched prospect/competitor carries its OWN schedule. The panel lives
+  // on the entity's detail page: enable toggle + cadence/day/timezone/email +
+  // Save + Run now. `marketWatchAvailable` (set at init from entitlements)
+  // decides whether the schedule shows or an upsell does.
 
-  function wireWatchToggle(host, scope, entity, invalidate) {
-    const btn = host.querySelector('#watch-toggle-btn');
-    if (!btn) return;
-    btn.addEventListener('click', async () => {
-      const turningOn = btn.dataset.watchOn !== '1';
-      btn.disabled = true; const orig = btn.textContent; btn.textContent = '…';
-      const url = scope === 'PROSPECT'
-        ? `/api/companies/${encodeURIComponent(entity.id)}`
-        : `/api/portfolio/competitors/${encodeURIComponent(entity.id)}`;
-      try {
-        await fetchJson(url, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ watchEnabled: turningOn }),
-        });
-        entity.watch_enabled = turningOn;
-        btn.dataset.watchOn = turningOn ? '1' : '0';
-        btn.classList.toggle('on', turningOn);
-        btn.textContent = turningOn ? '★ Watching' : '☆ Watch';
-        if (typeof invalidate === 'function') invalidate();
-      } catch (err) { alert(`Couldn't update watch: ${err.message}`); btn.textContent = orig; }
-      finally { btn.disabled = false; }
-    });
-  }
-
-  async function loadWatchSettings() {
-    const host = $('settings-watch-body');
-    if (!host) return;
-    let data;
-    try { data = await fetchJson('/api/watch/config'); }
-    catch (err) { host.innerHTML = `<div class="kb-subtle">Couldn't load: ${escapeHtml(err.message)}</div>`; return; }
-    renderWatchSettings(host, data);
-  }
-
-  function renderWatchSettings(host, data) {
-    const cfg = (data && data.config) || {};
-    if (!data.featureAvailable) {
-      host.innerHTML = `<div class="upsell-note">Market Watch is a <strong>Pro</strong> feature. <a href="#billing">Upgrade your plan</a> to have the AI monitor your watched prospects and competitors.</div>`;
-      return;
+  function watchPanelHtml(scope, e, available) {
+    const noun = scope === 'PROSPECT' ? 'prospect' : 'competitor';
+    if (!available) {
+      return `<div class="watch-panel">
+        <div class="watch-panel-h">📡 Market Watch</div>
+        <div class="upsell-note">Monitoring is a <strong>Pro</strong> feature. <a href="#billing">Upgrade your plan</a> to have the AI track this ${noun} for new developments — funding, launches, leadership moves and more.</div>
+      </div>`;
     }
-    const enabled = !!cfg.watch_enabled;
-    const freq = String(cfg.watch_frequency || 'weekly');
-    const day = cfg.watch_day == null ? 1 : Number(cfg.watch_day);
-    // Default the picker to the tenant's saved tz; if it's still the 'UTC'
-    // default (never set), pre-select the browser's tz for a better first run.
-    const tz = (cfg.watch_timezone && cfg.watch_timezone !== 'UTC') ? cfg.watch_timezone : browserTz();
-    const next = cfg.watch_next_run_at ? new Date(cfg.watch_next_run_at).toLocaleString() : null;
-    const last = cfg.watch_last_run_at ? new Date(cfg.watch_last_run_at).toLocaleString() : null;
-    host.innerHTML = `
-      <div class="watch-settings">
-        <label class="watch-row">
-          <input type="checkbox" id="watch-enabled" ${enabled ? 'checked' : ''}>
-          <span>Enable Market Watch <span class="kb-subtle">— monitor the entities you've marked "Watch".</span></span>
-        </label>
+    const on = !!e.watch_enabled;
+    const freq = String(e.watch_frequency || 'weekly');
+    const day = e.watch_day == null ? 1 : Number(e.watch_day);
+    const tz = (e.watch_timezone && e.watch_timezone !== 'UTC') ? e.watch_timezone : browserTz();
+    const next = e.watch_next_run_at ? new Date(e.watch_next_run_at).toLocaleString() : null;
+    const last = e.watch_last_run_at ? new Date(e.watch_last_run_at).toLocaleString() : null;
+    return `<div class="watch-panel">
+      <div class="watch-panel-h">📡 Market Watch
+        <label class="watch-switch"><input type="checkbox" id="wp-enabled" ${on ? 'checked' : ''}> Watch this ${noun}</label>
+      </div>
+      <div class="watch-panel-body${on ? '' : ' hidden'}" id="wp-body">
         <div class="watch-schedule">
           <label class="watch-field">How often
-            <select id="watch-frequency">
+            <select id="wp-frequency">
               <option value="daily"   ${freq === 'daily' ? 'selected' : ''}>Every day</option>
               <option value="weekly"  ${freq === 'weekly' ? 'selected' : ''}>Every week</option>
               <option value="monthly" ${freq === 'monthly' ? 'selected' : ''}>Every month</option>
             </select>
           </label>
-          <label class="watch-field${freq === 'daily' ? ' hidden' : ''}" id="watch-day-field">
-            <span id="watch-day-label">${freq === 'monthly' ? 'On day' : 'On'}</span>
-            <select id="watch-day">${watchDayOptions(freq, day)}</select>
+          <label class="watch-field${freq === 'daily' ? ' hidden' : ''}" id="wp-day-field">
+            <span id="wp-day-label">${freq === 'monthly' ? 'On day' : 'On'}</span>
+            <select id="wp-day">${watchDayOptions(freq, day)}</select>
           </label>
           <label class="watch-field watch-tz-field">Timezone
-            <select id="watch-timezone">${watchTzOptions(tz)}</select>
+            <select id="wp-timezone">${watchTzOptions(tz)}</select>
           </label>
         </div>
-        <div class="watch-meta kb-subtle">Runs at 8:00 AM in the selected timezone.</div>
         <label class="watch-row">
-          <input type="checkbox" id="watch-email-digest" ${cfg.watch_email_digest === false ? '' : 'checked'}>
-          <span>Email me a digest when new signals are found</span>
+          <input type="checkbox" id="wp-email" ${e.watch_email_digest === false ? '' : 'checked'}>
+          <span>Email me a digest when new signals are found for this ${noun}</span>
         </label>
         <div class="watch-meta kb-subtle">
-          ${enabled && next ? `Next run: ${escapeHtml(next)}. ` : (enabled ? 'Next run: shortly. ' : 'Currently off. ')}
-          ${last ? `Last run: ${escapeHtml(last)}.` : 'Never run yet.'}
+          Runs at 8:00 AM in the selected timezone.
+          ${on && next ? ` Next: ${escapeHtml(next)}.` : ''} ${last ? `Last: ${escapeHtml(last)}.` : 'Never run yet.'}
         </div>
-        <div class="watch-actions">
-          <button class="primary-cta" id="watch-config-save">Save</button>
-          <button class="kb-secondary-btn" id="watch-run-now" ${enabled ? '' : 'disabled'} title="${enabled ? 'Run a watch pass right now' : 'Enable and save first'}">⚡ Run now</button>
-          <span class="kb-result hidden" id="watch-config-result"></span>
-        </div>
-      </div>`;
-
-    // Frequency change → rebuild the day picker for the new cadence.
-    $('watch-frequency').addEventListener('change', (e) => {
-      const f = e.target.value;
-      const field = $('watch-day-field');
-      const sel = $('watch-day');
-      if (f === 'daily') { field.classList.add('hidden'); return; }
-      field.classList.remove('hidden');
-      $('watch-day-label').textContent = f === 'monthly' ? 'On day' : 'On';
-      // Default to Monday (1) / 1st when switching cadence.
-      sel.innerHTML = watchDayOptions(f, f === 'monthly' ? 1 : 1);
-    });
-
-    $('watch-config-save').addEventListener('click', async (e) => {
-      const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Saving…';
-      const res = $('watch-config-result');
-      try {
-        const fr = $('watch-frequency').value;
-        const payload = {
-          enabled: $('watch-enabled').checked,
-          frequency: fr,
-          emailDigest: $('watch-email-digest').checked,
-          timezone: $('watch-timezone').value,
-        };
-        if (fr !== 'daily') payload.day = parseInt($('watch-day').value, 10);
-        const out = await fetchJson('/api/watch/config', {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        renderWatchSettings(host, { featureAvailable: true, config: out.config });
-        const r2 = $('watch-config-result');
-        if (r2) { r2.classList.remove('hidden', 'error'); r2.classList.add('success'); r2.textContent = 'Saved.'; }
-      } catch (err) {
-        res.classList.remove('hidden', 'success'); res.classList.add('error'); res.textContent = err.message;
-        btn.disabled = false; btn.textContent = 'Save';
-      }
-    });
-
-    const runBtn = $('watch-run-now');
-    if (runBtn) runBtn.addEventListener('click', () => triggerWatchRun(runBtn));
+      </div>
+      <div class="watch-actions">
+        <button class="primary-cta" id="wp-save">Save</button>
+        <button class="kb-secondary-btn" id="wp-run" title="Research this ${noun} right now">⚡ Run now</button>
+        <span class="kb-result hidden" id="wp-result"></span>
+      </div>
+    </div>`;
   }
 
-  async function triggerWatchRun(btn) {
+  // Render + wire the panel into `hostId` for one entity. `invalidate` marks the
+  // owning list stale so a re-open reflects the new schedule.
+  function mountWatchPanel(hostId, scope, entity, invalidate) {
+    const host = $(hostId);
+    if (!host) return;
+    const url = scope === 'PROSPECT'
+      ? `/api/companies/${encodeURIComponent(entity.id)}`
+      : `/api/portfolio/competitors/${encodeURIComponent(entity.id)}`;
+
+    const render = () => { host.innerHTML = watchPanelHtml(scope, entity, marketWatchAvailable); wire(); };
+
+    function wire() {
+      if (!marketWatchAvailable) return;
+      const enabledEl = $('wp-enabled');
+      const body = $('wp-body');
+      enabledEl.addEventListener('change', () => body.classList.toggle('hidden', !enabledEl.checked));
+      $('wp-frequency').addEventListener('change', (ev) => {
+        const f = ev.target.value, field = $('wp-day-field'), sel = $('wp-day');
+        if (f === 'daily') { field.classList.add('hidden'); return; }
+        field.classList.remove('hidden');
+        $('wp-day-label').textContent = f === 'monthly' ? 'On day' : 'On';
+        sel.innerHTML = watchDayOptions(f, 1);
+      });
+
+      $('wp-save').addEventListener('click', async (ev) => {
+        const btn = ev.currentTarget; btn.disabled = true; btn.textContent = 'Saving…';
+        const res = $('wp-result');
+        try {
+          const fr = $('wp-frequency').value;
+          const payload = {
+            watchEnabled: $('wp-enabled').checked,
+            watchFrequency: fr,
+            watchTimezone: $('wp-timezone').value,
+            watchEmailDigest: $('wp-email').checked,
+          };
+          if (fr !== 'daily') payload.watchDay = parseInt($('wp-day').value, 10);
+          const out = await fetchJson(url, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          // Refresh the local entity from the server echo, then re-render.
+          const row = (out && (out.company || out.competitor)) || null;
+          if (row) Object.assign(entity, row);
+          else Object.assign(entity, { watch_enabled: payload.watchEnabled, watch_frequency: fr, watch_email_digest: payload.watchEmailDigest });
+          if (typeof invalidate === 'function') invalidate();
+          render();
+          const r2 = $('wp-result'); if (r2) { r2.classList.remove('hidden', 'error'); r2.classList.add('success'); r2.textContent = 'Saved.'; }
+        } catch (err) {
+          res.classList.remove('hidden', 'success'); res.classList.add('error'); res.textContent = err.message;
+          btn.disabled = false; btn.textContent = 'Save';
+        }
+      });
+
+      $('wp-run').addEventListener('click', (ev) => triggerEntityRun(scope, entity.id, ev.currentTarget));
+    }
+
+    render();
+  }
+
+  // Manual per-entity "run now" → POST /watch/run {scope, id}.
+  async function triggerEntityRun(scope, id, btn) {
     btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Starting…';
     try {
-      await fetchJson('/api/watch/run', { method: 'POST' });
-      btn.textContent = '✓ Running — check back soon';
+      await fetchJson('/api/watch/run', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope, id }),
+      });
+      btn.textContent = '✓ Running — check Market signals soon';
       setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 4000);
       setTimeout(refreshWatchBadge, 20000);
     } catch (err) { alert(`Couldn't start: ${err.message}`); btn.textContent = orig; btn.disabled = false; }
@@ -7348,12 +7337,7 @@
   async function loadMarketSignals() {
     const host = $('market-signals-body');
     if (!host) return;
-    const runBtn = $('watch-run-btn');
     const refreshBtn = $('watch-refresh-btn');
-    if (runBtn && runBtn.dataset.wired !== '1') {
-      runBtn.dataset.wired = '1';
-      runBtn.addEventListener('click', () => triggerWatchRun(runBtn));
-    }
     if (refreshBtn && refreshBtn.dataset.wired !== '1') {
       refreshBtn.dataset.wired = '1';
       refreshBtn.addEventListener('click', () => { loaded['market-signals'] = false; switchSection('market-signals'); });
@@ -7368,8 +7352,8 @@
   function renderMarketSignals(host, findings) {
     if (!findings.length) {
       host.innerHTML = `<div class="empty" style="padding:20px 0">
-        No market signals yet. Mark a <a href="#prospects">prospect</a> or <a href="#competitors">competitor</a> as
-        <strong>☆ Watch</strong>, enable Market Watch in <a href="#settings">Settings</a>, and the AI will start surfacing
+        No market signals yet. Open a <a href="#prospects">prospect</a> or <a href="#competitors">competitor</a>,
+        turn on its <strong>📡 Market Watch</strong> panel and pick a schedule, and the AI will start surfacing
         developments here.</div>`;
       return;
     }
