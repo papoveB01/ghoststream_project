@@ -76,10 +76,6 @@ async function usedCount(parentId) {
   const i = await sys().query("SELECT count(*)::int AS n FROM subtenant_invites WHERE parent_tenant_id = $1 AND status = 'PENDING'", [parentId]);
   return c.rows[0].n + i.rows[0].n;
 }
-async function domainTaken(domain) {
-  const r = await sys().query('SELECT 1 FROM tenants WHERE lower(domain) = lower($1) LIMIT 1', [domain]);
-  return r.rowCount > 0;
-}
 
 // ── authed parent router ─────────────────────────────────────────────────────
 const router = express.Router();
@@ -90,8 +86,9 @@ router.get('/', async (req, res, next) => {
   try {
     const parent = await parentRow(req);
     const children = (await sys().query(
-      `SELECT id, name, domain, subscription_status, suspended_at, feature_overrides, cap_overrides, created_at
-         FROM tenants WHERE parent_tenant_id = $1 ORDER BY created_at`, [req.tenantId]
+      `SELECT t.id, t.name, t.subscription_status, t.suspended_at, t.feature_overrides, t.cap_overrides, t.created_at,
+              (SELECT email FROM users u WHERE u.tenant_id = t.id ORDER BY created_at LIMIT 1) AS owner_email
+         FROM tenants t WHERE t.parent_tenant_id = $1 ORDER BY t.created_at`, [req.tenantId]
     )).rows;
     const invites = (await sys().query(
       `SELECT id, company_name, domain, email, features, cap_overrides, status, expires_at, created_at
@@ -100,7 +97,7 @@ router.get('/', async (req, res, next) => {
     const limit = plans.subAccountLimitFor(parent);
     res.json({
       children: children.map((c) => ({
-        id: c.id, name: c.name, domain: c.domain,
+        id: c.id, name: c.name, ownerEmail: c.owner_email || null,
         status: c.suspended_at ? 'SUSPENDED' : c.subscription_status,
         suspended: !!c.suspended_at,
         features: c.feature_overrides || [], caps: c.cap_overrides || {},
@@ -124,16 +121,16 @@ router.post('/invite', async (req, res, next) => {
     }
     const b = req.body || {};
     const inviteEmail = String(b.email || '').trim().toLowerCase().slice(0, 320);
-    const domain = normDomain(b.domain);
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(inviteEmail)) return res.status(400).json({ error: 'A valid owner email is required.' });
-    if (!domain) return res.status(400).json({ error: 'A workspace domain is required.' });
-    // Sub-accounts live under the parent's company, so we don't ask for a company
-    // name — the workspace is identified by its domain (used as the display name).
-    const companyName = String(b.companyName || '').trim().slice(0, 200) || domain;
-    if (!domainsRelated(domainFromEmail(inviteEmail), domain)) {
-      return res.status(400).json({ error: `The owner email must be on the ${domain} domain.` });
+    // Sub-accounts live under the parent's company — no domain/company-name input.
+    // The owner email must be on the parent's company domain (that's what keeps it
+    // "same company"); the workspace's display name is derived from the email.
+    const companyDomain = normDomain(parent.domain);
+    const emailDomain = domainFromEmail(inviteEmail);
+    if (companyDomain && !domainsRelated(emailDomain, companyDomain)) {
+      return res.status(400).json({ error: `The owner email must be on your company domain (${companyDomain}).` });
     }
-    if (await domainTaken(domain)) return res.status(409).json({ error: 'A workspace already exists for that domain.' });
+    const companyName = inviteEmail.split('@')[0].slice(0, 200) || inviteEmail;
     const dupe = await sys().query(
       "SELECT 1 FROM subtenant_invites WHERE parent_tenant_id = $1 AND lower(email) = $2 AND status = 'PENDING' LIMIT 1",
       [req.tenantId, inviteEmail]
@@ -148,7 +145,7 @@ router.post('/invite', async (req, res, next) => {
       `INSERT INTO subtenant_invites (parent_tenant_id, company_name, domain, email, features, cap_overrides, token, created_by, expires_at)
        VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8, now() + ($9 || ' days')::interval)
        RETURNING id, company_name, email, status, expires_at`,
-      [req.tenantId, companyName, domain, inviteEmail, JSON.stringify(features), JSON.stringify(caps), token, (req.user && req.user.sub) || null, String(INVITE_TTL_DAYS)]
+      [req.tenantId, companyName, companyDomain || emailDomain, inviteEmail, JSON.stringify(features), JSON.stringify(caps), token, (req.user && req.user.sub) || null, String(INVITE_TTL_DAYS)]
     );
 
     const link = `${APP_BASE_URL}/join/?token=${encodeURIComponent(token)}`;
@@ -307,17 +304,19 @@ publicRouter.post('/invite/:token/accept', async (req, res, next) => {
     const b = req.body || {};
     const password = String(b.password || '');
     if (password.length < MIN_PASSWORD_LEN) return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LEN} characters.` });
-    if (await domainTaken(inv.domain)) return res.status(409).json({ error: 'A workspace already exists for that domain.' });
 
     const parent = await tenants.get(inv.parent_tenant_id);
     if (!parent) return res.status(410).json({ error: 'The inviting account no longer exists.' });
 
-    // Create the child tenant (billing inherited from parent) + its owner.
+    // Create the child tenant (billing inherited from parent) + its owner. A
+    // sub-tenant carries NO own domain — it lives under the parent's company
+    // identity (the column is nullable; this avoids colliding with the parent's
+    // unique domain).
     const childRow = (await sys().query(
       `INSERT INTO tenants (name, domain, subscription_status, plan, parent_tenant_id, feature_overrides, cap_overrides)
-       VALUES ($1,$2,'ACTIVE',$3,$4,$5::jsonb,$6::jsonb)
+       VALUES ($1, NULL, 'ACTIVE', $2, $3, $4::jsonb, $5::jsonb)
        RETURNING id, name`,
-      [inv.company_name, inv.domain, parent.plan, inv.parent_tenant_id, JSON.stringify(inv.features || []), JSON.stringify(inv.cap_overrides || {})]
+      [inv.company_name, parent.plan, inv.parent_tenant_id, JSON.stringify(inv.features || []), JSON.stringify(inv.cap_overrides || {})]
     )).rows[0];
 
     const owner = await users.create({

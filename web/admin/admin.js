@@ -8353,7 +8353,7 @@
       </div>`;
     $('subaccounts-monitor').innerHTML = m.children.map((c) => `
       <div class="sam-card">
-        <div class="sam-name">${escapeHtml(c.name)} <span class="sam-domain">${escapeHtml(c.domain)}</span>${c.status === 'SUSPENDED' ? ' <span class="pill pill-warn">Suspended</span>' : ''}</div>
+        <div class="sam-name">${escapeHtml(c.name)}${c.domain ? ` <span class="sam-domain">${escapeHtml(c.domain)}</span>` : ''}${c.status === 'SUSPENDED' ? ' <span class="pill pill-warn">Suspended</span>' : ''}</div>
         <div class="sam-cols">
           ${col('Intel', c.intel.count, c.intel.recent.map((r) => ({ t: r.title || 'Document', d: r.at })))}
           ${col('Call reports', c.calls.count, c.calls.recent.map((r) => ({ t: r.company, d: r.at })))}
@@ -8371,9 +8371,10 @@
       const action = c.suspended
         ? `<button class="kb-secondary-btn" data-unsuspend="${escapeHtml(c.id)}">Resume</button>`
         : `<button class="kb-danger-btn" data-suspend="${escapeHtml(c.id)}">Suspend</button>`;
+      const who = c.ownerEmail ? `${escapeHtml(c.ownerEmail)} · ` : '';
       return `<div class="sa-row">
         <div class="sa-info"><div class="sa-name">${escapeHtml(c.name)} ${pill}</div>
-          <div class="sa-sub">${escapeHtml(c.domain)} · ${escapeHtml(featNames(c.features))}</div></div>
+          <div class="sa-sub">${who}${escapeHtml(featNames(c.features))}</div></div>
         <div class="sa-actions"><button class="kb-secondary-btn" data-edit="${escapeHtml(c.id)}">Edit</button>${action}</div></div>`;
     }).join('');
     const invites = (d.invites || []).map((iv) => `<div class="sa-row">
@@ -8426,10 +8427,8 @@
             <button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
           <div class="cal-picker-body">
             <div class="kb-form">
-              <div class="field kb-inline-pair">
-                <div><label for="sa-domain">Workspace domain</label><input id="sa-domain" type="text" placeholder="team.acme.com"></div>
-                <div><label for="sa-email">Owner email</label><input id="sa-email" type="email" placeholder="owner@acme.com"></div>
-              </div>
+              <div class="field"><label for="sa-email">Owner email</label><input id="sa-email" type="email" placeholder="owner@yourcompany.com">
+                <div class="field-hint">Must be on your company's domain — they'll get a link to set up their workspace.</div></div>
               <div class="field"><label>Features this sub-account can use</label>
                 <div class="sa-feats" id="sa-feats">${featureRows}</div>
                 <div class="field-hint">Tick a feature to enable it; set a monthly cap (blank = your plan's full pool).</div>
@@ -8451,23 +8450,19 @@
       saWireToggle($('sa-feats'));
     } else {
       $('sa-feats').innerHTML = featureRows;
-      $('sa-domain').value = ''; $('sa-email').value = '';
+      $('sa-email').value = '';
       $('sa-result').classList.add('hidden');
     }
     ov.classList.remove('hidden');
-    setTimeout(() => $('sa-domain').focus(), 50);
+    setTimeout(() => $('sa-email').focus(), 50);
   }
 
   async function submitInvite() {
     const result = $('sa-result');
     const { features, caps } = saCollect('sa-feats');
-    const body = {
-      domain: $('sa-domain').value.trim(),
-      email: $('sa-email').value.trim(),
-      features, caps,
-    };
-    if (!body.domain || !body.email) {
-      result.textContent = 'A workspace domain and owner email are both required.'; result.className = 'kb-result error'; return;
+    const body = { email: $('sa-email').value.trim(), features, caps };
+    if (!body.email) {
+      result.textContent = 'An owner email is required.'; result.className = 'kb-result error'; return;
     }
     const btn = $('sa-submit'); btn.disabled = true; btn.textContent = 'Sending…';
     try {
