@@ -8426,9 +8426,8 @@
             <button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
           <div class="cal-picker-body">
             <div class="kb-form">
-              <div class="field"><label for="sa-company">Company name</label><input id="sa-company" type="text" maxlength="200"></div>
               <div class="field kb-inline-pair">
-                <div><label for="sa-domain">Company domain</label><input id="sa-domain" type="text" placeholder="acme.com"></div>
+                <div><label for="sa-domain">Workspace domain</label><input id="sa-domain" type="text" placeholder="team.acme.com"></div>
                 <div><label for="sa-email">Owner email</label><input id="sa-email" type="email" placeholder="owner@acme.com"></div>
               </div>
               <div class="field"><label>Features this sub-account can use</label>
@@ -8452,24 +8451,23 @@
       saWireToggle($('sa-feats'));
     } else {
       $('sa-feats').innerHTML = featureRows;
-      $('sa-company').value = ''; $('sa-domain').value = ''; $('sa-email').value = '';
+      $('sa-domain').value = ''; $('sa-email').value = '';
       $('sa-result').classList.add('hidden');
     }
     ov.classList.remove('hidden');
-    setTimeout(() => $('sa-company').focus(), 50);
+    setTimeout(() => $('sa-domain').focus(), 50);
   }
 
   async function submitInvite() {
     const result = $('sa-result');
     const { features, caps } = saCollect('sa-feats');
     const body = {
-      companyName: $('sa-company').value.trim(),
       domain: $('sa-domain').value.trim(),
       email: $('sa-email').value.trim(),
       features, caps,
     };
-    if (!body.companyName || !body.domain || !body.email) {
-      result.textContent = 'Company, domain and owner email are all required.'; result.className = 'kb-result error'; return;
+    if (!body.domain || !body.email) {
+      result.textContent = 'A workspace domain and owner email are both required.'; result.className = 'kb-result error'; return;
     }
     const btn = $('sa-submit'); btn.disabled = true; btn.textContent = 'Sending…';
     try {

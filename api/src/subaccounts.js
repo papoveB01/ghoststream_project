@@ -123,12 +123,13 @@ router.post('/invite', async (req, res, next) => {
       return res.status(400).json({ error: `You've reached your sub-account limit (${Number.isFinite(limit) ? limit : '—'}). Remove one or upgrade.`, code: 'SUBACCOUNT_LIMIT' });
     }
     const b = req.body || {};
-    const companyName = String(b.companyName || '').trim().slice(0, 200);
     const inviteEmail = String(b.email || '').trim().toLowerCase().slice(0, 320);
     const domain = normDomain(b.domain);
-    if (!companyName) return res.status(400).json({ error: 'Company name is required.' });
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(inviteEmail)) return res.status(400).json({ error: 'A valid owner email is required.' });
-    if (!domain) return res.status(400).json({ error: 'A company domain is required.' });
+    if (!domain) return res.status(400).json({ error: 'A workspace domain is required.' });
+    // Sub-accounts live under the parent's company, so we don't ask for a company
+    // name — the workspace is identified by its domain (used as the display name).
+    const companyName = String(b.companyName || '').trim().slice(0, 200) || domain;
     if (!domainsRelated(domainFromEmail(inviteEmail), domain)) {
       return res.status(400).json({ error: `The owner email must be on the ${domain} domain.` });
     }
