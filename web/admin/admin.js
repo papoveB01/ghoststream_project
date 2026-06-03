@@ -7661,6 +7661,7 @@
     api_tokens: 'API / MCP access',
     calendly: 'Calendly auto-booking',
     market_monitoring: 'Market Watch monitoring',
+    sub_accounts: 'Sub-account workspaces',
   };
   const METER_LABELS = {
     discovery: 'Prospect discovery runs',
