@@ -180,6 +180,60 @@ router.post('/invite', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /monitor — activity roll-up across the parent's children: generated intel,
+// completed call reports, and upcoming meetings. A SUMMARY only (counts + recent
+// titles/dates) — the parent monitors activity without entering a child's
+// workspace. Strictly scoped to the parent's own children (childIds are derived
+// server-side from parent_tenant_id; never from the client).
+router.get('/monitor', async (req, res, next) => {
+  try {
+    const childRows = (await sys().query(
+      `SELECT id, name, domain, subscription_status, suspended_at
+         FROM tenants WHERE parent_tenant_id = $1 ORDER BY name`, [req.tenantId]
+    )).rows;
+    if (!childRows.length) return res.json({ children: [] });
+    const ids = childRows.map((c) => c.id);
+
+    const [intelCnt, callCnt, upCnt, intelRecent, callRecent, upRecent] = await Promise.all([
+      sys().query(`SELECT tenant_id, count(*)::int n FROM kb_documents WHERE tenant_id = ANY($1) AND scope='TENANT' AND status='READY' GROUP BY tenant_id`, [ids]),
+      sys().query(`SELECT tenant_id, count(*)::int n FROM scheduled_meetings WHERE tenant_id = ANY($1) AND status='COMPLETED' GROUP BY tenant_id`, [ids]),
+      sys().query(`SELECT tenant_id, count(*)::int n FROM scheduled_meetings WHERE tenant_id = ANY($1) AND scheduled_at >= now() AND status NOT IN ('CANCELLED','COMPLETED') GROUP BY tenant_id`, [ids]),
+      sys().query(`SELECT tenant_id, title, category, created_at FROM (
+                     SELECT tenant_id, title, category, created_at,
+                            row_number() OVER (PARTITION BY tenant_id ORDER BY created_at DESC) rn
+                       FROM kb_documents WHERE tenant_id = ANY($1) AND scope='TENANT' AND status='READY'
+                   ) s WHERE rn <= 5`, [ids]),
+      sys().query(`SELECT tenant_id, id, scheduled_at, company_name FROM (
+                     SELECT sm.tenant_id, sm.id, sm.scheduled_at, c.name AS company_name,
+                            row_number() OVER (PARTITION BY sm.tenant_id ORDER BY sm.scheduled_at DESC) rn
+                       FROM scheduled_meetings sm LEFT JOIN companies c ON c.id = sm.company_id
+                      WHERE sm.tenant_id = ANY($1) AND sm.status='COMPLETED'
+                   ) s WHERE rn <= 5`, [ids]),
+      sys().query(`SELECT tenant_id, id, scheduled_at, status, company_name FROM (
+                     SELECT sm.tenant_id, sm.id, sm.scheduled_at, sm.status, c.name AS company_name,
+                            row_number() OVER (PARTITION BY sm.tenant_id ORDER BY sm.scheduled_at ASC) rn
+                       FROM scheduled_meetings sm LEFT JOIN companies c ON c.id = sm.company_id
+                      WHERE sm.tenant_id = ANY($1) AND sm.scheduled_at >= now() AND sm.status NOT IN ('CANCELLED','COMPLETED')
+                   ) s WHERE rn <= 5`, [ids]),
+    ]);
+
+    const byId = (rows) => { const m = {}; for (const r of rows) (m[r.tenant_id] = m[r.tenant_id] || []).push(r); return m; };
+    const cnt = (rows) => { const m = {}; for (const r of rows) m[r.tenant_id] = r.n; return m; };
+    const ic = cnt(intelCnt.rows), cc = cnt(callCnt.rows), uc = cnt(upCnt.rows);
+    const ir = byId(intelRecent.rows), cr = byId(callRecent.rows), ur = byId(upRecent.rows);
+
+    res.json({
+      children: childRows.map((c) => ({
+        id: c.id, name: c.name, domain: c.domain,
+        status: c.suspended_at ? 'SUSPENDED' : c.subscription_status,
+        intel: { count: ic[c.id] || 0, recent: (ir[c.id] || []).map((r) => ({ title: r.title, category: r.category, at: r.created_at })) },
+        calls: { count: cc[c.id] || 0, recent: (cr[c.id] || []).map((r) => ({ company: r.company_name || 'Prospect', at: r.scheduled_at })) },
+        upcoming: { count: uc[c.id] || 0, items: (ur[c.id] || []).map((r) => ({ company: r.company_name || 'Prospect', at: r.scheduled_at, status: r.status })) },
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
 // PATCH /:childId — update a child's feature mask / cap allocation.
 router.patch('/:childId', async (req, res, next) => {
   try {

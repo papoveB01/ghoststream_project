@@ -8301,6 +8301,28 @@
     try { d = await fetchJson('/api/account/subaccounts'); }
     catch (err) { $('subaccounts-body').innerHTML = `<div class="empty">Couldn't load sub-accounts: ${escapeHtml(err.message)}</div>`; return; }
     renderSubaccounts(d);
+    loadSubaccountMonitor();
+  }
+
+  async function loadSubaccountMonitor() {
+    let m;
+    try { m = await fetchJson('/api/account/subaccounts/monitor'); }
+    catch (err) { $('subaccounts-monitor').innerHTML = `<div class="empty">Couldn't load activity: ${escapeHtml(err.message)}</div>`; return; }
+    if (!m.children || !m.children.length) { $('subaccounts-monitor').innerHTML = '<div class="kb-subtle">No sub-account activity yet.</div>'; return; }
+    const col = (label, count, rows) => `
+      <div class="sam-col">
+        <div class="sam-col-h">${label} <span class="sam-count">${count}</span></div>
+        ${rows.length ? rows.map((r) => `<div class="sam-item"><span class="sam-item-t">${escapeHtml(r.t)}</span><span class="sam-item-d">${r.d ? escapeHtml(fmtDate(r.d)) : ''}</span></div>`).join('') : '<div class="sam-empty">—</div>'}
+      </div>`;
+    $('subaccounts-monitor').innerHTML = m.children.map((c) => `
+      <div class="sam-card">
+        <div class="sam-name">${escapeHtml(c.name)} <span class="sam-domain">${escapeHtml(c.domain)}</span>${c.status === 'SUSPENDED' ? ' <span class="pill pill-warn">Suspended</span>' : ''}</div>
+        <div class="sam-cols">
+          ${col('Intel', c.intel.count, c.intel.recent.map((r) => ({ t: r.title || 'Document', d: r.at })))}
+          ${col('Call reports', c.calls.count, c.calls.recent.map((r) => ({ t: r.company, d: r.at })))}
+          ${col('Upcoming', c.upcoming.count, c.upcoming.items.map((r) => ({ t: r.company, d: r.at })))}
+        </div>
+      </div>`).join('');
   }
 
   function renderSubaccounts(d) {
