@@ -9,7 +9,8 @@ const _cache = new Map(); // tenantId -> { tenant, exp }
 
 const COLUMNS = `
   id, name, domain, subscription_status, plan, trial_ends_at, current_period_end,
-  stripe_customer_id, stripe_subscription_id, cancel_at_period_end, suspended_at, created_at, updated_at
+  stripe_customer_id, stripe_subscription_id, cancel_at_period_end, suspended_at,
+  parent_tenant_id, max_subtenants, feature_overrides, cap_overrides, created_at, updated_at
 `;
 
 async function get(tenantId, { fresh = false } = {}) {
@@ -30,7 +31,7 @@ function invalidate(tenantId) { _cache.delete(tenantId); }
 const UPDATABLE = new Set([
   'name', 'domain', 'subscription_status', 'plan', 'trial_ends_at',
   'current_period_end', 'stripe_customer_id', 'stripe_subscription_id', 'suspended_at',
-  'cancel_at_period_end',
+  'cancel_at_period_end', 'parent_tenant_id', 'max_subtenants', 'feature_overrides', 'cap_overrides',
 ]);
 async function update(tenantId, patch) {
   const sets = []; const vals = []; let i = 1;

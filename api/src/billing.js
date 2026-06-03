@@ -42,7 +42,7 @@ const router = express.Router();
 router.get('/', async (req, res, next) => {
   try {
     const tenant = await tenants.get(req.tenantId, { fresh: true });
-    const ent = entitlements.entitlementsFor(tenant);
+    const ent = await entitlements.resolveEntitlementsFor(tenant);
     // Free tier meters are lifetime; paid tiers are monthly. Read the matching bucket.
     const used = await usage.summary(req.tenantId, { lifetime: ent.lifetimeCaps });
     const creditBalance = await credits.summary(req.tenantId);

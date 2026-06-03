@@ -33,24 +33,67 @@ function trialDaysLeft(tenant) {
 }
 
 // Full entitlement snapshot for a tenant row.
-function entitlementsFor(tenant) {
+//
+// Sub-tenants (parent_tenant_id set) inherit their billing/active state AND plan
+// tier from the PARENT — pass the parent row as `opts.parent`. Their effective
+// features are the parent plan's features (minus sub_accounts — children can't
+// nest) intersected with the parent-chosen mask (tenant.feature_overrides), and
+// their caps are the parent-allocated slice (tenant.cap_overrides) layered over
+// the plan caps. Standalone tenants ignore all of this (no parent passed).
+function entitlementsFor(tenant, opts = {}) {
   if (!tenant) {
-    return { active: false, reason: 'no_tenant', planKey: null, planName: null, features: [], caps: {}, lifetimeCaps: false, daysLeft: null };
+    return { active: false, reason: 'no_tenant', planKey: null, planName: null, features: [], caps: {}, lifetimeCaps: false, daysLeft: null, isSubtenant: false, parentTenantId: null };
   }
-  const state = accessState(tenant);
-  const plan = plans.planFor(tenant.plan);
+  const isSub = !!tenant.parent_tenant_id;
+  const parent = isSub ? (opts.parent || null) : null;
+  // Billing/active + the plan tier come from the parent for a sub-tenant. If the
+  // parent row wasn't supplied (defensive), fall back to read-only.
+  const billingTenant = isSub ? parent : tenant;
+  const state = billingTenant ? accessState(billingTenant) : { active: false, reason: 'no_parent' };
+  const plan = plans.planFor(billingTenant ? billingTenant.plan : tenant.plan);
+
+  let features = plan.features;
+  let caps = plan.caps;
+  let lifetimeCaps = !!plan.lifetimeCaps;
+
+  if (isSub) {
+    // Children never get the sub_accounts capability (no nesting).
+    const ceiling = plan.features.filter((f) => f !== plans.FEATURES.SUB_ACCOUNTS);
+    const mask = Array.isArray(tenant.feature_overrides) ? tenant.feature_overrides : ceiling;
+    features = ceiling.filter((f) => mask.includes(f));
+    // Parent-allocated caps override the plan caps per meter; unspecified meters
+    // fall back to the plan cap.
+    caps = (tenant.cap_overrides && typeof tenant.cap_overrides === 'object')
+      ? { ...plan.caps, ...tenant.cap_overrides } : plan.caps;
+    lifetimeCaps = false; // a sub-tenant under a paid parent uses monthly caps
+  }
+
   return {
     active: state.active,
     reason: state.reason,
-    status: tenant.subscription_status,
+    status: (billingTenant || tenant).subscription_status,
     planKey: plan.key,
     planName: plan.name,
-    features: plan.features,
-    caps: plan.caps,
-    lifetimeCaps: !!plan.lifetimeCaps,
-    daysLeft: trialDaysLeft(tenant),
-    currentPeriodEnd: tenant.current_period_end || null,
+    features,
+    caps,
+    lifetimeCaps,
+    daysLeft: trialDaysLeft(billingTenant || tenant),
+    currentPeriodEnd: (billingTenant || tenant).current_period_end || null,
+    isSubtenant: isSub,
+    parentTenantId: tenant.parent_tenant_id || null,
   };
+}
+
+// Async wrapper that resolves a sub-tenant's parent before computing entitlements.
+// Use this at the request boundary (billingGate, capacity/feature guards) so
+// inheritance is always applied; the sync entitlementsFor stays available for
+// callers that already hold both rows.
+async function resolveEntitlementsFor(tenant) {
+  if (!tenant) return entitlementsFor(null);
+  if (!tenant.parent_tenant_id) return entitlementsFor(tenant);
+  const tenants = require('./tenants');
+  const parent = await tenants.get(tenant.parent_tenant_id);
+  return entitlementsFor(tenant, { parent });
 }
 
 function hasFeature(ent, feature) {
@@ -76,7 +119,8 @@ function toJson(ent) {
     lifetimeCaps: !!ent.lifetimeCaps,
     daysLeft: ent.daysLeft,
     currentPeriodEnd: ent.currentPeriodEnd || null,
+    isSubtenant: !!ent.isSubtenant,
   };
 }
 
-module.exports = { accessState, entitlementsFor, hasFeature, trialDaysLeft, toJson };
+module.exports = { accessState, entitlementsFor, resolveEntitlementsFor, hasFeature, trialDaysLeft, toJson };

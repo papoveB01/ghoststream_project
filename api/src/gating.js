@@ -45,7 +45,8 @@ async function billingGate(req, res, next) {
       return res.status(403).json({ error: 'This organization has been suspended.', code: 'TENANT_SUSPENDED' });
     }
 
-    const ent = entitlements.entitlementsFor(tenant);
+    // resolveEntitlementsFor inherits billing/plan from the parent for sub-tenants.
+    const ent = await entitlements.resolveEntitlementsFor(tenant);
     req.entitlements = ent;
     req.tenantRecord = tenant;
 
@@ -68,7 +69,7 @@ async function billingGate(req, res, next) {
 async function ensureEntitlements(req) {
   if (req.entitlements) return req.entitlements;
   const tenant = req.tenantRecord || (req.tenantId ? await tenants.get(req.tenantId) : null);
-  req.entitlements = entitlements.entitlementsFor(tenant);
+  req.entitlements = await entitlements.resolveEntitlementsFor(tenant);
   return req.entitlements;
 }
 

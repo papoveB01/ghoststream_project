@@ -19,6 +19,7 @@ const FEATURES = {
   API_TOKENS:           'api_tokens',            // MCP / API tokens
   CALENDLY:             'calendly',              // Calendly auto-booking
   MARKET_MONITORING:    'market_monitoring',     // agentic Market Watch (premium)
+  SUB_ACCOUNTS:         'sub_accounts',          // manage sub-tenant workspaces (Pro/Enterprise)
 };
 
 // "Standard" features (everything except the premium Market Watch). Pro+ tiers
@@ -27,7 +28,7 @@ const ALL = [
   FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS,
   FEATURES.ARENA, FEATURES.CRM, FEATURES.API_TOKENS, FEATURES.CALENDLY,
 ];
-const PREMIUM = [...ALL, FEATURES.MARKET_MONITORING];
+const PREMIUM = [...ALL, FEATURES.MARKET_MONITORING, FEATURES.SUB_ACCOUNTS];
 const CORE = [FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS];
 
 // Metered actions (monthly caps). Keys match FEATURES so caps[meter] is direct.
@@ -61,6 +62,7 @@ const PLANS = {
     blurb: 'Everything in Starter plus CRM, unlimited Arena, Calendly, API access and Market Watch — with higher limits.',
     features: PREMIUM,
     caps: { discovery: 250, competitor_research: 250, engagements: 75, market_monitoring: 500, arena: Infinity },
+    subAccountLimit: 5, // sub-tenant workspaces a Pro account may create
   },
   // Enterprise is custom-priced from a sales inquiry (rep count, expected call
   // volume, etc — see billing.enterprise-inquiry). Caps stay uncapped here so a
@@ -71,12 +73,14 @@ const PLANS = {
     blurb: 'Custom limits, more seats, and onboarding support — tailored to your sales org.',
     features: PREMIUM,
     caps: { discovery: Infinity, competitor_research: Infinity, engagements: Infinity, market_monitoring: Infinity, arena: Infinity },
+    subAccountLimit: null, // custom — set per-account via tenants.max_subtenants (sales)
   },
   internal: {
     key: 'internal', name: 'Internal', selfServe: false,
     blurb: 'Platform/staff tenant — ungated.',
     features: PREMIUM,
     caps: { discovery: Infinity, competitor_research: Infinity, engagements: Infinity, market_monitoring: Infinity, arena: Infinity },
+    subAccountLimit: Infinity,
   },
 };
 
@@ -94,6 +98,18 @@ function priceIdFor(key) {
 function trialDaysFor(key) {
   const p = PLANS[key];
   return p && p.trialDays ? p.trialDays : 0;
+}
+
+// How many sub-tenant workspaces a tenant may create. 0 = the plan doesn't
+// include sub-accounts at all. An explicit per-account override
+// (tenants.max_subtenants, set by sales/superadmin) always wins — that's how
+// Enterprise gets its negotiated limit (and how a Pro account can be bumped).
+function subAccountLimitFor(tenant) {
+  const plan = planFor(tenant && tenant.plan);
+  if (!plan.features.includes(FEATURES.SUB_ACCOUNTS)) return 0;
+  if (plan.subAccountLimit === Infinity) return Infinity;
+  if (tenant && Number.isInteger(tenant.max_subtenants)) return Math.max(0, tenant.max_subtenants);
+  return Number.isInteger(plan.subAccountLimit) ? plan.subAccountLimit : 0;
 }
 
 // JSON can't carry Infinity — render unlimited caps as null for the client.
@@ -122,4 +138,4 @@ function catalog() {
   });
 }
 
-module.exports = { FEATURES, ALL, METERS, PLANS, planFor, priceIdFor, trialDaysFor, catalog, capForJson };
+module.exports = { FEATURES, ALL, METERS, PLANS, planFor, priceIdFor, trialDaysFor, subAccountLimitFor, catalog, capForJson };
