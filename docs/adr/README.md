@@ -9,6 +9,8 @@ monotonically increasing number.
 | #    | Title                                                  | Status   |
 | ---- | ------------------------------------------------------ | -------- |
 | 0001 | [Multi-tenant knowledge isolation](./0001-multi-tenant-knowledge-isolation.md) | Proposed |
+| 0002 | [Direct Microsoft Graph integration](./0002-microsoft-graph-direct.md) | Amended |
+| 0003 | [Subscription feature packaging](./0003-subscription-feature-packaging.md) | Accepted |
 
 ## Template
 

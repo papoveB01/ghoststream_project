@@ -7650,11 +7650,14 @@
     crm: 'CRM integrations',
     api_tokens: 'API / MCP access',
     calendly: 'Calendly auto-booking',
+    market_monitoring: 'Market Watch monitoring',
   };
   const METER_LABELS = {
     discovery: 'Prospect discovery runs',
     competitor_research: 'Competitor research runs',
     engagements: 'Engagements scheduled',
+    market_monitoring: 'Market Watch checks',
+    arena: 'Arena practice sessions',
   };
 
   // Top-of-page banner: trial countdown, or a paywall when inactive.
@@ -7766,10 +7769,13 @@
   }
 
   function renderBillingUsage(b) {
-    const meters = ['discovery', 'competitor_research', 'engagements'];
+    const meters = ['discovery', 'competitor_research', 'engagements', 'market_monitoring', 'arena'];
     $('bill-usage').innerHTML = meters.map((m) => {
-      const used = (b.usage && b.usage[m]) || 0;
       const cap = b.caps ? b.caps[m] : null;
+      const used = (b.usage && b.usage[m]) || 0;
+      // Hide meters the current plan can't use at all (cap 0 and no usage) so a
+      // Starter doesn't see "Market Watch 0/0".
+      if (cap === 0 && !used) return '';
       const capLabel = cap == null ? '∞' : cap;
       const pct = cap == null || cap === 0 ? 0 : Math.min(100, Math.round((used / cap) * 100));
       const over = cap != null && used >= cap;
@@ -7781,15 +7787,38 @@
     }).join('') + '<div class="bill-sub" style="margin-top:10px">Resets on the 1st of each month (UTC).</div>';
   }
 
+  // Features that carry a monthly cap — show the per-plan allowance inline so the
+  // value ladder (25 vs 50 discovery, limited vs unlimited Arena) is visible.
+  const METERED_FEATURES = new Set(['discovery', 'competitor_research', 'engagements', 'market_monitoring', 'arena']);
+  function capBadge(v) { return v == null ? 'unlimited' : `${v}/mo`; }
+
+  // Table-stakes capabilities included on every plan (not gated, so they're not
+  // in the catalog's feature list). Calendar connect is listed because AI-joined
+  // engagements run off the rep's connected calendar.
+  const ALWAYS_INCLUDED = ['Connect Google &amp; Outlook calendars'];
+
   function renderBillingPlans(b, catalog) {
     $('bill-plans').innerHTML = catalog.map((p) => {
       const isCurrent = b.plan === p.key;
-      const feats = (p.features || []).map((f) => `<li>${escapeHtml(FEATURE_LABELS[f] || f)}</li>`).join('');
+      // Enterprise is custom-priced — never surface per-meter caps (or "unlimited")
+      // on its card; volume is set in the sales conversation.
+      const isEnterprise = !!p.contactSales;
+      const gated = (p.features || []).map((f) => {
+        const label = escapeHtml(FEATURE_LABELS[f] || f);
+        // Skip a feature the plan can't actually use (cap 0, e.g. Market Watch on Starter).
+        if (METERED_FEATURES.has(f) && p.caps && p.caps[f] === 0) return '';
+        const cap = (!isEnterprise && METERED_FEATURES.has(f) && p.caps && f in p.caps)
+          ? ` <span class="plan-cap">${capBadge(p.caps[f])}</span>` : '';
+        return `<li>${label}${cap}</li>`;
+      }).join('');
+      const included = ALWAYS_INCLUDED.map((l) => `<li>${l}</li>`).join('');
+      const enterpriseLead = isEnterprise ? '<li>Volume tailored to your team</li>' : '';
+      const feats = enterpriseLead + gated + included;
       let btn;
       if (isCurrent) {
         btn = `<button class="primary-cta" disabled>Current plan</button>`;
       } else if (p.contactSales) {
-        btn = `<a class="kb-secondary-btn" href="mailto:sales@ghoststream.exact-it.net?subject=Enterprise%20plan">Contact sales</a>`;
+        btn = `<button class="kb-secondary-btn" data-contact-sales="1">Contact sales</button>`;
       } else if (p.selfServe) {
         const disabled = (!b.stripeConfigured || !p.hasPrice) ? 'disabled title="Billing not set up yet"' : '';
         btn = `<button class="primary-cta" data-upgrade="${escapeHtml(p.key)}" ${disabled}>Upgrade to ${escapeHtml(p.name)}</button>`;
@@ -7809,6 +7838,116 @@
     $('bill-plans').querySelectorAll('[data-upgrade]').forEach((btn) => {
       btn.addEventListener('click', () => startCheckout(btn.dataset.upgrade, btn));
     });
+    $('bill-plans').querySelectorAll('[data-contact-sales]').forEach((btn) => {
+      btn.addEventListener('click', () => openEnterpriseInquiryModal());
+    });
+  }
+
+  // ── Enterprise "Contact sales" inquiry ─────────────────────────────────────
+  function _enterpriseEsc(e) { if (e.key === 'Escape') closeEnterpriseInquiryModal(); }
+  function closeEnterpriseInquiryModal() {
+    const o = $('enterprise-modal-overlay'); if (o) o.classList.add('hidden');
+  }
+  function openEnterpriseInquiryModal() {
+    let overlay = $('enterprise-modal-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'enterprise-modal-overlay';
+      overlay.className = 'cal-picker-overlay';
+      overlay.innerHTML = `
+        <div class="cal-picker enterprise-modal">
+          <div class="cal-picker-h">
+            <span class="cal-picker-title">Talk to sales — Enterprise</span>
+            <button type="button" class="kb-link-btn cal-picker-close">✕</button>
+          </div>
+          <div class="cal-picker-body">
+            <p class="kb-subtle" style="margin:0 0 14px">Tell us about your team and we'll tailor a plan and price. The numbers below help us scope it — estimates are fine.</p>
+            <div class="kb-form enterprise-form">
+              <div class="field kb-inline-pair">
+                <div><label for="ent-name">Your name</label><input id="ent-name" type="text" maxlength="200"></div>
+                <div><label for="ent-email">Work email *</label><input id="ent-email" type="email" maxlength="320"></div>
+              </div>
+              <div class="field"><label for="ent-company">Company</label><input id="ent-company" type="text" maxlength="200"></div>
+              <div class="field kb-inline-pair">
+                <div><label for="ent-reps">Sales reps (seats)</label><input id="ent-reps" type="number" min="0" inputmode="numeric" placeholder="e.g. 25"></div>
+                <div><label for="ent-engagements">AI-joined calls / month</label><input id="ent-engagements" type="number" min="0" inputmode="numeric" placeholder="e.g. 400"></div>
+              </div>
+              <div class="field kb-inline-pair">
+                <div><label for="ent-watched">Prospects/competitors to monitor</label><input id="ent-watched" type="number" min="0" inputmode="numeric" placeholder="e.g. 50"></div>
+                <div><label for="ent-research">Discovery + competitor runs / month</label><input id="ent-research" type="number" min="0" inputmode="numeric" placeholder="e.g. 200"></div>
+              </div>
+              <div class="field"><label for="ent-crm">CRM in use <span class="kb-subtle">(optional)</span></label>
+                <select id="ent-crm">
+                  <option value="">Select a CRM…</option>
+                  <option value="HubSpot">HubSpot</option>
+                  <option value="Salesforce">Salesforce</option>
+                  <option value="Pipedrive">Pipedrive</option>
+                  <option value="Zoho CRM">Zoho CRM</option>
+                  <option value="Microsoft Dynamics 365">Microsoft Dynamics 365</option>
+                  <option value="Other">Other</option>
+                  <option value="None">None</option>
+                </select>
+              </div>
+              <div class="field"><label for="ent-notes">Anything else? <span class="kb-subtle">(optional)</span></label><textarea id="ent-notes" rows="3" placeholder="Compliance needs, timeline, integrations…"></textarea></div>
+              <div class="teams-modal-actions">
+                <button type="button" class="kb-secondary-btn" id="ent-cancel-btn">Cancel</button>
+                <button type="button" class="primary-cta" id="ent-submit-btn">Send to sales</button>
+              </div>
+              <div class="kb-result hidden" id="ent-modal-result"></div>
+            </div>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) closeEnterpriseInquiryModal(); });
+      overlay.querySelector('.cal-picker-close').addEventListener('click', closeEnterpriseInquiryModal);
+      $('ent-cancel-btn').addEventListener('click', closeEnterpriseInquiryModal);
+      $('ent-submit-btn').addEventListener('click', submitEnterpriseInquiry);
+      document.addEventListener('keydown', _enterpriseEsc);
+    }
+    // Prefill from the signed-in user.
+    if (me && me.name) $('ent-name').value = me.name;
+    if (me && me.email) $('ent-email').value = me.email;
+    $('ent-modal-result').classList.add('hidden');
+    overlay.classList.remove('hidden');
+    setTimeout(() => $('ent-reps').focus(), 50);
+  }
+
+  async function submitEnterpriseInquiry() {
+    const email = $('ent-email').value.trim();
+    const result = $('ent-modal-result');
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      result.textContent = 'Please enter a valid work email.';
+      result.className = 'kb-result error';
+      return;
+    }
+    const btn = $('ent-submit-btn');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      const r = await fetch('/api/billing/enterprise-inquiry', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contactName: $('ent-name').value.trim(),
+          contactEmail: email,
+          companyName: $('ent-company').value.trim(),
+          salesReps: $('ent-reps').value,
+          monthlyEngagements: $('ent-engagements').value,
+          watchedEntities: $('ent-watched').value,
+          monthlyResearchRuns: $('ent-research').value,
+          crm: $('ent-crm').value.trim(),
+          notes: $('ent-notes').value.trim(),
+        }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+      closeEnterpriseInquiryModal();
+      toast('Thanks — our team will be in touch shortly.', 'ok');
+    } catch (err) {
+      result.textContent = `Couldn't send: ${err.message}`;
+      result.className = 'kb-result error';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Send to sales';
+    }
   }
 
   async function startCheckout(plan, btn) {

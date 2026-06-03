@@ -23,6 +23,7 @@ const microsoft = require('./microsoft');
 const email     = require('./email');
 const ics       = require('./ics');
 const db        = require('./db');
+const gating    = require('./gating');
 
 const APP_BASE_URL =
   process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net';
@@ -1010,7 +1011,7 @@ router.get('/calendar/events', async (req, res, next) => {
 // Multi-tenant: each tenant's webhook is registered at a per-tenant callback
 // URL (/webhooks/calendly/<routeToken>) so inbound bookings route back to the
 // connecting tenant. No Founders-only restriction.
-router.get('/calendly/connect', async (req, res, next) => {
+router.get('/calendly/connect', gating.requireFeature('calendly'), async (req, res, next) => {
   try {
     if (!isConfigured('calendly')) {
       return res.status(503).json({ error: 'Calendly not configured — set CALENDLY_CLIENT_ID + CALENDLY_CLIENT_SECRET + CALENDLY_WEBHOOK_SIGNING_KEY.', code: 'NOT_CONFIGURED' });
@@ -1043,7 +1044,7 @@ router.get('/calendly/events', async (req, res, next) => {
 // webhook for an already-connected account and refresh the stored status.
 // Recovers the case where registration failed at connect time (most commonly:
 // the webhooks:write scope was granted to the OAuth app after connecting).
-router.post('/calendly/verify', async (req, res, next) => {
+router.post('/calendly/verify', gating.requireFeature('calendly'), async (req, res, next) => {
   try {
     if (!isConfigured('calendly')) {
       return res.status(503).json({ error: 'Calendly not configured.', code: 'NOT_CONFIGURED' });

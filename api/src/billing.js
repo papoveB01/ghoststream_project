@@ -10,10 +10,19 @@
 // checkout/portal return 503 so the UI can show "billing not set up yet".
 
 const express = require('express');
+const db = require('./db');
+const email = require('./email');
 const tenants = require('./tenants');
 const plans = require('./plans');
 const usage = require('./usage');
 const entitlements = require('./entitlements');
+
+// Where Enterprise "Contact sales" inquiries are emailed. Falls back to the
+// public sales alias if unset. ENTERPRISE_INQUIRY_NOTIFY is an optional
+// comma-separated list of extra recipients copied on every inquiry.
+const SALES_INQUIRY_EMAIL = process.env.SALES_INQUIRY_EMAIL || 'sales@ghoststream.exact-it.net';
+const EXTRA_INQUIRY_NOTIFY = (process.env.ENTERPRISE_INQUIRY_NOTIFY || 'pbombando@gmail.com')
+  .split(',').map((s) => s.trim()).filter(Boolean);
 
 const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net').replace(/\/+$/, '');
 
@@ -41,6 +50,8 @@ router.get('/', async (req, res, next) => {
           discovery: used.discovery || 0,
           competitor_research: used.competitor_research || 0,
           engagements: used.engagements || 0,
+          market_monitoring: used.market_monitoring || 0,
+          arena: used.arena || 0,
         },
         stripeConfigured: isConfigured(),
         manageable: !!(tenant && tenant.stripe_subscription_id),
@@ -148,6 +159,130 @@ router.post('/portal', async (req, res, next) => {
       ...(process.env.STRIPE_PORTAL_CONFIG_ID ? { configuration: process.env.STRIPE_PORTAL_CONFIG_ID } : {}),
     });
     res.json({ url: portal.url });
+  } catch (err) { next(err); }
+});
+
+// POST /billing/enterprise-inquiry — capture a "Contact sales" lead from the
+// Enterprise plan card. Persists the pricing signals (rep count, expected call
+// volume, monitored entities, CRM) and best-effort emails sales. The lead is
+// stored first so a failed/unconfigured email never loses it.
+router.post('/enterprise-inquiry', async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const contactEmail = String(b.contactEmail || '').trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contactEmail)) {
+      return res.status(400).json({ error: 'A valid work email is required.' });
+    }
+    // Coerce the numeric pricing signals; blanks become null, negatives clamp to 0.
+    const num = (v) => {
+      if (v === '' || v == null) return null;
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) ? Math.max(0, n) : null;
+    };
+    const str = (v, max) => { const s = String(v || '').trim(); return s ? s.slice(0, max) : null; };
+
+    const row = {
+      tenant_id: req.tenantId,
+      user_id: (req.user && req.user.sub) || null,
+      contact_name: str(b.contactName, 200),
+      contact_email: contactEmail.slice(0, 320),
+      company_name: str(b.companyName, 200),
+      sales_reps: num(b.salesReps),
+      monthly_engagements: num(b.monthlyEngagements),
+      watched_entities: num(b.watchedEntities),
+      monthly_research_runs: num(b.monthlyResearchRuns),
+      crm: str(b.crm, 120),
+      notes: str(b.notes, 4000),
+    };
+
+    const ins = await db.query(
+      `INSERT INTO enterprise_inquiries
+         (tenant_id, user_id, contact_name, contact_email, company_name,
+          sales_reps, monthly_engagements, watched_entities, monthly_research_runs, crm, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       RETURNING id, created_at`,
+      [row.tenant_id, row.user_id, row.contact_name, row.contact_email, row.company_name,
+       row.sales_reps, row.monthly_engagements, row.watched_entities, row.monthly_research_runs, row.crm, row.notes]
+    );
+    const inquiryId = ins.rows[0].id;
+
+    // Best-effort notification to sales — never block the lead on email.
+    if (email.isConfigured()) {
+      const tenant = await tenants.get(req.tenantId).catch(() => null);
+      const esc = (v) => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const fmt = (v) => (v == null ? '—' : String(v));
+      const companyName = row.company_name || (tenant && tenant.name) || '—';
+
+      // Pricing signals → the table rows. Numbers are the cost/price drivers.
+      const lines = [
+        ['Company',               companyName],
+        ['Contact',               `${row.contact_name || '—'} <${row.contact_email}>`],
+        ['Sales reps (seats)',    fmt(row.sales_reps)],
+        ['Expected calls / mo',   fmt(row.monthly_engagements)],
+        ['Watched entities',      fmt(row.watched_entities)],
+        ['Research runs / mo',    fmt(row.monthly_research_runs)],
+        ['CRM',                   row.crm || '—'],
+        ['Tenant id',             row.tenant_id],
+      ];
+
+      // Branded HTML email — table-based + inline styles so it renders in every
+      // mail client (Gmail/Outlook strip <style> and flex/grid).
+      const rowsHtml = lines.map(([k, v], i) => `
+        <tr style="background:${i % 2 ? '#ffffff' : '#f8fafc'}">
+          <td style="padding:10px 16px;color:#64748b;font-size:13px;white-space:nowrap;vertical-align:top">${esc(k)}</td>
+          <td style="padding:10px 16px;color:#0f172a;font-size:14px;font-weight:600">${esc(v)}</td>
+        </tr>`).join('');
+      const notesHtml = row.notes ? `
+        <tr><td colspan="2" style="padding:16px">
+          <div style="color:#64748b;font-size:13px;margin-bottom:4px">Notes</div>
+          <div style="color:#0f172a;font-size:14px;line-height:1.5">${esc(row.notes).replace(/\n/g, '<br>')}</div>
+        </td></tr>` : '';
+
+      const html = `
+<div style="background:#f1f5f9;padding:24px 0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08)">
+      <tr><td style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:24px 28px">
+        <div style="color:#c7d2fe;font-size:12px;letter-spacing:.08em;text-transform:uppercase;font-weight:700">GhostStream · Sales</div>
+        <div style="color:#ffffff;font-size:20px;font-weight:700;margin-top:4px">New Enterprise inquiry</div>
+        <div style="color:#e0e7ff;font-size:14px;margin-top:2px">${esc(companyName)} · inquiry #${inquiryId}</div>
+      </td></tr>
+      <tr><td style="padding:8px 28px 20px">
+        <p style="color:#334155;font-size:14px;line-height:1.5">A prospect asked to talk to sales about an Enterprise plan. The volume signals below are what you need to scope a quote.</p>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+          ${rowsHtml}
+          ${notesHtml}
+        </table>
+        <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:20px"><tr><td style="border-radius:8px;background:#4f46e5">
+          <a href="mailto:${esc(row.contact_email)}?subject=${encodeURIComponent('Re: GhostStream Enterprise — ' + companyName)}" style="display:inline-block;padding:11px 22px;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none">Reply to ${esc(row.contact_name || row.contact_email)} →</a>
+        </td></tr></table>
+      </td></tr>
+      <tr><td style="padding:16px 28px;border-top:1px solid #f1f5f9;color:#94a3b8;font-size:12px">
+        Sent automatically by GhostStream when the Enterprise “Contact sales” form was submitted. Reply directly to reach the prospect.
+      </td></tr>
+    </table>
+  </td></tr></table>
+</div>`;
+      const text = `New Enterprise inquiry (#${inquiryId})\n\n`
+        + lines.map(([k, v]) => `${k}: ${v}`).join('\n')
+        + (row.notes ? `\n\nNotes:\n${row.notes}` : '')
+        + `\n\nReply to: ${row.contact_email}`;
+
+      const recipients = [...new Set([SALES_INQUIRY_EMAIL, ...EXTRA_INQUIRY_NOTIFY])];
+      try {
+        await email.send({
+          to: recipients,
+          replyTo: row.contact_email,
+          subject: `Enterprise inquiry — ${companyName === '—' ? row.contact_email : companyName}`,
+          html, text,
+          categories: ['enterprise-inquiry'],
+        });
+      } catch (e) {
+        console.warn('[enterprise-inquiry] sales email failed (lead stored):', e.message);
+      }
+    }
+
+    res.status(201).json({ ok: true, id: inquiryId });
   } catch (err) { next(err); }
 });
 

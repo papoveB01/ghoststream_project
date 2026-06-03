@@ -16,6 +16,7 @@ const history = require('./arenaHistory');
 const userModel = require('./users');
 const tenants = require('./tenants');
 const entitlements = require('./entitlements');
+const usage = require('./usage');
 
 const MAX_TURNS = 24;            // 12 rep ↔ prospect rounds
 const MAX_MESSAGE_LEN = 4000;
@@ -168,6 +169,9 @@ async function startSession({ portalId, persona = DEFAULT_PERSONA, repUserId = n
   if (!entitlements.hasFeature(ent, 'arena')) {
     const err = new Error('Arena practice is a Pro feature. Ask your admin to upgrade.'); err.status = 402; throw err;
   }
+  // Meter the session against the plan's monthly Arena cap (Infinity = no-op for
+  // Pro+; Starter gets a limited allowance). consume() throws 402 at the cap.
+  await usage.consume(tenantId, 'arena', ent.caps ? ent.caps.arena : 0);
 
   const cacheRecord = await ensurePersonaCache(persona);
 

@@ -322,6 +322,7 @@ body {
 .plan-feats { list-style: none; margin: 0 0 16px; padding: 0; font-size: 13px; color: var(--text-2); flex: 1; }
 .plan-feats li { padding: 4px 0 4px 20px; position: relative; }
 .plan-feats li::before { content: '✓'; position: absolute; left: 0; color: var(--success); font-weight: 700; }
+.plan-cap { color: var(--muted); font-size: 12px; font-weight: 600; }
 .plan-cta { margin-top: auto; }
 .plan-cta .primary-cta, .plan-cta .kb-secondary-btn { width: 100%; text-align: center; box-sizing: border-box; display: inline-block; }
 .user-avatar {
@@ -1002,6 +1003,26 @@ details.schedule-advanced > .schedule-advanced-body {
 }
 .teams-form textarea { resize: vertical; }
 .teams-form .kb-inline-pair { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
+
+/* Enterprise "Contact sales" inquiry modal — mirrors the teams form styling. */
+.enterprise-modal { max-width: 560px; }
+.enterprise-form .field { margin-bottom: 14px; }
+.enterprise-form label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.enterprise-form input[type="text"],
+.enterprise-form input[type="email"],
+.enterprise-form input[type="number"],
+.enterprise-form select,
+.enterprise-form textarea {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font: inherit;
+  background: #fff;
+  box-sizing: border-box;
+}
+.enterprise-form textarea { resize: vertical; }
+.enterprise-form .kb-inline-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .teams-chips {
   display: flex;
   flex-wrap: wrap;

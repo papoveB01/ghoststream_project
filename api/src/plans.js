@@ -31,39 +31,46 @@ const PREMIUM = [...ALL, FEATURES.MARKET_MONITORING];
 const CORE = [FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS];
 
 // Metered actions (monthly caps). Keys match FEATURES so caps[meter] is direct.
-const METERS = [FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS, FEATURES.MARKET_MONITORING];
+const METERS = [FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS, FEATURES.MARKET_MONITORING, FEATURES.ARENA];
 
 const PLANS = {
+  // Caps below follow ADR-0003 "Option B": generous limits on the cheap meters
+  // (discovery/competitor/arena/market — near-zero marginal cost) and disciplined
+  // caps on the expensive, inelastic engagement meter (a ~$1.20 Recall bot each).
   trial: {
     key: 'trial', name: 'Trial', selfServe: false,
-    blurb: '14-day free trial — full Pro features, Starter usage caps.',
+    blurb: '14-day free trial — explore the Pro feature set with a small monthly allowance.',
     features: ALL,
-    caps: { discovery: 10, competitor_research: 10, engagements: 20, market_monitoring: 0 },
+    caps: { discovery: 15, competitor_research: 15, engagements: 5, market_monitoring: 0, arena: 5 },
   },
   starter: {
     key: 'starter', name: 'Starter', selfServe: true, priceEnv: 'STRIPE_PRICE_STARTER', monthly: 49,
     trialDays: parseInt(process.env.STARTER_TRIAL_DAYS || '14', 10), // free trial lives on Starter only
-    blurb: 'Foundation, prospect discovery, competitors and engagements for a small team.',
-    features: CORE,
-    caps: { discovery: 10, competitor_research: 10, engagements: 20, market_monitoring: 0 },
+    blurb: 'Foundation, prospect discovery, competitors, engagements and light Arena practice for a small team.',
+    features: [...CORE, FEATURES.ARENA], // CORE + a limited Arena allowance (capped below)
+    caps: { discovery: 75, competitor_research: 75, engagements: 15, market_monitoring: 0, arena: 40 },
   },
   pro: {
     key: 'pro', name: 'Pro', selfServe: true, priceEnv: 'STRIPE_PRICE_PRO', monthly: 149,
-    blurb: 'Everything in Starter plus CRM, Arena practice, Calendly, API access and Market Watch — with higher limits.',
+    blurb: 'Everything in Starter plus CRM, unlimited Arena, Calendly, API access and Market Watch — with higher limits.',
     features: PREMIUM,
-    caps: { discovery: 50, competitor_research: 50, engagements: 100, market_monitoring: 150 },
+    caps: { discovery: 250, competitor_research: 250, engagements: 75, market_monitoring: 500, arena: Infinity },
   },
+  // Enterprise is custom-priced from a sales inquiry (rep count, expected call
+  // volume, etc — see billing.enterprise-inquiry). Caps stay uncapped here so a
+  // contracted account is never hard-blocked mid-month; the price is set to the
+  // negotiated volume. The Billing UI shows "Custom", never "unlimited".
   enterprise: {
     key: 'enterprise', name: 'Enterprise', selfServe: false, contactSales: true,
-    blurb: 'Custom limits, more seats, and onboarding support. Talk to us.',
+    blurb: 'Custom limits, more seats, and onboarding support — tailored to your sales org.',
     features: PREMIUM,
-    caps: { discovery: Infinity, competitor_research: Infinity, engagements: Infinity, market_monitoring: Infinity },
+    caps: { discovery: Infinity, competitor_research: Infinity, engagements: Infinity, market_monitoring: Infinity, arena: Infinity },
   },
   internal: {
     key: 'internal', name: 'Internal', selfServe: false,
     blurb: 'Platform/staff tenant — ungated.',
     features: PREMIUM,
-    caps: { discovery: Infinity, competitor_research: Infinity, engagements: Infinity, market_monitoring: Infinity },
+    caps: { discovery: Infinity, competitor_research: Infinity, engagements: Infinity, market_monitoring: Infinity, arena: Infinity },
   },
 };
 
@@ -101,6 +108,8 @@ function catalog() {
         discovery: capForJson(p.caps.discovery),
         competitor_research: capForJson(p.caps.competitor_research),
         engagements: capForJson(p.caps.engagements),
+        market_monitoring: capForJson(p.caps.market_monitoring),
+        arena: capForJson(p.caps.arena),
       },
     };
   });

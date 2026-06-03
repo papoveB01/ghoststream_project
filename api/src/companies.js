@@ -211,7 +211,7 @@ router.post('/', async (req, res, next) => {
 // POST /companies/discover { region, industry } — web-search for potential
 // prospects (companies showing a buying signal that fits OUR products), ranked by
 // priority. Read-only research (no creation); the rep adds the relevant ones.
-router.post('/discover', gating.requireCapacity('discovery'), async (req, res, next) => {
+router.post('/discover', gating.requireFeature('discovery'), gating.requireCapacity('discovery'), async (req, res, next) => {
   try {
     if (!web.isConfigured() && !web.isBraveConfigured()) {
       return res.status(503).json({ error: 'web search is not configured on this workspace' });

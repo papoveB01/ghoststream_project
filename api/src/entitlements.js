@@ -67,6 +67,7 @@ function toJson(ent) {
       competitor_research: plans.capForJson(ent.caps.competitor_research),
       engagements: plans.capForJson(ent.caps.engagements),
       market_monitoring: plans.capForJson(ent.caps.market_monitoring),
+      arena: plans.capForJson(ent.caps.arena),
     },
     daysLeft: ent.daysLeft,
     currentPeriodEnd: ent.currentPeriodEnd || null,

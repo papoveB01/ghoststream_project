@@ -852,7 +852,7 @@ router.post('/competitors/:id/discover-products', async (req, res, next) => {
 // ingest, no creation): returns candidates; the rep adds the relevant ones one
 // by one via POST /portfolio/competitors. Existing competitors are flagged.
 // Body: { region?: string }
-router.post('/competitors/discover', gating.requireCapacity('competitor_research'), async (req, res, next) => {
+router.post('/competitors/discover', gating.requireFeature('competitor_research'), gating.requireCapacity('competitor_research'), async (req, res, next) => {
   try {
     if (!web.isConfigured() && !web.isBraveConfigured()) {
       return res.status(503).json({ error: 'web search is not configured on this workspace' });
