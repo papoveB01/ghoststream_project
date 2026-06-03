@@ -129,7 +129,7 @@ async function watchTick() {
     // The per-tenant entitlement/active re-check lives inside runTenant.
     const due = (await db.query(
       `SELECT t.id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end,
-              p.watch_frequency, p.watch_day, p.watch_email_digest, true AS watch_enabled
+              p.watch_frequency, p.watch_day, p.watch_timezone, p.watch_email_digest, true AS watch_enabled
          FROM tenant_profiles p
          JOIN tenants t ON t.id = p.tenant_id
         WHERE p.watch_enabled = true
@@ -145,7 +145,7 @@ async function watchTick() {
       // re-sets it precisely when it completes.
       await db.query(
         `UPDATE tenant_profiles SET watch_next_run_at = $2 WHERE tenant_id = $1`,
-        [t.id, watch.nextRunISO(t.watch_frequency, t.watch_day)]
+        [t.id, watch.nextRunISO(t.watch_frequency, t.watch_day, t.watch_timezone)]
       ).catch(() => {});
       // Fire-and-forget — never block the tick on web/LLM work.
       watch.runTenant(t).catch((err) => console.error(`[scheduler] market watch failed for tenant ${t.id}: ${(err && err.message) || err}`));

@@ -172,35 +172,77 @@ async function runEntity(tenantId, scope, subject) {
   return inserted;
 }
 
-// Next run timestamp for a cadence + chosen day, landing at RUN_HOUR UTC:
+// Schedule runs at 08:00 in the tenant's OWN timezone (IANA name; 'UTC' = legacy).
+const RUN_HOUR = 8;
+
+function isValidTz(tz) {
+  if (!tz || typeof tz !== 'string') return false;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; }
+}
+
+// Offset (ms) of `tz` at `instant`, i.e. localWallClock - UTC.
+function tzOffsetMs(instant, tz) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const p = {};
+  for (const part of dtf.formatToParts(instant)) p[part.type] = part.value;
+  const asIfUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return asIfUTC - instant.getTime();
+}
+
+// A wall-clock (y, m=1..12, d, h) in `tz` → the corresponding UTC Date.
+function zonedWallToUtc(y, m, d, h, tz) {
+  const guess = Date.UTC(y, m - 1, d, h, 0, 0);
+  const off = tzOffsetMs(new Date(guess), tz);
+  return new Date(guess - off);
+}
+
+// Current wall-clock in `tz` as plain fields (weekday 0=Sun … 6=Sat).
+function wallNow(tz) {
+  const now = new Date();
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hourCycle: 'h23', weekday: 'short',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+  const p = {};
+  for (const part of dtf.formatToParts(now)) p[part.type] = part.value;
+  const wd = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[p.weekday];
+  return { now, year: +p.year, month: +p.month, day: +p.day, weekday: wd };
+}
+
+// Next run timestamp (ISO) for a cadence + chosen day, at RUN_HOUR local time:
 //   daily   → tomorrow
 //   weekly  → next occurrence of day-of-week `day` (0=Sun … 6=Sat)
 //   monthly → next occurrence of day-of-month `day` (1..28)
-const RUN_HOUR_UTC = 8;
-function nextRunISO(frequency, day) {
+function nextRunISO(frequency, day, timezone) {
+  const tz = isValidTz(timezone) ? timezone : 'UTC';
   const freq = String(frequency || 'weekly').toLowerCase();
-  const now = new Date();
+  const w = wallNow(tz);
+  // A UTC Date used purely as a calendar holder for y/m/d arithmetic.
+  const cal = new Date(Date.UTC(w.year, w.month - 1, w.day));
+  const at = () => zonedWallToUtc(cal.getUTCFullYear(), cal.getUTCMonth() + 1, cal.getUTCDate(), RUN_HOUR, tz);
+
   if (freq === 'daily') {
-    const d = new Date(now);
-    d.setUTCDate(d.getUTCDate() + 1);
-    d.setUTCHours(RUN_HOUR_UTC, 0, 0, 0);
-    return d.toISOString();
+    cal.setUTCDate(cal.getUTCDate() + 1);
+    return at().toISOString();
   }
   if (freq === 'monthly') {
     const dom = Math.max(1, Math.min(28, parseInt(day, 10) || 1));
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), dom, RUN_HOUR_UTC, 0, 0, 0));
-    if (d <= now) d.setUTCMonth(d.getUTCMonth() + 1);
-    return d.toISOString();
+    let y = w.year, m = w.month;
+    let cand = zonedWallToUtc(y, m, dom, RUN_HOUR, tz);
+    if (cand <= w.now) { m += 1; if (m > 12) { m = 1; y += 1; } cand = zonedWallToUtc(y, m, dom, RUN_HOUR, tz); }
+    return cand.toISOString();
   }
   // weekly
   let dow = parseInt(day, 10); if (!Number.isInteger(dow)) dow = 1; // default Monday
   dow = Math.max(0, Math.min(6, dow));
-  const d = new Date(now);
-  d.setUTCHours(RUN_HOUR_UTC, 0, 0, 0);
-  let delta = (dow - d.getUTCDay() + 7) % 7;
-  if (delta === 0 && d <= now) delta = 7; // today's slot already passed → next week
-  d.setUTCDate(d.getUTCDate() + delta);
-  return d.toISOString();
+  const delta = (dow - w.weekday + 7) % 7;
+  cal.setUTCDate(cal.getUTCDate() + delta);
+  let cand = at();
+  if (delta === 0 && cand <= w.now) { cal.setUTCDate(cal.getUTCDate() + 7); cand = at(); }
+  return cand.toISOString();
 }
 
 // Run the watch for every watched entity of a tenant. `tenant` is a row with at
@@ -209,7 +251,7 @@ async function runTenant(tenant) {
   const ent = entitlements.entitlementsFor(tenant);
   const advance = async () => db.query(
     `UPDATE tenant_profiles SET watch_last_run_at = now(), watch_next_run_at = $2 WHERE tenant_id = $1`,
-    [tenant.id, nextRunISO(tenant.watch_frequency, tenant.watch_day)]
+    [tenant.id, nextRunISO(tenant.watch_frequency, tenant.watch_day, tenant.watch_timezone)]
   ).catch(() => {});
 
   if (!ent.active || !entitlements.hasFeature(ent, plans.FEATURES.MARKET_MONITORING)) { await advance(); return { skipped: 'not_entitled' }; }
@@ -330,12 +372,12 @@ router.post('/findings/:id/accept', async (req, res, next) => {
 router.get('/config', async (req, res, next) => {
   try {
     const r = await db.query(
-      `SELECT watch_enabled, watch_frequency, watch_day, watch_email_digest, watch_last_run_at, watch_next_run_at FROM tenant_profiles WHERE tenant_id = $1`,
+      `SELECT watch_enabled, watch_frequency, watch_day, watch_timezone, watch_email_digest, watch_last_run_at, watch_next_run_at FROM tenant_profiles WHERE tenant_id = $1`,
       [req.tenantId]
     );
     const ent = req.entitlements;
     res.json({
-      config: r.rows[0] || { watch_enabled: false, watch_frequency: 'weekly', watch_day: 1, watch_email_digest: true, watch_last_run_at: null, watch_next_run_at: null },
+      config: r.rows[0] || { watch_enabled: false, watch_frequency: 'weekly', watch_day: 1, watch_timezone: 'UTC', watch_email_digest: true, watch_last_run_at: null, watch_next_run_at: null },
       featureAvailable: !!(ent && Array.isArray(ent.features) && ent.features.includes(plans.FEATURES.MARKET_MONITORING)),
     });
   } catch (err) { next(err); }
@@ -360,14 +402,18 @@ router.patch('/config', auth.requireRole('owner'), gating.requireFeature(plans.F
     // Merge incoming fields over the current row, then recompute the schedule
     // in one place — so changing the day/frequency re-schedules even when the
     // enable toggle isn't touched.
+    if (b.timezone !== undefined && !isValidTz(String(b.timezone))) {
+      return res.status(400).json({ error: 'timezone must be a valid IANA name (e.g. America/New_York)' });
+    }
     const cur = (await db.query(
-      `SELECT watch_enabled, watch_frequency, watch_day, watch_email_digest FROM tenant_profiles WHERE tenant_id = $1`,
+      `SELECT watch_enabled, watch_frequency, watch_day, watch_timezone, watch_email_digest FROM tenant_profiles WHERE tenant_id = $1`,
       [req.tenantId]
-    )).rows[0] || { watch_enabled: false, watch_frequency: 'weekly', watch_day: 1, watch_email_digest: true };
+    )).rows[0] || { watch_enabled: false, watch_frequency: 'weekly', watch_day: 1, watch_timezone: 'UTC', watch_email_digest: true };
 
     const enabled = b.enabled !== undefined ? !!b.enabled : cur.watch_enabled;
     const freq = b.frequency !== undefined ? String(b.frequency).toLowerCase() : cur.watch_frequency;
     const digest = b.emailDigest !== undefined ? !!b.emailDigest : cur.watch_email_digest;
+    const tz = b.timezone !== undefined ? String(b.timezone) : (cur.watch_timezone || 'UTC');
     let day = cur.watch_day;
     if (b.day !== undefined) {
       day = normalizeWatchDay(freq, b.day);
@@ -378,19 +424,20 @@ router.patch('/config', auth.requireRole('owner'), gating.requireFeature(plans.F
       const reuse = normalizeWatchDay(freq, cur.watch_day);
       day = reuse === null ? (freq === 'monthly' ? 1 : 1) : reuse;
     }
-    const nextRun = enabled ? nextRunISO(freq, day) : null;
+    const nextRun = enabled ? nextRunISO(freq, day, tz) : null;
     const r = await db.query(
-      `INSERT INTO tenant_profiles (tenant_id, watch_enabled, watch_frequency, watch_day, watch_email_digest, watch_next_run_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, now())
+      `INSERT INTO tenant_profiles (tenant_id, watch_enabled, watch_frequency, watch_day, watch_timezone, watch_email_digest, watch_next_run_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, now())
        ON CONFLICT (tenant_id) DO UPDATE SET
             watch_enabled      = $2,
             watch_frequency    = $3,
             watch_day          = $4,
-            watch_email_digest = $5,
-            watch_next_run_at  = $6,
+            watch_timezone     = $5,
+            watch_email_digest = $6,
+            watch_next_run_at  = $7,
             updated_at = now()
-       RETURNING watch_enabled, watch_frequency, watch_day, watch_email_digest, watch_last_run_at, watch_next_run_at`,
-      [req.tenantId, enabled, freq, day, digest, nextRun]
+       RETURNING watch_enabled, watch_frequency, watch_day, watch_timezone, watch_email_digest, watch_last_run_at, watch_next_run_at`,
+      [req.tenantId, enabled, freq, day, tz, digest, nextRun]
     );
     res.json({ config: r.rows[0] });
   } catch (err) { next(err); }
@@ -402,7 +449,8 @@ router.post('/run', auth.requireRole('owner'), gating.requireFeature(plans.FEATU
     const t = (await db.query(
       `SELECT t.id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end,
               COALESCE(p.watch_enabled,false) AS watch_enabled, COALESCE(p.watch_frequency,'weekly') AS watch_frequency,
-              COALESCE(p.watch_day,1) AS watch_day, COALESCE(p.watch_email_digest,true) AS watch_email_digest
+              COALESCE(p.watch_day,1) AS watch_day, COALESCE(p.watch_timezone,'UTC') AS watch_timezone,
+              COALESCE(p.watch_email_digest,true) AS watch_email_digest
          FROM tenants t LEFT JOIN tenant_profiles p ON p.tenant_id = t.id WHERE t.id = $1`,
       [req.tenantId]
     )).rows[0];

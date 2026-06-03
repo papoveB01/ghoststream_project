@@ -7152,6 +7152,29 @@
   const WATCH_WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const ordinal = (n) => { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
 
+  // The browser's IANA timezone (e.g. "America/New_York"), best-effort.
+  function browserTz() {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; }
+  }
+
+  // <option> list for the timezone picker. Uses the full IANA set when the
+  // browser exposes it (modern Chrome/FF/Safari), else a curated fallback.
+  const WATCH_TZ_FALLBACK = [
+    'UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+    'America/Sao_Paulo', 'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Madrid',
+    'Africa/Lagos', 'Africa/Johannesburg', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore',
+    'Asia/Shanghai', 'Asia/Tokyo', 'Australia/Sydney',
+  ];
+  function watchTzOptions(selected) {
+    let zones;
+    try { zones = (Intl.supportedValuesOf && Intl.supportedValuesOf('timeZone')) || WATCH_TZ_FALLBACK; }
+    catch { zones = WATCH_TZ_FALLBACK; }
+    // Ensure the saved value (and UTC) are present even if not in the list.
+    if (selected && !zones.includes(selected)) zones = [selected, ...zones];
+    if (!zones.includes('UTC')) zones = ['UTC', ...zones];
+    return zones.map((z) => `<option value="${escapeHtml(z)}" ${z === selected ? 'selected' : ''}>${escapeHtml(z.replace(/_/g, ' '))}</option>`).join('');
+  }
+
   // <option> list for the day picker, keyed to the cadence.
   function watchDayOptions(freq, selected) {
     if (freq === 'weekly') {
@@ -7215,6 +7238,9 @@
     const enabled = !!cfg.watch_enabled;
     const freq = String(cfg.watch_frequency || 'weekly');
     const day = cfg.watch_day == null ? 1 : Number(cfg.watch_day);
+    // Default the picker to the tenant's saved tz; if it's still the 'UTC'
+    // default (never set), pre-select the browser's tz for a better first run.
+    const tz = (cfg.watch_timezone && cfg.watch_timezone !== 'UTC') ? cfg.watch_timezone : browserTz();
     const next = cfg.watch_next_run_at ? new Date(cfg.watch_next_run_at).toLocaleString() : null;
     const last = cfg.watch_last_run_at ? new Date(cfg.watch_last_run_at).toLocaleString() : null;
     host.innerHTML = `
@@ -7235,7 +7261,11 @@
             <span id="watch-day-label">${freq === 'monthly' ? 'On day' : 'On'}</span>
             <select id="watch-day">${watchDayOptions(freq, day)}</select>
           </label>
+          <label class="watch-field watch-tz-field">Timezone
+            <select id="watch-timezone">${watchTzOptions(tz)}</select>
+          </label>
         </div>
+        <div class="watch-meta kb-subtle">Runs at 8:00 AM in the selected timezone.</div>
         <label class="watch-row">
           <input type="checkbox" id="watch-email-digest" ${cfg.watch_email_digest === false ? '' : 'checked'}>
           <span>Email me a digest when new signals are found</span>
@@ -7272,6 +7302,7 @@
           enabled: $('watch-enabled').checked,
           frequency: fr,
           emailDigest: $('watch-email-digest').checked,
+          timezone: $('watch-timezone').value,
         };
         if (fr !== 'daily') payload.day = parseInt($('watch-day').value, 10);
         const out = await fetchJson('/api/watch/config', {
