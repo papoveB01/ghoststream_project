@@ -82,7 +82,7 @@ img { max-width: 100%; display: block; }
 
 /* ---------- hero ---------- */
 .hero { padding: 84px 0 64px; border-bottom: 1px solid var(--line); }
-.hero-grid { display: grid; grid-template-columns: 1.05fr 1fr; gap: 48px; align-items: center; }
+.hero-grid { display: grid; grid-template-columns: 1fr 1.2fr; gap: 48px; align-items: center; }
 .hero-pill {
   display: inline-flex; align-items: center; gap: 9px; font-family: var(--font);
   font-size: 12.5px; letter-spacing: .04em; font-weight: 500;
@@ -105,7 +105,7 @@ img { max-width: 100%; display: block; }
 .frame-bar { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
 .frame-bar .tick { width: 7px; height: 7px; border: 1px solid var(--line-2); border-radius: 2px; }
 .frame-bar .grow { flex: 1; }
-.hero-frame img { width: 100%; aspect-ratio: 1376 / 768; object-fit: cover; }
+.hero-frame img { display: block; width: 100%; height: auto; }
 .frame-foot { display: flex; gap: 16px; padding: 10px 14px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 11px; color: var(--faint); }
 .frame-foot .on { color: var(--signal-ink); }
 
