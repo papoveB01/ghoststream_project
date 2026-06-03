@@ -7775,7 +7775,9 @@
       ? `<span class="pill pill-ok">${escapeHtml(b.status || 'ACTIVE')}</span>`
       : `<span class="pill pill-warn">${escapeHtml(b.status || 'INACTIVE')}</span>`;
     let line2 = '';
-    if (b.status === 'TRIAL' && b.daysLeft != null) {
+    if (b.cancelAtPeriodEnd && b.currentPeriodEnd) {
+      line2 = `Your ${b.planName || 'paid'} plan ends ${fmtDate(b.currentPeriodEnd)} — you'll move to the Free plan then.`;
+    } else if (b.status === 'TRIAL' && b.daysLeft != null) {
       line2 = `${b.daysLeft} day${b.daysLeft === 1 ? '' : 's'} left in your free trial.`;
     } else if (b.currentPeriodEnd) {
       line2 = `Renews ${fmtDate(b.currentPeriodEnd)}.`;
@@ -7784,16 +7786,28 @@
     }
     const manageBtn = b.manageable
       ? `<button class="kb-secondary-btn" id="bill-manage-btn">Manage billing</button>` : '';
+    // Cancel/resume only apply to a live paid subscription (b.manageable).
+    let cancelBtn = '';
+    if (b.manageable) {
+      cancelBtn = b.cancelAtPeriodEnd
+        ? `<button class="primary-cta" id="bill-resume-btn">Resume plan</button>`
+        : `<button class="kb-danger-btn" id="bill-cancel-btn">Cancel plan</button>`;
+    }
     $('bill-summary').innerHTML = `
       <div class="bill-summary-row">
         <div>
           <div class="bill-plan-name">${escapeHtml(b.planName || '—')} plan ${statusPill}</div>
-          ${line2 ? `<div class="bill-sub">${escapeHtml(line2)}</div>` : ''}
+          ${line2 ? `<div class="bill-sub${b.cancelAtPeriodEnd ? ' bill-sub-warn' : ''}">${escapeHtml(line2)}</div>` : ''}
         </div>
-        <div class="bill-summary-actions">${manageBtn}</div>
+        <div class="bill-summary-actions">${manageBtn}${cancelBtn}</div>
       </div>`;
     if (b.manageable) {
       $('bill-manage-btn').addEventListener('click', () => openBillingPortal($('bill-manage-btn')));
+      if (b.cancelAtPeriodEnd) {
+        $('bill-resume-btn').addEventListener('click', () => resumeSubscription($('bill-resume-btn')));
+      } else {
+        $('bill-cancel-btn').addEventListener('click', () => openCancelModal(b));
+      }
     }
   }
 
@@ -8116,6 +8130,160 @@
     } catch (err) {
       toast(`Couldn't open billing portal: ${err.message}`, 'warn');
       if (btn) { btn.disabled = false; btn.textContent = 'Manage billing'; }
+    }
+  }
+
+  async function resumeSubscription(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Resuming…'; }
+    try {
+      const r = await fetch('/api/billing/resume', { method: 'POST', credentials: 'include' });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+      toast('Your plan is back on — no change to your billing.');
+      loadBilling();
+    } catch (err) {
+      toast(`Couldn't resume: ${err.message}`, 'warn');
+      if (btn) { btn.disabled = false; btn.textContent = 'Resume plan'; }
+    }
+  }
+
+  // ── Cancellation — 3-step exit survey then cancel-at-period-end ────────────
+  const CANCEL_REASONS = [
+    ['too_expensive', 'Too expensive'],
+    ['missing_features', 'Missing features I need'],
+    ['not_enough_value', 'Didn\'t get enough value'],
+    ['switching_tool', 'Switching to another tool'],
+    ['temporary_need', 'Only needed it temporarily'],
+    ['technical_issues', 'Technical issues / bugs'],
+    ['other', 'Other'],
+  ];
+  const CANCEL_CONTEXT_LABEL = {
+    too_expensive: 'What would have felt like fair pricing?',
+    missing_features: 'Which feature were you missing?',
+    not_enough_value: 'What were you hoping GhostStream would do for you?',
+    switching_tool: 'Which tool are you switching to?',
+    temporary_need: 'What did you use GhostStream for?',
+    technical_issues: 'What went wrong? We\'ll look into it.',
+    other: 'Tell us more',
+  };
+  let _cancel = { step: 1, reason: null, wouldReturn: null, plan: null, periodEnd: null };
+
+  function _cancelEsc(e) { if (e.key === 'Escape') closeCancelModal(); }
+  function closeCancelModal() { const o = $('cancel-modal-overlay'); if (o) o.classList.add('hidden'); }
+
+  function updateCancelStep() {
+    const ov = $('cancel-modal-overlay'); if (!ov) return;
+    ov.querySelectorAll('.cancel-step').forEach((el) => el.classList.toggle('hidden', +el.dataset.step !== _cancel.step));
+    ov.querySelectorAll('.cancel-dot').forEach((el) => el.classList.toggle('is-on', +el.dataset.dot <= _cancel.step));
+    $('cancel-back-btn').style.visibility = _cancel.step === 1 ? 'hidden' : 'visible';
+    const next = $('cancel-next-btn');
+    if (_cancel.step === 3) { next.textContent = 'Cancel subscription'; next.classList.add('is-danger'); }
+    else { next.textContent = 'Next'; next.classList.remove('is-danger'); }
+    next.disabled = (_cancel.step === 1 && !_cancel.reason);
+    if (_cancel.step === 2) $('cancel-context-label').textContent = CANCEL_CONTEXT_LABEL[_cancel.reason] || 'Tell us more';
+    if (_cancel.step === 3) {
+      $('cancel-confirm-note').textContent = _cancel.periodEnd
+        ? `You'll keep ${_cancel.plan || 'your'} plan until ${fmtDate(_cancel.periodEnd)}, then move to the Free plan. No further charges.`
+        : `Your plan will be cancelled at the end of the current period, then you'll move to the Free plan.`;
+    }
+  }
+
+  function openCancelModal(b) {
+    _cancel = { step: 1, reason: null, wouldReturn: null, plan: b.planName, periodEnd: b.currentPeriodEnd };
+    let ov = $('cancel-modal-overlay');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'cancel-modal-overlay';
+      ov.className = 'cal-picker-overlay';
+      ov.innerHTML = `
+        <div class="cal-picker cancel-modal">
+          <div class="cal-picker-h">
+            <span class="cal-picker-title">Cancel subscription</span>
+            <button type="button" class="kb-link-btn cal-picker-close">✕</button>
+          </div>
+          <div class="cal-picker-body">
+            <div class="cancel-dots"><span class="cancel-dot is-on" data-dot="1"></span><span class="cancel-dot" data-dot="2"></span><span class="cancel-dot" data-dot="3"></span></div>
+            <div class="cancel-step" data-step="1">
+              <p class="kb-subtle" style="margin:0 0 12px">We're sorry to see you go. What's the main reason you're cancelling?</p>
+              <div class="cancel-reasons" id="cancel-reasons">
+                ${CANCEL_REASONS.map(([v, l]) => `<label class="cancel-reason"><input type="radio" name="cancel-reason" value="${v}"><span>${escapeHtml(l)}</span></label>`).join('')}
+              </div>
+            </div>
+            <div class="cancel-step hidden" data-step="2">
+              <div class="field"><label id="cancel-context-label">Tell us more</label><textarea id="cancel-context" rows="3" placeholder="A sentence or two helps us improve."></textarea></div>
+              <div class="field"><label>How likely are you to come back?</label>
+                <div class="cancel-return" id="cancel-return">
+                  <button type="button" data-return="unlikely">Unlikely</button>
+                  <button type="button" data-return="maybe">Maybe</button>
+                  <button type="button" data-return="likely">Likely</button>
+                </div>
+              </div>
+            </div>
+            <div class="cancel-step hidden" data-step="3">
+              <div class="field"><label for="cancel-comments">Anything else? <span class="kb-subtle">(optional)</span></label><textarea id="cancel-comments" rows="3"></textarea></div>
+              <div class="cancel-confirm-note" id="cancel-confirm-note"></div>
+            </div>
+            <div class="teams-modal-actions cancel-actions">
+              <button type="button" class="kb-secondary-btn" id="cancel-back-btn">Back</button>
+              <span class="grow"></span>
+              <button type="button" class="kb-secondary-btn" id="cancel-keep-btn">Never mind</button>
+              <button type="button" class="primary-cta" id="cancel-next-btn">Next</button>
+            </div>
+            <div class="kb-result hidden" id="cancel-modal-result"></div>
+          </div>
+        </div>`;
+      document.body.appendChild(ov);
+      ov.addEventListener('click', (e) => { if (e.target === ov) closeCancelModal(); });
+      ov.querySelector('.cal-picker-close').addEventListener('click', closeCancelModal);
+      $('cancel-keep-btn').addEventListener('click', closeCancelModal);
+      document.addEventListener('keydown', _cancelEsc);
+      $('cancel-reasons').addEventListener('change', (e) => {
+        if (e.target.name === 'cancel-reason') { _cancel.reason = e.target.value; updateCancelStep(); }
+      });
+      $('cancel-return').addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-return]'); if (!btn) return;
+        _cancel.wouldReturn = btn.dataset.return;
+        $('cancel-return').querySelectorAll('button').forEach((x) => x.classList.toggle('is-on', x === btn));
+      });
+      $('cancel-back-btn').addEventListener('click', () => { if (_cancel.step > 1) { _cancel.step--; updateCancelStep(); } });
+      $('cancel-next-btn').addEventListener('click', () => {
+        if (_cancel.step < 3) { _cancel.step++; updateCancelStep(); } else { submitCancel(); }
+      });
+    } else {
+      // Reset fields on reopen.
+      ov.querySelectorAll('input[name="cancel-reason"]').forEach((r) => { r.checked = false; });
+      $('cancel-context').value = ''; $('cancel-comments').value = '';
+      $('cancel-return').querySelectorAll('button').forEach((x) => x.classList.remove('is-on'));
+      $('cancel-modal-result').classList.add('hidden');
+    }
+    updateCancelStep();
+    ov.classList.remove('hidden');
+  }
+
+  async function submitCancel() {
+    const result = $('cancel-modal-result');
+    const btn = $('cancel-next-btn');
+    btn.disabled = true; btn.textContent = 'Cancelling…';
+    try {
+      const r = await fetch('/api/billing/cancel', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reason: _cancel.reason,
+          context: $('cancel-context').value.trim(),
+          wouldReturn: _cancel.wouldReturn,
+          comments: $('cancel-comments').value.trim(),
+        }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+      closeCancelModal();
+      toast('Your plan is set to cancel at the end of the period. You can resume any time before then.');
+      loadBilling();
+    } catch (err) {
+      result.textContent = `Couldn't cancel: ${err.message}`;
+      result.className = 'kb-result error';
+      btn.disabled = false; btn.textContent = 'Cancel subscription';
     }
   }
 

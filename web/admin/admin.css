@@ -363,6 +363,41 @@ body {
 .credit-pack:disabled .cp-cta { background: var(--border-2); }
 .credit-foot { margin-top: 18px; }
 
+/* ── Cancellation ───────────────────────────────────────────────────────── */
+.bill-sub-warn { color: var(--danger, #dc2626); font-weight: 600; }
+.kb-danger-btn {
+  background: transparent; color: var(--danger, #dc2626);
+  border: 1px solid color-mix(in srgb, var(--danger, #dc2626) 40%, transparent);
+  border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.kb-danger-btn:hover { background: color-mix(in srgb, var(--danger, #dc2626) 10%, transparent); }
+.primary-cta.is-danger { background: var(--danger, #dc2626); }
+.primary-cta.is-danger:hover { background: color-mix(in srgb, var(--danger, #dc2626) 88%, black); }
+
+.cancel-modal { max-width: 460px; }
+.cancel-dots { display: flex; gap: 6px; justify-content: center; margin-bottom: 16px; }
+.cancel-dot { width: 26px; height: 4px; border-radius: 999px; background: var(--border-2); transition: background .15s; }
+.cancel-dot.is-on { background: var(--accent); }
+.cancel-reasons { display: flex; flex-direction: column; gap: 8px; }
+.cancel-reason {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  padding: 11px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px;
+}
+.cancel-reason:hover { border-color: var(--accent); }
+.cancel-reason:has(input:checked) { border-color: var(--accent); background: var(--accent-light); }
+.cancel-reason input { accent-color: var(--accent); }
+.cancel-return { display: flex; gap: 8px; }
+.cancel-return button {
+  flex: 1; padding: 9px 0; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.cancel-return button.is-on { border-color: var(--accent); background: var(--accent-light); color: var(--accent); }
+.cancel-confirm-note {
+  font-size: 13px; color: var(--text-2); line-height: 1.5;
+  padding: 12px 14px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border);
+}
+.cancel-actions .grow { flex: 1; }
+
 .plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
 .plan-card {
   border: 1px solid var(--border); border-radius: var(--radius, 12px); padding: 20px;

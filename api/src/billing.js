@@ -59,6 +59,7 @@ router.get('/', async (req, res, next) => {
         credits: creditBalance,
         stripeConfigured: isConfigured(),
         manageable: !!(tenant && tenant.stripe_subscription_id),
+        cancelAtPeriodEnd: !!(tenant && tenant.cancel_at_period_end),
       },
       plans: plans.catalog(),
       creditPacks: credits.catalog(),
@@ -230,6 +231,65 @@ router.post('/portal', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Sanitise + clamp the exit-survey fields (best-effort intel; never blocks cancel).
+function cleanSurvey(b) {
+  const str = (v, max) => { const s = String(v == null ? '' : v).trim(); return s ? s.slice(0, max) : null; };
+  const REASONS = new Set(['too_expensive', 'missing_features', 'not_enough_value', 'switching_tool', 'temporary_need', 'technical_issues', 'other']);
+  const RETURN = new Set(['unlikely', 'maybe', 'likely']);
+  const reason = String((b && b.reason) || '').trim();
+  const wr = String((b && b.wouldReturn) || '').trim();
+  return {
+    reason: REASONS.has(reason) ? reason : (reason ? 'other' : null),
+    context: str(b && b.context, 2000),
+    would_return: RETURN.has(wr) ? wr : null,
+    comments: str(b && b.comments, 4000),
+  };
+}
+
+// POST /billing/cancel — schedule cancellation at period end (the user keeps the
+// paid plan until the period they've already paid for ends, then the webhook
+// downgrades them to Free). Records the exit survey for churn intel. The survey
+// is stored first so a Stripe hiccup never loses it.
+router.post('/cancel', async (req, res, next) => {
+  try {
+    if (!isConfigured()) return res.status(503).json({ error: 'Billing is not configured yet.', code: 'BILLING_NOT_CONFIGURED' });
+    const tenant = await tenants.get(req.tenantId, { fresh: true });
+    if (!tenant.stripe_subscription_id) return res.status(400).json({ error: 'No active paid subscription to cancel.' });
+
+    const s = cleanSurvey(req.body || {});
+    await db.query(
+      `INSERT INTO cancellation_feedback (tenant_id, user_id, plan, reason, context, would_return, comments)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [req.tenantId, (req.user && req.user.sub) || null, tenant.plan || null, s.reason, s.context, s.would_return, s.comments]
+    );
+
+    const sub = await stripe().subscriptions.update(tenant.stripe_subscription_id, { cancel_at_period_end: true });
+    await tenants.update(req.tenantId, {
+      cancel_at_period_end: true,
+      current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : tenant.current_period_end,
+    });
+    res.json({ ok: true, cancelAtPeriodEnd: true, currentPeriodEnd: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null });
+  } catch (err) { next(err); }
+});
+
+// POST /billing/resume — undo a pending cancellation before the period ends.
+router.post('/resume', async (req, res, next) => {
+  try {
+    if (!isConfigured()) return res.status(503).json({ error: 'Billing is not configured yet.', code: 'BILLING_NOT_CONFIGURED' });
+    const tenant = await tenants.get(req.tenantId, { fresh: true });
+    if (!tenant.stripe_subscription_id) return res.status(400).json({ error: 'No subscription to resume.' });
+    await stripe().subscriptions.update(tenant.stripe_subscription_id, { cancel_at_period_end: false });
+    await tenants.update(req.tenantId, { cancel_at_period_end: false });
+    // Note the reversal on the most recent open feedback row (intel: cancel→stay).
+    await db.query(
+      `UPDATE cancellation_feedback SET resumed_at = now()
+        WHERE id = (SELECT id FROM cancellation_feedback WHERE tenant_id = $1 AND resumed_at IS NULL ORDER BY created_at DESC LIMIT 1)`,
+      [req.tenantId]
+    ).catch(() => {});
+    res.json({ ok: true, cancelAtPeriodEnd: false });
+  } catch (err) { next(err); }
+});
+
 // POST /billing/enterprise-inquiry — capture a "Contact sales" lead from the
 // Enterprise plan card. Persists the pricing signals (rep count, expected call
 // volume, monitored entities, CRM) and best-effort emails sales. The lead is
@@ -378,6 +438,9 @@ async function applySubscription(sub) {
   const patch = {
     stripe_subscription_id: sub.id,
     current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
+    // Keep the cancel flag in sync whether they cancelled via our form or the
+    // Stripe portal directly, so the Billing UI shows "ends <date> → Free".
+    cancel_at_period_end: !!sub.cancel_at_period_end,
   };
   if (status) patch.subscription_status = status;
   // Set the plan on both trial and paid states (the trial IS the Starter plan).
@@ -425,9 +488,22 @@ async function webhook(req, res) {
         await applySubscription(event.data.object);
         break;
       case 'customer.subscription.deleted': {
+        // The paid plan has fully lapsed → downgrade to the Free tier rather than
+        // locking the account out: perpetual TRIAL (no end date) on plan 'trial',
+        // Stripe subscription cleared (customer kept for an easy re-subscribe).
         const sub = event.data.object;
         const tenantId = (sub.metadata && sub.metadata.tenantId) || await tenants.findIdByStripeCustomer(sub.customer);
-        if (tenantId) await tenants.update(tenantId, { subscription_status: 'CANCELLED' });
+        if (tenantId) {
+          await tenants.update(tenantId, {
+            subscription_status: 'TRIAL',
+            plan: 'trial',
+            trial_ends_at: null,
+            stripe_subscription_id: null,
+            current_period_end: null,
+            cancel_at_period_end: false,
+          });
+          console.log(`[billing] tenant ${tenantId} subscription ended → downgraded to Free (sub ${sub.id})`);
+        }
         break;
       }
       default: break;
