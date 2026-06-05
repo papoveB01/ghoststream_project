@@ -22,7 +22,7 @@ const tenants = require('./tenants');
 const plans = require('./plans');
 const email = require('./email');
 
-const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net').replace(/\/+$/, '');
+const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://dealscope.io').replace(/\/+$/, '');
 const INVITE_TTL_DAYS = parseInt(process.env.SUBACCOUNT_INVITE_TTL_DAYS || '14', 10);
 const MIN_PASSWORD_LEN = parseInt(process.env.ONBOARDING_MIN_PASSWORD_LEN || '12', 10);
 

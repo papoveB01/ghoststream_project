@@ -23,7 +23,7 @@ const redis = require('./redis');
 const secretbox = require('./secretbox');
 
 const APP_BASE_URL =
-  process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net';
+  process.env.APP_BASE_URL || 'https://dealscope.io';
 
 // Authority host — global Azure AD by default. Sovereign clouds (Azure
 // Government, China 21Vianet) use a different host; override per ADR-0002 §6

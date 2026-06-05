@@ -163,7 +163,7 @@
   // FAQ first (the common answers resolve most questions instantly), then a
   // "still need help" form that composes an email to support. No backend
   // dependency — submitting opens the rep's mail client with a prefilled draft.
-  const SUPPORT_EMAIL = 'support@ghoststream.exact-it.net';
+  const SUPPORT_EMAIL = 'support@dealscope.io';
   const SUPPORT_FAQ = [
     { q: 'How do I add prospects?',
       a: 'Three ways, all on the <b>Prospects</b> page: add a company manually, pull from a connected CRM (Integrations → HubSpot is live), or let <b>AI Discovery</b> find companies showing a buying signal — ranked by priority and matched to your products (≈ 3 credits a run).' },

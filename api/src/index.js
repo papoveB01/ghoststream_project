@@ -61,7 +61,7 @@ app.use(gating.billingGate);
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const APP_BASE_URL =
-  process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net';
+  process.env.APP_BASE_URL || 'https://dealscope.io';
 
 // =========================================================================
 // Health

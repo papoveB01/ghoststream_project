@@ -21,11 +21,11 @@ const entitlements = require('./entitlements');
 // Where Enterprise "Contact sales" inquiries are emailed. Falls back to the
 // public sales alias if unset. ENTERPRISE_INQUIRY_NOTIFY is an optional
 // comma-separated list of extra recipients copied on every inquiry.
-const SALES_INQUIRY_EMAIL = process.env.SALES_INQUIRY_EMAIL || 'sales@ghoststream.exact-it.net';
+const SALES_INQUIRY_EMAIL = process.env.SALES_INQUIRY_EMAIL || 'sales@dealscope.io';
 const EXTRA_INQUIRY_NOTIFY = (process.env.ENTERPRISE_INQUIRY_NOTIFY || 'pbombando@gmail.com')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
-const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net').replace(/\/+$/, '');
+const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://dealscope.io').replace(/\/+$/, '');
 
 let _stripe; // undefined = not yet resolved, null = unconfigured
 function stripe() {

@@ -26,7 +26,7 @@ const knowledge = require('./knowledge/service');
 const schedule = require('./watchSchedule');
 
 const MODEL = require('./models').modelFor('marketWatch');
-const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net').replace(/\/+$/, '');
+const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://dealscope.io').replace(/\/+$/, '');
 
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 

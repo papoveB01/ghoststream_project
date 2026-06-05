@@ -37,7 +37,7 @@ const plans = require('./plans');
 // contact sales, not here.)
 const SIGNUP_PLANS = new Set(['starter', 'pro']);
 
-const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net').replace(/\/+$/, '');
+const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://dealscope.io').replace(/\/+$/, '');
 const SESSION_TTL_SEC = parseInt(process.env.ONBOARDING_SESSION_TTL_SEC || '1800', 10); // 30 min
 const VERIFY_TTL_SEC = parseInt(process.env.ONBOARDING_VERIFY_TTL_SEC || '86400', 10); // 24h to click the email link
 const MIN_PASSWORD_LEN = parseInt(process.env.ONBOARDING_MIN_PASSWORD_LEN || '12', 10);

@@ -29,7 +29,7 @@ const db        = require('./db');
 const gating    = require('./gating');
 
 const APP_BASE_URL =
-  process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net';
+  process.env.APP_BASE_URL || 'https://dealscope.io';
 
 // Calendly OAuth app + webhook config.
 const CALENDLY_API_BASE  = (process.env.CALENDLY_API_BASE  || 'https://api.calendly.com').replace(/\/+$/, '');
