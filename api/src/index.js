@@ -1228,6 +1228,11 @@ app.post('/webhooks/calendly/:routeToken', async (req, res) => {
 app.post('/webhooks/calendly', (req, res) =>
   handleCalendlyBooking(req, res, userModel.FOUNDERS_TENANT_ID));
 
+// Inbound email (SendGrid Inbound Parse) — proposal engine Phase 2. Forwarded
+// prospect emails → filed as PROSPECT intel. Unauthenticated; guarded by a
+// secret in the path (INBOUND_PARSE_SECRET). Mounts its own multipart parser.
+app.use('/webhooks/inbound-email', require('./inboundEmail').webhookRouter);
+
 // =========================================================================
 // Error handler
 // =========================================================================

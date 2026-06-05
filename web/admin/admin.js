@@ -1443,6 +1443,23 @@
       sel.innerHTML = versions.map((v) => `<option value="${escapeHtml(v.id)}">v${escapeHtml(String(v.version))} · ${escapeHtml(v.status)} · ${(v.coverage_json && v.coverage_json.score != null) ? escapeHtml(String(v.coverage_json.score)) + '%' : '—'}</option>`).join('');
       await loadVersion(versions[0].id);
     }
+    async function loadInbox() {
+      const box = $('prospect-proposal-inbox');
+      if (!box) return;
+      try {
+        const info = await fetchJson(`/api/proposals/${encodeURIComponent(companyId)}/inbox`);
+        if (!info.configured || !info.address) { box.classList.add('hidden'); return; }
+        box.innerHTML = `<span class="rec-inbox-ico">✉️</span>
+          <div class="rec-inbox-main"><div class="rec-inbox-t">Feed this recommendation by email</div>
+          <div class="rec-inbox-sub">BCC or forward this prospect's emails to <code>${escapeHtml(info.address)}</code> — they're filed as intel and sharpen the next recommendation.</div></div>
+          <button type="button" class="kb-secondary-btn" id="rec-inbox-copy">Copy</button>`;
+        const cp = $('rec-inbox-copy');
+        if (cp) cp.addEventListener('click', () => navigator.clipboard.writeText(info.address)
+          .then(() => { cp.textContent = 'Copied'; setTimeout(() => { cp.textContent = 'Copy'; }, 1500); }).catch(() => {}));
+        box.classList.remove('hidden');
+      } catch { box.classList.add('hidden'); }
+    }
+
     sel.addEventListener('change', () => loadVersion(sel.value).catch((err) => { status.textContent = `Couldn't load version: ${err.message}`; }));
     finalBtn.addEventListener('click', async () => {
       if (!current) return;
@@ -1461,6 +1478,7 @@
       } catch (err) { status.textContent = ''; alert(`Couldn't generate: ${err.message}`); }
       finally { genBtn.disabled = false; genBtn.textContent = t0; }
     });
+    loadInbox();
     refresh();
   }
 
@@ -1555,6 +1573,7 @@
           <button class="kb-secondary-btn hidden" id="prospect-proposal-final-btn">✓ Mark final</button>
         </div>
         <div class="prospect-intel-status kb-subtle" id="prospect-proposal-status">Loading…</div>
+        <div id="prospect-proposal-inbox" class="rec-inbox hidden"></div>
         <div id="prospect-proposal" class="prospect-proposal"></div>
       </div>
     `;

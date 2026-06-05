@@ -177,3 +177,40 @@ Default behavior = draft-with-assumptions (thin sections flagged inline).
 - [ ] Citation/confidence rendering
 - [ ] Tests: gather/synthesis shape, RLS scoping, versioning
 - [ ] (Bonus, unrelated) fix stale "VERIFIED BY GHOSTSTREAM" → DealScope in the current SOW export
+
+---
+
+# Phase 2 — BCC email ingestion (built 2026-06-05)
+
+Forward/BCC a prospect's emails to a per-prospect address; they're filed as
+PROSPECT intel and automatically feed research re-analysis + the proposal
+synthesis (no separate extraction — `gatherEvidence` already reads PROSPECT KB).
+
+**Code (done):**
+- `0045_prospect_inbound_tokens.sql` — one stable token per company (RLS).
+- `api/src/inboundEmail.js` — `getOrCreateToken`/`inboxInfo`/`addressFor`;
+  `handleInbound()` resolves token → cleans quoted/sig text → `service.ingest`
+  as PROSPECT `kb_documents` + logs `prospect_engagement_inputs` (type EMAIL);
+  `webhookRouter` (multer multipart) guarded by a secret in the path.
+- `index.js`: `app.use('/webhooks/inbound-email', …)` (unauthenticated).
+- `proposals.js`: `GET /proposals/:companyId/inbox` → `{configured,address}`.
+- `docker-compose.yml`: `INBOUND_PARSE_DOMAIN` / `INBOUND_PARSE_SECRET` passthrough.
+- `proxy/nginx.conf`: `location /webhooks/inbound-email/` → api (beats the
+  `/webhooks/` capture catch-all).
+- Frontend: Proposal tab shows the forward address (copy button) when configured.
+
+Verified end-to-end on staging: simulated SendGrid POST → filed READY PROSPECT
+doc + EMAIL engagement input → PROSPECT_INTEL evidence 1→2 → regenerated
+recommendation reflected the new email signal.
+
+**Ops to activate (per environment):**
+1. Pick an inbound subdomain, e.g. `parse.dealscope.io`. Add a DNS **MX** record
+   → `mx.sendgrid.net` (priority 10).
+2. SendGrid → Settings → **Inbound Parse** → Add Host & URL:
+   host `parse.dealscope.io`, destination
+   `https://<host>/webhooks/inbound-email/<INBOUND_PARSE_SECRET>`. (Leave "POST
+   the raw, full MIME message" OFF — we consume the parsed fields.)
+3. Set `INBOUND_PARSE_DOMAIN` + `INBOUND_PARSE_SECRET` in the env file, redeploy
+   api, and (if nginx changed) recreate the proxy.
+Until configured, the inbox endpoint reports `configured:false` (UI hides the
+card) and the webhook returns 503 — safe no-op.

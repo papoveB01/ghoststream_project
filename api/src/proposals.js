@@ -278,6 +278,12 @@ router.patch('/version/:id', async (req, res, next) => {
   catch (err) { next(err); }
 });
 
+// GET /proposals/:companyId/inbox — the per-prospect forward address (Phase 2).
+router.get('/:companyId/inbox', async (req, res, next) => {
+  try { res.json(await require('./inboundEmail').inboxInfo(req.tenantId, req.params.companyId)); }
+  catch (err) { next(err); }
+});
+
 // GET /proposals/:companyId — version list (latest first) for a prospect.
 router.get('/:companyId', async (req, res, next) => {
   try { res.json({ versions: await listForCompany(req.tenantId, req.params.companyId) }); }
