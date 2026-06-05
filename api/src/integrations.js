@@ -85,6 +85,15 @@ function envSet(name) {
   return !!(process.env[name] && String(process.env[name]).trim());
 }
 
+// Comma-separated provider keys to hide from the catalog, per-deploy. Lets one
+// environment (e.g. production) drop a card without code divergence — the var
+// is simply unset elsewhere. e.g. HIDE_INTEGRATIONS=calendly
+const HIDDEN_PROVIDERS = new Set(
+  String(process.env.HIDE_INTEGRATIONS || '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+);
+function providerHidden(key) { return HIDDEN_PROVIDERS.has(String(key).toLowerCase()); }
+
 function isConfigured(key) {
   const p = PROVIDERS.find((x) => x.key === key);
   if (!p) return false;
@@ -696,7 +705,7 @@ async function statusPayload(tenantId, userId) {
     microsoftConnection(tenantId, userId),
   ]);
   return {
-    providers: PROVIDERS.map((p) => ({
+    providers: PROVIDERS.filter((p) => !providerHidden(p.key)).map((p) => ({
       key: p.key, name: p.name, icon: p.icon, mode: p.mode, blurb: p.blurb, setup: p.setup,
       configured: p.requires.every(envSet),
       requires: p.requires.map((name) => ({ name, set: envSet(name) })),
