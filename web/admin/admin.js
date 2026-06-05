@@ -1197,6 +1197,7 @@
       (industries || []).forEach((i) => { const o = document.createElement('option'); o.value = i; o.textContent = i; sel.appendChild(o); });
     } catch { /* dropdown stays at "Any industry" */ }
     $('pdisc-search').addEventListener('click', runProspectDiscover);
+    wireRegionCountry('pdisc-region', 'pdisc-country');
   }
 
   async function runProspectDiscover() {
@@ -1842,9 +1843,37 @@
   // follow-up task lists every kb_document tagged with this competitor.
 
   let _competitorsState = { competitors: [], selectedId: null };
-  const COMPETITOR_REGIONS = ['Global / Any', 'Africa', 'Europe', 'GCC / Middle East', 'North America', 'Latin America', 'Asia-Pacific'];
-  const COUNTRIES = ['Afghanistan','Albania','Algeria','Angola','Argentina','Armenia','Australia','Austria','Azerbaijan','Bahamas','Bahrain','Bangladesh','Barbados','Belarus','Belgium','Belize','Benin','Bhutan','Bolivia','Bosnia and Herzegovina','Botswana','Brazil','Brunei','Bulgaria','Burkina Faso','Cambodia','Cameroon','Canada','Chad','Chile','China','Colombia','Costa Rica','Croatia','Cuba','Cyprus','Czechia','Democratic Republic of the Congo','Denmark','Dominican Republic','Ecuador','Egypt','El Salvador','Estonia','Eswatini','Ethiopia','Fiji','Finland','France','Gabon','Georgia','Germany','Ghana','Greece','Guatemala','Guinea','Guyana','Haiti','Honduras','Hong Kong','Hungary','Iceland','India','Indonesia','Iran','Iraq','Ireland','Israel','Italy','Ivory Coast','Jamaica','Japan','Jordan','Kazakhstan','Kenya','Kuwait','Kyrgyzstan','Laos','Latvia','Lebanon','Libya','Lithuania','Luxembourg','Madagascar','Malawi','Malaysia','Maldives','Mali','Malta','Mauritius','Mexico','Moldova','Monaco','Mongolia','Montenegro','Morocco','Mozambique','Myanmar','Namibia','Nepal','Netherlands','New Zealand','Nicaragua','Niger','Nigeria','North Macedonia','Norway','Oman','Pakistan','Panama','Papua New Guinea','Paraguay','Peru','Philippines','Poland','Portugal','Qatar','Romania','Rwanda','Saudi Arabia','Senegal','Serbia','Sierra Leone','Singapore','Slovakia','Slovenia','Somalia','South Africa','South Korea','Spain','Sri Lanka','Sudan','Sweden','Switzerland','Syria','Taiwan','Tajikistan','Tanzania','Thailand','Togo','Trinidad and Tobago','Tunisia','Turkey','Turkmenistan','Uganda','Ukraine','United Arab Emirates','United Kingdom','United States','Uruguay','Uzbekistan','Venezuela','Vietnam','Yemen','Zambia','Zimbabwe'];
-  const countryOptions = (sel) => ['<option value="">Any country</option>'].concat(COUNTRIES.map((c) => `<option${c === sel ? ' selected' : ''}>${c}</option>`)).join('');
+  const COMPETITOR_REGIONS = ['Global / Any', 'North America', 'Latin America', 'Europe', 'GCC / Middle East', 'Africa', 'Asia-Pacific'];
+  // Region → its countries. The flat COUNTRIES list is derived from this, and
+  // selecting a region filters the country dropdown to just that region.
+  const COUNTRIES_BY_REGION = {
+    'North America': ['Canada','United States'],
+    'Latin America': ['Argentina','Bahamas','Barbados','Belize','Bolivia','Brazil','Chile','Colombia','Costa Rica','Cuba','Dominican Republic','Ecuador','El Salvador','Guatemala','Guyana','Haiti','Honduras','Jamaica','Mexico','Nicaragua','Panama','Paraguay','Peru','Trinidad and Tobago','Uruguay','Venezuela'],
+    'Europe': ['Albania','Austria','Belarus','Belgium','Bosnia and Herzegovina','Bulgaria','Croatia','Cyprus','Czechia','Denmark','Estonia','Finland','France','Germany','Greece','Hungary','Iceland','Ireland','Italy','Latvia','Lithuania','Luxembourg','Malta','Moldova','Monaco','Montenegro','Netherlands','North Macedonia','Norway','Poland','Portugal','Romania','Serbia','Slovakia','Slovenia','Spain','Sweden','Switzerland','Ukraine','United Kingdom'],
+    'GCC / Middle East': ['Bahrain','Iran','Iraq','Israel','Jordan','Kuwait','Lebanon','Oman','Qatar','Saudi Arabia','Syria','Turkey','United Arab Emirates','Yemen'],
+    'Africa': ['Algeria','Angola','Benin','Botswana','Burkina Faso','Cameroon','Chad','Democratic Republic of the Congo','Egypt','Eswatini','Ethiopia','Gabon','Ghana','Guinea','Ivory Coast','Kenya','Libya','Madagascar','Malawi','Mali','Mauritius','Morocco','Mozambique','Namibia','Niger','Nigeria','Rwanda','Senegal','Sierra Leone','Somalia','South Africa','Sudan','Tanzania','Togo','Tunisia','Uganda','Zambia','Zimbabwe'],
+    'Asia-Pacific': ['Afghanistan','Armenia','Australia','Azerbaijan','Bangladesh','Bhutan','Brunei','Cambodia','China','Fiji','Georgia','Hong Kong','India','Indonesia','Japan','Kazakhstan','Kyrgyzstan','Laos','Malaysia','Maldives','Mongolia','Myanmar','Nepal','New Zealand','Pakistan','Papua New Guinea','Philippines','Singapore','South Korea','Sri Lanka','Taiwan','Tajikistan','Thailand','Turkmenistan','Uzbekistan','Vietnam'],
+  };
+  const COUNTRIES = Object.values(COUNTRIES_BY_REGION).flat().sort((a, b) => a.localeCompare(b));
+  // Countries for a region — all countries for "Global / Any" (or unknown region).
+  function countriesForRegion(region) {
+    if (!region || /global|any/i.test(region)) return COUNTRIES;
+    return COUNTRIES_BY_REGION[region] || COUNTRIES;
+  }
+  const countryOptions = (sel, region) => ['<option value="">Any country</option>']
+    .concat(countriesForRegion(region).map((c) => `<option${c === sel ? ' selected' : ''}>${c}</option>`)).join('');
+  // Wire a region <select> so changing it filters its country <select> to that
+  // region (resetting to "Any country" if the prior pick isn't in the new region).
+  function wireRegionCountry(regionId, countryId) {
+    const rsel = $(regionId), csel = $(countryId);
+    if (!rsel || !csel) return;
+    // .onchange (not addEventListener) so re-wiring a reused element is idempotent.
+    rsel.onchange = () => {
+      const prev = csel.value;
+      csel.innerHTML = countryOptions(prev, rsel.value);
+      if (csel.value !== prev) csel.value = ''; // prior country not in this region
+    };
+  }
   let _finderAddedAny = false; // any competitor added in the finder modal → reload the list on close
 
   async function loadCompetitors() {
@@ -2078,6 +2107,7 @@
     $('comp-finder-body').innerHTML = `<div class="kb-subtle" style="padding:14px">Pick a region and hit Search. We'll find companies that compete with you, based on your own profile and products.</div>`;
     $('comp-finder-search').onclick = runCompetitorFinderSearch;
     $('comp-finder-done').onclick = finderDone;
+    wireRegionCountry('comp-finder-region', 'comp-finder-country');
     overlay.classList.remove('hidden');
   }
 
