@@ -1342,6 +1342,107 @@
     });
   }
 
+  // ── Proposal recommendation (Phase 1) ──────────────────────────────────
+  const _recConfChip = (c) => {
+    const k = String(c || '').toLowerCase();
+    const cls = k === 'high' ? 'win' : k === 'low' ? 'lose' : 'tie';
+    return `<span class="bc-verdict bc-verdict-${cls} rec-conf">${escapeHtml(k || '—')}</span>`;
+  };
+  const _recCites = (arr) => (Array.isArray(arr) && arr.length)
+    ? `<span class="rec-cite">${arr.map((n) => `[${escapeHtml(String(n))}]`).join(' ')}</span>` : '';
+  const _recAssume = (arr) => (Array.isArray(arr) && arr.length)
+    ? `<div class="rec-assume">⚠︎ Assumptions: ${arr.map((a) => escapeHtml(a)).join(' · ')}</div>` : '';
+  function _recSection(label, sec) {
+    if (!sec || !sec.text) return '';
+    return `<div class="rec-section">
+      <div class="rec-h"><span class="rec-label">${escapeHtml(label)}</span>${_recConfChip(sec.confidence)}${_recCites(sec.citations)}</div>
+      <div class="rec-text">${escapeHtml(sec.text)}</div>
+      ${_recAssume(sec.assumptions)}
+    </div>`;
+  }
+
+  function renderRecommendationVersion(host, prop) {
+    const c = prop.content_json || {};
+    const cov = prop.coverage_json || {};
+    const ev = Array.isArray(prop.citations_json) ? prop.citations_json : [];
+    const objections = Array.isArray(c.objections) ? c.objections : [];
+    const gaps = Array.isArray(cov.gaps) ? cov.gaps : (Array.isArray(c.intelligenceGaps) ? c.intelligenceGaps : []);
+    const score = (cov.score != null) ? cov.score : null;
+    const covCls = score == null ? 'tie' : score >= 75 ? 'win' : score >= 45 ? 'tie' : 'lose';
+    host.innerHTML = `
+      <div class="rec-meta">
+        <span class="lib-badge ${prop.status === 'FINAL' ? 'lib-badge-done' : 'lib-badge-running'}">${escapeHtml(prop.status || 'DRAFT')}</span>
+        <span class="bc-verdict bc-verdict-${covCls}">Intelligence coverage ${score == null ? '—' : escapeHtml(String(score)) + '%'}</span>
+        <span class="kb-subtle">v${escapeHtml(String(prop.version))} · ${escapeHtml(new Date(prop.created_at).toLocaleString())}</span>
+      </div>
+      ${c.headline && c.headline.text ? `<div class="rec-headline">${escapeHtml(c.headline.text)} ${_recCites(c.headline.citations)}</div>` : ''}
+      ${_recSection('Their situation', c.situation)}
+      ${_recSection('Recommended positioning', c.positioning)}
+      ${_recSection('Outcomes to emphasize', c.outcomes)}
+      ${_recSection('Our edge vs alternatives', c.edge)}
+      ${_recSection('Proof points', c.proof)}
+      ${objections.length ? `<div class="rec-section"><div class="rec-h"><span class="rec-label">Objections to preempt</span></div>
+        ${objections.map((o) => `<div class="rec-obj"><div class="rec-obj-q">“${escapeHtml(o.objection || '')}” ${_recCites(o.citations)}</div><div class="rec-obj-a">${escapeHtml(o.response || '')}</div></div>`).join('')}
+      </div>` : ''}
+      ${_recSection('Recommended next move', c.nextMove)}
+      ${gaps.length ? `<div class="rec-gaps"><strong>Intelligence gaps</strong> — what would strengthen this:<ul>${gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join('')}</ul></div>` : ''}
+      ${ev.length ? `<details class="rec-evidence"><summary>Evidence basis (${ev.length} item${ev.length === 1 ? '' : 's'})</summary><ol>${ev.map((e) => `<li>[${escapeHtml(String(e.n))}] <span class="kb-stream-pill ${/compet/i.test(e.type || '') ? 'stream-web' : 'stream-file'}">${escapeHtml(e.type || '')}</span> ${escapeHtml(e.label || '')}</li>`).join('')}</ol></details>` : ''}
+    `;
+  }
+
+  function wireProspectProposal(companyId) {
+    const status = $('prospect-proposal-status');
+    const host = $('prospect-proposal');
+    const sel = $('prospect-proposal-version');
+    const finalBtn = $('prospect-proposal-final-btn');
+    const genBtn = $('prospect-proposal-gen-btn');
+    if (!host) return;
+    let versions = [];
+    let current = null;
+
+    async function loadVersion(id) {
+      current = await fetchJson(`/api/proposals/version/${encodeURIComponent(id)}`);
+      renderRecommendationVersion(host, current);
+      finalBtn.classList.remove('hidden');
+      finalBtn.textContent = current.status === 'FINAL' ? '✓ Final' : '✓ Mark final';
+      finalBtn.disabled = current.status === 'FINAL';
+    }
+    async function refresh() {
+      try {
+        const r = await fetchJson(`/api/proposals/${encodeURIComponent(companyId)}`);
+        versions = r.versions || [];
+      } catch (err) { status.textContent = `Couldn't load: ${err.message}`; return; }
+      if (!versions.length) {
+        status.textContent = 'No recommendation yet — generate one from everything we know about this prospect.';
+        sel.classList.add('hidden'); finalBtn.classList.add('hidden'); host.innerHTML = '';
+        return;
+      }
+      status.textContent = '';
+      sel.classList.remove('hidden');
+      sel.innerHTML = versions.map((v) => `<option value="${escapeHtml(v.id)}">v${escapeHtml(String(v.version))} · ${escapeHtml(v.status)} · ${(v.coverage_json && v.coverage_json.score != null) ? escapeHtml(String(v.coverage_json.score)) + '%' : '—'}</option>`).join('');
+      await loadVersion(versions[0].id);
+    }
+    sel.addEventListener('change', () => loadVersion(sel.value).catch((err) => { status.textContent = `Couldn't load version: ${err.message}`; }));
+    finalBtn.addEventListener('click', async () => {
+      if (!current) return;
+      finalBtn.disabled = true;
+      try {
+        await fetchJson(`/api/proposals/version/${encodeURIComponent(current.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'FINAL' }) });
+        await refresh();
+      } catch (err) { alert(`Couldn't update: ${err.message}`); finalBtn.disabled = false; }
+    });
+    genBtn.addEventListener('click', async () => {
+      genBtn.disabled = true; const t0 = genBtn.textContent; genBtn.textContent = 'Generating… (~15s)';
+      status.textContent = 'Consolidating intelligence and formulating a recommendation…';
+      try {
+        await fetchJson(`/api/proposals/${encodeURIComponent(companyId)}/generate`, { method: 'POST' });
+        await refresh();
+      } catch (err) { status.textContent = ''; alert(`Couldn't generate: ${err.message}`); }
+      finally { genBtn.disabled = false; genBtn.textContent = t0; }
+    });
+    refresh();
+  }
+
   function renderProspectDetail(c, contacts) {
     return `
       <div class="prospect-detail-h">
@@ -1368,6 +1469,7 @@
         <button type="button" class="kb-tab active" data-prospect-tab="signals">🔎 Signals</button>
         <button type="button" class="kb-tab" data-prospect-tab="people">👤 People (${contacts.length})</button>
         <button type="button" class="kb-tab" data-prospect-tab="intel">📁 Intel</button>
+        <button type="button" class="kb-tab" data-prospect-tab="proposal">📝 Proposal</button>
       </div>
 
       <div class="prospect-tab-pane" data-prospect-pane="signals">
@@ -1422,6 +1524,17 @@
           <div class="kb-result hidden" id="prospect-note-result"></div>
         </div>
         <div id="prospect-intel-library-host" style="margin:10px 0 8px 0"></div>
+      </div>
+
+      <div class="prospect-tab-pane hidden" data-prospect-pane="proposal">
+        <span class="kb-subtle">A recommendation that pulls together everything we know — your profile, this prospect's signals, competitor intel and past calls — into how to position, which outcomes to lead with, and what objections to preempt. It's a grounded, cited suggestion; you decide. No pricing, no pipeline.</span>
+        <div class="prospect-intel-actions">
+          <button class="primary-cta" id="prospect-proposal-gen-btn">✨ Generate recommendation</button>
+          <select id="prospect-proposal-version" class="kb-select hidden" title="Version"></select>
+          <button class="kb-secondary-btn hidden" id="prospect-proposal-final-btn">✓ Mark final</button>
+        </div>
+        <div class="prospect-intel-status kb-subtle" id="prospect-proposal-status">Loading…</div>
+        <div id="prospect-proposal" class="prospect-proposal"></div>
       </div>
     `;
   }
@@ -1487,11 +1600,14 @@
         } catch (err) { alert(`Couldn't delete: ${err.message}`); }
       }));
 
-    // ── Tabs (Signals / People / Intel) ──
+    // ── Tabs (Signals / People / Intel / Proposal) ──
     host.querySelectorAll('[data-prospect-tab]').forEach((t) => t.addEventListener('click', () => {
       host.querySelectorAll('[data-prospect-tab]').forEach((x) => x.classList.toggle('active', x === t));
       host.querySelectorAll('[data-prospect-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.prospectPane !== t.dataset.prospectTab));
     }));
+
+    // ── Proposal: intelligence-driven recommendation ──
+    wireProspectProposal(company.id);
 
     // ── Intel Library (the unified, retrievable store) ──
     const intelHost = $('prospect-intel-library-host');

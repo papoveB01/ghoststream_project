@@ -169,7 +169,8 @@ const PROPOSAL_SCHEMA = {
 const SYNTHESIS_PROMPT =
   'You are a sales strategist producing an INTERNAL proposal RECOMMENDATION for a rep — not a contract, not a quote. ' +
   'Consolidate OUR company profile, then the numbered EVIDENCE [n] about a PROSPECT (their research-derived opportunities, filed intel, our competitor intel, and what they said on calls), into an outcome-based recommendation: what to propose, how to position us, which outcomes to emphasize, and which objections to preempt. ' +
-  'RULES: (1) Ground every claim in the evidence and cite the relevant [n] numbers. (2) Where evidence is thin, still give your best recommendation but list those claims under `assumptions` and set that section\'s `confidence` to "low" — NEVER invent facts, signals, or figures. (3) NO pricing, NO contract terms, NO deal-stage language — this is intelligence + suggestion only. (4) Be concrete and specific to THIS prospect; no generic sales filler. (5) Map positioning to products/strengths that actually appear in OUR profile.';
+  'RULES: (1) Ground every claim in the evidence and cite the relevant [n] numbers. (2) Where evidence is thin, still give your best recommendation but list those claims under `assumptions` and set that section\'s `confidence` to "low" — NEVER invent facts, signals, or figures. (3) NO pricing, NO contract terms, NO deal-stage language — this is intelligence + suggestion only. (4) Be concrete and specific to THIS prospect; no generic sales filler. (5) Map positioning to products/strengths that actually appear in OUR profile. ' +
+  '(6) COMPLETELY IGNORE website boilerplate in the evidence — cookie/consent banners, "we use cookies", "we value/take your privacy", privacy-policy and terms-of-use text, navigation, footers, copyright lines. None of that is a signal: never cite it, quote it, or build a point on it.';
 
 async function synthesize(companyName, profileText, evidence) {
   const ai = gemini.getClient();
