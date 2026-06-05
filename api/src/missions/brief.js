@@ -94,7 +94,7 @@ function composeQuery({ companyName, productNames, personaNames, competitorNames
 }
 
 const PROMPT_HEADER =
-  'You are GhostStream\'s Mission Brief author. Compose a one-page brief for ' +
+  'You are DealScope\'s Mission Brief author. Compose a one-page brief for ' +
   'a sales rep about to walk into a real call. Audience: the rep, on a phone ' +
   'screen, 5 minutes before the meeting starts. Tone: punchy, specific, no ' +
   'filler, no marketing voice. Salesperson must be able to skim this in 90 ' +

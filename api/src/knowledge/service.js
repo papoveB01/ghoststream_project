@@ -791,8 +791,8 @@ async function getStatus(tenantId) {
   return {
     active: totals.documents > 0,
     summary: totals.documents > 0
-      ? 'GhostStream Intelligence: Active'
-      : 'GhostStream Intelligence: Awaiting first upload',
+      ? 'DealScope Intelligence: Active'
+      : 'DealScope Intelligence: Awaiting first upload',
     byCategory,
     totals,
     byStatus,

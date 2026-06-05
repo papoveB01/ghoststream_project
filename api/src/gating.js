@@ -56,7 +56,7 @@ async function billingGate(req, res, next) {
 
     return res.status(402).json({
       error: ent.reason === 'trial_expired'
-        ? 'Your free trial has ended. Upgrade to keep using GhostStream.'
+        ? 'Your free trial has ended. Upgrade to keep using DealScope.'
         : 'Your subscription is inactive. Update billing to continue.',
       code: 'SUBSCRIPTION_REQUIRED',
       reason: ent.reason,

@@ -33,6 +33,7 @@ const SELECT_COLUMNS = `
   m.recall_bot_id, m.portal_id, m.brief_id, m.brief_error, m.notes,
   m.created_at, m.updated_at,
   m.ms_event_id, m.ms_ical_uid, m.ms_organizer_email, m.ms_attendee_emails, m.ms_sequence,
+  m.g_event_id, m.g_ical_uid, m.g_organizer_email, m.g_attendee_emails, m.g_sequence,
   c.id AS company_id, c.name AS company_name, c.domain AS company_domain,
   pj.product_ids, sj.persona_ids, cj.competitor_ids
 `;
@@ -69,6 +70,9 @@ async function schedule(tenantId, {
   // meeting from the "🎥 Generate Teams meeting" modal. Lets edit/cancel
   // operate on the mission later. See ADR-0002 §10/§11.
   msEventId, msIcalUid, msOrganizerEmail,
+  // Optional Google Calendar linkage — the Google Meet counterpart of the
+  // ms_* fields, set when the rep generated a Google Meet from the modal.
+  googleEventId, googleIcalUid, googleOrganizerEmail,
 }) {
   if (!tenantId) { const e = new Error('tenantId required'); e.status = 400; throw e; }
   if (!companyName) {
@@ -97,19 +101,23 @@ async function schedule(tenantId, {
 
   let missionId;
   await db.withTx(async (client) => {
-    // ms_attendee_emails defaults to prospect_emails at create time so a
+    // {ms,g}_attendee_emails default to prospect_emails at create time so a
     // later "cancel" still knows whom to notify even if the rep edited
-    // prospect_emails in between.
+    // prospect_emails in between. A mission carries at most one provider's
+    // linkage (whichever modal generated the meeting).
     const r = await client.query(
       `INSERT INTO scheduled_meetings
          (tenant_id, company_id, scheduled_at, meeting_url, prospect_emails, notes,
-          ms_event_id, ms_ical_uid, ms_organizer_email, ms_attendee_emails)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          ms_event_id, ms_ical_uid, ms_organizer_email, ms_attendee_emails,
+          g_event_id, g_ical_uid, g_organizer_email, g_attendee_emails)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING id`,
       [
         tenantId, company.id, scheduledAt, meetingUrl || null, emails, notes || null,
         msEventId || null, msIcalUid || null, msOrganizerEmail || null,
         msEventId ? emails : [],
+        googleEventId || null, googleIcalUid || null, googleOrganizerEmail || null,
+        googleEventId ? emails : [],
       ]
     );
     missionId = r.rows[0].id;

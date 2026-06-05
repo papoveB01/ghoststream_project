@@ -84,7 +84,7 @@ function addressLine(prop, params, email, name) {
 function buildInvite(opts = {}) {
   const {
     uid,
-    subject = 'GhostStream meeting',
+    subject = 'DealScope meeting',
     description = '',
     location = '',
     start,
@@ -93,7 +93,7 @@ function buildInvite(opts = {}) {
     attendees = [],
     sequence = 0,
     method = 'REQUEST',
-    prodId = '-//GhostStream//Meeting Invite//EN',
+    prodId = '-//DealScope//Meeting Invite//EN',
   } = opts;
 
   if (!uid) throw new Error('ics: uid is required');

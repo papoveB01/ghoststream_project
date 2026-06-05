@@ -33,7 +33,7 @@ async function http(method, path, body) {
 }
 
 // Uploads a source video URL to Stream (copy-from-URL). Returns the Stream uid.
-async function ingestFromUrl(videoUrl, name = 'GhostStream call') {
+async function ingestFromUrl(videoUrl, name = 'DealScope call') {
   if (!isConfigured()) {
     return {
       uid: 'mock_' + Math.random().toString(36).slice(2, 12),

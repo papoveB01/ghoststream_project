@@ -4,17 +4,35 @@
 
 const express = require('express');
 const db = require('./db');
+const tenants = require('./tenants');
+const entitlements = require('./entitlements');
+const usage = require('./usage');
 
 const router = express.Router();
 
 const STRENGTH_RANK = { strong: 3, tie: 2, weak: 1 };
 const CRM_LABELS = { hubspot: 'HubSpot', salesforce: 'Salesforce', zoho: 'Zoho CRM', pipedrive: 'Pipedrive', dynamics: 'Dynamics 365' };
 
+// Metered features → human label, in display order. Only the meters whose
+// feature the plan unlocks are surfaced as usage gauges (see below).
+const METER_LABELS = {
+  discovery: 'Discovery',
+  competitor_research: 'Competitor research',
+  engagements: 'Engagements',
+  arena: 'Arena practice',
+  market_monitoring: 'Market Watch',
+};
+const METER_ORDER = ['discovery', 'competitor_research', 'engagements', 'arena', 'market_monitoring'];
+
 router.get('/', async (req, res, next) => {
   try {
     const t = req.tenantId;
-    const [tenantR, prospectsR, prodR, persR, compR, compIntelR, intelR, engCountR, profR, oppR, engR, crmR] = await Promise.all([
-      db.query(`SELECT name, subscription_status, trial_ends_at FROM tenants WHERE id = $1`, [t]),
+    // Tenant row first (resolves plan/caps + parent inheritance for the usage
+    // gauges); cached, so this is effectively free on the hot path.
+    const tenantRow = await tenants.get(t);
+    const ent = await entitlements.resolveEntitlementsFor(tenantRow);
+    const [usedSummary, prospectsR, prodR, persR, compR, compIntelR, intelR, engCountR, profR, oppR, engR, crmR, trendR] = await Promise.all([
+      usage.summary(t, { lifetime: ent.lifetimeCaps }),
       db.query(`SELECT count(*)::int AS total,
                        count(*) FILTER (WHERE created_at >= now() - interval '7 days')::int AS new_week
                   FROM companies WHERE tenant_id = $1`, [t]),
@@ -41,9 +59,21 @@ router.get('/', async (req, res, next) => {
                  WHERE sm.tenant_id = $1 AND sm.status IN ('PENDING','BRIEFED') AND sm.scheduled_at >= now()
                  ORDER BY sm.scheduled_at ASC LIMIT 8`, [t]),
       db.query(`SELECT provider, status FROM crm_connections WHERE tenant_id = $1 ORDER BY updated_at DESC`, [t]),
+      // New prospects per ISO week for the last 8 weeks (gaps filled with 0 so
+      // the sparkline always has a fixed-width 8-bar series).
+      db.query(`SELECT to_char(g.wk, 'YYYY-MM-DD') AS week, COALESCE(c.n, 0)::int AS count
+                  FROM generate_series(date_trunc('week', now()) - interval '7 weeks',
+                                       date_trunc('week', now()), interval '1 week') AS g(wk)
+                  LEFT JOIN (
+                    SELECT date_trunc('week', created_at) AS wk, count(*)::int AS n
+                      FROM companies
+                     WHERE tenant_id = $1 AND created_at >= date_trunc('week', now()) - interval '7 weeks'
+                     GROUP BY 1
+                  ) c ON c.wk = g.wk
+                 ORDER BY g.wk`, [t]),
     ]);
 
-    const tenant = tenantR.rows[0] || {};
+    const tenant = tenantRow || {};
     let daysLeft = null;
     if (tenant.trial_ends_at) {
       daysLeft = Math.max(0, Math.ceil((new Date(tenant.trial_ends_at).getTime() - Date.now()) / 86400000));
@@ -68,6 +98,9 @@ router.get('/', async (req, res, next) => {
       }
     }
     const openSignals = allOpps.length;
+    // Strength mix for the opportunity donut.
+    const strengthBreakdown = { strong: 0, tie: 0, weak: 0 };
+    for (const o of allOpps) { if (strengthBreakdown[o.strength] != null) strengthBreakdown[o.strength]++; }
     allOpps.sort((a, b) => {
       const ra = (a.pinned ? 10 : 0) + (STRENGTH_RANK[a.strength] || 0);
       const rb = (b.pinned ? 10 : 0) + (STRENGTH_RANK[b.strength] || 0);
@@ -87,8 +120,15 @@ router.get('/', async (req, res, next) => {
     const prof = profR.rows[0] || {};
     const crmRow = (crmR.rows || []).find((r) => r.status === 'connected') || (crmR.rows || [])[0] || null;
 
+    // Usage gauges — one per metered feature the plan unlocks. cap === null
+    // means unlimited (Enterprise/Internal) → the client shows a count, not a gauge.
+    const entJson = entitlements.toJson(ent);
+    const meters = METER_ORDER
+      .filter((m) => ent.features.includes(m))
+      .map((m) => ({ key: m, label: METER_LABELS[m], used: usedSummary[m] || 0, cap: entJson.caps[m] }));
+
     res.json({
-      tenant: { name: tenant.name || 'your company', plan: tenant.subscription_status || 'TRIAL', trialEndsAt: tenant.trial_ends_at || null, daysLeft },
+      tenant: { name: tenant.name || 'your company', plan: tenant.subscription_status || 'TRIAL', planName: entJson.planName, trialEndsAt: tenant.trial_ends_at || null, daysLeft },
       kpis: {
         prospects: prospectsR.rows[0].total,
         prospectsNewWeek: prospectsR.rows[0].new_week,
@@ -98,6 +138,9 @@ router.get('/', async (req, res, next) => {
       },
       opportunities,
       engagements,
+      usage: { lifetime: ent.lifetimeCaps, meters },
+      strengthBreakdown,
+      prospectTrend: trendR.rows,
       foundation: {
         profileSet: !!((prof.positioning && prof.positioning.trim()) || (prof.objectives && prof.objectives.trim())),
         products: prodR.rows[0].n,

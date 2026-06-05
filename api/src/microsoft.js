@@ -11,7 +11,7 @@
 //   with scopes `Calendars.Read OnlineMeetings.Read User.Read offline_access`.
 //   No admin consent needed — these are user-consent scopes. The refresh
 //   token is keyed `(tenantId, userId)` in Redis under `ms_grant:` with a
-//   180-day rolling TTL, mirroring the Nylas/Calendly grants in integrations.js.
+//   180-day rolling TTL, mirroring the Calendly/Google grants in integrations.js.
 //
 // MS_CLIENT_SECRET never leaves the server. The redactForLog helper at the
 // bottom is used at every error log site to keep it (and any access/refresh
@@ -489,6 +489,7 @@ async function createTeamsMeeting(tenantId, userId, { subject, startISO, endISO,
     organizerEmail,
     organizerName,
     attendees: normalizedAttendees,
+    platformLabel: 'Microsoft Teams',
   };
 }
 
@@ -517,6 +518,7 @@ async function updateTeamsMeeting(tenantId, userId, eventId, { subject, startISO
     endISO:   (updated.end   && updated.end.dateTime)   ? `${updated.end.dateTime}Z`.replace(/Z+$/,   'Z') : (endISO   || null),
     webLink:  updated.webLink || null,
     organizerEmail: (updated.organizer && updated.organizer.emailAddress && updated.organizer.emailAddress.address) || null,
+    platformLabel: 'Microsoft Teams',
   };
 }
 

@@ -149,7 +149,7 @@ router.post('/credits/checkout', async (req, res, next) => {
         price_data: {
           currency: 'usd',
           unit_amount: pack.unitAmount,
-          product_data: { name: `GhostStream — ${pack.name}`, description: `${pack.credits} credits · expire ${credits.CREDIT_TTL_DAYS} days after purchase` },
+          product_data: { name: `DealScope — ${pack.name}`, description: `${pack.credits} credits · expire ${credits.CREDIT_TTL_DAYS} days after purchase` },
         },
         quantity: 1,
       }],
@@ -371,7 +371,7 @@ router.post('/enterprise-inquiry', async (req, res, next) => {
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
     <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08)">
       <tr><td style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:24px 28px">
-        <div style="color:#c7d2fe;font-size:12px;letter-spacing:.08em;text-transform:uppercase;font-weight:700">GhostStream · Sales</div>
+        <div style="color:#c7d2fe;font-size:12px;letter-spacing:.08em;text-transform:uppercase;font-weight:700">DealScope · Sales</div>
         <div style="color:#ffffff;font-size:20px;font-weight:700;margin-top:4px">New Enterprise inquiry</div>
         <div style="color:#e0e7ff;font-size:14px;margin-top:2px">${esc(companyName)} · inquiry #${inquiryId}</div>
       </td></tr>
@@ -382,11 +382,11 @@ router.post('/enterprise-inquiry', async (req, res, next) => {
           ${notesHtml}
         </table>
         <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:20px"><tr><td style="border-radius:8px;background:#4f46e5">
-          <a href="mailto:${esc(row.contact_email)}?subject=${encodeURIComponent('Re: GhostStream Enterprise — ' + companyName)}" style="display:inline-block;padding:11px 22px;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none">Reply to ${esc(row.contact_name || row.contact_email)} →</a>
+          <a href="mailto:${esc(row.contact_email)}?subject=${encodeURIComponent('Re: DealScope Enterprise — ' + companyName)}" style="display:inline-block;padding:11px 22px;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none">Reply to ${esc(row.contact_name || row.contact_email)} →</a>
         </td></tr></table>
       </td></tr>
       <tr><td style="padding:16px 28px;border-top:1px solid #f1f5f9;color:#94a3b8;font-size:12px">
-        Sent automatically by GhostStream when the Enterprise “Contact sales” form was submitted. Reply directly to reach the prospect.
+        Sent automatically by DealScope when the Enterprise “Contact sales” form was submitted. Reply directly to reach the prospect.
       </td></tr>
     </table>
   </td></tr></table>

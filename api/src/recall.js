@@ -45,16 +45,24 @@ async function http(method, path, body) {
 // then removed when we discovered Recall has no programmatic Teams bot
 // credential API — authenticated Teams joining is configured once on Recall's
 // dashboard (one Microsoft user account per Recall org). See ADR-0002 §8.
-async function createBot({ meetingUrl, botName = 'GhostStream Notetaker', webhookUrl, metadata = {} }) {
+// captureVideo=false → transcript-only: the bot still joins and transcribes
+// (real-time captions), so the sales-intel pipeline is unaffected, but we omit
+// the mixed-video layout and never ingest a recording (privacy mode — see
+// recordingSettings.js / migration 0043).
+//
+// noticeMessage → a recording/transcription notice posted to participants in
+// the meeting chat when the bot joins (consent/notice).
+async function createBot({ meetingUrl, botName = 'DealScope Notetaker', webhookUrl, metadata = {}, captureVideo = true, noticeMessage = null }) {
   if (!meetingUrl) throw new Error('createBot: meetingUrl required');
   const recordingConfig = {
     // Default real-time provider (the platform's own meeting captions).
     transcript: {
       provider: { meeting_captions: {} },
     },
-    // speaker_view used to live at the top level as `recording_mode`.
-    video_mixed_layout: 'speaker_view',
   };
+  // Only render/keep mixed video when video capture is enabled. speaker_view
+  // used to live at the top level as `recording_mode`.
+  if (captureVideo) recordingConfig.video_mixed_layout = 'speaker_view';
   if (webhookUrl) {
     // realtime_endpoints only stream transcript + participant events — bot
     // lifecycle events (bot.status_change → "done") are delivered out-of-band
@@ -77,6 +85,10 @@ async function createBot({ meetingUrl, botName = 'GhostStream Notetaker', webhoo
     metadata,
     recording_config: recordingConfig,
   };
+  // Post a recording notice to the meeting chat the moment the bot joins.
+  if (noticeMessage && String(noticeMessage).trim()) {
+    body.chat = { on_bot_join: { message: String(noticeMessage).trim().slice(0, 4000) } };
+  }
   return http('POST', '/bot/', body);
 }
 

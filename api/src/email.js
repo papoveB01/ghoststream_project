@@ -33,7 +33,7 @@ function isConfigured() {
 function fromAddress() {
   return {
     email: process.env.SENDGRID_FROM_EMAIL || 'no-reply@eel-global.com',
-    name:  process.env.SENDGRID_FROM_NAME  || 'GhostStream',
+    name:  process.env.SENDGRID_FROM_NAME  || 'DealScope',
   };
 }
 

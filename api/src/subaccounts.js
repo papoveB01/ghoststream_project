@@ -156,11 +156,11 @@ router.post('/invite', async (req, res, next) => {
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
     <table role="presentation" width="560" style="max-width:560px;background:#fff;border-radius:12px;overflow:hidden">
       <tr><td style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:24px 28px;color:#fff">
-        <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#c7d2fe;font-weight:700">GhostStream</div>
+        <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#c7d2fe;font-weight:700">DealScope</div>
         <div style="font-size:20px;font-weight:700;margin-top:4px">You've been invited to a workspace</div>
       </td></tr>
       <tr><td style="padding:24px 28px;color:#334155;font-size:14px;line-height:1.6">
-        <p>${esc(parent.name || 'An organization')} set up a GhostStream workspace for <strong>${esc(companyName)}</strong> and invited you (${esc(inviteEmail)}) to run it.</p>
+        <p>${esc(parent.name || 'An organization')} set up a DealScope workspace for <strong>${esc(companyName)}</strong> and invited you (${esc(inviteEmail)}) to run it.</p>
         <p>Set your password to get started — your account is ready.</p>
         <table role="presentation" cellpadding="0" cellspacing="0" style="margin:18px 0"><tr><td style="border-radius:8px;background:#4f46e5">
           <a href="${esc(link)}" style="display:inline-block;padding:12px 26px;color:#fff;font-weight:600;text-decoration:none">Accept &amp; set up →</a>
@@ -171,7 +171,7 @@ router.post('/invite', async (req, res, next) => {
   </td></tr></table>
 </div>`;
       try {
-        await email.send({ to: inviteEmail, subject: `You're invited to the ${companyName} workspace on GhostStream`, html, text: `You've been invited to set up the ${companyName} workspace on GhostStream.\n\nAccept: ${link}\n\nExpires in ${INVITE_TTL_DAYS} days.`, categories: ['subaccount-invite'] });
+        await email.send({ to: inviteEmail, subject: `You're invited to the ${companyName} workspace on DealScope`, html, text: `You've been invited to set up the ${companyName} workspace on DealScope.\n\nAccept: ${link}\n\nExpires in ${INVITE_TTL_DAYS} days.`, categories: ['subaccount-invite'] });
       } catch (e) { console.warn('[subaccounts] invite email failed (invite stored):', e.message); }
     }
     res.status(201).json({ ok: true, invite: ins.rows[0], emailSent: email.isConfigured() });

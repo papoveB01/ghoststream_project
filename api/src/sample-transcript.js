@@ -3,15 +3,15 @@
 // has a clean Moment-of-Truth to find.
 
 module.exports = {
-  meetingTitle: 'Helix Robotics × GhostStream — Discovery Call',
+  meetingTitle: 'Helix Robotics × DealScope — Discovery Call',
   durationSeconds: 285,
   participants: [
-    { role: 'rep', name: 'Mike Patel', company: 'GhostStream' },
+    { role: 'rep', name: 'Mike Patel', company: 'DealScope' },
     { role: 'prospect', name: 'Sara Chen', company: 'Helix Robotics', title: 'CFO' },
   ],
   // [startSec, endSec, speaker, text]
   segments: [
-    [0, 12, 'rep', "Hi Sara, thanks for jumping on. I wanted to walk you through how GhostStream helps your team close more deals with AI-powered roleplay practice and instant post-call portals."],
+    [0, 12, 'rep', "Hi Sara, thanks for jumping on. I wanted to walk you through how DealScope helps your team close more deals with AI-powered roleplay practice and instant post-call portals."],
     [12, 28, 'prospect', "Sure. Before you start — what's the typical payback window? Not the marketing number. The one I can defend to my board."],
     [28, 55, 'rep', "Most of our customers see payback within four to six months based on increased win rate. We measure it on closed-won dollars, not pipeline."],
     [55, 80, 'prospect', "That's a wide range. What's the median, on what sample size, in which segment? Companies our size and stage."],

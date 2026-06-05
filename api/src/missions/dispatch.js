@@ -13,6 +13,7 @@ const recall   = require('../recall');
 const store    = require('../store');
 const service  = require('./service');
 const integrations = require('../integrations');
+const recordingSettings = require('../recordingSettings');
 
 const APP_BASE_URL = process.env.APP_BASE_URL || '';
 
@@ -69,11 +70,15 @@ async function dispatchBot(tenantId, missionId, { force = false, botName } = {})
   // missionCompanyId=null and skipped the prospect-scoped retrieval —
   // exactly what made today's portals come back with kbReady=false. (H9.)
   const missionCompanyId = mission.company_id || null;
+  // Recording privacy settings for this tenant — drives video capture + the
+  // participant notice. captureVideo is stashed in meta so the post-call
+  // processor knows whether to ingest/store the recording.
+  const rec = await recordingSettings.get(tenantId);
   const meeting = await store.createMeeting({
     source: 'recall',
     meetingUrl,
     status: 'creating',
-    meta: { missionId, missionCompanyId, tenantId, dispatchedBy: 'mission' },
+    meta: { missionId, missionCompanyId, tenantId, dispatchedBy: 'mission', captureVideo: rec.videoEnabled },
   });
 
   const webhookUrl = `${APP_BASE_URL}/webhooks/recall`;
@@ -81,9 +86,11 @@ async function dispatchBot(tenantId, missionId, { force = false, botName } = {})
   try {
     bot = await recall.createBot({
       meetingUrl,
-      botName: botName || 'GhostStream Notetaker',
+      botName: botName || 'DealScope Notetaker',
       webhookUrl,
       metadata: { meetingId: meeting.id, missionId, missionCompanyId, tenantId, app: 'ghoststream' },
+      captureVideo: rec.videoEnabled,
+      noticeMessage: recordingSettings.noticeMessageFor(rec),
     });
   } catch (err) {
     // Roll the meetings record into a 'failed' state so it doesn't sit in

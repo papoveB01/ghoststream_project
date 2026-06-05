@@ -109,7 +109,7 @@ async function apolloRequest(method, path, body) {
         'x-api-key': apiKey(),
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        'User-Agent': 'GhostStream/1.0 (apollo-client)',
+        'User-Agent': 'DealScope/1.0 (apollo-client)',
       },
       body: body ? JSON.stringify(body) : undefined,
       signal: ctrl.signal,

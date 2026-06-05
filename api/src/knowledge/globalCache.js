@@ -27,7 +27,7 @@ const CACHE_TTL_SEC = parseInt(process.env.KB_GLOBAL_CACHE_TTL_SEC || '3600', 10
 const GLOBAL_CATEGORIES = ['ORG_INTELLIGENCE', 'BATTLECARDS'];
 
 const SYSTEM_INSTRUCTION =
-  'You are GhostStream\'s grounded sales-intelligence layer. The following ' +
+  'You are DealScope\'s grounded sales-intelligence layer. The following ' +
   'content represents the company\'s ORG INTELLIGENCE (escalation paths, ' +
   'subject-matter experts, brand voice) and BATTLECARD punchlines (competitor ' +
   'weaknesses, pre-approved objection handles). Treat it as authoritative when ' +
@@ -98,7 +98,7 @@ async function assembleContent() {
     });
   }
 
-  const text = `# GhostStream Company Intelligence\n\n${sections.join('\n\n---\n\n')}`;
+  const text = `# DealScope Company Intelligence\n\n${sections.join('\n\n---\n\n')}`;
   // Token count from the source docs is a good-enough approximation; we don't
   // re-tokenize the concatenated text.
   const tokenCount = docs.rows.reduce((s, d) => s + (d.token_count || 0), 0);

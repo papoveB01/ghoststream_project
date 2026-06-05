@@ -28,7 +28,7 @@ async function verifyPassword(plain, hash) {
 }
 
 const PUBLIC_COLUMNS = `
-  id, tenant_id, email, name, first_name, last_name, role, is_admin, email_verified,
+  id, tenant_id, email, name, first_name, last_name, role, job_title, is_admin, email_verified,
   email_verified_at, last_login_at, created_at, updated_at
 `;
 
@@ -42,6 +42,7 @@ function rowToUser(row) {
     firstName: row.first_name,
     lastName: row.last_name,
     role: row.role,
+    jobTitle: row.job_title,
     isAdmin: row.is_admin,
     emailVerified: row.email_verified,
     emailVerifiedAt: row.email_verified_at,
@@ -81,7 +82,7 @@ async function findByVerificationToken(token) {
 // Create a user. `passwordHash` must already be bcrypt-hashed (callers go
 // through hashPassword first). Generates an email-verification token unless
 // emailVerified is explicitly true.
-async function create({ tenantId, email, passwordHash, name = null, firstName = null, lastName = null, role = 'owner', isAdmin = false, emailVerified = false }) {
+async function create({ tenantId, email, passwordHash, name = null, firstName = null, lastName = null, role = 'owner', jobTitle = null, isAdmin = false, emailVerified = false }) {
   if (!tenantId) { const e = new Error('tenantId required'); e.status = 400; throw e; }
   if (!email)    { const e = new Error('email required');    e.status = 400; throw e; }
   if (!passwordHash) { const e = new Error('passwordHash required'); e.status = 400; throw e; }
@@ -91,14 +92,17 @@ async function create({ tenantId, email, passwordHash, name = null, firstName = 
   const first = firstName ? String(firstName).trim() : null;
   const last = lastName ? String(lastName).trim() : null;
   const displayName = name || [first, last].filter(Boolean).join(' ') || null;
+  // job_title is the GTM role from onboarding (allow-list value), NOT the
+  // tenancy `role` above.
+  const job = jobTitle ? String(jobTitle).trim() : null;
 
   const token = emailVerified ? null : crypto.randomBytes(24).toString('hex');
   const r = await db.query(
     `INSERT INTO users
-       (tenant_id, email, password_hash, name, first_name, last_name, role, is_admin, email_verified, email_verification_token, email_verified_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, CASE WHEN $9 THEN now() ELSE NULL END)
+       (tenant_id, email, password_hash, name, first_name, last_name, role, job_title, is_admin, email_verified, email_verification_token, email_verified_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, CASE WHEN $10 THEN now() ELSE NULL END)
      RETURNING ${PUBLIC_COLUMNS}, email_verification_token`,
-    [tenantId, String(email).trim(), passwordHash, displayName, first, last, role, isAdmin, emailVerified, token]
+    [tenantId, String(email).trim(), passwordHash, displayName, first, last, role, job, isAdmin, emailVerified, token]
   );
   const u = rowToUser(r.rows[0]);
   u.emailVerificationToken = r.rows[0].email_verification_token; // returned to caller for the email link

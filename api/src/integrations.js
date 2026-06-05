@@ -1,11 +1,13 @@
 // Calendar integrations — "stop the double-entry". Two shapes:
 //
-//   1. READ an existing calendar via **Nylas** (one connect flow covers
-//      Google, Microsoft 365 / Outlook, iCloud, IMAP). The rep clicks
-//      "Connect calendar" → Nylas hosted auth → we store a per-(tenant,user)
-//      `grant_id`. The schedule form can then list upcoming events and prefill
-//      Company / When / Meeting URL / attendees. Needs NYLAS_API_KEY +
-//      NYLAS_CLIENT_ID (a Nylas application + a registered callback URI).
+//   1. READ + WRITE a calendar directly via the provider's own API — Google
+//      (api/src/google.js) and Microsoft 365 (api/src/microsoft.js). The rep
+//      clicks "Connect" → the provider's OAuth consent → we store a
+//      per-(tenant,user) refresh token. The schedule form can then list
+//      upcoming events (prefilling Company / When / Meeting URL / attendees)
+//      AND generate a Google Meet / Teams meeting with a branded invite.
+//      Needs GOOGLE_CLIENT_ID/SECRET resp. MS_CLIENT_ID/SECRET. (This replaced
+//      the old Nylas-hosted-auth path — see docs/adr/0002 Option D.)
 //
 //   2. RECEIVE from Calendly (internal-use booking links). When a prospect
 //      books a slot, Calendly fires an `invitee.created` webhook; we verify
@@ -20,6 +22,7 @@ const express = require('express');
 const redis = require('./redis');
 const secretbox = require('./secretbox');
 const microsoft = require('./microsoft');
+const google    = require('./google');
 const email     = require('./email');
 const ics       = require('./ics');
 const db        = require('./db');
@@ -27,15 +30,6 @@ const gating    = require('./gating');
 
 const APP_BASE_URL =
   process.env.APP_BASE_URL || 'https://ghoststream.exact-it.net';
-
-// Nylas region base — set NYLAS_API_URI to https://api.eu.nylas.com for the
-// EU data region. The callback URI must be registered in the Nylas app.
-const NYLAS_API_URI = (process.env.NYLAS_API_URI || 'https://api.us.nylas.com').replace(/\/+$/, '');
-const NYLAS_CALLBACK_PATH = '/api/integrations/calendar/callback';
-
-function nylasApiKey()  { return process.env.NYLAS_API_KEY  || null; }
-function nylasClientId() { return process.env.NYLAS_CLIENT_ID || null; }
-function nylasCallbackUri() { return `${APP_BASE_URL}${NYLAS_CALLBACK_PATH}`; }
 
 // Calendly OAuth app + webhook config.
 const CALENDLY_API_BASE  = (process.env.CALENDLY_API_BASE  || 'https://api.calendly.com').replace(/\/+$/, '');
@@ -55,21 +49,21 @@ function calendlyWebhookUri(routeToken) { return `${APP_BASE_URL}${CALENDLY_WEBH
 
 const PROVIDERS = [
   {
-    key: 'nylas',
-    name: 'Calendar',
+    key: 'google',
+    name: 'Google',
     icon: '📆',
-    mode: 'read', // we read the rep's calendar
-    blurb: 'Connect a Google or iCloud calendar (via Nylas). The schedule form then pulls an upcoming event — date, link and attendees fill in automatically.',
-    requires: ['NYLAS_API_KEY', 'NYLAS_CLIENT_ID'],
-    setup: 'Create a Nylas v3 application, add the callback URI below to its allowed callback URIs, then set NYLAS_API_KEY + NYLAS_CLIENT_ID (and NYLAS_API_URI if your data region is EU) and restart.',
-    callbackPath: NYLAS_CALLBACK_PATH,
+    mode: 'read', // per-user delegated calendar reads + Google Meet creation
+    blurb: 'Connect your Google Calendar to stop double-entering meetings — upcoming events drop straight into the schedule form with the date, join link and attendees already filled in. Spin up a Google Meet for any engagement in one click, invite included.',
+    requires: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'],
+    setup: 'Create an OAuth 2.0 "Web application" client in a Google Cloud project (enable the Google Calendar API + People API), add the redirect URI below to its Authorized redirect URIs, configure the OAuth consent screen with the calendar.events + contacts scopes, then set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET and restart.',
+    callbackPath: google.CALLBACK_PATH,
   },
   {
     key: 'microsoft',
-    name: 'Microsoft 365 (direct)',
+    name: 'Microsoft 365',
     icon: '🪟',
     mode: 'read', // per-user delegated calendar reads (Piece A in ADR-0002)
-    blurb: 'Connect a Microsoft 365 / Outlook calendar directly via Microsoft Graph. Outlook events + Teams join links prefill the schedule form, and you can generate Teams meetings from it.',
+    blurb: 'Connect your Microsoft 365 / Outlook calendar to stop double-entering meetings — upcoming events drop straight into the schedule form with the date, join link and attendees already filled in. Spin up a Teams meeting for any engagement in one click, invite included.',
     requires: ['MS_CLIENT_ID', 'MS_CLIENT_SECRET'],
     setup: 'Register a multi-tenant Azure AD application (see .env.example for the exact registration steps), add the redirect URI below to the app, set MS_CLIENT_ID + MS_CLIENT_SECRET and restart. Authenticated Teams meeting joining is a separate one-time operator action on the Recall.ai dashboard — see ADR-0002 §8.',
     callbackPath: microsoft.CALLBACK_PATH,
@@ -103,8 +97,9 @@ const STATE_TTL_SEC = 600;                       // 10 min — the OAuth round-t
 const GRANT_TTL_SEC = 60 * 60 * 24 * 180;        // 180 days — rolling
 
 function stateKey(s)               { return `cal_state:${s}`; }
-function grantKey(tenantId, userId){ return `cal_grant:${tenantId}:${userId}`; }
 
+// Shared OAuth CSRF state (Calendly uses this too — Google/Microsoft each have
+// their own state helpers inside their modules).
 async function makeOAuthState(tenantId, userId) {
   const s = crypto.randomBytes(24).toString('base64url');
   await redis.set(stateKey(s), JSON.stringify({ tenantId, userId }), 'EX', STATE_TTL_SEC);
@@ -116,124 +111,8 @@ async function consumeOAuthState(s) {
   if (raw) await redis.del(stateKey(s));
   try { return raw ? JSON.parse(raw) : null; } catch { return null; }
 }
-async function saveGrant(tenantId, userId, grant) {
-  // Encrypted at rest — holds the calendar OAuth access/refresh tokens.
-  await redis.set(grantKey(tenantId, userId), secretbox.sealJson(grant), 'EX', GRANT_TTL_SEC);
-}
-async function loadGrant(tenantId, userId) {
-  const raw = await redis.get(grantKey(tenantId, userId));
-  try { return raw ? secretbox.openJson(raw) : null; } catch { return null; }
-}
-async function deleteGrant(tenantId, userId) {
-  await redis.del(grantKey(tenantId, userId));
-}
 
-// ── Nylas API helpers ────────────────────────────────────────
-
-// Providers we let a rep connect (must have a matching connector in the Nylas
-// app). `outlook` is an alias for `microsoft`; `icloud` for `imap`.
-const CALENDAR_PROVIDERS = ['google', 'microsoft', 'imap'];
-function normalizeProvider(p) {
-  const v = String(p || '').trim().toLowerCase();
-  if (v === 'outlook') return 'microsoft';
-  if (v === 'icloud')  return 'imap';
-  return CALENDAR_PROVIDERS.includes(v) ? v : 'google'; // default: Google
-}
-
-// Build the Nylas v3 hosted-auth URL. `provider` is REQUIRED in v3 — without
-// it Nylas redirects to a sandbox-warning page that has no working picker and
-// dead-ends on nylas.com. We always pass one (defaulting to Google).
-function nylasAuthUrl(state, provider) {
-  const params = new URLSearchParams({
-    client_id: nylasClientId(),
-    redirect_uri: nylasCallbackUri(),
-    response_type: 'code',
-    provider: normalizeProvider(provider),
-    access_type: 'offline',
-    state,
-  });
-  return `${NYLAS_API_URI}/v3/connect/auth?${params.toString()}`;
-}
-
-// Exchange the hosted-auth `code` for a grant. v3 `POST /v3/connect/token`
-// authenticates with the application API key (Bearer) + `client_id` in the
-// body — there's no separate client_secret in v3. Returns { grantId, email,
-// provider }; falls back to a `GET /v3/grants/{id}` for email/provider if the
-// token response didn't carry them.
-async function nylasExchangeCode(code) {
-  const r = await fetch(`${NYLAS_API_URI}/v3/connect/token`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      Authorization: `Bearer ${nylasApiKey()}`,
-    },
-    body: JSON.stringify({
-      client_id: nylasClientId(),
-      redirect_uri: nylasCallbackUri(),
-      code,
-      grant_type: 'authorization_code',
-    }),
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    throw new Error(`Nylas token exchange failed (${r.status}): ${j.error_description || j.error || JSON.stringify(j).slice(0, 200)}`);
-  }
-  const d = j.data || j;
-  const grantId = d.grant_id || null;
-  if (!grantId) throw new Error('Nylas token exchange returned no grant_id');
-  let email = d.email || null;
-  let provider = d.provider || null;
-  if (!email || !provider) {
-    try {
-      const g = await nylasGet(`/v3/grants/${encodeURIComponent(grantId)}`);
-      const gd = g.data || g;
-      email = email || gd.email || null;
-      provider = provider || gd.provider || null;
-    } catch { /* non-fatal — we still have the grant id */ }
-  }
-  return { grantId, email, provider };
-}
-
-// Authenticated call against a grant. NYLAS_API_KEY is the application bearer.
-async function nylasGet(path) {
-  const r = await fetch(`${NYLAS_API_URI}${path}`, {
-    headers: { Authorization: `Bearer ${nylasApiKey()}`, Accept: 'application/json' },
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    const e = new Error(`Nylas GET ${path} → ${r.status}: ${(j.error && (j.error.message || j.error.type)) || j.message || 'error'}`);
-    e.status = r.status;
-    throw e;
-  }
-  return j;
-}
-async function nylasDelete(path) {
-  const r = await fetch(`${NYLAS_API_URI}${path}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${nylasApiKey()}`, Accept: 'application/json' },
-  });
-  // 200 or 404 (already gone) are both "fine" for our purposes.
-  if (!r.ok && r.status !== 404) {
-    const j = await r.json().catch(() => ({}));
-    throw new Error(`Nylas DELETE ${path} → ${r.status}: ${(j.error && j.error.message) || 'error'}`);
-  }
-}
-
-// ── Connection status (is this user's calendar connected? as whom?) ───────
-
-async function calendarConnection(tenantId, userId) {
-  const g = await loadGrant(tenantId, userId);
-  if (!g) return { connected: false };
-  return {
-    connected: true,
-    email: g.email || null,
-    provider: g.provider || null,
-    connectedAt: g.connectedAt || null,
-  };
-}
-
-// ── Event listing + normalization ─────────────────────────────────
+// ── Shared helpers for company/contact guessing ───────────────────
 
 const PUBLIC_EMAIL_DOMAINS = new Set([
   'gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.co.uk', 'outlook.com',
@@ -258,31 +137,6 @@ function companyNameFromDomain(domain) {
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') || null;
 }
 
-// Nylas v3 `when` object → ISO string for the start. Variants:
-//   { object:'timespan', start_time, end_time }   unix seconds
-//   { object:'date', date }                        "YYYY-MM-DD"
-//   { object:'datespan', start_date, end_date }
-function whenToIso(when, which /* 'start'|'end' */) {
-  if (!when) return null;
-  if (when.object === 'timespan') {
-    const sec = which === 'end' ? when.end_time : when.start_time;
-    return sec ? new Date(sec * 1000).toISOString() : null;
-  }
-  if (when.object === 'date')     return when.date ? `${when.date}T00:00:00.000Z` : null;
-  if (when.object === 'datespan') return (which === 'end' ? when.end_date : when.start_date) || null;
-  // Fallbacks for older shapes
-  if (when.start_time) return new Date((which === 'end' ? when.end_time : when.start_time) * 1000).toISOString();
-  return null;
-}
-
-function conferencingUrl(ev) {
-  const c = ev.conferencing || {};
-  if (c.details && c.details.url) return c.details.url;
-  if (c.url) return c.url;
-  if (typeof ev.location === 'string' && /^https?:\/\//.test(ev.location)) return ev.location.trim();
-  return null;
-}
-
 // Hostnames Recall.ai's bot dispatcher recognises directly. If a meeting URL
 // already resolves to one of these, no need to follow redirects.
 const RECALL_NATIVE_HOSTS = /(meet\.google\.com|zoom\.us|zoom\.com|teams\.microsoft\.com|teams\.live\.com|webex\.com|gotomeet(ing)?\.com|whereby\.com|chime\.aws)$/i;
@@ -304,7 +158,7 @@ async function resolveMeetingUrl(url, { timeoutMs = 4000 } = {}) {
     const r = await fetch(url, {
       redirect: 'manual',
       signal: ctrl.signal,
-      headers: { 'User-Agent': 'GhostStream/1.0 (calendar-resolver)' },
+      headers: { 'User-Agent': 'DealScope/1.0 (calendar-resolver)' },
     });
     if (r.status >= 300 && r.status < 400) {
       const loc = r.headers.get('location');
@@ -324,85 +178,6 @@ async function resolveMeetingUrl(url, { timeoutMs = 4000 } = {}) {
     clearTimeout(timer);
   }
   return url;
-}
-
-// Normalize one Nylas event → a stable shape the frontend understands, plus a
-// `suggestion` object pre-derived for the schedule form.
-function normalizeEvent(ev, providerHint) {
-  const start = whenToIso(ev.when, 'start');
-  const end   = whenToIso(ev.when, 'end');
-  const url   = conferencingUrl(ev);
-  const participants = Array.isArray(ev.participants) ? ev.participants : [];
-  const organizerEmail = (ev.organizer && ev.organizer.email) || null;
-  // Anyone on the invite who isn't us / a resource room.
-  const attendeeEmails = participants
-    .map((p) => (p && p.email ? String(p.email).toLowerCase() : null))
-    .filter(Boolean);
-  // "External" = not from a public-mail provider. First external attendee/
-  // organizer domain drives the company guess.
-  const externalDomains = [...new Set(
-    [...attendeeEmails, organizerEmail].filter(Boolean)
-      .map(domainOf).filter((d) => d && !PUBLIC_EMAIL_DOMAINS.has(d))
-  )];
-  const guessDomain = externalDomains[0] || null;
-  // A name for the primary contact: first participant whose email matches the
-  // guessed domain (or just the first non-empty participant name).
-  let primaryContact = null;
-  for (const p of participants) {
-    if (!p || !p.email) continue;
-    if (guessDomain && domainOf(p.email) === guessDomain && (p.name || '').trim()) { primaryContact = p.name.trim(); break; }
-  }
-  if (!primaryContact) {
-    const named = participants.find((p) => p && (p.name || '').trim());
-    if (named) primaryContact = named.name.trim();
-  }
-  const externalEmails = attendeeEmails.filter((e) => {
-    const d = domainOf(e);
-    return d && !PUBLIC_EMAIL_DOMAINS.has(d);
-  });
-
-  return {
-    provider: providerHint || ev.provider || 'calendar',
-    id: ev.id || null,
-    title: ev.title || ev.subject || '(no title)',
-    start, end,
-    url,
-    location: typeof ev.location === 'string' ? ev.location : null,
-    attendees: attendeeEmails,
-    organizerEmail,
-    // Pre-baked prefill for the schedule form. The rep reviews before saving.
-    suggestion: {
-      companyName: companyNameFromDomain(guessDomain) || (externalEmails[0] || ''),
-      companyDomain: guessDomain || null,
-      primaryContact,
-      scheduledAt: start,
-      meetingUrl: url,
-      prospectEmails: externalEmails,
-      notes: `Imported from calendar — "${ev.title || ev.subject || 'meeting'}".`,
-    },
-  };
-}
-
-// Upcoming events from the user's connected calendar (next `days` days).
-async function fetchUpcomingEvents(tenantId, userId, { days = 14, limit = 30 } = {}) {
-  const g = await loadGrant(tenantId, userId);
-  if (!g || !g.grantId) { const e = new Error('no calendar connected'); e.status = 409; e.code = 'NOT_CONNECTED'; throw e; }
-  const now = Math.floor(Date.now() / 1000);
-  const until = now + days * 86400;
-  const params = new URLSearchParams({
-    calendar_id: 'primary',
-    start: String(now),
-    end: String(until),
-    limit: String(Math.max(1, Math.min(limit, 50))),
-    order_by: 'start',
-  });
-  const j = await nylasGet(`/v3/grants/${encodeURIComponent(g.grantId)}/events?${params.toString()}`);
-  const items = Array.isArray(j.data) ? j.data : [];
-  return items
-    .filter((ev) => (ev.status || '').toLowerCase() !== 'cancelled')
-    .map((ev) => normalizeEvent(ev, g.provider))
-    .filter((ev) => ev.start) // need a start time to be useful
-    .sort((a, b) => new Date(a.start) - new Date(b.start));
 }
 
 // ── Calendly webhook (unchanged) ──────────────────────────────────
@@ -649,7 +424,7 @@ async function registerCalendlyWebhook(tenantId, userId) {
 // in-app flow. See ADR-0002 §8 for why that ended up dashboard-only.
 
 // microsoft.connection already returns { connected, email, name, msTenantId, connectedAt }.
-// We re-export through this name for symmetry with calendarConnection /
+// We re-export through this name for symmetry with googleConnection /
 // calendlyConnection, in case future shape additions need to wrap it.
 const microsoftConnection = (tenantId, userId) => microsoft.connection(tenantId, userId);
 
@@ -660,7 +435,19 @@ async function handleMicrosoftCallback(req, res) {
   return microsoft.handleCalendarCallback(req, res);
 }
 
-// Send a branded GhostStream meeting invite via SendGrid with the .ics
+// ── Google — thin wrappers over api/src/google.js ────────────────
+// Symmetry with microsoftConnection / handleMicrosoftCallback; the module owns
+// all Google API logic, this file owns only the route surface.
+const googleConnection = (tenantId, userId) => google.connection(tenantId, userId);
+
+// Public callback (mounted UN-authed in index.js) — Google's cookieless
+// redirect can't carry the session cookie; the Redis state token binds the
+// response to (tenantId, userId).
+async function handleGoogleCallback(req, res) {
+  return google.handleCalendarCallback(req, res);
+}
+
+// Send a branded DealScope meeting invite via SendGrid with the .ics
 // attachment. The rep's M365 mailbox is intentionally NOT used for delivery
 // (ADR-0002 §10). Reply-To is the rep's email so prospects' "can we push by
 // 30?" lands in the rep's inbox, not in our no-reply.
@@ -676,7 +463,7 @@ async function sendBrandedInvite({ created, body, replyTo, sequence = 0, method 
   const attendees = Array.isArray(created.attendees) ? created.attendees : [];
   const branding = {
     fromEmail: process.env.MEETINGS_FROM_EMAIL || 'meetings@eel-global.com',
-    fromName:  process.env.MEETINGS_FROM_NAME  || 'GhostStream Meetings',
+    fromName:  process.env.MEETINGS_FROM_NAME  || 'DealScope Meetings',
     replyTo:   process.env.MEETINGS_REPLY_TO || replyTo || null,
   };
   // Refuse to silently swallow the invite step when SendGrid isn't set up;
@@ -693,11 +480,15 @@ async function sendBrandedInvite({ created, body, replyTo, sequence = 0, method 
     return { sent: [], totalAttempted: 0, branding };
   }
 
+  // Provider label so the same code path serves Teams + Google Meet (the
+  // create*/update* helpers set platformLabel; default keeps it generic).
+  const label = created.platformLabel || 'video meeting';
+
   // Build the ICS once — same body for every recipient. UID is per-event
-  // (Microsoft's iCalUId is stable and unique).
+  // (the provider's iCalUId / iCalUID is stable and unique).
   const description = body && body.trim()
-    ? `${body.trim()}\n\nJoin the Teams meeting: ${created.joinUrl}`
-    : `Join the Teams meeting: ${created.joinUrl}`;
+    ? `${body.trim()}\n\nJoin the ${label}: ${created.joinUrl}`
+    : `Join the ${label}: ${created.joinUrl}`;
   const icsBody = ics.buildInvite({
     uid: created.iCalUId || `${created.eventId}@ghoststream`,
     subject: method === 'CANCEL' ? `Cancelled: ${created.subject}` : created.subject,
@@ -719,16 +510,16 @@ async function sendBrandedInvite({ created, body, replyTo, sequence = 0, method 
     <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.5">
       <p>You're invited to <strong>${escapeHtmlEntity(created.subject)}</strong></p>
       <p><strong>When:</strong> ${escapeHtmlEntity(startLocal)}</p>
-      <p><strong>Where:</strong> <a href="${escapeAttr(created.joinUrl)}">Microsoft Teams meeting</a></p>
+      <p><strong>Where:</strong> <a href="${escapeAttr(created.joinUrl)}">${escapeHtmlEntity(label)}</a></p>
       ${body && body.trim() ? `<hr style="border:none;border-top:1px solid #e5e7eb;margin:14px 0"><div>${nl2br(escapeHtmlEntity(body.trim()))}</div>` : ''}
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:14px 0">
-      <p style="font-size:12px;color:#6b7280">Sent via GhostStream. Reply to this email to reach the meeting organizer.</p>
+      <p style="font-size:12px;color:#6b7280">Sent via DealScope. Reply to this email to reach the meeting organizer.</p>
     </div>
   `;
   const textBody = [
     `You're invited to ${created.subject}`,
     `When: ${startLocal}`,
-    `Join the Teams meeting: ${created.joinUrl}`,
+    `Join the ${label}: ${created.joinUrl}`,
     body && body.trim() ? `\n${body.trim()}` : '',
   ].filter(Boolean).join('\n');
 
@@ -899,8 +690,8 @@ async function handleCalendlyCallback(req, res) {
 // ── Status payload for the admin page ────────────────────────────────
 
 async function statusPayload(tenantId, userId) {
-  const [calConn, calyConn, msConn] = await Promise.all([
-    calendarConnection(tenantId, userId),
+  const [googleConn, calyConn, msConn] = await Promise.all([
+    googleConnection(tenantId, userId),
     calendlyConnection(tenantId, userId),
     microsoftConnection(tenantId, userId),
   ]);
@@ -910,46 +701,22 @@ async function statusPayload(tenantId, userId) {
       configured: p.requires.every(envSet),
       requires: p.requires.map((name) => ({ name, set: envSet(name) })),
       // The effective redirect/callback URI to register in the provider's
-      // console (Calendly honours CALENDLY_REDIRECT_URI; Nylas uses APP_BASE_URL;
-      // Microsoft honours MS_REDIRECT_URI via microsoft.redirectUri()).
+      // console (Calendly honours CALENDLY_REDIRECT_URI; Google honours
+      // GOOGLE_REDIRECT_URI via google.redirectUri(); Microsoft honours
+      // MS_REDIRECT_URI via microsoft.redirectUri()).
       callbackUri: p.key === 'calendly'  ? calendlyCallbackUri()
                  : p.key === 'microsoft' ? microsoft.redirectUri()
+                 : p.key === 'google'    ? google.redirectUri()
                  : p.callbackPath ? `${APP_BASE_URL}${p.callbackPath}` : null,
       webhookUrl:  p.webhookPath  ? `${APP_BASE_URL}${p.webhookPath}`  : null,
-      // Per-user connection state (Nylas grant / Calendly OAuth token /
+      // Per-user connection state (Google grant / Calendly OAuth token /
       // Microsoft delegated grant).
-      connection: p.key === 'nylas'     ? calConn
+      connection: p.key === 'google'    ? googleConn
                 : p.key === 'calendly'  ? calyConn
                 : p.key === 'microsoft' ? msConn
                 : null,
     })),
   };
-}
-
-// ── Public callback handler (mounted UN-authed in index.js) ───────────────
-// Nylas redirects the browser here after hosted auth: ?code=...&state=...
-
-async function handleCalendarCallback(req, res) {
-  const finish = (queryKey, val) => res.redirect(`/admin/?${queryKey}=${encodeURIComponent(val)}#integrations`);
-  try {
-    if (!isConfigured('nylas')) return finish('cal_error', 'Nylas not configured');
-    const { code, state, error, error_description } = req.query || {};
-    if (error) return finish('cal_error', error_description || error);
-    if (!code || !state) return finish('cal_error', 'missing code/state');
-    const st = await consumeOAuthState(state);
-    if (!st) return finish('cal_error', 'state expired — please try connecting again');
-    const grant = await nylasExchangeCode(code);
-    await saveGrant(st.tenantId, st.userId, {
-      grantId: grant.grantId,
-      email: grant.email,
-      provider: grant.provider,
-      connectedAt: new Date().toISOString(),
-    });
-    return finish('cal', 'connected');
-  } catch (err) {
-    console.error('[nylas-callback]', err.stack || err.message);
-    return finish('cal_error', err.message || 'connect failed');
-  }
 }
 
 // ── Router (mounted at /api/integrations behind authMiddleware) ────────────
@@ -961,50 +728,6 @@ router.use(express.json());
 router.get('/calendar', async (req, res, next) => {
   try { res.json(await statusPayload(req.tenantId, req.user.sub)); }
   catch (err) { next(err); }
-});
-
-// GET /api/integrations/calendar/connect — start the Nylas hosted-auth flow.
-// 302-redirects the browser to Nylas; the browser carries the session cookie
-// on this top-level navigation, so authMiddleware has already run.
-router.get('/calendar/connect', async (req, res, next) => {
-  try {
-    if (!isConfigured('nylas')) {
-      return res.status(503).json({ error: 'Calendar (Nylas) not configured — set NYLAS_API_KEY + NYLAS_CLIENT_ID.', code: 'NOT_CONFIGURED' });
-    }
-    const state = await makeOAuthState(req.tenantId, req.user.sub);
-    res.redirect(nylasAuthUrl(state, req.query.provider));
-  } catch (err) { next(err); }
-});
-
-// DELETE /api/integrations/calendar/connection — revoke + forget the grant.
-router.delete('/calendar/connection', async (req, res, next) => {
-  try {
-    const g = await loadGrant(req.tenantId, req.user.sub);
-    if (g && g.grantId && isConfigured('nylas')) {
-      try { await nylasDelete(`/v3/grants/${encodeURIComponent(g.grantId)}`); } catch (e) { /* best-effort */ }
-    }
-    await deleteGrant(req.tenantId, req.user.sub);
-    res.json({ ok: true });
-  } catch (err) { next(err); }
-});
-
-// GET /api/integrations/calendar/events?days=14 — upcoming events for the
-// schedule-form picker. 409 (with code) when no calendar is connected so the
-// UI can prompt the rep to connect one.
-router.get('/calendar/events', async (req, res, next) => {
-  try {
-    if (!isConfigured('nylas')) {
-      return res.status(503).json({ error: 'Calendar (Nylas) not configured.', code: 'NOT_CONFIGURED' });
-    }
-    const days = Math.max(1, Math.min(parseInt(req.query.days, 10) || 14, 60));
-    const events = await fetchUpcomingEvents(req.tenantId, req.user.sub, { days });
-    res.json({ events });
-  } catch (err) {
-    if (err.code === 'NOT_CONNECTED' || err.status === 409) {
-      return res.status(409).json({ error: 'No calendar connected — connect one on the Integrations page.', code: 'NOT_CONNECTED' });
-    }
-    next(err);
-  }
 });
 
 // GET /api/integrations/calendly/connect — start the Calendly OAuth flow.
@@ -1083,14 +806,14 @@ router.delete('/calendly/connection', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// ── Microsoft 365 (direct) routes ─────────────────────────────────────────
+// ── Microsoft 365 routes ─────────────────────────────────────────
 
 // GET /api/integrations/microsoft/connect — start the per-user delegated
 // OAuth flow for the rep's calendar.
 router.get('/microsoft/connect', async (req, res, next) => {
   try {
     if (!microsoft.isConfigured()) {
-      return res.status(503).json({ error: 'Microsoft 365 (direct) not configured — set MS_CLIENT_ID + MS_CLIENT_SECRET.', code: 'NOT_CONFIGURED' });
+      return res.status(503).json({ error: 'Microsoft 365 not configured — set MS_CLIENT_ID + MS_CLIENT_SECRET.', code: 'NOT_CONFIGURED' });
     }
     const state = await microsoft.makeOAuthState(req.tenantId, req.user.sub, 'calendar');
     res.redirect(microsoft.authUrl(state));
@@ -1103,7 +826,7 @@ router.get('/microsoft/connect', async (req, res, next) => {
 router.get('/microsoft/events', async (req, res, next) => {
   try {
     if (!microsoft.isConfigured()) {
-      return res.status(503).json({ error: 'Microsoft 365 (direct) not configured.', code: 'NOT_CONFIGURED' });
+      return res.status(503).json({ error: 'Microsoft 365 not configured.', code: 'NOT_CONFIGURED' });
     }
     const days = Math.max(1, Math.min(parseInt(req.query.days, 10) || 14, 60));
     const events = await microsoft.fetchUpcomingEvents(req.tenantId, req.user.sub, { days });
@@ -1133,7 +856,7 @@ router.delete('/microsoft/connection', async (req, res, next) => {
 router.post('/microsoft/meetings', async (req, res, next) => {
   try {
     if (!microsoft.isConfigured()) {
-      return res.status(503).json({ error: 'Microsoft 365 (direct) not configured.', code: 'NOT_CONFIGURED' });
+      return res.status(503).json({ error: 'Microsoft 365 not configured.', code: 'NOT_CONFIGURED' });
     }
     const { subject, startISO, endISO, attendees, body } = req.body || {};
     const created = await microsoft.createTeamsMeeting(req.tenantId, req.user.sub, {
@@ -1189,7 +912,7 @@ router.post('/microsoft/meetings', async (req, res, next) => {
 router.patch('/microsoft/meetings/:eventId', async (req, res, next) => {
   try {
     if (!microsoft.isConfigured()) {
-      return res.status(503).json({ error: 'Microsoft 365 (direct) not configured.', code: 'NOT_CONFIGURED' });
+      return res.status(503).json({ error: 'Microsoft 365 not configured.', code: 'NOT_CONFIGURED' });
     }
     const eventId = String(req.params.eventId);
     const { subject, startISO, endISO, attendees, body } = req.body || {};
@@ -1280,7 +1003,7 @@ router.patch('/microsoft/meetings/:eventId', async (req, res, next) => {
 router.delete('/microsoft/meetings/:eventId', async (req, res, next) => {
   try {
     if (!microsoft.isConfigured()) {
-      return res.status(503).json({ error: 'Microsoft 365 (direct) not configured.', code: 'NOT_CONFIGURED' });
+      return res.status(503).json({ error: 'Microsoft 365 not configured.', code: 'NOT_CONFIGURED' });
     }
     const eventId = String(req.params.eventId);
     const mission = await loadMissionByMsEvent(req.tenantId, eventId);
@@ -1308,6 +1031,7 @@ router.delete('/microsoft/meetings/:eventId', async (req, res, next) => {
         endISO:   new Date(new Date(mission.scheduled_at).getTime() + 30 * 60_000).toISOString(),
         organizerEmail: mission.ms_organizer_email,
         attendees: lastAttendees,
+        platformLabel: 'Microsoft Teams',
       },
       body: 'This meeting has been cancelled.',
       replyTo: mission.ms_organizer_email,
@@ -1353,6 +1077,19 @@ async function loadMissionByMsEvent(tenantId, eventId) {
   return r.rows[0] || null;
 }
 
+// Google counterpart — looks up the mission by the Google Calendar event id.
+async function loadMissionByGoogleEvent(tenantId, eventId) {
+  const r = await db.query(
+    `SELECT id, tenant_id, scheduled_at, meeting_url, prospect_emails,
+            g_event_id, g_ical_uid, g_organizer_email, g_attendee_emails, g_sequence
+       FROM scheduled_meetings
+      WHERE g_event_id = $1 AND tenant_id = $2
+      LIMIT 1`,
+    [eventId, tenantId]
+  );
+  return r.rows[0] || null;
+}
+
 function normalizeAttendees(attendees) {
   return (Array.isArray(attendees) ? attendees : [])
     .map((a) => (typeof a === 'string' ? { email: a } : a))
@@ -1365,7 +1102,7 @@ function normalizeAttendees(attendees) {
 router.get('/microsoft/contacts', async (req, res, next) => {
   try {
     if (!microsoft.isConfigured()) {
-      return res.status(503).json({ error: 'Microsoft 365 (direct) not configured.', code: 'NOT_CONFIGURED' });
+      return res.status(503).json({ error: 'Microsoft 365 not configured.', code: 'NOT_CONFIGURED' });
     }
     const q = String(req.query.q || '').trim();
     const contacts = await microsoft.searchPeople(req.tenantId, req.user.sub, q);
@@ -1378,11 +1115,258 @@ router.get('/microsoft/contacts', async (req, res, next) => {
   }
 });
 
+// ── Google routes ─────────────────────────────────────────────────
+// Mirror the Microsoft routes 1:1 (connect / events / connection / meetings
+// create+edit+cancel / contacts) so the frontend can treat the two providers
+// identically.
+
+// GET /api/integrations/google/connect — start the per-user delegated OAuth
+// flow for the rep's Google Calendar.
+router.get('/google/connect', async (req, res, next) => {
+  try {
+    if (!google.isConfigured()) {
+      return res.status(503).json({ error: 'Google not configured — set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET.', code: 'NOT_CONFIGURED' });
+    }
+    const state = await google.makeOAuthState(req.tenantId, req.user.sub);
+    res.redirect(google.authUrl(state));
+  } catch (err) { next(err); }
+});
+
+// GET /api/integrations/google/events?days=14 — upcoming events from the rep's
+// Google Calendar. Same shape as /microsoft/events so the picker is agnostic.
+router.get('/google/events', async (req, res, next) => {
+  try {
+    if (!google.isConfigured()) {
+      return res.status(503).json({ error: 'Google not configured.', code: 'NOT_CONFIGURED' });
+    }
+    const days = Math.max(1, Math.min(parseInt(req.query.days, 10) || 14, 60));
+    const events = await google.fetchUpcomingEvents(req.tenantId, req.user.sub, { days });
+    res.json({ events });
+  } catch (err) {
+    if (err.code === 'NOT_CONNECTED' || err.status === 409) {
+      return res.status(409).json({ error: 'Google not connected — connect it on the Integrations page.', code: 'NOT_CONNECTED' });
+    }
+    next(err);
+  }
+});
+
+// DELETE /api/integrations/google/connection — forget the per-user grant.
+router.delete('/google/connection', async (req, res, next) => {
+  try {
+    await google.deleteGrant(req.tenantId, req.user.sub);
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// POST /api/integrations/google/meetings — create a Google Meet meeting + the
+// Google Calendar event that wraps it. The invite is sent via SendGrid (not
+// Gmail). Returns the joinUrl the caller writes into the mission's meeting_url.
+// Body: { subject, startISO, endISO, attendees: [string|{email,name}], body }
+router.post('/google/meetings', async (req, res, next) => {
+  try {
+    if (!google.isConfigured()) {
+      return res.status(503).json({ error: 'Google not configured.', code: 'NOT_CONFIGURED' });
+    }
+    const { subject, startISO, endISO, attendees, body } = req.body || {};
+    const created = await google.createMeeting(req.tenantId, req.user.sub, {
+      subject, startISO, endISO, attendees, body,
+    });
+    const invite = await sendBrandedInvite({
+      created, body,
+      replyTo: created.organizerEmail,
+      replyToName: created.organizerName,
+    });
+    res.json({ ...created, invite });
+  } catch (err) {
+    if (err.code === 'NOT_CONNECTED' || err.status === 409) {
+      return res.status(409).json({ error: 'Google not connected — connect it on the Integrations page.', code: 'NOT_CONNECTED' });
+    }
+    // Token revoked / scopes insufficient → reconnect to re-consent. Google
+    // signals this as a 401 (invalid_grant on refresh) or a 403 whose message
+    // mentions insufficient scope / permission.
+    const msg = String(err.message || '');
+    if (err.status === 401 || /invalid_grant|insufficient.*scope|ACCESS_TOKEN_SCOPE_INSUFFICIENT|insufficientPermissions/i.test(msg)) {
+      return res.status(401).json({
+        error: 'Reconnect Google to grant the required permissions — your connection may have expired or was made before meeting creation was enabled.',
+        code: 'CONSENT_REQUIRED',
+      });
+    }
+    if (err.status === 400) {
+      return res.status(400).json({ error: err.message });
+    }
+    if (err.status === 403) {
+      return res.status(403).json({ error: `Google refused: ${err.message}`, code: 'GOOGLE_FORBIDDEN' });
+    }
+    next(err);
+  }
+});
+
+// PATCH /api/integrations/google/meetings/:eventId — edit a previously created
+// Google Meet meeting. Mirrors the Microsoft PATCH: updates the linked mission
+// (scheduled_at / meeting_url / prospect_emails / g_sequence++), sends a
+// SEQUENCE-bumped update .ics to current attendees, and a CANCEL .ics to anyone
+// dropped from the list.
+router.patch('/google/meetings/:eventId', async (req, res, next) => {
+  try {
+    if (!google.isConfigured()) {
+      return res.status(503).json({ error: 'Google not configured.', code: 'NOT_CONFIGURED' });
+    }
+    const eventId = String(req.params.eventId);
+    const { subject, startISO, endISO, attendees, body } = req.body || {};
+    const mission = await loadMissionByGoogleEvent(req.tenantId, eventId);
+    if (!mission) return res.status(404).json({ error: 'No mission found for this Google event id.', code: 'NOT_FOUND' });
+
+    const updated = await google.updateMeeting(req.tenantId, req.user.sub, eventId, {
+      subject, startISO, endISO, body,
+    });
+
+    const newAttendees = normalizeAttendees(attendees);
+    const newEmails = newAttendees.map((a) => a.email.toLowerCase());
+    const prevEmails = (mission.g_attendee_emails || []).map((e) => String(e).toLowerCase());
+    const removed = prevEmails.filter((e) => !newEmails.includes(e));
+
+    const nextSequence = (mission.g_sequence || 0) + 1;
+    await db.query(
+      `UPDATE scheduled_meetings
+          SET scheduled_at        = COALESCE($2, scheduled_at),
+              meeting_url         = COALESCE($3, meeting_url),
+              prospect_emails     = $4,
+              g_attendee_emails   = $5,
+              g_sequence          = $6,
+              updated_at          = now()
+        WHERE id = $1 AND tenant_id = $7`,
+      [
+        mission.id,
+        updated.startISO || null,
+        updated.joinUrl  || null,
+        newEmails,
+        newEmails,
+        nextSequence,
+        req.tenantId,
+      ]
+    );
+
+    const updateResult = await sendBrandedInvite({
+      created: {
+        ...updated,
+        attendees: newAttendees,
+        iCalUId: mission.g_ical_uid || updated.iCalUId,
+      },
+      body,
+      replyTo: updated.organizerEmail || mission.g_organizer_email,
+      sequence: nextSequence,
+      method: 'REQUEST',
+    });
+
+    let cancelResult = { sent: [], totalAttempted: 0 };
+    if (removed.length > 0) {
+      cancelResult = await sendBrandedInvite({
+        created: {
+          ...updated,
+          attendees: removed.map((email) => ({ email, name: null })),
+          iCalUId: mission.g_ical_uid || updated.iCalUId,
+        },
+        body,
+        replyTo: updated.organizerEmail || mission.g_organizer_email,
+        sequence: nextSequence,
+        method: 'CANCEL',
+      });
+    }
+
+    res.json({ ...updated, invite: updateResult, cancelledForRemoved: cancelResult });
+  } catch (err) {
+    if (err.code === 'NOT_CONNECTED' || err.status === 409) {
+      return res.status(409).json({ error: 'Google not connected.', code: 'NOT_CONNECTED' });
+    }
+    if (err.status === 404 || err.status === 410) {
+      return res.status(404).json({ error: 'Google Calendar event no longer exists.', code: 'EVENT_GONE' });
+    }
+    next(err);
+  }
+});
+
+// DELETE /api/integrations/google/meetings/:eventId — cancel the Google
+// Calendar event + send a METHOD:CANCEL .ics to the last-known attendee list.
+router.delete('/google/meetings/:eventId', async (req, res, next) => {
+  try {
+    if (!google.isConfigured()) {
+      return res.status(503).json({ error: 'Google not configured.', code: 'NOT_CONFIGURED' });
+    }
+    const eventId = String(req.params.eventId);
+    const mission = await loadMissionByGoogleEvent(req.tenantId, eventId);
+    if (!mission) return res.status(404).json({ error: 'No mission found for this Google event id.', code: 'NOT_FOUND' });
+
+    let result;
+    try {
+      result = await google.cancelMeeting(req.tenantId, req.user.sub, eventId);
+    } catch (err) {
+      if (err.status === 404 || err.status === 410) result = { eventId, deleted: false, alreadyGone: true };
+      else throw err;
+    }
+
+    const nextSequence = (mission.g_sequence || 0) + 1;
+    const lastAttendees = (mission.g_attendee_emails || []).map((e) => ({ email: String(e), name: null }));
+
+    const cancelResult = await sendBrandedInvite({
+      created: {
+        eventId,
+        iCalUId: mission.g_ical_uid || `${eventId}@ghoststream`,
+        joinUrl: mission.meeting_url || '',
+        subject: 'Meeting cancelled',
+        startISO: (mission.scheduled_at instanceof Date ? mission.scheduled_at : new Date(mission.scheduled_at)).toISOString(),
+        endISO:   new Date(new Date(mission.scheduled_at).getTime() + 30 * 60_000).toISOString(),
+        organizerEmail: mission.g_organizer_email,
+        attendees: lastAttendees,
+        platformLabel: 'Google Meet',
+      },
+      body: 'This meeting has been cancelled.',
+      replyTo: mission.g_organizer_email,
+      sequence: nextSequence,
+      method: 'CANCEL',
+    });
+
+    await db.query(
+      `UPDATE scheduled_meetings
+          SET status              = 'CANCELLED',
+              g_event_id          = NULL,
+              g_sequence          = $2,
+              updated_at          = now()
+        WHERE id = $1 AND tenant_id = $3`,
+      [mission.id, nextSequence, req.tenantId]
+    );
+
+    res.json({ ...result, invite: cancelResult, missionId: mission.id });
+  } catch (err) {
+    if (err.code === 'NOT_CONNECTED' || err.status === 409) {
+      return res.status(409).json({ error: 'Google not connected.', code: 'NOT_CONNECTED' });
+    }
+    next(err);
+  }
+});
+
+// GET /api/integrations/google/contacts?q=... — People-API contacts for the
+// meeting-creation form's attendees autocomplete.
+router.get('/google/contacts', async (req, res, next) => {
+  try {
+    if (!google.isConfigured()) {
+      return res.status(503).json({ error: 'Google not configured.', code: 'NOT_CONFIGURED' });
+    }
+    const q = String(req.query.q || '').trim();
+    const contacts = await google.searchPeople(req.tenantId, req.user.sub, q);
+    res.json({ contacts });
+  } catch (err) {
+    if (err.code === 'NOT_CONNECTED' || err.status === 409) {
+      return res.status(409).json({ error: 'Google not connected.', code: 'NOT_CONNECTED' });
+    }
+    next(err);
+  }
+});
+
 module.exports = {
   router,
-  handleCalendarCallback,
   handleCalendlyCallback,
   handleMicrosoftCallback,
+  handleGoogleCallback,
   isConfigured,
   statusPayload,
   verifyCalendlyWebhook,

@@ -95,6 +95,28 @@ const INDUSTRIES = [
   'Other',
 ];
 
+// GTM role of the person signing up (onboarding step 2). Stored on
+// users.job_title as the stable `value` — distinct from the tenancy role
+// (owner/manager/rep). Labels live in the frontend; the server validates the
+// value against this allow-list.
+const JOB_ROLES = [
+  'founder',           // Founder / CEO / Owner
+  'sales_leader',      // Sales / Revenue leader (VP, CRO, Head of Sales)
+  'sales_manager',     // Sales Manager / Team Lead
+  'account_executive', // Account Executive (AE)
+  'sdr_bdr',           // SDR / BDR
+  'rev_ops',           // Sales / Revenue Operations (RevOps)
+  'enablement',        // Sales Enablement
+  'sales_engineer',    // Solutions / Sales Engineer
+  'customer_success',  // Customer Success / Account Management
+  'marketing',         // Marketing
+  'consultant',        // Consultant / Agency
+  'other',             // Other
+];
+
+// Company employee-count buckets (onboarding step 1) → tenants.company_size.
+const COMPANY_SIZES = ['1-10', '11-50', '51-200', '201-500', '500+'];
+
 // ---------------------------------------------------------------- helpers
 
 function sessionKey(id)       { return `onboarding:${id}`; }
@@ -153,8 +175,10 @@ router.get('/industries', (_req, res) => {
 // Body: { companyName, industry, website, email }
 router.post('/start', async (req, res, next) => {
   try {
-    const { firstName: rawFirst, lastName: rawLast, companyName, industry, website, email: rawEmail, password } = req.body || {};
+    const { firstName: rawFirst, lastName: rawLast, companyName, industry, website, email: rawEmail, password, jobTitle: rawJobTitle, companySize: rawCompanySize } = req.body || {};
     const plan = SIGNUP_PLANS.has(String((req.body && req.body.plan) || '')) ? req.body.plan : 'starter';
+    const jobTitle = String(rawJobTitle || '').trim();
+    const companySize = String(rawCompanySize || '').trim();
     const firstName = String(rawFirst || '').trim();
     const lastName = String(rawLast || '').trim();
     if (!firstName || firstName.length > 100) {
@@ -169,6 +193,12 @@ router.post('/start', async (req, res, next) => {
     if (!industry || !INDUSTRIES.includes(industry)) {
       return res.status(400).json({ error: 'industry required (must be one of the provided options)' });
     }
+    if (!companySize || !COMPANY_SIZES.includes(companySize)) {
+      return res.status(400).json({ error: 'company size required (must be one of the provided options)' });
+    }
+    if (!jobTitle || !JOB_ROLES.includes(jobTitle)) {
+      return res.status(400).json({ error: 'role required (must be one of the provided options)' });
+    }
     const websiteUrl = normalizeWebsiteUrl(website);
     if (!websiteUrl) return res.status(400).json({ error: 'a valid company website is required' });
     const websiteDomain = hostFromWebsite(websiteUrl);
@@ -181,7 +211,7 @@ router.post('/start', async (req, res, next) => {
     if (!emailDomain) return res.status(400).json({ error: 'a valid work email is required' });
     if (PUBLIC_EMAIL_DOMAINS.has(emailDomain)) {
       return res.status(422).json({
-        error: 'Please use your corporate email to unlock GhostStream\'s enterprise intelligence — public mailboxes (Gmail, Outlook, Yahoo, …) aren\'t supported.',
+        error: 'Please use your corporate email to unlock DealScope\'s enterprise intelligence — public mailboxes (Gmail, Outlook, Yahoo, …) aren\'t supported.',
         code: 'PUBLIC_EMAIL',
       });
     }
@@ -210,7 +240,7 @@ router.post('/start', async (req, res, next) => {
     );
     if (existingTenant.rows[0]) {
       return res.status(409).json({
-        error: `${existingTenant.rows[0].name} already has a GhostStream workspace. Ask a teammate to invite you.`,
+        error: `${existingTenant.rows[0].name} already has a DealScope workspace. Ask a teammate to invite you.`,
         code: 'TENANT_EXISTS',
         tenant: { id: existingTenant.rows[0].id, name: existingTenant.rows[0].name },
       });
@@ -229,9 +259,11 @@ router.post('/start', async (req, res, next) => {
     if (session) {
       session.firstName = firstName;
       session.lastName = lastName;
+      session.jobTitle = jobTitle;
       session.plan = plan;
       session.companyName = companyName.trim();
       session.industry = industry;
+      session.companySize = companySize;
       session.website = websiteUrl;
       session.websiteDomain = websiteDomain;
       session.passwordHash = passwordHash; // they may have re-typed a new one
@@ -240,9 +272,11 @@ router.post('/start', async (req, res, next) => {
         id: crypto.randomUUID(),
         firstName,
         lastName,
+        jobTitle,
         plan,
         companyName: companyName.trim(),
         industry,
+        companySize,
         website: websiteUrl,
         websiteDomain,
         email: emailAddr,
@@ -265,14 +299,14 @@ router.post('/start', async (req, res, next) => {
       try {
         await email.send({
           to: emailAddr,
-          subject: 'Confirm your email to set up GhostStream',
+          subject: 'Confirm your email to set up DealScope',
           categories: ['onboarding-verify'],
           html:
             `<p>You're almost there — confirm this email to create your <strong>${escapeHtml(session.companyName)}</strong> workspace.</p>` +
             `<p><a href="${verifyUrl}" style="display:inline-block;padding:10px 18px;background:#4f46e5;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">Confirm &amp; set up workspace</a></p>` +
             `<p style="color:#6b7280;font-size:13px">Or paste this link into your browser:<br>${verifyUrl}</p>` +
             `<p style="color:#6b7280;font-size:13px">This link expires in 24 hours. If you didn't request this, you can ignore this email.</p>`,
-          text: `Confirm your email to set up GhostStream: ${verifyUrl}`,
+          text: `Confirm your email to set up DealScope: ${verifyUrl}`,
         });
         emailSent = true;
       } catch (err) {
@@ -351,10 +385,10 @@ router.post('/verify', async (req, res, next) => {
     const paidChoice = SIGNUP_PLANS.has(s.plan) ? s.plan : null;
 
     const tenantRow = (await db.query(
-      `INSERT INTO tenants (name, domain, subscription_status, plan, trial_ends_at)
-       VALUES ($1, $2, 'TRIAL', 'trial', NULL)
+      `INSERT INTO tenants (name, domain, subscription_status, plan, trial_ends_at, company_size)
+       VALUES ($1, $2, 'TRIAL', 'trial', NULL, $3)
        RETURNING id, name, domain, subscription_status, plan, trial_ends_at`,
-      [s.companyName, s.websiteDomain]
+      [s.companyName, s.websiteDomain, s.companySize || null]
     )).rows[0];
     const owner = await users.create({
       tenantId: tenantRow.id,
@@ -363,6 +397,7 @@ router.post('/verify', async (req, res, next) => {
       firstName: s.firstName || null,
       lastName: s.lastName || null,
       role: 'owner',
+      jobTitle: s.jobTitle || null,
       isAdmin: false,
       emailVerified: true,
     });
@@ -411,7 +446,7 @@ router.post('/verify', async (req, res, next) => {
 // the email link are inert).
 function confirmPage(token, companyName) {
   const t = escapeHtml(token);
-  return `<!doctype html><meta charset="utf-8"><title>GhostStream — Confirm your email</title>` +
+  return `<!doctype html><meta charset="utf-8"><title>DealScope — Confirm your email</title>` +
     `<body style="font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;text-align:center;color:#111">` +
     `<h1 style="font-size:20px">Confirm your email</h1>` +
     `<p style="color:#374151">Finish setting up your <strong>${escapeHtml(companyName)}</strong> workspace.</p>` +
@@ -421,11 +456,11 @@ function confirmPage(token, companyName) {
 }
 
 function verifyPage(message, ok) {
-  return `<!doctype html><meta charset="utf-8"><title>GhostStream — Email verification</title>` +
+  return `<!doctype html><meta charset="utf-8"><title>DealScope — Email verification</title>` +
     `<body style="font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;text-align:center;color:#111">` +
     `<h1 style="font-size:20px">${ok ? '✓ Verified' : 'Verification failed'}</h1>` +
     `<p style="color:#374151">${escapeHtml(message)}</p>` +
-    `<p><a href="${APP_BASE_URL}/admin/" style="color:#4f46e5;font-weight:600">Go to GhostStream →</a></p></body>`;
+    `<p><a href="${APP_BASE_URL}/admin/" style="color:#4f46e5;font-weight:600">Go to DealScope →</a></p></body>`;
 }
 
 function escapeHtml(s) {

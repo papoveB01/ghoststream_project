@@ -25,7 +25,7 @@ const BRIEF_SCHEMA = {
 };
 
 const BRIEF_PROMPT =
-  "You are GhostStream's onboarding assistant. You're given the markdown of a " +
+  "You are DealScope's onboarding assistant. You're given the markdown of a " +
   "company's website. Summarize it for the user to CONFIRM we indexed their " +
   "business correctly. Be concrete — quote real product names from the page. " +
   "Return: missionStatement (1 sentence), keyProducts (array of named offerings " +

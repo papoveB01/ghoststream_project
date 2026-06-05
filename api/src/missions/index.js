@@ -18,10 +18,12 @@ router.use(express.json());
 //   meetingUrl?, prospectEmails: string[],
 //   productIds[], personaIds[], competitorIds[],
 //   notes?,
-//   // Optional: set when the rep generated the Teams meeting from the
-//   // "🎥 Generate Teams meeting" modal. Lets us PATCH / cancel the Outlook
-//   // event later from the mission detail UI. See ADR-0002 §10/§11.
+//   // Optional: set when the rep generated the meeting from the "Generate
+//   // meeting" modal. Lets us PATCH / cancel the provider event later from the
+//   // mission detail UI. ms_* = Microsoft Teams, google* = Google Meet (a
+//   // mission carries at most one). See ADR-0002 §10/§11.
 //   msEventId?, msIcalUid?, msOrganizerEmail?,
+//   googleEventId?, googleIcalUid?, googleOrganizerEmail?,
 // }
 router.post('/', gating.requireFeature('engagements'), gating.requireCapacity('engagements'), async (req, res, next) => {
   try {

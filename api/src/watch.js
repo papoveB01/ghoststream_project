@@ -245,7 +245,7 @@ async function sendDigest(tenantId, entityName, findings) {
     to: owners,
     subject: `Market Watch — ${findings.length} new signal${findings.length === 1 ? '' : 's'} for ${entityName}`,
     categories: ['market-watch'],
-    html: `<p>New developments on <strong>${entityName}</strong>, which you're watching:</p><ul style="margin:0;padding-left:18px">${items}</ul><p style="margin-top:18px"><a href="${APP_BASE_URL}/admin/#market-signals">Review in GhostStream →</a></p>`,
+    html: `<p>New developments on <strong>${entityName}</strong>, which you're watching:</p><ul style="margin:0;padding-left:18px">${items}</ul><p style="margin-top:18px"><a href="${APP_BASE_URL}/admin/#market-signals">Review in DealScope →</a></p>`,
     text: findings.map((f) => `• ${f.title} (${f.category}, ${f.materiality}/5)`).join('\n') + `\n\nReview: ${APP_BASE_URL}/admin/#market-signals`,
   });
   return true;

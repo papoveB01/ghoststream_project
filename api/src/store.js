@@ -107,6 +107,14 @@ async function getPortal(id) {
   return getJson(NS.portal + id);
 }
 
+async function updatePortal(id, patch) {
+  const existing = await getJson(NS.portal + id);
+  if (!existing) return null;
+  const merged = { ...existing, ...patch, updatedAt: new Date().toISOString() };
+  await saveJson(NS.portal + id, merged);
+  return merged;
+}
+
 // Sessions ----------------------------------------------------------------
 
 async function createSession(data) {
@@ -450,6 +458,7 @@ module.exports = {
   getMeetingsByIds,
   createPortal,
   getPortal,
+  updatePortal,
   createSession,
   getSession,
   appendSessionTurns,

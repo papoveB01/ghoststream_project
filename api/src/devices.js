@@ -227,14 +227,14 @@ async function sendOtpEmail(to, code) {
   const mins = Math.round(OTP_TTL_SEC / 60);
   await email.send({
     to,
-    subject: `${code} is your GhostStream verification code`,
+    subject: `${code} is your DealScope verification code`,
     categories: ['device-otp'],
     html:
-      `<p>Confirm this device to finish signing in to GhostStream.</p>` +
+      `<p>Confirm this device to finish signing in to DealScope.</p>` +
       `<p style="font-size:28px;font-weight:800;letter-spacing:4px;margin:14px 0">${code}</p>` +
       `<p style="color:#6b7280;font-size:13px">This code expires in ${mins} minutes. ` +
       `If you didn't try to sign in, change your password — someone may have it.</p>`,
-    text: `Your GhostStream verification code is ${code}. It expires in ${mins} minutes. ` +
+    text: `Your DealScope verification code is ${code}. It expires in ${mins} minutes. ` +
       `If you didn't try to sign in, change your password.`,
   });
   return true;

@@ -15,11 +15,19 @@ const brief = require('./missions/brief');
 const dispatch = require('./missions/dispatch');
 const watch = require('./watch');
 const watchSchedule = require('./watchSchedule');
+const store = require('./store');
+const stream = require('./stream');
 
 // Market Watch — separate low-frequency pass (default hourly). Picks tenants
 // whose cadence has come due (watch_next_run_at <= now) and fires runTenant
 // fire-and-forget so the web/LLM work never blocks the tick.
 const WATCH_CRON = process.env.WATCH_CRON || '0 * * * *';
+
+// Recording retention purge — deletes stored meeting video older than each
+// tenant's recording_retention_days (migration 0043). Transcript + portal text
+// are kept; only the Cloudflare Stream recording + its clip are removed. Hourly
+// at :17 so it doesn't pile onto the top-of-hour watch tick.
+const PURGE_CRON = process.env.RECORDING_PURGE_CRON || '17 * * * *';
 
 const CRON_EXPR = process.env.MISSIONS_CRON || '* * * * *'; // every minute
 const LOOKAHEAD_START_HOURS = parseFloat(process.env.BRIEF_LOOKAHEAD_START_HOURS || '23');
@@ -167,11 +175,71 @@ async function watchTick() {
   }
 }
 
+let purgeRunning = false;
+
+// Delete stored meeting video past each tenant's retention window. Meetings
+// live in Redis (store); per-tenant retention lives in Postgres. We scan recent
+// meetings, and for any with a stored video older than its tenant's window we
+// delete the Cloudflare Stream source + objection clip and clear the uids
+// (leaving transcript + portal text intact). A tenant with NULL retention keeps
+// recordings indefinitely (explicit opt-in) and is skipped.
+async function purgeTick() {
+  if (purgeRunning) return; // single-instance guard
+  purgeRunning = true;
+  try {
+    if (!stream.isConfigured()) return; // no Stream → nothing stored to purge
+    const rows = (await db.query(
+      `SELECT id, recording_retention_days FROM tenants WHERE recording_retention_days IS NOT NULL`
+    )).rows;
+    if (!rows.length) return;
+    const retention = new Map(rows.map((r) => [String(r.id), Number(r.recording_retention_days)]));
+
+    const meetings = await store.listMeetings(2000); // recent-first; bounded scan
+    const now = Date.now();
+    let purged = 0;
+    for (const m of meetings) {
+      if (!m || !m.videoUid || !m.videoIngestedAt || m.videoPurgedAt) continue;
+      const tid = m.meta && m.meta.tenantId;
+      const days = tid ? retention.get(String(tid)) : null;
+      if (!days) continue; // tenant keeps indefinitely, or meeting has no tenant
+      const ageDays = (now - new Date(m.videoIngestedAt).getTime()) / 86400000;
+      if (!(ageDays >= days)) continue;
+      try {
+        await stream.deleteVideo(m.videoUid);
+      } catch (e) {
+        console.error(`[scheduler] retention: stream delete ${m.videoUid} failed: ${e.message}`);
+        continue; // leave the marker so we retry next tick
+      }
+      if (m.objectionClipUid) {
+        try { await stream.deleteVideo(m.objectionClipUid); } catch (e) { /* best-effort */ }
+      }
+      await store.updateMeeting(m.id, {
+        videoUid: null, objectionClipUid: null, videoPurgedAt: new Date().toISOString(),
+      }).catch(() => {});
+      // Flag the linked portal so its viewer shows a graceful "recording
+      // expired" state instead of a broken player (transcript/insights kept).
+      if (m.portalId) {
+        await store.updatePortal(m.portalId, {
+          recordingExpired: true, videoUid: null, objectionClip: null,
+        }).catch(() => {});
+      }
+      purged++;
+    }
+    if (purged) console.log(`[scheduler] recording retention: purged ${purged} expired recording(s)`);
+  } catch (err) {
+    console.error('[scheduler] recording purge tick failed:', err.message);
+  } finally {
+    purgeRunning = false;
+  }
+}
+
 function start() {
   cron.schedule(CRON_EXPR, tick);
   cron.schedule(WATCH_CRON, watchTick);
+  cron.schedule(PURGE_CRON, purgeTick);
   console.log(`[scheduler] mission cron started (expression: "${CRON_EXPR}", brief window: T-${LOOKAHEAD_END_HOURS}h to T-${LOOKAHEAD_START_HOURS}h, bot lead: ${BOT_LEAD_MINUTES > 0 ? `T-${BOT_LEAD_MINUTES}min` : 'disabled'})`);
   console.log(`[scheduler] market watch cron started (expression: "${WATCH_CRON}")`);
+  console.log(`[scheduler] recording retention purge started (expression: "${PURGE_CRON}")`);
 }
 
-module.exports = { start, tick, watchTick, findDueMissions, findMissionsDueForBot };
+module.exports = { start, tick, watchTick, purgeTick, findDueMissions, findMissionsDueForBot };

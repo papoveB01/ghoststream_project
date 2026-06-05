@@ -32,6 +32,7 @@ const loginGuard = require('./loginGuard');
 const sessions = require('./sessions');
 const audit = require('./audit');
 const erasure = require('./erasure');
+const recordingSettings = require('./recordingSettings');
 const platformAdmin = require('./platformAdmin');
 const subaccounts = require('./subaccounts');
 const tenants = require('./tenants');
@@ -170,6 +171,10 @@ app.post('/meetings', async (req, res, next) => {
     const { meetingUrl, botName } = req.body || {};
     if (!meetingUrl) return res.status(400).json({ error: 'meetingUrl required' });
 
+    // Recording privacy settings (per-tenant when authed; defaults otherwise).
+    const recTenantId = req.tenantId || null;
+    const rec = await recordingSettings.get(recTenantId);
+
     // Engagement scoping (the per-rep "active profile" Redis key) was retired
     // 2026-05-11 in favour of mission-driven scoping. A meeting's filter
     // context now comes from the linked mission's tags (via meeting.meta.
@@ -178,7 +183,7 @@ app.post('/meetings', async (req, res, next) => {
       source: 'recall',
       meetingUrl,
       status: 'creating',
-      meta: {},
+      meta: { tenantId: recTenantId || undefined, captureVideo: rec.videoEnabled },
     });
 
     const webhookUrl = `${APP_BASE_URL}/webhooks/recall`;
@@ -186,6 +191,8 @@ app.post('/meetings', async (req, res, next) => {
       meetingUrl, botName,
       webhookUrl,
       metadata: { meetingId: meeting.id, app: 'ghoststream' },
+      captureVideo: rec.videoEnabled,
+      noticeMessage: recordingSettings.noticeMessageFor(rec),
     });
 
     const updated = await store.updateMeeting(meeting.id, {
@@ -314,8 +321,13 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
       throw err;
     }
 
-    // STEP 3 — video ingest + clip. Same try/catch story: transcript stays.
-    const videoUid = videoUrl ? (await stream.ingestFromUrl(videoUrl, transcript.meetingTitle)).uid : null;
+    // STEP 3 — video ingest + clip. Skipped entirely in transcript-only mode
+    // (recording privacy — meta.captureVideo=false): the meeting was still
+    // transcribed + analysed above, so the portal / SOW / coaching are
+    // unaffected; we simply never store a recording. Same try/catch story
+    // otherwise: the transcript stays even if ingest fails.
+    const captureVideo = !(m.meta && m.meta.captureVideo === false);
+    const videoUid = (captureVideo && videoUrl) ? (await stream.ingestFromUrl(videoUrl, transcript.meetingTitle)).uid : null;
     const objectionClip = videoUid
       ? await stream.createClip({
           videoUid,
@@ -347,6 +359,11 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
       status: 'done',
       analysis: pipeline,
       analysisError: null,
+      // Stamp the stored-video identifiers so the retention cron can purge them
+      // after the tenant's window. Null in transcript-only mode (nothing kept).
+      videoUid: videoUid || null,
+      objectionClipUid: (objectionClip && objectionClip.uid) || null,
+      videoIngestedAt: videoUid ? new Date().toISOString() : null,
     });
     // Close the loop: a linked engagement becomes COMPLETED and learns its
     // portal_id, so the Engagements → Past tab can surface this recording.
@@ -1135,11 +1152,11 @@ app.use('/onboarding', onboarding.router);
 // + the Calendly webhook receiver (auto-creates a mission on `invitee.created`).
 // =========================================================================
 
-// OAuth callbacks (Nylas, Calendly) are hit by the provider redirecting the
+// OAuth callbacks (Google, Calendly) are hit by the provider redirecting the
 // browser; they authenticate via the short-lived `state` token (Redis), not
 // the session cookie — so they must sit BEFORE the authMiddleware-protected
 // router below.
-app.get('/integrations/calendar/callback', integrations.handleCalendarCallback);
+app.get('/integrations/google/callback', integrations.handleGoogleCallback);
 app.get('/integrations/calendly/callback', integrations.handleCalendlyCallback);
 // Microsoft 365 (direct) — per-user calendar callback. Cookieless return from
 // login.microsoftonline.com, so it sits before the authMiddleware'd
@@ -1147,6 +1164,10 @@ app.get('/integrations/calendly/callback', integrations.handleCalendlyCallback);
 // See ADR-0002 §4.2 (and §8 for why the admin-consent callback was dropped).
 app.get('/integrations/microsoft/callback', integrations.handleMicrosoftCallback);
 app.use('/integrations', auth.authMiddleware, integrations.router);
+
+// Tenant settings (recording privacy, …). Reads open to any authed user;
+// writes gated to manager+.
+app.use('/settings', auth.authMiddleware, auth.requireRoleWrite('manager'), require('./settings').router);
 
 // API tokens — long-lived PATs for non-browser clients (Lili MCP server,
 // scripts). See docs/rfcs/0001-lili-integration.md. Routes require an

@@ -118,7 +118,7 @@ const MOMENTS_SCHEMA = {
       type: 'array',
       description:
         'Claims the rep made that CONTRADICT the [Grounded Knowledge] section ' +
-        'OR contradict the [Pre-Call Brief] section (the predictions GhostStream ' +
+        'OR contradict the [Pre-Call Brief] section (the predictions DealScope ' +
         "made about objections / competitive edge before the call). Empty array " +
         'if there are no contradictions or no grounded knowledge / brief was provided.',
       items: {
@@ -158,15 +158,15 @@ async function findMoments(transcript, { groundedKnowledge, preCallBrief } = {})
   const formatted = formatTranscript(transcript);
   const ai = gemini.getClient();
 
-  // Pre-call brief: the predictions GhostStream made BEFORE the meeting,
+  // Pre-call brief: the predictions DealScope made BEFORE the meeting,
   // grounded in the same KB. Including this in the Stage-1 prompt lets the
   // analysis flag "rep contradicted the predicted competitive edge" or
   // "rep accepted an objection the brief told them to push back on" —
   // structurally answerable only when the brief and the analysis share state.
   const briefClause = preCallBrief && preCallBrief.contentMd
     ? (
-      '\n\n## Pre-Call Brief (what GhostStream predicted before the call)\n' +
-      'This is the briefing GhostStream prepared for the rep ahead of time, ' +
+      '\n\n## Pre-Call Brief (what DealScope predicted before the call)\n' +
+      'This is the briefing DealScope prepared for the rep ahead of time, ' +
       "grounded in the same KB. When flagging a rep claim that contradicts " +
       'the brief (e.g. predicted objection went unhandled, predicted ' +
       'competitive edge was misstated), add a `knowledgeGaps` entry with ' +
@@ -371,7 +371,7 @@ async function runPipeline(transcript, {
   }
 
   // Pre-call brief: when the portal belongs to a mission, pull the latest
-  // brief that GhostStream generated BEFORE the meeting and thread it into
+  // brief that DealScope generated BEFORE the meeting and thread it into
   // Stage 1. Without this, "did the rep handle the objections we predicted?"
   // is structurally unanswerable — the analysis pipeline would re-derive
   // everything from the transcript + KB without seeing the predictions.
@@ -404,7 +404,7 @@ async function runPipeline(transcript, {
       kbReady,
       entities: entities ? entities.entities : [],
       retrievedChunkCount: kbHits,
-      // Pre-call brief consulted? When true, Stage 1 saw GhostStream's
+      // Pre-call brief consulted? When true, Stage 1 saw DealScope's
       // pre-meeting predictions and may have flagged contradictions with
       // `kbCitation: "[BRIEF]"` in knowledgeGaps. The portal can render
       // "Compared against pre-call brief" when this is true.
