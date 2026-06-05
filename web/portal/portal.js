@@ -416,7 +416,7 @@
     }
 
     const lines = [
-      'STATEMENT OF WORK — VERIFIED BY GHOSTSTREAM',
+      'STATEMENT OF WORK — VERIFIED BY DEALSCOPE',
       `Portal: ${p.id}`,
       `Generated: ${date}`,
       `Verified against: ${summaryLine}.`,
