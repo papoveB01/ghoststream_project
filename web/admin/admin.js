@@ -411,10 +411,20 @@
       throw new Error('unauthorized');
     }
     if (r.status === 402) {
-      // Subscription/feature/usage gate — surface an upgrade prompt.
+      // Subscription/usage gate (USAGE_LIMIT / SUBSCRIPTION_REQUIRED) — prompt upgrade.
       const body = await r.json().catch(() => ({}));
       handlePaywall(body);
       throw new Error((body && body.error) || 'Upgrade required');
+    }
+    if (r.status === 403) {
+      // Feature-not-in-plan is a plan gate (route to Billing); other 403s are
+      // ordinary role/permission denials and just surface their message.
+      const body = await r.json().catch(() => ({}));
+      if (body && body.code === 'FEATURE_NOT_IN_PLAN') {
+        handlePaywall(body);
+        throw new Error((body && body.error) || 'Upgrade required');
+      }
+      throw new Error((body && body.error) || `HTTP 403`);
     }
     if (!r.ok) {
       // Surface the server's `error` field when present — gives reps a
@@ -8209,19 +8219,62 @@
     el.classList.add('hidden'); // ACTIVE / INTERNAL — no banner
   }
 
-  // 402 responses → toast + nudge to Billing.
+  // Plan-gate responses (USAGE_LIMIT / FEATURE_NOT_IN_PLAN / SUBSCRIPTION_REQUIRED)
+  // → toast + route to Billing with a contextual notice so the rep can upgrade or
+  // add credits right there. The notice is consumed (one-shot) by loadBilling.
   let _lastPaywallAt = 0;
+  let _billingNotice = null;
   function handlePaywall(body) {
+    const code = body && body.code;
     const msg = (body && body.error) || 'Upgrade required to do that.';
     toast(msg, 'warn');
-    // Avoid yanking the user to Billing repeatedly; only on a hard sub block.
-    if (body && body.code === 'SUBSCRIPTION_REQUIRED' && Date.now() - _lastPaywallAt > 3000) {
-      _lastPaywallAt = Date.now();
-      location.hash = '#billing';
+    if (code === 'USAGE_LIMIT' || code === 'FEATURE_NOT_IN_PLAN' || code === 'SUBSCRIPTION_REQUIRED') {
+      _billingNotice = { code, meter: (body && body.meter) || null, message: msg };
+      // Throttle so a burst of gated calls doesn't yank the page repeatedly.
+      if (Date.now() - _lastPaywallAt > 1500) {
+        _lastPaywallAt = Date.now();
+        location.hash = '#billing';
+      }
     }
   }
 
+  // Renders the one-shot limit/upgrade banner at the top of the Billing page.
+  function renderBillNotice() {
+    const el = $('bill-notice');
+    if (!el) return;
+    if (!_billingNotice) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+    const n = _billingNotice; _billingNotice = null; // consume
+    let headline, detail, showCredits = true;
+    if (n.code === 'USAGE_LIMIT') {
+      const label = (METER_LABELS[n.meter] || 'this action').toLowerCase();
+      headline = `You've reached your ${label} limit on your current plan.`;
+      detail = 'Upgrade for higher limits, or add a credit pack to keep going right now.';
+    } else if (n.code === 'FEATURE_NOT_IN_PLAN') {
+      headline = n.message || "That feature isn't in your current plan.";
+      detail = 'Upgrade your plan to unlock it.';
+    } else {
+      headline = n.message || 'Your subscription is inactive.';
+      detail = 'Choose a plan below to continue.';
+      showCredits = false;
+    }
+    el.innerHTML = `
+      <div class="bill-notice-inner">
+        <span class="bill-notice-icon" aria-hidden="true">⛔</span>
+        <div class="bill-notice-text"><strong>${escapeHtml(headline)}</strong><br><span class="kb-subtle">${escapeHtml(detail)}</span></div>
+        <div class="bill-notice-cta">
+          <button class="primary-cta" data-bill-scroll="bill-plans">Upgrade →</button>
+          ${showCredits ? '<button class="kb-secondary-btn" data-bill-scroll="bill-credits">Add credits</button>' : ''}
+        </div>
+      </div>`;
+    el.classList.remove('hidden');
+    el.querySelectorAll('[data-bill-scroll]').forEach((b) => b.addEventListener('click', () => {
+      const t = document.getElementById(b.dataset.billScroll);
+      if (t) t.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }));
+  }
+
   async function loadBilling(query) {
+    renderBillNotice(); // contextual limit/upgrade banner (one-shot, if set)
     if (query && query.checkout === 'success') {
       toast('Subscription activated — welcome aboard!');
       history.replaceState(null, '', '#billing');

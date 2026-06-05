@@ -627,6 +627,18 @@ body {
 .rec-muted { opacity: .5; }
 .rec-actions { display: flex; align-items: center; gap: 12px; margin-top: 2px; }
 
+/* ── Billing limit-reached / upgrade notice ── */
+.bill-notice { margin-bottom: 16px; }
+.bill-notice.hidden { display: none; }
+.bill-notice-inner {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 14px 18px; border: 1px solid #f59e0b; border-left-width: 4px;
+  border-radius: var(--radius-sm); background: #fff7ed;
+}
+.bill-notice-icon { font-size: 22px; flex: 0 0 auto; }
+.bill-notice-text { flex: 1; min-width: 220px; font-size: 14px; line-height: 1.5; }
+.bill-notice-cta { display: flex; gap: 10px; flex-wrap: wrap; }
+
 /* ── Support panel (FAQ + contact form) ── */
 .support-overlay.hidden { display: none; }
 .support-modal { max-width: 580px; width: 100%; }

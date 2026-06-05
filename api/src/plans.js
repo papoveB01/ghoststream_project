@@ -46,9 +46,9 @@ const PLANS = {
   // on free → effectively pay-as-you-go).
   trial: {
     key: 'trial', name: 'Free', selfServe: false, monthly: 0,
-    blurb: 'Free forever, no card. Try discovery, a competitor battlecard and one AI-joined call — upgrade or buy credits when you need more.',
+    blurb: 'Free forever, no card. Try discovery, competitor battlecards and one AI-joined call — upgrade or buy credits when you need more.',
     features: [FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS],
-    caps: { discovery: 5, competitor_research: 1, engagements: 1, market_monitoring: 0, arena: 0 },
+    caps: { discovery: 5, competitor_research: 5, engagements: 1, market_monitoring: 0, arena: 0 },
     lifetimeCaps: true, // caps count over the lifetime of the account, never reset
   },
   starter: {
