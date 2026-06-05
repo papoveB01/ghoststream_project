@@ -1,0 +1,14 @@
+# DealScope — production (dealscope.io)
+User-agent: *
+Allow: /$
+Allow: /assets/
+# Auth-gated app surfaces — keep out of the index.
+Disallow: /admin
+Disallow: /portal
+Disallow: /arena
+Disallow: /api
+Disallow: /webhooks
+# Note: /onboarding and /join are intentionally crawlable; they carry their own
+# <meta name="robots" content="noindex"> so Google can see and honour it.
+
+Sitemap: https://dealscope.io/sitemap.xml

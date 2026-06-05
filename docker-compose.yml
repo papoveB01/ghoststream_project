@@ -69,6 +69,8 @@ services:
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       APP_BASE_URL: ${APP_BASE_URL:-}
+      # Comma-separated integration keys to hide from the catalog (per-deploy).
+      HIDE_INTEGRATIONS: ${HIDE_INTEGRATIONS:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       GEMINI_MODEL_LITE: ${GEMINI_MODEL_LITE:-gemini-2.5-flash-lite}
