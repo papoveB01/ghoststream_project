@@ -122,6 +122,9 @@ services:
       SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-no-reply@eel-global.com}
       SENDGRID_FROM_NAME: ${SENDGRID_FROM_NAME:-DealScope}
       SENDGRID_REPLY_TO: ${SENDGRID_REPLY_TO:-}
+      # Inbound email (SendGrid Inbound Parse) — proposal engine Phase 2.
+      INBOUND_PARSE_DOMAIN: ${INBOUND_PARSE_DOMAIN:-}
+      INBOUND_PARSE_SECRET: ${INBOUND_PARSE_SECRET:-}
       # Non-prod envs share the SendGrid sender, so they tag every subject
       # (e.g. "(staging)"). Empty/unset in production.
       EMAIL_SUBJECT_TAG: ${EMAIL_SUBJECT_TAG:-}

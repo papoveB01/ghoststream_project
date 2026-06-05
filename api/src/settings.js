@@ -5,9 +5,25 @@
 
 const express = require('express');
 const recordingSettings = require('./recordingSettings');
+const proposals = require('./proposals');
 
 const router = express.Router();
 router.use(express.json());
+
+// GET /api/settings/proposal — the tenant's recommendation mode.
+router.get('/proposal', async (req, res, next) => {
+  try { res.json({ mode: await proposals.getMode(req.tenantId), modes: proposals.PROPOSAL_MODES }); }
+  catch (err) { next(err); }
+});
+
+// PUT /api/settings/proposal — set the mode (manager+, gated at mount). Body { mode }.
+router.put('/proposal', async (req, res, next) => {
+  try { res.json({ mode: await proposals.setMode(req.tenantId, req.body && req.body.mode) }); }
+  catch (err) {
+    if (err.status === 400) return res.status(400).json({ error: err.message });
+    next(err);
+  }
+});
 
 function shape(s) {
   return {

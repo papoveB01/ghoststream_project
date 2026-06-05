@@ -3943,3 +3943,114 @@ details.schedule-advanced > .schedule-advanced-body {
   font-weight: 500; font-size: 13px; cursor: pointer;
 }
 .watch-panel-body { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }
+
+/* ── Proposal recommendation tab (Phase 1) ───────────────────────────── */
+.prospect-proposal { margin-top: 12px; }
+
+/* Document card */
+.rec-doc { border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); overflow: hidden; box-shadow: var(--shadow); }
+
+/* Header — headline + coverage meter */
+.rec-top { display: flex; gap: 18px; align-items: flex-start; justify-content: space-between;
+  padding: 16px 18px; background: var(--accent-soft); border-bottom: 1px solid var(--accent-light); }
+.rec-top-main { min-width: 0; }
+.rec-eyebrow { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 6px; }
+.rec-status { font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 1px 7px; border-radius: 999px; }
+.rec-status-draft { background: #fef3c7; color: #92400e; }
+.rec-status-final { background: #d1fae5; color: #065f46; }
+.rec-headline { margin: 0; font-size: 16.5px; font-weight: 800; line-height: 1.38; color: var(--text); }
+
+/* Coverage meter */
+.rec-cov { flex: 0 0 auto; width: 116px; text-align: center; }
+.rec-cov-num { font-size: 24px; font-weight: 800; line-height: 1; }
+.rec-cov-num small { font-size: 13px; font-weight: 700; opacity: .7; }
+.rec-cov-track { height: 6px; border-radius: 999px; background: var(--border); margin: 6px 0 4px; overflow: hidden; }
+.rec-cov-track span { display: block; height: 100%; border-radius: 999px; transition: width .4s ease; }
+.rec-cov-cap { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.rec-cov-hi  .rec-cov-num { color: #059669; } .rec-cov-hi  .rec-cov-track span { background: #059669; }
+.rec-cov-mid .rec-cov-num { color: #d97706; } .rec-cov-mid .rec-cov-track span { background: #d97706; }
+.rec-cov-lo  .rec-cov-num { color: #dc2626; } .rec-cov-lo  .rec-cov-track span { background: #dc2626; }
+
+/* Section blocks — divided, not boxed */
+.rec-block { padding: 15px 18px; border-top: 1px solid var(--border); }
+.rec-blocks > .rec-block:first-child { border-top: none; }
+.rec-block-h { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+.rec-ico { font-size: 15px; line-height: 1; width: 18px; text-align: center; flex: 0 0 auto; }
+.rec-block-h h4 { margin: 0; flex: 1; min-width: 0; font-size: 12px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .05em; color: var(--text); }
+.rec-body-text { font-size: 13.5px; line-height: 1.62; color: var(--text); }
+
+/* Confidence pill with dot */
+.rec-conf { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+  padding: 2px 8px; border-radius: 999px; }
+.rec-conf i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.rec-conf-hi  { background: #d1fae5; color: #065f46; } .rec-conf-hi  i { background: #059669; }
+.rec-conf-mid { background: #fef3c7; color: #92400e; } .rec-conf-mid i { background: #d97706; }
+.rec-conf-lo  { background: #fee2e2; color: #991b1b; } .rec-conf-lo  i { background: #dc2626; }
+
+/* Citations */
+.rec-cites { margin-top: 9px; display: flex; align-items: center; flex-wrap: wrap; gap: 5px;
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.rec-cite { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px;
+  padding: 0 5px; border-radius: 5px; background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* Assumptions callout */
+.rec-assume { margin-top: 9px; font-size: 12px; line-height: 1.5; color: #92400e;
+  background: #fffbeb; border: 1px solid #fde68a; border-left: 3px solid #f59e0b;
+  border-radius: var(--radius-sm); padding: 7px 10px; }
+.rec-assume-h { font-weight: 700; margin-right: 6px; }
+
+/* Objections */
+.rec-objs { display: flex; flex-direction: column; gap: 10px; }
+.rec-obj { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; }
+.rec-obj-q { font-weight: 700; font-size: 13px; color: var(--text); }
+.rec-obj-q::before { content: "\201C"; } .rec-obj-q::after { content: "\201D"; }
+.rec-obj-a { font-size: 13px; line-height: 1.55; color: var(--muted); margin-top: 4px; }
+.rec-obj .rec-cites { margin-top: 6px; }
+
+/* Intelligence gaps */
+.rec-gaps { margin: 14px 18px; font-size: 12.5px; color: var(--muted);
+  background: var(--bg); border: 1px dashed var(--border); border-radius: var(--radius); padding: 10px 14px; }
+.rec-gaps-h { font-weight: 700; color: var(--text); margin-bottom: 4px; }
+.rec-gaps ul { margin: 0; padding-left: 18px; } .rec-gaps li { margin: 3px 0; }
+
+/* Evidence basis */
+.rec-evidence { margin: 0 18px 14px; font-size: 12.5px; color: var(--muted); }
+.rec-evidence summary { cursor: pointer; font-weight: 700; color: var(--text); padding: 4px 0; }
+.rec-evidence ol { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rec-evidence li { display: flex; align-items: center; gap: 8px; }
+.rec-ev-n { flex: 0 0 auto; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 5px; background: var(--bg); border: 1px solid var(--border); font-size: 11px; font-weight: 700; color: var(--text); }
+
+/* Footer */
+.rec-foot { padding: 10px 18px; border-top: 1px solid var(--border); background: var(--bg);
+  font-size: 11.5px; color: var(--muted); }
+
+.kb-select { padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); font-size: 12.5px; }
+
+/* ── Submit buttons on dense admin pages ─────────────────────────────────
+   Primary actions size to their content (not full-width) so each reads as
+   belonging to its section; action rows right-align like a form footer.
+   Scoped to .content, so login (no .content) keeps its full-width submit.
+   Billing plan cards opt back into full-width below. */
+.content .primary-cta { width: auto; margin-top: 0; display: inline-flex; align-items: center; justify-content: center; }
+.content .action-row,
+.content .prospect-intel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: flex-end; }
+.content .prospect-note-add button { align-self: flex-end; }
+/* Genuine full-width opt-in (billing plan cards). */
+.content .plan-cta .primary-cta,
+.content .plan-cta .kb-secondary-btn { width: 100%; }
+
+/* Proposal tab — inbound email address callout (Phase 2) */
+.rec-inbox { display: flex; align-items: center; gap: 12px; margin: 10px 0; padding: 11px 14px;
+  background: var(--accent-soft); border: 1px solid var(--accent-light); border-radius: var(--radius); }
+.rec-inbox-ico { font-size: 18px; flex: 0 0 auto; }
+.rec-inbox-main { flex: 1; min-width: 0; }
+.rec-inbox-t { font-weight: 700; font-size: 12.5px; color: var(--text); }
+.rec-inbox-sub { font-size: 12px; color: var(--muted); line-height: 1.5; margin-top: 2px; }
+.rec-inbox-sub code { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 11.5px; color: var(--text); }

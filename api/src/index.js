@@ -1130,6 +1130,7 @@ app.use('/account/subaccounts', auth.authMiddleware, gating.requireFeature(plans
 app.use('/companies', auth.authMiddleware, companies.router);
 app.use('/contacts',  auth.authMiddleware, require('./contacts').router);
 app.use('/missions',  auth.authMiddleware, missions.router);
+app.use('/proposals', auth.authMiddleware, require('./proposals').router);
 
 // =========================================================================
 // Knowledge Base — Dynamic Context Layer (RAG over Postgres + pgvector)
@@ -1226,6 +1227,11 @@ app.post('/webhooks/calendly/:routeToken', async (req, res) => {
 // per-tenant routing existed.
 app.post('/webhooks/calendly', (req, res) =>
   handleCalendlyBooking(req, res, userModel.FOUNDERS_TENANT_ID));
+
+// Inbound email (SendGrid Inbound Parse) — proposal engine Phase 2. Forwarded
+// prospect emails → filed as PROSPECT intel. Unauthenticated; guarded by a
+// secret in the path (INBOUND_PARSE_SECRET). Mounts its own multipart parser.
+app.use('/webhooks/inbound-email', require('./inboundEmail').webhookRouter);
 
 // =========================================================================
 // Error handler

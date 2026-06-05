@@ -1342,6 +1342,151 @@
     });
   }
 
+  // ── Proposal recommendation (Phase 1) ──────────────────────────────────
+  const REC_BLOCKS = [
+    { k: 'situation',   ico: '📍', label: 'Their situation' },
+    { k: 'positioning', ico: '🎯', label: 'Recommended positioning' },
+    { k: 'outcomes',    ico: '📈', label: 'Outcomes to emphasize' },
+    { k: 'edge',        ico: '⚔️', label: 'Our edge vs alternatives' },
+    { k: 'proof',       ico: '🏆', label: 'Proof points' },
+  ];
+  const _recConf = (c) => {
+    const k = String(c || '').toLowerCase();
+    const cls = k === 'high' ? 'hi' : k === 'low' ? 'lo' : 'mid';
+    return `<span class="rec-conf rec-conf-${cls}" title="Confidence this section is grounded in evidence"><i></i>${escapeHtml(k || '—')}</span>`;
+  };
+  const _recCites = (arr) => (Array.isArray(arr) && arr.length)
+    ? `<div class="rec-cites">Sources ${arr.map((n) => `<span class="rec-cite">${escapeHtml(String(n))}</span>`).join('')}</div>` : '';
+  const _recAssume = (arr) => (Array.isArray(arr) && arr.length)
+    ? `<div class="rec-assume"><span class="rec-assume-h">⚠︎ Assumptions</span>${arr.map((a) => escapeHtml(a)).join(' · ')}</div>` : '';
+  function _recBlock(ico, label, sec) {
+    if (!sec || !sec.text) return '';
+    return `<section class="rec-block">
+      <div class="rec-block-h"><span class="rec-ico">${ico}</span><h4>${escapeHtml(label)}</h4>${_recConf(sec.confidence)}</div>
+      <div class="rec-body-text">${escapeHtml(sec.text)}</div>
+      ${_recCites(sec.citations)}
+      ${_recAssume(sec.assumptions)}
+    </section>`;
+  }
+
+  function renderRecommendationVersion(host, prop) {
+    const c = prop.content_json || {};
+    const cov = prop.coverage_json || {};
+    const ev = Array.isArray(prop.citations_json) ? prop.citations_json : [];
+    const objections = Array.isArray(c.objections) ? c.objections : [];
+    const gaps = Array.isArray(cov.gaps) ? cov.gaps : (Array.isArray(c.intelligenceGaps) ? c.intelligenceGaps : []);
+    const score = (cov.score != null) ? cov.score : null;
+    const covCls = score == null ? 'mid' : score >= 75 ? 'hi' : score >= 45 ? 'mid' : 'lo';
+    const head = c.headline || {};
+    host.innerHTML = `
+      <article class="rec-doc">
+        <header class="rec-top">
+          <div class="rec-top-main">
+            <div class="rec-eyebrow">Recommendation · v${escapeHtml(String(prop.version))}<span class="rec-status rec-status-${prop.status === 'FINAL' ? 'final' : 'draft'}">${escapeHtml(prop.status || 'DRAFT')}</span></div>
+            ${head.text ? `<h3 class="rec-headline">${escapeHtml(head.text)}</h3>` : ''}
+            ${_recCites(head.citations)}
+          </div>
+          <div class="rec-cov rec-cov-${covCls}">
+            <div class="rec-cov-num">${score == null ? '—' : escapeHtml(String(score)) + '<small>%</small>'}</div>
+            <div class="rec-cov-track"><span style="width:${score == null ? 0 : score}%"></span></div>
+            <div class="rec-cov-cap">intel coverage</div>
+          </div>
+        </header>
+        <div class="rec-blocks">
+          ${REC_BLOCKS.map((b) => _recBlock(b.ico, b.label, c[b.k])).join('')}
+          ${objections.length ? `<section class="rec-block">
+            <div class="rec-block-h"><span class="rec-ico">🛡️</span><h4>Objections to preempt</h4></div>
+            <div class="rec-objs">${objections.map((o) => `<div class="rec-obj">
+              <div class="rec-obj-q">${escapeHtml(o.objection || '')}</div>
+              <div class="rec-obj-a">${escapeHtml(o.response || '')}</div>
+              ${_recCites(o.citations)}
+            </div>`).join('')}</div>
+          </section>` : ''}
+          ${_recBlock('➡️', 'Recommended next move', c.nextMove)}
+        </div>
+        ${gaps.length ? `<div class="rec-gaps"><div class="rec-gaps-h">🔍 Intelligence gaps — what would sharpen this</div><ul>${gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join('')}</ul></div>` : ''}
+        ${ev.length ? `<details class="rec-evidence"><summary>Evidence basis · ${ev.length} item${ev.length === 1 ? '' : 's'}</summary><ol>${ev.map((e) => `<li><span class="rec-ev-n">${escapeHtml(String(e.n))}</span><span class="kb-stream-pill ${/compet/i.test(e.type || '') ? 'stream-web' : 'stream-file'}">${escapeHtml(e.type || '')}</span> ${escapeHtml(e.label || '')}</li>`).join('')}</ol></details>` : ''}
+        <div class="rec-foot">Generated ${escapeHtml(new Date(prop.created_at).toLocaleString())} · a grounded suggestion — you decide.</div>
+      </article>
+    `;
+  }
+
+  function wireProspectProposal(companyId) {
+    const status = $('prospect-proposal-status');
+    const host = $('prospect-proposal');
+    const sel = $('prospect-proposal-version');
+    const finalBtn = $('prospect-proposal-final-btn');
+    const exportBtn = $('prospect-proposal-export-btn');
+    const genBtn = $('prospect-proposal-gen-btn');
+    if (!host) return;
+    let versions = [];
+    let current = null;
+
+    async function loadVersion(id) {
+      current = await fetchJson(`/api/proposals/version/${encodeURIComponent(id)}`);
+      renderRecommendationVersion(host, current);
+      finalBtn.classList.remove('hidden');
+      finalBtn.textContent = current.status === 'FINAL' ? '✓ Final' : '✓ Mark final';
+      finalBtn.disabled = current.status === 'FINAL';
+      exportBtn.classList.remove('hidden');
+    }
+    if (exportBtn) exportBtn.addEventListener('click', () => {
+      if (current) window.open(`/api/proposals/version/${encodeURIComponent(current.id)}/export`, '_blank');
+    });
+    async function refresh() {
+      try {
+        const r = await fetchJson(`/api/proposals/${encodeURIComponent(companyId)}`);
+        versions = r.versions || [];
+      } catch (err) { status.textContent = `Couldn't load: ${err.message}`; return; }
+      if (!versions.length) {
+        status.textContent = 'No recommendation yet — generate one from everything we know about this prospect.';
+        sel.classList.add('hidden'); finalBtn.classList.add('hidden'); exportBtn.classList.add('hidden'); host.innerHTML = '';
+        return;
+      }
+      status.textContent = '';
+      sel.classList.remove('hidden');
+      sel.innerHTML = versions.map((v) => `<option value="${escapeHtml(v.id)}">v${escapeHtml(String(v.version))} · ${escapeHtml(v.status)} · ${(v.coverage_json && v.coverage_json.score != null) ? escapeHtml(String(v.coverage_json.score)) + '%' : '—'}</option>`).join('');
+      await loadVersion(versions[0].id);
+    }
+    async function loadInbox() {
+      const box = $('prospect-proposal-inbox');
+      if (!box) return;
+      try {
+        const info = await fetchJson(`/api/proposals/${encodeURIComponent(companyId)}/inbox`);
+        if (!info.configured || !info.address) { box.classList.add('hidden'); return; }
+        box.innerHTML = `<span class="rec-inbox-ico">✉️</span>
+          <div class="rec-inbox-main"><div class="rec-inbox-t">Feed this recommendation by email</div>
+          <div class="rec-inbox-sub">BCC or forward this prospect's emails to <code>${escapeHtml(info.address)}</code> — they're filed as intel and sharpen the next recommendation.</div></div>
+          <button type="button" class="kb-secondary-btn" id="rec-inbox-copy">Copy</button>`;
+        const cp = $('rec-inbox-copy');
+        if (cp) cp.addEventListener('click', () => navigator.clipboard.writeText(info.address)
+          .then(() => { cp.textContent = 'Copied'; setTimeout(() => { cp.textContent = 'Copy'; }, 1500); }).catch(() => {}));
+        box.classList.remove('hidden');
+      } catch { box.classList.add('hidden'); }
+    }
+
+    sel.addEventListener('change', () => loadVersion(sel.value).catch((err) => { status.textContent = `Couldn't load version: ${err.message}`; }));
+    finalBtn.addEventListener('click', async () => {
+      if (!current) return;
+      finalBtn.disabled = true;
+      try {
+        await fetchJson(`/api/proposals/version/${encodeURIComponent(current.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'FINAL' }) });
+        await refresh();
+      } catch (err) { alert(`Couldn't update: ${err.message}`); finalBtn.disabled = false; }
+    });
+    genBtn.addEventListener('click', async () => {
+      genBtn.disabled = true; const t0 = genBtn.textContent; genBtn.textContent = 'Generating… (~15s)';
+      status.textContent = 'Consolidating intelligence and formulating a recommendation…';
+      try {
+        await fetchJson(`/api/proposals/${encodeURIComponent(companyId)}/generate`, { method: 'POST' });
+        await refresh();
+      } catch (err) { status.textContent = ''; alert(`Couldn't generate: ${err.message}`); }
+      finally { genBtn.disabled = false; genBtn.textContent = t0; }
+    });
+    loadInbox();
+    refresh();
+  }
+
   function renderProspectDetail(c, contacts) {
     return `
       <div class="prospect-detail-h">
@@ -1368,6 +1513,7 @@
         <button type="button" class="kb-tab active" data-prospect-tab="signals">🔎 Signals</button>
         <button type="button" class="kb-tab" data-prospect-tab="people">👤 People (${contacts.length})</button>
         <button type="button" class="kb-tab" data-prospect-tab="intel">📁 Intel</button>
+        <button type="button" class="kb-tab" data-prospect-tab="proposal">📝 Proposal</button>
       </div>
 
       <div class="prospect-tab-pane" data-prospect-pane="signals">
@@ -1422,6 +1568,19 @@
           <div class="kb-result hidden" id="prospect-note-result"></div>
         </div>
         <div id="prospect-intel-library-host" style="margin:10px 0 8px 0"></div>
+      </div>
+
+      <div class="prospect-tab-pane hidden" data-prospect-pane="proposal">
+        <span class="kb-subtle">A recommendation that pulls together everything we know — your profile, this prospect's signals, competitor intel and past calls — into how to position, which outcomes to lead with, and what objections to preempt. It's a grounded, cited suggestion; you decide. No pricing, no pipeline.</span>
+        <div class="prospect-intel-actions">
+          <button class="primary-cta" id="prospect-proposal-gen-btn">✨ Generate recommendation</button>
+          <select id="prospect-proposal-version" class="kb-select hidden" title="Version"></select>
+          <button class="kb-secondary-btn hidden" id="prospect-proposal-export-btn">⬇ Export</button>
+          <button class="kb-secondary-btn hidden" id="prospect-proposal-final-btn">✓ Mark final</button>
+        </div>
+        <div class="prospect-intel-status kb-subtle" id="prospect-proposal-status">Loading…</div>
+        <div id="prospect-proposal-inbox" class="rec-inbox hidden"></div>
+        <div id="prospect-proposal" class="prospect-proposal"></div>
       </div>
     `;
   }
@@ -1487,11 +1646,14 @@
         } catch (err) { alert(`Couldn't delete: ${err.message}`); }
       }));
 
-    // ── Tabs (Signals / People / Intel) ──
+    // ── Tabs (Signals / People / Intel / Proposal) ──
     host.querySelectorAll('[data-prospect-tab]').forEach((t) => t.addEventListener('click', () => {
       host.querySelectorAll('[data-prospect-tab]').forEach((x) => x.classList.toggle('active', x === t));
       host.querySelectorAll('[data-prospect-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.prospectPane !== t.dataset.prospectTab));
     }));
+
+    // ── Proposal: intelligence-driven recommendation ──
+    wireProspectProposal(company.id);
 
     // ── Intel Library (the unified, retrievable store) ──
     const intelHost = $('prospect-intel-library-host');
@@ -3087,13 +3249,20 @@
         <div class="integration-group-h">Recording &amp; privacy <span class="kb-subtle">— control what the AI notetaker keeps</span></div>
         <div id="rec-privacy-card" class="rec-privacy-card"><div class="kb-subtle">Loading…</div></div>
       </div>`;
+    const recommendationGroup = `
+      <div class="integration-group">
+        <div class="integration-group-h">Recommendations <span class="kb-subtle">— how the proposal engine handles thin intel</span></div>
+        <div id="proposal-mode-card" class="rec-privacy-card"><div class="kb-subtle">Loading…</div></div>
+      </div>`;
     host.innerHTML =
       (flash || '') +
       recPrivacyGroup +
+      recommendationGroup +
       crmGroup +
       group('Read your calendar', '— pull events into the schedule form', readCal) +
       group('Inbound booking', '— auto-create engagements when prospects book', inbound);
     loadRecordingPrivacy();
+    loadProposalMode();
     wireCrmCards(host);
     host.querySelectorAll('[data-copy]').forEach((b) =>
       b.addEventListener('click', () => copyToClipboard(b.dataset.copy, b)));
@@ -3616,6 +3785,50 @@
     } finally {
       btn.disabled = false; btn.textContent = orig;
     }
+  }
+
+  // ── Recommendations: proposal mode (Phase 3) ──────────────────────────────
+  async function loadProposalMode() {
+    const host = $('proposal-mode-card');
+    if (!host) return;
+    let s;
+    try { s = await fetchJson('/api/settings/proposal'); }
+    catch (err) { host.innerHTML = `<div class="kb-result error">Couldn't load: ${escapeHtml(err.message)}</div>`; return; }
+    const role = (window._me && window._me.role) || '';
+    const canEdit = !!(window._me && window._me.isAdmin) || role === 'owner' || role === 'manager';
+    const dis = canEdit ? '' : 'disabled';
+    const opt = (val, label, sub) => `
+      <label class="rec-toggle" style="align-items:flex-start">
+        <input type="radio" name="proposal-mode" value="${val}" ${s.mode === val ? 'checked' : ''} ${dis}>
+        <span><strong>${label}</strong><br><span class="kb-subtle">${sub}</span></span>
+      </label>`;
+    host.innerHTML = `
+      <div class="rec-row">${opt('DRAFT_WITH_ASSUMPTIONS', 'Draft with assumptions (default)',
+        'Always generate. Where intel is thin, the recommendation flags those parts as assumptions and lowers the confidence — nothing is hidden.')}</div>
+      <div class="rec-row">${opt('BLOCK', 'Require prospect intel first',
+        'Withhold generation until this prospect has its own intelligence (research, filed intel, or a logged call/email) — not just your profile and generic competitor intel.')}</div>
+      ${canEdit
+        ? `<div class="rec-actions"><button class="primary-cta" id="pmode-save-btn">Save</button><span class="kb-result hidden" id="pmode-save-result"></span></div>`
+        : '<div class="kb-subtle">Only an owner or manager can change this.</div>'}`;
+    const saveBtn = $('pmode-save-btn');
+    if (saveBtn) saveBtn.addEventListener('click', async () => {
+      const sel = host.querySelector('input[name="proposal-mode"]:checked');
+      if (!sel) return;
+      const result = $('pmode-save-result');
+      saveBtn.disabled = true; const orig = saveBtn.textContent; saveBtn.textContent = 'Saving…';
+      if (result) result.classList.add('hidden');
+      try {
+        const r = await fetch('/api/settings/proposal', {
+          method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: sel.value }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        if (result) { result.classList.remove('hidden', 'error'); result.classList.add('success'); result.textContent = 'Saved.'; }
+      } catch (err) {
+        if (result) { result.classList.remove('hidden', 'success'); result.classList.add('error'); result.textContent = `Couldn't save: ${err.message}`; }
+      } finally { saveBtn.disabled = false; saveBtn.textContent = orig; }
+    });
   }
 
   function wireCrmCards(host) {
