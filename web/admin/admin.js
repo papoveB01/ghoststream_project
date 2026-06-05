@@ -3249,13 +3249,20 @@
         <div class="integration-group-h">Recording &amp; privacy <span class="kb-subtle">— control what the AI notetaker keeps</span></div>
         <div id="rec-privacy-card" class="rec-privacy-card"><div class="kb-subtle">Loading…</div></div>
       </div>`;
+    const recommendationGroup = `
+      <div class="integration-group">
+        <div class="integration-group-h">Recommendations <span class="kb-subtle">— how the proposal engine handles thin intel</span></div>
+        <div id="proposal-mode-card" class="rec-privacy-card"><div class="kb-subtle">Loading…</div></div>
+      </div>`;
     host.innerHTML =
       (flash || '') +
       recPrivacyGroup +
+      recommendationGroup +
       crmGroup +
       group('Read your calendar', '— pull events into the schedule form', readCal) +
       group('Inbound booking', '— auto-create engagements when prospects book', inbound);
     loadRecordingPrivacy();
+    loadProposalMode();
     wireCrmCards(host);
     host.querySelectorAll('[data-copy]').forEach((b) =>
       b.addEventListener('click', () => copyToClipboard(b.dataset.copy, b)));
@@ -3778,6 +3785,50 @@
     } finally {
       btn.disabled = false; btn.textContent = orig;
     }
+  }
+
+  // ── Recommendations: proposal mode (Phase 3) ──────────────────────────────
+  async function loadProposalMode() {
+    const host = $('proposal-mode-card');
+    if (!host) return;
+    let s;
+    try { s = await fetchJson('/api/settings/proposal'); }
+    catch (err) { host.innerHTML = `<div class="kb-result error">Couldn't load: ${escapeHtml(err.message)}</div>`; return; }
+    const role = (window._me && window._me.role) || '';
+    const canEdit = !!(window._me && window._me.isAdmin) || role === 'owner' || role === 'manager';
+    const dis = canEdit ? '' : 'disabled';
+    const opt = (val, label, sub) => `
+      <label class="rec-toggle" style="align-items:flex-start">
+        <input type="radio" name="proposal-mode" value="${val}" ${s.mode === val ? 'checked' : ''} ${dis}>
+        <span><strong>${label}</strong><br><span class="kb-subtle">${sub}</span></span>
+      </label>`;
+    host.innerHTML = `
+      <div class="rec-row">${opt('DRAFT_WITH_ASSUMPTIONS', 'Draft with assumptions (default)',
+        'Always generate. Where intel is thin, the recommendation flags those parts as assumptions and lowers the confidence — nothing is hidden.')}</div>
+      <div class="rec-row">${opt('BLOCK', 'Require prospect intel first',
+        'Withhold generation until this prospect has its own intelligence (research, filed intel, or a logged call/email) — not just your profile and generic competitor intel.')}</div>
+      ${canEdit
+        ? `<div class="rec-actions"><button class="primary-cta" id="pmode-save-btn">Save</button><span class="kb-result hidden" id="pmode-save-result"></span></div>`
+        : '<div class="kb-subtle">Only an owner or manager can change this.</div>'}`;
+    const saveBtn = $('pmode-save-btn');
+    if (saveBtn) saveBtn.addEventListener('click', async () => {
+      const sel = host.querySelector('input[name="proposal-mode"]:checked');
+      if (!sel) return;
+      const result = $('pmode-save-result');
+      saveBtn.disabled = true; const orig = saveBtn.textContent; saveBtn.textContent = 'Saving…';
+      if (result) result.classList.add('hidden');
+      try {
+        const r = await fetch('/api/settings/proposal', {
+          method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: sel.value }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        if (result) { result.classList.remove('hidden', 'error'); result.classList.add('success'); result.textContent = 'Saved.'; }
+      } catch (err) {
+        if (result) { result.classList.remove('hidden', 'success'); result.classList.add('error'); result.textContent = `Couldn't save: ${err.message}`; }
+      } finally { saveBtn.disabled = false; saveBtn.textContent = orig; }
+    });
   }
 
   function wireCrmCards(host) {

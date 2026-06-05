@@ -202,6 +202,19 @@ function computeCoverage(content, byLayer) {
   return { score, byLayer, gaps: Array.isArray(content.intelligenceGaps) ? content.intelligenceGaps : [] };
 }
 
+// ── Tenant recommendation mode ──────────────────────────────────────────────
+const PROPOSAL_MODES = ['DRAFT_WITH_ASSUMPTIONS', 'BLOCK'];
+async function getMode(tenantId) {
+  const r = await db.query(`SELECT proposal_mode FROM tenants WHERE id = $1`, [tenantId]);
+  const m = r.rows[0] && r.rows[0].proposal_mode;
+  return PROPOSAL_MODES.includes(m) ? m : 'DRAFT_WITH_ASSUMPTIONS';
+}
+async function setMode(tenantId, mode) {
+  if (!PROPOSAL_MODES.includes(mode)) { const e = new Error('mode must be DRAFT_WITH_ASSUMPTIONS or BLOCK'); e.status = 400; throw e; }
+  await db.query(`UPDATE tenants SET proposal_mode = $2 WHERE id = $1`, [tenantId, mode]);
+  return mode;
+}
+
 // ── Public ops ──────────────────────────────────────────────────────────────
 async function generate(tenantId, companyId, userId) {
   const c = await db.query(`SELECT id, name FROM companies WHERE id = $1 AND tenant_id = $2`, [companyId, tenantId]);
@@ -211,6 +224,17 @@ async function generate(tenantId, companyId, userId) {
   if (!evidence.length && !profileText) {
     const e = new Error('no intelligence on file for this prospect yet — run research or log a call first');
     e.status = 422; throw e;
+  }
+
+  // BLOCK mode: require prospect-specific intelligence before generating, rather
+  // than building a recommendation from our profile + generic intel alone.
+  const mode = await getMode(tenantId);
+  if (mode === 'BLOCK') {
+    const prospectSignal = (byLayer.PROSPECT_RESEARCH || 0) + (byLayer.PROSPECT_INTEL || 0) + (byLayer.ENGAGEMENT || 0);
+    if (prospectSignal === 0) {
+      const e = new Error('Not enough prospect-specific intelligence yet — run research, file intel, or forward a call/email first. (Your workspace requires this before generating; change it in Settings → Recommendations.)');
+      e.status = 422; throw e;
+    }
   }
 
   const { content, usage } = await synthesize(c.rows[0].name, profileText, evidence);
@@ -390,4 +414,4 @@ router.get('/:companyId', async (req, res, next) => {
   catch (err) { next(err); }
 });
 
-module.exports = { router, generate, gatherEvidence, listForCompany, getVersion, updateVersion, exportHtml };
+module.exports = { router, generate, gatherEvidence, listForCompany, getVersion, updateVersion, exportHtml, getMode, setMode, PROPOSAL_MODES };
