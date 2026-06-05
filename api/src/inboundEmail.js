@@ -94,6 +94,20 @@ function htmlToText(html) {
     .replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+// Privacy: strip email addresses (PII) before anything is stored. Forwarded
+// threads carry long To/Cc lists of real addresses — redact them to [email],
+// keeping surrounding display names/roles so the intel stays readable. Removes
+// any angle brackets around an address too (e.g. "Jane Doe <jane@acme.com>" →
+// "Jane Doe [email]").
+const EMAIL_RE = /<?\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b>?/g;
+function stripEmails(text) {
+  return String(text == null ? '' : text)
+    .replace(EMAIL_RE, '[email]')
+    .replace(/\[email\](?:[;,\s]*\[email\])+/g, '[email]') // collapse runs of redactions
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n');
+}
+
 // ── Ingest one parsed inbound email ─────────────────────────────────────────
 // Unauthenticated context (SendGrid): resolves token via sysPool, then files.
 async function handleInbound(fields) {
@@ -105,9 +119,10 @@ async function handleInbound(fields) {
   if (!row) return { ok: false, reason: 'unknown token' };
 
   const { tenant_id: tenantId, company_id: companyId } = row;
-  const from = String(fields.from || '').slice(0, 300);
-  const subject = String(fields.subject || '').slice(0, 300) || '(no subject)';
-  const body = cleanBody(fields.text || htmlToText(fields.html));
+  // Strip email addresses (PII) from everything we persist.
+  const from = stripEmails(String(fields.from || '')).slice(0, 300);
+  const subject = stripEmails(String(fields.subject || '')).slice(0, 300) || '(no subject)';
+  const body = stripEmails(cleanBody(fields.text || htmlToText(fields.html)));
   if (!body) return { ok: false, reason: 'empty body' };
 
   const receivedAt = new Date().toISOString();
@@ -153,4 +168,4 @@ webhookRouter.post('/:secret', upload.any(), async (req, res) => {
   }
 });
 
-module.exports = { webhookRouter, inboxInfo, getOrCreateToken, isConfigured, handleInbound, addressFor };
+module.exports = { webhookRouter, inboxInfo, getOrCreateToken, isConfigured, handleInbound, addressFor, stripEmails };
