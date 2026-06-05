@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dashboard · GhostStream Admin</title>
+  <title>Dashboard · DealScope Admin</title>
   <meta name="theme-color" content="#ffffff">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/admin/admin.css">
   <link rel="stylesheet" href="/admin/vendor/driver.css">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233c7d13'/%3E%3Ctext x='16' y='22' font-family='Inter' font-size='18' font-weight='800' text-anchor='middle' fill='white'%3EG%3C/text%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23c2f24a'/%3E%3Ctext x='16' y='22' font-family='Inter' font-size='18' font-weight='800' text-anchor='middle' fill='%2312141a'%3ED%3C/text%3E%3C/svg%3E">
 </head>
 <body class="admin-page">
 
@@ -20,7 +20,7 @@
         <span class="brand-mark">
           <svg width="28" height="28" viewBox="0 0 28 28"><rect width="28" height="28" rx="7" fill="#3c7d13"/><path d="M9 14a5 5 0 0110 0v3l2 2H7l2-2v-3z" fill="white"/></svg>
         </span>
-        <span class="brand-name">GhostStream</span>
+        <span class="brand-name">DealScope</span>
       </a>
       <div class="sidebar-tag">Admin</div>
       <nav class="sidebar-nav" id="nav">
@@ -66,6 +66,7 @@
         <header class="content-head">
           <h1 id="page-title">Overview</h1>
           <div class="head-actions">
+            <button class="refresh-btn" id="support-btn" title="Help &amp; support">🛟 Support</button>
             <button class="refresh-btn" id="tour-btn" title="Take the product tour">？ Guide</button>
             <button class="refresh-btn" id="refresh-btn">↻ Refresh</button>
           </div>
@@ -430,7 +431,7 @@
                         <textarea id="missions-emails" name="prospectEmails" class="hidden" rows="1"></textarea>
                       </div>
                       <div class="field">
-                        <label>Tags <span class="field-hint-inline">(products · personas · competitors — auto-filled from your last meeting with this prospect)</span></label>
+                        <label>Tags <span class="field-hint-inline">(products · personas · competitors — auto-filled from your last meeting with this prospect; click to add or remove)</span></label>
                         <div class="kb-tag-grid">
                           <select id="missions-product" name="productIds" multiple size="3"></select>
                           <select id="missions-persona" name="personaIds" multiple size="3"></select>

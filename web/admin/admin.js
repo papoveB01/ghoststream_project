@@ -46,6 +46,7 @@
       me = payload.user;
       if (me && payload.entitlements) me.entitlements = payload.entitlements;
       if (me) me.credits = payload.credits || null;
+      window._me = me; // exposed for the support panel (prefilled email context)
     } catch {
       window.location.href = '/admin/login.html';
       return;
@@ -118,6 +119,10 @@
     refreshWatchBadge();
     setInterval(refreshWatchBadge, 300000);
 
+    // Help & support: opens the FAQ-first support panel.
+    const supportBtn = $('support-btn');
+    if (supportBtn) supportBtn.addEventListener('click', openSupportModal);
+
     // Product tour: wire the "？ Guide" replay button + auto-run once for new users.
     const tourBtn = $('tour-btn');
     if (tourBtn) tourBtn.addEventListener('click', startTour);
@@ -142,7 +147,7 @@
       popoverClass: 'gs-tour',
       onDestroyed: () => { try { localStorage.setItem('gs_tour_seen', '1'); } catch { /* ignore */ } },
       steps: [
-        { popover: { title: 'Welcome to GhostStream 👋', description: 'A 30-second tour of how to go from a cold list to a closed call. You can replay it any time from <b>？ Guide</b> in the top bar.' } },
+        { popover: { title: 'Welcome to DealScope 👋', description: 'A 30-second tour of how to go from a cold list to a closed call. You can replay it any time from <b>？ Guide</b> in the top bar.' } },
         { element: nav('overview'),     popover: { title: '1 · Your cockpit', description: 'Priority opportunities, upcoming engagements, and your foundation health — what to do next, at a glance.', side: 'right', align: 'start' } },
         { element: nav('company'),      popover: { title: '2 · Company foundation', description: 'Built automatically from your website on day one — your products, positioning and personas. Every AI output is grounded here.', side: 'right', align: 'start' } },
         { element: nav('prospects'),    popover: { title: '3 · Find prospects', description: 'Add them manually, pull from your CRM, or let AI <b>discover</b> companies showing a buying signal — ranked by priority and matched to your products (≈ 3 credits a run).', side: 'right', align: 'start' } },
@@ -152,6 +157,105 @@
         { element: '#tour-btn',         popover: { title: 'You\'re all set 🚀', description: 'Start by reviewing your <b>Company</b> foundation, then <b>Discover</b> your first prospects. Replay this tour any time from here.', side: 'bottom', align: 'end' } },
       ],
     }).drive();
+  }
+
+  // ── Support panel ─────────────────────────────────────────────────────────
+  // FAQ first (the common answers resolve most questions instantly), then a
+  // "still need help" form that composes an email to support. No backend
+  // dependency — submitting opens the rep's mail client with a prefilled draft.
+  const SUPPORT_EMAIL = 'support@ghoststream.exact-it.net';
+  const SUPPORT_FAQ = [
+    { q: 'How do I add prospects?',
+      a: 'Three ways, all on the <b>Prospects</b> page: add a company manually, pull from a connected CRM (Integrations → HubSpot is live), or let <b>AI Discovery</b> find companies showing a buying signal — ranked by priority and matched to your products (≈ 3 credits a run).' },
+    { q: 'How do credits work?',
+      a: 'Every plan includes a monthly pool of AI credits that flow to whatever you do — a recorded call ≈ 24 credits, a discovery run ≈ 3, an Arena session ≈ 1. You can top up anytime from <b>Billing</b>; nothing is charged beyond your plan + any top-ups.' },
+    { q: 'How do I connect my calendar?',
+      a: 'Go to <b>Integrations</b> and connect Google or Microsoft 365. Upcoming meetings then prefill the schedule form, and you can generate a Google Meet / Teams meeting in one click. Calendly auto-creates engagements when a prospect books.' },
+    { q: 'A meeting invite didn’t arrive — why?',
+      a: 'Invites are sent from our branded sender (not your mailbox) so deliverability is consistent. If a recipient shows as failed in the create dialog, check the address and resend; persistent failures are usually a recipient-side spam filter.' },
+    { q: 'How is my data kept private?',
+      a: 'Each workspace is fully isolated (multi-tenant), connected tokens are encrypted at rest, and your data is never used to train shared models. See the Privacy Policy and DPA linked from the marketing site.' },
+  ];
+
+  function openSupportModal() {
+    let overlay = $('support-modal-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'support-modal-overlay';
+      overlay.className = 'cal-picker-overlay support-overlay';
+      const faq = SUPPORT_FAQ.map((f, i) => `
+        <div class="support-faq-item">
+          <button type="button" class="support-faq-q" data-support-faq="${i}" aria-expanded="false">
+            <span>${escapeHtml(f.q)}</span><span class="support-faq-chevron" aria-hidden="true">▸</span>
+          </button>
+          <div class="support-faq-a hidden" data-support-faq-a="${i}">${f.a}</div>
+        </div>`).join('');
+      overlay.innerHTML = `
+        <div class="cal-picker support-modal">
+          <div class="cal-picker-h">
+            <span class="cal-picker-title">🛟 Help &amp; support</span>
+            <button type="button" class="kb-link-btn cal-picker-close">✕</button>
+          </div>
+          <div class="cal-picker-body support-body">
+            <div class="support-section-h">Frequently asked</div>
+            <div class="support-faq">${faq}</div>
+            <div class="support-section-h support-contact-h">Still need help? Send us a message</div>
+            <div class="kb-form support-form">
+              <div class="field">
+                <label for="support-subject">Subject</label>
+                <input id="support-subject" type="text" maxlength="150" placeholder="e.g. AI discovery returned no results">
+              </div>
+              <div class="field">
+                <label for="support-message">Message</label>
+                <textarea id="support-message" rows="5" placeholder="Tell us what's happening — the more detail, the faster we can help."></textarea>
+              </div>
+              <div class="support-form-actions">
+                <button type="button" class="primary-cta" id="support-send-btn">Send message</button>
+                <span class="kb-subtle">or email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a></span>
+              </div>
+              <div class="kb-result hidden" id="support-result"></div>
+            </div>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) closeSupportModal(); });
+      overlay.querySelector('.cal-picker-close').addEventListener('click', closeSupportModal);
+      document.addEventListener('keydown', _supportEsc);
+      // FAQ accordion toggles.
+      overlay.querySelectorAll('[data-support-faq]').forEach((b) => b.addEventListener('click', () => {
+        const ans = overlay.querySelector(`[data-support-faq-a="${b.dataset.supportFaq}"]`);
+        if (!ans) return;
+        const open = ans.classList.toggle('hidden') === false;
+        b.setAttribute('aria-expanded', String(open));
+        b.classList.toggle('open', open);
+      }));
+      overlay.querySelector('#support-send-btn').addEventListener('click', submitSupport);
+    }
+    // Reset the form each open.
+    $('support-subject').value = '';
+    $('support-message').value = '';
+    $('support-result').classList.add('hidden');
+    overlay.classList.remove('hidden');
+    setTimeout(() => $('support-subject').focus(), 50);
+  }
+
+  function _supportEsc(e) { if (e.key === 'Escape') closeSupportModal(); }
+  function closeSupportModal() { const o = $('support-modal-overlay'); if (o) o.classList.add('hidden'); }
+
+  function submitSupport() {
+    const subject = ($('support-subject').value || '').trim();
+    const message = ($('support-message').value || '').trim();
+    const result = $('support-result');
+    result.classList.remove('hidden', 'error', 'success');
+    if (!message) { result.classList.add('error'); result.textContent = 'Please add a short message first.'; return; }
+    // Compose a prefilled email. Include the workspace + signed-in user so the
+    // support team has context without asking. _me is set during init().
+    const who = (window._me && (window._me.email || window._me.name)) || 'a DealScope user';
+    const ctx = `\n\n— Sent from the DealScope app by ${who}`;
+    const href = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(subject || 'DealScope support request')}&body=${encodeURIComponent(message + ctx)}`;
+    window.location.href = href;
+    result.classList.add('success');
+    result.innerHTML = `Opening your email app… if nothing happens, email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a> directly.`;
   }
 
   // Parse a hash like "calls?status=ready&q=foo" → { section, query }.
@@ -345,7 +449,7 @@
     if (!k.prospects) need.push(['Find your first prospects', 'prospects']);
     const activation = need.length ? `
       <div class="dash-activation">
-        <div class="dash-activation-h">⚡ Finish setting up GhostStream</div>
+        <div class="dash-activation-h">⚡ Finish setting up DealScope</div>
         <div class="dash-activation-steps">${need.map(([label, sec]) => `<button class="dash-chip" data-goto="${sec}">○ ${escapeHtml(label)} →</button>`).join('')}</div>
       </div>` : '';
 
@@ -371,6 +475,7 @@
         ${kpiCell('Competitors', fmtNum(k.competitors || 0), `${fmtNum(f.competitorsWithIntel || 0)} with intel`, 'competitors')}
         ${kpiCell('Next 7 days', fmtNum(k.engagementsNext7d || 0), 'engagements', 'missions')}
       </div>
+      ${buildDashCharts(d)}
       <div class="dash-grid">
         <div class="dash-col">
           <div class="dash-card-h">🎯 Priority opportunities</div>
@@ -381,6 +486,7 @@
           <div class="dash-engs">${engs.length ? engs.map(dashEngRow).join('') : dashEmpty('No upcoming engagements — schedule one from a prospect or the Engagements page.')}</div>
         </div>
       </div>
+      <div id="dash-subaccounts"></div>
       <div class="dash-foundation">
         <span class="dash-found-h">🧱 Foundation</span>
         ${dashFound(f.profileSet, 'Positioning')}
@@ -398,7 +504,25 @@
       if (sec === 'prospects' && b.dataset.pmode) _prospectMode = b.dataset.pmode;
       window.location.hash = '#' + sec;
     }));
-    host.querySelectorAll('[data-opp-company]').forEach((el) => el.addEventListener('click', () => {
+    // Click a priority row (its header) to expand the full description.
+    const toggleOpp = (idx) => {
+      const detail = host.querySelector(`[data-opp-detail="${idx}"]`);
+      const headEl = host.querySelector(`[data-opp-toggle="${idx}"]`);
+      if (!detail) return;
+      const open = detail.classList.toggle('hidden') === false;
+      if (headEl) {
+        headEl.setAttribute('aria-expanded', String(open));
+        headEl.classList.toggle('open', open);
+      }
+    };
+    host.querySelectorAll('[data-opp-toggle]').forEach((el) => {
+      el.addEventListener('click', () => toggleOpp(el.dataset.oppToggle));
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleOpp(el.dataset.oppToggle); }
+      });
+    });
+    host.querySelectorAll('[data-opp-company]').forEach((el) => el.addEventListener('click', (e) => {
+      e.stopPropagation();
       _prospectsState.selectedCompanyId = el.dataset.oppCompany;
       window.location.hash = '#prospects';
     }));
@@ -408,11 +532,146 @@
       window._prefillMission = { companyName: o.companyName || '', companyDomain: '', productIds: [], note: o.title ? `Angle: ${o.title}` : '' };
       window.location.hash = '#missions';
     }));
+    // Kick off prospect research for the opportunity's company. Research runs
+    // in the background; we land the rep on the prospect so they watch it fill
+    // in (Signals/Intel tabs) rather than staring at a spinner here.
+    host.querySelectorAll('[data-opp-intel]').forEach((b) => b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const o = opps[Number(b.dataset.oppIntel)] || {};
+      if (!o.companyId) { alert("This opportunity isn't linked to a company yet."); return; }
+      b.disabled = true; const orig = b.textContent; b.textContent = 'Starting research…';
+      try {
+        await fetchJson(`/api/knowledge/research/${encodeURIComponent(o.companyId)}`, { method: 'POST' });
+        _prospectsState.selectedCompanyId = o.companyId;
+        loaded.prospects = false;
+        window.location.hash = '#prospects';
+      } catch (err) {
+        b.disabled = false; b.textContent = orig;
+        alert(`Couldn't start prospect intel: ${err.message}`);
+      }
+    }));
     host.querySelectorAll('[data-eng-company]').forEach((el) => el.addEventListener('click', () => {
       const cid = el.dataset.engCompany;
       if (cid) { _prospectsState.selectedCompanyId = cid; window.location.hash = '#prospects'; }
       else window.location.hash = '#missions';
     }));
+
+    // Parent-account roll-up loads async (separate endpoint); never blocks the
+    // main dashboard render and silently no-ops for non-parent profiles.
+    renderDashRollup();
+  }
+
+  // ── Overview charts (inline SVG / CSS — no charting dependency) ───────────
+  const DASH_STRENGTH_SEGS = [
+    { key: 'strong', label: 'Strong', color: '#3c7d13' },
+    { key: 'tie',    label: 'Even',   color: '#ea580c' },
+    { key: 'weak',   label: 'Weak',   color: '#c2c6cc' },
+  ];
+
+  function buildDashCharts(d) {
+    const meters = (d.usage && d.usage.meters) || [];
+    const usageCard = meters.length ? `
+      <div class="dash-col dash-chart-card">
+        <div class="dash-card-h">📊 Usage this ${d.usage.lifetime ? 'account' : 'month'}</div>
+        <div class="dash-gauges">${meters.map(dashGauge).join('')}</div>
+      </div>` : '';
+    const mixCard = `
+      <div class="dash-col dash-chart-card">
+        <div class="dash-card-h">🎯 Opportunity mix</div>
+        ${dashStrengthDonut(d.strengthBreakdown || {})}
+      </div>`;
+    const trendCard = `
+      <div class="dash-col dash-chart-card">
+        <div class="dash-card-h">📈 New prospects</div>
+        ${dashTrend(d.prospectTrend)}
+      </div>`;
+    return `<div class="dash-charts">${usageCard}${mixCard}${trendCard}</div>`;
+  }
+
+  // Single usage gauge: a ring filled to used/cap, colored by headroom.
+  // cap === null (unlimited) → faint full ring, count + ∞, no fill arc.
+  function dashGauge(m) {
+    const unlimited = m.cap == null;
+    const frac = unlimited || m.cap <= 0 ? 0 : Math.min(1, m.used / m.cap);
+    const r = 30, c = 2 * Math.PI * r, filled = c * frac;
+    const col = frac >= 1 ? 'var(--danger)' : frac >= 0.85 ? 'var(--warn)' : 'var(--accent)';
+    const sub = unlimited ? '∞' : `/${fmtNum(m.cap)}`;
+    return `<div class="dash-gauge" title="${escapeHtml(m.label)}: ${fmtNum(m.used)}${unlimited ? '' : ' of ' + fmtNum(m.cap)} used">
+      <svg viewBox="0 0 80 80" class="dash-gauge-svg" role="img" aria-label="${escapeHtml(m.label)} usage">
+        <circle cx="40" cy="40" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="9"/>
+        ${unlimited ? '' : `<circle cx="40" cy="40" r="${r}" fill="none" stroke="${col}" stroke-width="9" stroke-linecap="round" stroke-dasharray="${filled.toFixed(2)} ${(c - filled).toFixed(2)}" transform="rotate(-90 40 40)"/>`}
+        <text x="40" y="38" class="dash-gauge-v">${fmtNum(m.used)}</text>
+        <text x="40" y="53" class="dash-gauge-s">${escapeHtml(sub)}</text>
+      </svg>
+      <div class="dash-gauge-l">${escapeHtml(m.label)}</div>
+    </div>`;
+  }
+
+  // Donut of opportunity strength mix (strong / even / weak).
+  function dashStrengthDonut(b) {
+    const segs = DASH_STRENGTH_SEGS.map((s) => ({ ...s, value: b[s.key] || 0 }));
+    const sum = segs.reduce((s, x) => s + x.value, 0);
+    const r = 32, c = 2 * Math.PI * r;
+    let offset = 0;
+    const arcs = sum === 0
+      ? `<circle cx="50" cy="50" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="14"/>`
+      : segs.filter((s) => s.value > 0).map((s) => {
+          const len = (s.value / sum) * c;
+          const arc = `<circle cx="50" cy="50" r="${r}" fill="none" stroke="${s.color}" stroke-width="14" stroke-dasharray="${len.toFixed(2)} ${(c - len).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 50 50)"/>`;
+          offset += len; return arc;
+        }).join('');
+    const legend = segs.map((s) => `<span class="dash-leg"><i style="background:${s.color}"></i>${escapeHtml(s.label)} <b>${fmtNum(s.value)}</b></span>`).join('');
+    return `<div class="dash-donut-wrap">
+      <svg viewBox="0 0 100 100" class="dash-donut" role="img" aria-label="Opportunity strength mix">
+        ${arcs}
+        <text x="50" y="47" class="dash-donut-v">${fmtNum(sum)}</text>
+        <text x="50" y="62" class="dash-donut-s">signals</text>
+      </svg>
+      <div class="dash-legend">${legend}</div>
+    </div>`;
+  }
+
+  // 8-week new-prospect bar sparkline.
+  function dashTrend(rows) {
+    const data = Array.isArray(rows) ? rows : [];
+    if (!data.length) return dashEmpty('No prospect history yet.');
+    const max = Math.max(1, ...data.map((r) => r.count || 0));
+    const bars = data.map((r) => {
+      const h = Math.round(((r.count || 0) / max) * 100);
+      const wk = String(r.week || '').slice(5);
+      return `<div class="dash-bar" title="Week of ${escapeHtml(r.week || '')}: ${fmtNum(r.count || 0)} new"><i style="height:${Math.max(h, 2)}%"></i><span>${escapeHtml(wk)}</span></div>`;
+    }).join('');
+    const totalNew = data.reduce((s, r) => s + (r.count || 0), 0);
+    return `<div class="dash-trend">${bars}</div><div class="dash-trend-foot kb-subtle">${fmtNum(totalNew)} new in 8 weeks</div>`;
+  }
+
+  // Parent-account only: per-child activity bars (intel + calls + upcoming).
+  async function renderDashRollup() {
+    const host = $('dash-subaccounts');
+    if (!host) return;
+    const feats = (me && me.entitlements && me.entitlements.features) || [];
+    const isParent = feats.includes('sub_accounts') && !(me.entitlements && me.entitlements.isSubtenant);
+    if (!isParent) return;
+    let d;
+    try { d = await fetchJson('/api/account/subaccounts/monitor'); }
+    catch (_) { return; }
+    const kids = (d && d.children) || [];
+    if (!kids.length) return;
+    const act = (c) => (c.intel.count || 0) + (c.calls.count || 0) + (c.upcoming.count || 0);
+    const maxAct = Math.max(1, ...kids.map(act));
+    const rows = kids.map((c) => {
+      const w = Math.round((act(c) / maxAct) * 100);
+      return `<button class="dash-kid" data-goto="subaccounts">
+        <span class="dash-kid-name">${escapeHtml(c.name || c.domain || 'Workspace')}</span>
+        <span class="dash-kid-bar"><i style="width:${Math.max(w, 2)}%"></i></span>
+        <span class="dash-kid-stats kb-subtle">${fmtNum(c.intel.count || 0)} intel · ${fmtNum(c.calls.count || 0)} calls · ${fmtNum(c.upcoming.count || 0)} upcoming</span>
+      </button>`;
+    }).join('');
+    host.innerHTML = `<div class="dash-col dash-chart-card dash-rollup">
+      <div class="dash-card-h">🏢 Sub-account activity <button class="kb-link-btn dash-rollup-manage" data-goto="subaccounts">Manage →</button></div>
+      <div class="dash-kids">${rows}</div>
+    </div>`;
+    host.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => { window.location.hash = '#' + b.dataset.goto; }));
   }
 
   function kpiCell(label, value, sub, sec) {
@@ -423,13 +682,27 @@
   function dashStrengthClass(s) { return s === 'strong' ? 'win' : s === 'weak' ? 'lose' : 'tie'; }
   function dashOppRow(o, i) {
     const fits = (o.products || []).slice(0, 4).map((p) => `<span class="kb-stream-pill stream-file">${escapeHtml(p)}</span>`).join(' ');
-    return `<div class="dash-opp">
-      <div class="dash-opp-top">
-        <span class="bc-verdict bc-verdict-${dashStrengthClass(o.strength)}">${escapeHtml(o.strength || '—')}</span>
-        <span class="dash-opp-title">${escapeHtml(o.title || 'Opportunity')}</span>
+    const analysis = (o.analysis || '').trim();
+    return `<div class="dash-opp" data-opp-idx="${i}">
+      <div class="dash-opp-head" data-opp-toggle="${i}" role="button" tabindex="0" aria-expanded="false" title="Click for the full description">
+        <div class="dash-opp-co">${escapeHtml(o.companyName || 'Prospect')}</div>
+        <div class="dash-opp-top">
+          <span class="bc-verdict bc-verdict-${dashStrengthClass(o.strength)}">${escapeHtml(o.strength || '—')}</span>
+          <span class="dash-opp-title">${escapeHtml(o.title || 'Opportunity')}</span>
+          <span class="dash-opp-chevron" aria-hidden="true">▸</span>
+        </div>
+        ${fits ? `<div class="dash-opp-fits">${fits}</div>` : ''}
       </div>
-      <div class="dash-opp-meta"><a class="dash-opp-company" data-opp-company="${escapeHtml(o.companyId)}">${escapeHtml(o.companyName || '')}</a>${fits ? ` · ${fits}` : ''}</div>
-      <div class="dash-opp-actions"><button class="kb-link-btn" data-opp-brief="${i}">📅 Brief an engagement →</button></div>
+      <div class="dash-opp-detail hidden" data-opp-detail="${i}">
+        <p class="dash-opp-analysis">${analysis
+          ? escapeHtml(analysis)
+          : '<span class="kb-subtle">No detailed description yet — generate prospect intel to research this account and surface the “why now”.</span>'}</p>
+        <div class="dash-opp-actions">
+          <button class="kb-secondary-btn" data-opp-intel="${i}">✨ Generate prospect intel</button>
+          <button class="kb-link-btn" data-opp-brief="${i}">📅 Brief an engagement →</button>
+          <button class="kb-link-btn" data-opp-company="${escapeHtml(o.companyId)}">Open prospect →</button>
+        </div>
+      </div>
     </div>`;
   }
   function dashEngRow(e) {
@@ -2744,10 +3017,10 @@
     try { crmProviders = (await fetchJson('/api/crm/providers')).providers || []; } catch { crmProviders = []; }
     crmProviders = crmProviders.filter((p) => p.live || (p.connection && p.connection.connected));
 
-    // Flash from the Nylas callback redirect (?cal=connected / ?cal_error=…).
+    // Flash from the OAuth callback redirects (?google=connected / ?ms=… / …).
     const flash = readCalFlash();
     // Group by connection model so the two flows read clearly: calendars we READ
-    // (Nylas / Microsoft) vs inbound booking webhooks (Calendly).
+    // (Google / Microsoft) vs inbound booking webhooks (Calendly).
     const readCal = providers.filter((p) => p.mode !== 'webhook');
     const inbound = providers.filter((p) => p.mode === 'webhook');
     const group = (label, hint, list) => list.length
@@ -2758,29 +3031,38 @@
       : '';
     const crmGroup = crmProviders.length
       ? `<div class="integration-group">
-           <div class="integration-group-h">CRM <span class="kb-subtle">— pull your prospects (companies + contacts) into GhostStream</span></div>
+           <div class="integration-group-h">CRM <span class="kb-subtle">— pull your prospects (companies + contacts) into DealScope</span></div>
            <div class="integration-grid">${crmProviders.map(crmCard).join('')}</div>
          </div>`
       : '';
+    const recPrivacyGroup = `
+      <div class="integration-group">
+        <div class="integration-group-h">Recording &amp; privacy <span class="kb-subtle">— control what the AI notetaker keeps</span></div>
+        <div id="rec-privacy-card" class="rec-privacy-card"><div class="kb-subtle">Loading…</div></div>
+      </div>`;
     host.innerHTML =
       (flash || '') +
+      recPrivacyGroup +
       crmGroup +
       group('Read your calendar', '— pull events into the schedule form', readCal) +
       group('Inbound booking', '— auto-create engagements when prospects book', inbound);
+    loadRecordingPrivacy();
     wireCrmCards(host);
     host.querySelectorAll('[data-copy]').forEach((b) =>
       b.addEventListener('click', () => copyToClipboard(b.dataset.copy, b)));
-    host.querySelectorAll('[data-cal-connect]').forEach((b) =>
-      b.addEventListener('click', () => { window.location.href = '/api/integrations/calendar/connect?provider=' + encodeURIComponent(b.dataset.calConnect || 'google'); }));
-    host.querySelectorAll('[data-cal-disconnect]').forEach((b) =>
-      b.addEventListener('click', () => calendarDisconnect(b)));
+    host.querySelectorAll('[data-google-connect]').forEach((b) =>
+      b.addEventListener('click', () => { window.location.href = '/api/integrations/google/connect'; }));
+    host.querySelectorAll('[data-google-disconnect]').forEach((b) =>
+      b.addEventListener('click', () => googleDisconnect(b)));
+    host.querySelectorAll('[data-google-reconnect]').forEach((b) =>
+      b.addEventListener('click', () => googleReconnect(b)));
     host.querySelectorAll('[data-caly-connect]').forEach((b) =>
       b.addEventListener('click', () => { window.location.href = '/api/integrations/calendly/connect'; }));
     host.querySelectorAll('[data-caly-disconnect]').forEach((b) =>
       b.addEventListener('click', () => calendlyDisconnect(b)));
     host.querySelectorAll('[data-caly-verify]').forEach((b) =>
       b.addEventListener('click', () => calendlyVerify(b)));
-    // Microsoft 365 (direct) — per-user delegated OAuth only. Authenticated
+    // Microsoft 365 — per-user delegated OAuth only. Authenticated
     // Teams meeting joining is a Recall dashboard config, not handled here.
     host.querySelectorAll('[data-ms-connect]').forEach((b) =>
       b.addEventListener('click', () => { window.location.href = '/api/integrations/microsoft/connect'; }));
@@ -2788,8 +3070,6 @@
       b.addEventListener('click', () => microsoftDisconnect(b)));
     host.querySelectorAll('[data-ms-reconnect]').forEach((b) =>
       b.addEventListener('click', () => microsoftReconnect(b)));
-    host.querySelectorAll('[data-nylas-ms-switch]').forEach((b) =>
-      b.addEventListener('click', () => nylasSwitchToDirectMicrosoft(b)));
   }
 
   // Disconnect + immediately route to the new-scopes OAuth flow. Used by the
@@ -2804,9 +3084,9 @@
   }
 
   // ── Calendar agenda view ─────────────────────────────────────────────────
-  // Pulls upcoming events from every connected source (Microsoft 365 direct,
-  // Calendly). Renders an agenda grouped by day; each row offers a quick
-  // "Schedule mission" hand-off that pre-fills the Missions form.
+  // Pulls upcoming events from every connected source (Google direct,
+  // Microsoft 365 direct, Calendly). Renders an agenda grouped by day; each row
+  // offers a quick "Schedule mission" hand-off that pre-fills the Missions form.
 
   let _calendarEvents = [];
 
@@ -2822,47 +3102,47 @@
 
     // Find out which sources are connected so we know what to pull from + can
     // show an honest empty state if nothing is connected.
-    let msConnected = false, calyConnected = false, nylasConnected = false;
+    let msConnected = false, calyConnected = false, googleConnected = false;
     let anyConfigured = false;
     try {
       const providers = (await fetchJson('/api/integrations/calendar')).providers || [];
       const ms = providers.find((p) => p.key === 'microsoft');
       const cl = providers.find((p) => p.key === 'calendly');
-      const ny = providers.find((p) => p.key === 'nylas');
-      msConnected    = !!(ms && ms.connection && ms.connection.connected);
-      calyConnected  = !!(cl && cl.connection && cl.connection.connected);
-      nylasConnected = !!(ny && ny.connection && ny.connection.connected);
-      anyConfigured  = !!((ms && ms.configured) || (cl && cl.configured) || (ny && ny.configured));
+      const gg = providers.find((p) => p.key === 'google');
+      msConnected     = !!(ms && ms.connection && ms.connection.connected);
+      calyConnected   = !!(cl && cl.connection && cl.connection.connected);
+      googleConnected = !!(gg && gg.connection && gg.connection.connected);
+      anyConfigured   = !!((ms && ms.configured) || (cl && cl.configured) || (gg && gg.configured));
     } catch (err) {
       host.innerHTML = `<div class="empty">Couldn't read integrations: ${escapeHtml(err.message)}</div>`;
       return;
     }
 
-    if (!msConnected && !calyConnected && !nylasConnected) {
+    if (!msConnected && !calyConnected && !googleConnected) {
       host.innerHTML = `
         <div class="empty">
           <p>No connected calendar yet.</p>
           <p class="kb-subtle">${anyConfigured
-            ? 'Open <a href="#integrations">Integrations</a> to connect Microsoft 365, Google / iCloud, or Calendly.'
+            ? 'Open <a href="#integrations">Integrations</a> to connect Google, Microsoft 365, or Calendly.'
             : 'No calendar provider is configured yet. Set the env vars and connect from <a href="#integrations">Integrations</a>.'}</p>
         </div>`;
       return;
     }
 
     // Fetch every connected source in parallel; tolerate any one failing.
-    const [msRes, calyRes, nylasRes] = await Promise.allSettled([
-      msConnected    ? fetchJson('/api/integrations/microsoft/events?days=14') : Promise.resolve({ events: [] }),
-      calyConnected  ? fetchJson('/api/integrations/calendly/events?days=30')  : Promise.resolve({ events: [] }),
-      nylasConnected ? fetchJson('/api/integrations/calendar/events?days=14')  : Promise.resolve({ events: [] }),
+    const [msRes, calyRes, googleRes] = await Promise.allSettled([
+      msConnected     ? fetchJson('/api/integrations/microsoft/events?days=14') : Promise.resolve({ events: [] }),
+      calyConnected   ? fetchJson('/api/integrations/calendly/events?days=30')  : Promise.resolve({ events: [] }),
+      googleConnected ? fetchJson('/api/integrations/google/events?days=14')    : Promise.resolve({ events: [] }),
     ]);
     const errors = [];
     const events = [];
-    if (msRes.status    === 'fulfilled') events.push(...(msRes.value.events    || []));
-    else                                 errors.push(`Microsoft 365: ${msRes.reason.message}`);
-    if (calyRes.status  === 'fulfilled') events.push(...(calyRes.value.events  || []));
-    else                                 errors.push(`Calendly: ${calyRes.reason.message}`);
-    if (nylasRes.status === 'fulfilled') events.push(...(nylasRes.value.events || []));
-    else                                 errors.push(`Calendar (Nylas): ${nylasRes.reason.message}`);
+    if (msRes.status     === 'fulfilled') events.push(...(msRes.value.events     || []));
+    else                                  errors.push(`Microsoft 365: ${msRes.reason.message}`);
+    if (calyRes.status   === 'fulfilled') events.push(...(calyRes.value.events   || []));
+    else                                  errors.push(`Calendly: ${calyRes.reason.message}`);
+    if (googleRes.status === 'fulfilled') events.push(...(googleRes.value.events || []));
+    else                                  errors.push(`Google: ${googleRes.reason.message}`);
 
     // Sort + dedupe (same event can appear in both feeds — match on
     // meetingUrl + start as a best-effort key).
@@ -2883,33 +3163,33 @@
       return;
     }
 
-    // Group by local day.
-    const groups = new Map();
-    for (const ev of deduped) {
-      const d = new Date(ev.start);
-      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(ev);
-    }
+    // One tab per connected source (Google / Microsoft / Calendly). Each pane
+    // is that source's events grouped by day. Events keep their `provider`, so
+    // we just partition the deduped list. The first connected source is active.
+    const TAB_DEFS = [
+      { key: 'google',    label: 'Google',    on: googleConnected },
+      { key: 'microsoft', label: 'Microsoft', on: msConnected },
+      { key: 'calendly',  label: 'Calendly',  on: calyConnected },
+    ].filter((t) => t.on);
 
-    const todayKey = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
-    const tomorrowKey = (() => { const d = new Date(); d.setDate(d.getDate()+1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
-
-    const sections = [...groups.entries()].map(([dayKey, items]) => {
-      const sample = new Date(items[0].start);
-      const heading = dayKey === todayKey
-        ? `Today · ${sample.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}`
-        : dayKey === tomorrowKey
-          ? `Tomorrow · ${sample.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}`
-          : sample.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
-      return `
-        <div class="cal-day">
-          <div class="cal-day-h">${escapeHtml(heading)}</div>
-          ${items.map((ev, _i) => calendarRow(ev, deduped.indexOf(ev))).join('')}
-        </div>`;
+    const tabBar = TAB_DEFS.map((t, i) => {
+      const n = deduped.filter((ev) => ev.provider === t.key).length;
+      return `<button class="kb-tab cal-src-tab${i === 0 ? ' active' : ''}" data-cal-tab="${t.key}">${t.label} <span class="cal-tab-count">${n}</span></button>`;
     }).join('');
 
-    host.innerHTML = errorBanner + `<div class="cal-agenda">${sections}</div>`;
+    const panes = TAB_DEFS.map((t, i) =>
+      `<div class="cal-tab-pane${i === 0 ? '' : ' hidden'}" data-cal-pane="${t.key}">${renderCalendarAgenda(deduped.filter((ev) => ev.provider === t.key))}</div>`
+    ).join('');
+
+    host.innerHTML = errorBanner +
+      `<div class="kb-tabs cal-src-tabs">${tabBar}</div><div class="cal-agenda">${panes}</div>`;
+
+    // Tab switching — toggle active button + show the matching pane.
+    host.querySelectorAll('[data-cal-tab]').forEach((tb) =>
+      tb.addEventListener('click', () => {
+        host.querySelectorAll('[data-cal-tab]').forEach((x) => x.classList.toggle('active', x === tb));
+        host.querySelectorAll('[data-cal-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.calPane !== tb.dataset.calTab));
+      }));
 
     host.querySelectorAll('[data-cal-schedule]').forEach((el) =>
       el.addEventListener('click', () => scheduleMissionFromCalendarRow(parseInt(el.dataset.calSchedule, 10))));
@@ -2919,6 +3199,38 @@
         // them open the join URL in a new tab naturally.
         if (e.ctrlKey || e.metaKey || e.shiftKey) return;
       }));
+  }
+
+  // Render a set of events (one source) grouped by local day. Schedule-row
+  // indices are resolved against the full _calendarEvents list so the
+  // hand-off picks the right event regardless of which tab it's in.
+  function renderCalendarAgenda(events) {
+    if (!events.length) {
+      return '<div class="empty">No upcoming meetings from this source in the next 14 days.</div>';
+    }
+    const dayKeyOf = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    const groups = new Map();
+    for (const ev of events) {
+      const key = dayKeyOf(new Date(ev.start));
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(ev);
+    }
+    const todayKey = dayKeyOf(new Date());
+    const tmr = new Date(); tmr.setDate(tmr.getDate() + 1);
+    const tomorrowKey = dayKeyOf(tmr);
+    return [...groups.entries()].map(([dayKey, items]) => {
+      const sample = new Date(items[0].start);
+      const heading = dayKey === todayKey
+        ? `Today · ${sample.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}`
+        : dayKey === tomorrowKey
+          ? `Tomorrow · ${sample.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}`
+          : sample.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+      return `
+        <div class="cal-day">
+          <div class="cal-day-h">${escapeHtml(heading)}</div>
+          ${items.map((ev) => calendarRow(ev, _calendarEvents.indexOf(ev))).join('')}
+        </div>`;
+    }).join('');
   }
 
   // One agenda row.
@@ -2981,33 +3293,45 @@
     return '';
   }
 
-  // Pull (and clear) the ?cal=… / ?ms=… flash params the callbacks set,
+  // Pull (and clear) the ?google=… / ?ms=… flash params the callbacks set,
   // returning a banner HTML string (or null). Cleans them off the URL so a
   // refresh is quiet.
   function readCalFlash() {
     const q = new URLSearchParams(location.search);
-    const ok   = q.get('cal'), err   = q.get('cal_error'), notice = q.get('cal_notice');
+    const ggOk = q.get('google'), ggErr = q.get('google_error');
+    const calNotice = q.get('cal_notice');
     const msOk = q.get('ms'),  msErr = q.get('ms_error');
-    if (!ok && !err && !notice && !msOk && !msErr) return null;
-    ['cal', 'cal_error', 'cal_notice', 'ms', 'ms_error'].forEach((k) => q.delete(k));
+    if (!ggOk && !ggErr && !calNotice && !msOk && !msErr) return null;
+    ['google', 'google_error', 'cal_notice', 'ms', 'ms_error'].forEach((k) => q.delete(k));
     const clean = location.pathname + (q.toString() ? `?${q}` : '') + location.hash;
     history.replaceState(null, '', clean);
     if (msErr)  return `<div class="kb-result error"   style="margin-bottom:14px">Microsoft 365: ${escapeHtml(msErr)}</div>`;
     if (msOk)   return `<div class="kb-result success" style="margin-bottom:14px">Microsoft 365 calendar ${escapeHtml(msOk)}.</div>`;
-    if (err)    return `<div class="kb-result error"   style="margin-bottom:14px">Calendar connect failed: ${escapeHtml(err)}</div>`;
-    if (notice) return `<div class="kb-result success" style="margin-bottom:14px">Calendar ${escapeHtml(notice)}</div>`;
-    return `<div class="kb-result success" style="margin-bottom:14px">Calendar connected.</div>`;
+    if (ggErr)  return `<div class="kb-result error"   style="margin-bottom:14px">Google connect failed: ${escapeHtml(ggErr)}</div>`;
+    if (ggOk)   return `<div class="kb-result success" style="margin-bottom:14px">Google calendar ${escapeHtml(ggOk)}.</div>`;
+    if (calNotice) return `<div class="kb-result success" style="margin-bottom:14px">Calendar ${escapeHtml(calNotice)}</div>`;
+    return null;
   }
 
-  async function calendarDisconnect(btn) {
-    if (!confirm('Disconnect this calendar? The schedule form will stop offering its events (re-connect any time).')) return;
+  async function googleDisconnect(btn) {
+    if (!confirm('Disconnect your Google calendar? The schedule form will stop offering its events (re-connect any time).')) return;
     if (btn) { btn.disabled = true; btn.textContent = 'Disconnecting…'; }
     try {
-      const r = await fetch('/api/integrations/calendar/connection', { method: 'DELETE', credentials: 'include' });
+      const r = await fetch('/api/integrations/google/connection', { method: 'DELETE', credentials: 'include' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
     } catch (err) { alert(`Couldn't disconnect: ${err.message}`); }
     loaded.integrations = false;
     await loadIntegrations();
+  }
+
+  // Disconnect + immediately re-run the Google OAuth flow. Used by the amber
+  // "needs reconsent" banner and by the meeting modal's CONSENT_REQUIRED path.
+  async function googleReconnect(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Reconnecting…'; }
+    try {
+      await fetch('/api/integrations/google/connection', { method: 'DELETE', credentials: 'include' });
+    } catch { /* best-effort; the connect step overwrites the grant anyway */ }
+    window.location.href = '/api/integrations/google/connect';
   }
 
   // Retry webhook registration for an already-connected account. The status is
@@ -3051,26 +3375,10 @@
     await loadIntegrations();
   }
 
-  // Soft-deprecation hand-off: drop the Nylas grant + route the rep to the
-  // direct Microsoft OAuth flow. Their Microsoft account picker comes up
-  // pre-selected since the browser already has them signed in.
-  async function nylasSwitchToDirectMicrosoft(btn) {
-    if (!confirm('Disconnect the Nylas-based Microsoft calendar and connect via direct Microsoft Graph instead?')) return;
-    if (btn) { btn.disabled = true; btn.textContent = 'Switching…'; }
-    try {
-      const r = await fetch('/api/integrations/calendar/connection', { method: 'DELETE', credentials: 'include' });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    } catch (err) {
-      alert(`Couldn't disconnect Nylas: ${err.message}`);
-      if (btn) { btn.disabled = false; btn.textContent = 'Switch to direct Microsoft →'; }
-      return;
-    }
-    window.location.href = '/api/integrations/microsoft/connect';
-  }
-
   function integrationCard(p) {
     const isCalendly  = p.key === 'calendly';
     const isMicrosoft = p.key === 'microsoft';
+    const isGoogle    = p.key === 'google';
     let badge, action;
     if (!p.configured) {
       badge = '<span class="pill pill-warn">Unavailable</span>';
@@ -3086,6 +3394,19 @@
            ${reconnect}
            <div class="integration-actions"><button class="kb-secondary-btn" data-ms-disconnect>Disconnect</button></div>`
         : '<div class="integration-actions"><button class="primary-cta" data-ms-connect>Connect Microsoft 365</button></div>';
+    } else if (isGoogle) {
+      // Direct Google (replaces the old Nylas flow). Same shape as the
+      // Microsoft card — per-user delegated OAuth + Google Meet creation.
+      const conn = p.connection || {};
+      const reconnect = (conn.connected && conn.needsReconsent)
+        ? '<div class="integration-actions"><button class="kb-link-btn" data-google-reconnect>Reconnect to enable meeting creation →</button></div>'
+        : '';
+      badge = conn.connected ? '<span class="pill pill-ok">Connected</span>' : '<span class="pill pill-warn">Not connected</span>';
+      action = conn.connected
+        ? `<div class="integration-connected">Connected as <strong>${escapeHtml(conn.email || conn.name || 'your account')}</strong></div>
+           ${reconnect}
+           <div class="integration-actions"><button class="kb-secondary-btn" data-google-disconnect>Disconnect</button></div>`
+        : '<div class="integration-actions"><button class="primary-cta" data-google-connect>Connect Google</button></div>';
     } else if (isCalendly) {
       const conn = p.connection || {};
       if (conn.connected) {
@@ -3103,24 +3424,8 @@
         action = '<div class="integration-actions"><button class="primary-cta" data-caly-connect>Connect Calendly</button></div>';
       }
     } else {
-      // Read-calendar provider (Nylas). Configured → connect (per provider) / connected.
-      // Microsoft is intentionally NOT offered here anymore — the direct
-      // Microsoft Graph card is the canonical path. Existing Nylas-Microsoft
-      // grants keep working, with a one-click "switch to direct" prompt.
-      const conn = p.connection || {};
-      if (conn.connected) {
-        badge = '<span class="pill pill-ok">Connected</span>';
-        action = `
-          <div class="integration-connected">Connected as <strong>${escapeHtml(conn.email || 'your account')}</strong></div>
-          <div class="integration-actions"><button class="kb-secondary-btn" data-cal-disconnect>Disconnect</button></div>`;
-      } else {
-        badge = '<span class="pill pill-warn">Not connected</span>';
-        action = `
-          <div class="integration-actions">
-            <button class="primary-cta" data-cal-connect="google">Connect Google</button>
-            <button class="kb-secondary-btn" data-cal-connect="imap">iCloud / IMAP</button>
-          </div>`;
-      }
+      badge = '<span class="pill pill-warn">Unavailable</span>';
+      action = '<div class="integration-setup">Unknown provider.</div>';
     }
     return `
       <div class="integration-card">
@@ -3178,6 +3483,92 @@
         </div>
         ${body}
       </div>`;
+  }
+
+  // ── Recording & privacy settings card ────────────────────────────────────
+  async function loadRecordingPrivacy() {
+    const host = $('rec-privacy-card');
+    if (!host) return;
+    let s;
+    try { s = await fetchJson('/api/settings/recording'); }
+    catch (err) { host.innerHTML = `<div class="kb-result error">Couldn't load recording settings: ${escapeHtml(err.message)}</div>`; return; }
+    const role = (window._me && window._me.role) || '';
+    const canEdit = !!(window._me && window._me.isAdmin) || role === 'owner' || role === 'manager';
+    renderRecordingPrivacy(host, s, canEdit);
+  }
+
+  function renderRecordingPrivacy(host, s, canEdit) {
+    const dis = canEdit ? '' : 'disabled';
+    const retentionVal = s.retentionDays == null ? '' : s.retentionDays;
+    host.innerHTML = `
+      <div class="rec-row">
+        <label class="rec-toggle">
+          <input type="checkbox" id="rec-video" ${s.videoEnabled ? 'checked' : ''} ${dis}>
+          <span><strong>Record video of meetings</strong><br>
+          <span class="kb-subtle">Off = the notetaker still joins and transcribes for your AI summary, SOW &amp; coaching — but no video is ever stored.</span></span>
+        </label>
+      </div>
+      <div class="rec-row rec-retention">
+        <label for="rec-retention"><strong>Delete recordings after</strong></label>
+        <input type="number" id="rec-retention" min="1" max="3650" placeholder="keep forever" value="${retentionVal}" ${dis}>
+        <span class="kb-subtle">days — blank keeps them indefinitely. Transcript &amp; portal text are always kept.</span>
+      </div>
+      <div class="rec-row">
+        <label class="rec-toggle">
+          <input type="checkbox" id="rec-notice" ${s.noticeEnabled ? 'checked' : ''} ${dis}>
+          <span><strong>Notify participants the meeting is recorded</strong><br>
+          <span class="kb-subtle">Posts a notice in the meeting chat the moment the notetaker joins.</span></span>
+        </label>
+      </div>
+      <div class="rec-row rec-notice-text">
+        <textarea id="rec-notice-msg" rows="2" placeholder="${escapeHtml(s.defaultNotice)}" ${dis}>${escapeHtml(s.notice || '')}</textarea>
+        <span class="kb-subtle">Leave blank to use the default notice shown above.</span>
+      </div>
+      ${canEdit
+        ? `<div class="rec-actions"><button class="primary-cta" id="rec-save-btn">Save settings</button><span class="kb-result hidden" id="rec-save-result"></span></div>`
+        : '<div class="kb-subtle">Only an owner or manager can change these settings.</div>'}`;
+
+    const vid = $('rec-video'), notice = $('rec-notice');
+    const syncMuted = () => {
+      const ret = $('rec-retention'); const msg = $('rec-notice-msg');
+      const retRow = host.querySelector('.rec-retention'); const msgRow = host.querySelector('.rec-notice-text');
+      if (retRow) retRow.classList.toggle('rec-muted', !(vid && vid.checked));
+      if (msgRow) msgRow.classList.toggle('rec-muted', !(notice && notice.checked));
+      if (ret) ret.disabled = !canEdit || !(vid && vid.checked);
+      if (msg) msg.disabled = !canEdit || !(notice && notice.checked);
+    };
+    if (vid) vid.addEventListener('change', syncMuted);
+    if (notice) notice.addEventListener('change', syncMuted);
+    syncMuted();
+    const saveBtn = $('rec-save-btn');
+    if (saveBtn) saveBtn.addEventListener('click', saveRecordingPrivacy);
+  }
+
+  async function saveRecordingPrivacy() {
+    const btn = $('rec-save-btn'), result = $('rec-save-result');
+    const retRaw = ($('rec-retention').value || '').trim();
+    const body = {
+      videoEnabled: $('rec-video').checked,
+      noticeEnabled: $('rec-notice').checked,
+      notice: ($('rec-notice-msg').value || '').trim() || null,
+      retentionDays: retRaw === '' ? null : parseInt(retRaw, 10),
+    };
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Saving…';
+    if (result) result.classList.add('hidden');
+    try {
+      const r = await fetch('/api/settings/recording', {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      if (result) { result.classList.remove('hidden', 'error'); result.classList.add('success'); result.textContent = 'Saved.'; }
+    } catch (err) {
+      if (result) { result.classList.remove('hidden', 'success'); result.classList.add('error'); result.textContent = `Couldn't save: ${err.message}`; }
+    } finally {
+      btn.disabled = false; btn.textContent = orig;
+    }
   }
 
   function wireCrmCards(host) {
@@ -3246,11 +3637,11 @@
     } catch { /* clipboard blocked — no-op */ }
   }
 
-  // ── Schedule-form imports (calendar via Nylas, or Calendly) ──────────────
-  // Two buttons in the schedule-import row: "📅 Import from calendar" (Nylas —
-  // also offers Connect if configured-but-not-linked) and "🗓️ From Calendly"
-  // (lists upcoming Calendly-booked events). Either opens the same picker
-  // modal; choosing an event prefills the form from its `suggestion`.
+  // ── Schedule-form imports (calendar via Google / Microsoft, or Calendly) ──
+  // "📅 Check upcoming meetings" aggregates upcoming events from every connected
+  // source (also offers Connect if configured-but-not-linked); "🗓️ From
+  // Calendly" lists upcoming Calendly-booked events. Either opens the same
+  // picker modal; choosing an event prefills the form from its `suggestion`.
 
   let _calPickerEvents = [];
   // Single "Check upcoming meetings" button. State machine:
@@ -3263,39 +3654,39 @@
   async function refreshCalendarImportButton() {
     const nb = $('missions-import-btn'), hint = $('missions-import-hint');
     if (!nb) return;
-    let nylasConn = null, calyConn = null, msConn = null;
-    let nylasCfg = false, calyCfg = false, msCfg = false;
+    let googleConn = null, calyConn = null, msConn = null;
+    let googleCfg = false, calyCfg = false, msCfg = false;
     try {
       const providers = (await fetchJson('/api/integrations/calendar')).providers || [];
-      const nyl = providers.find((p) => p.key === 'nylas');
+      const gg  = providers.find((p) => p.key === 'google');
       const cly = providers.find((p) => p.key === 'calendly');
       const ms  = providers.find((p) => p.key === 'microsoft');
-      nylasConn = nyl && nyl.connection; nylasCfg = !!(nyl && nyl.configured);
-      calyConn  = cly && cly.connection; calyCfg  = !!(cly && cly.configured);
-      msConn    = ms  && ms.connection;  msCfg    = !!(ms  && ms.configured);
+      googleConn = gg && gg.connection; googleCfg = !!(gg && gg.configured);
+      calyConn   = cly && cly.connection; calyCfg  = !!(cly && cly.configured);
+      msConn     = ms  && ms.connection;  msCfg    = !!(ms  && ms.configured);
     } catch { /* leave the button disabled */ }
 
-    const anyConnected = !!((nylasConn && nylasConn.connected) ||
-                            (calyConn  && calyConn.connected)  ||
-                            (msConn    && msConn.connected));
-    const anyConfigured = nylasCfg || calyCfg || msCfg;
+    const anyConnected = !!((googleConn && googleConn.connected) ||
+                            (calyConn   && calyConn.connected)  ||
+                            (msConn     && msConn.connected));
+    const anyConfigured = googleCfg || calyCfg || msCfg;
 
-    // The "🎥 Generate Teams meeting" button next to the URL field is gated
-    // by the same Microsoft connection state, so toggle it here.
-    refreshGenerateTeamsButton(msConn);
+    // The "🎥 Generate meeting" button next to the URL field is gated by the
+    // Google + Microsoft connection state, so toggle it here.
+    refreshGenerateMeetingButton(msConn, googleConn);
 
     if (anyConnected) {
       _calImportMode = 'import'; nb.disabled = false;
       nb.textContent = '📅 Check upcoming meetings';
       const bits = [];
-      if (msConn    && msConn.connected)    bits.push('Microsoft 365');
-      if (calyConn  && calyConn.connected)  bits.push('Calendly');
-      if (nylasConn && nylasConn.connected) bits.push(nylasConn.provider === 'google' ? 'Google' : (nylasConn.provider || 'calendar'));
+      if (msConn     && msConn.connected)     bits.push('Microsoft 365');
+      if (googleConn && googleConn.connected) bits.push('Google');
+      if (calyConn   && calyConn.connected)   bits.push('Calendly');
       nb.title = `Aggregated from ${bits.join(' + ')}`;
     } else if (anyConfigured) {
       _calImportMode = 'connect'; nb.disabled = false;
       nb.textContent = '📅 Connect a calendar';
-      nb.title = 'Connect Microsoft 365, Google, iCloud or Calendly on the Integrations page';
+      nb.title = 'Connect Google, Microsoft 365 or Calendly on the Integrations page';
     } else {
       _calImportMode = 'disabled'; nb.disabled = true;
       nb.textContent = '📅 Check upcoming meetings';
@@ -3304,9 +3695,9 @@
 
     if (hint) {
       const connectedBits = [];
-      if (msConn    && msConn.connected)    connectedBits.push(`Microsoft 365 (<strong>${escapeHtml(msConn.email || 'linked')}</strong>)`);
-      if (calyConn  && calyConn.connected)  connectedBits.push('Calendly');
-      if (nylasConn && nylasConn.connected) connectedBits.push(`${nylasConn.provider === 'google' ? 'Google' : 'calendar'} (<strong>${escapeHtml(nylasConn.email || 'linked')}</strong>)`);
+      if (msConn     && msConn.connected)     connectedBits.push(`Microsoft 365 (<strong>${escapeHtml(msConn.email || 'linked')}</strong>)`);
+      if (googleConn && googleConn.connected) connectedBits.push(`Google (<strong>${escapeHtml(googleConn.email || 'linked')}</strong>)`);
+      if (calyConn   && calyConn.connected)   connectedBits.push('Calendly');
       hint.innerHTML = connectedBits.length
         ? `Showing upcoming meetings from ${connectedBits.join(' + ')}. <a href="#integrations">Manage</a>`
         : `Connect a calendar in <a href="#integrations">Integrations</a> to skip the typing — or just fill the fields below.`;
@@ -3317,7 +3708,7 @@
   function closeCalendarPicker() { const o = $('cal-picker-overlay'); if (o) o.classList.add('hidden'); }
 
   // Aggregated picker — pulls upcoming meetings from every connected source
-  // (Microsoft 365 direct, Calendly, Nylas calendar) in parallel, dedupes,
+  // (Microsoft 365 direct, Google direct, Calendly) in parallel, dedupes,
   // and renders one merged list with a source pill on each row. Replaces
   // the per-source picker; one button on the schedule form drives it.
   async function openAggregatedPicker() {
@@ -3343,48 +3734,48 @@
 
     // Figure out which sources are connected so we only fetch what's
     // available (and so we can render an honest empty state if none are).
-    let msConn = false, calyConn = false, nylasConn = false;
-    let msCfg = false, calyCfg = false, nylasCfg = false;
+    let msConn = false, calyConn = false, googleConn = false;
+    let msCfg = false, calyCfg = false, googleCfg = false;
     try {
       const providers = (await fetchJson('/api/integrations/calendar')).providers || [];
       const ms = providers.find((p) => p.key === 'microsoft');
       const cl = providers.find((p) => p.key === 'calendly');
-      const ny = providers.find((p) => p.key === 'nylas');
-      msConn    = !!(ms && ms.connection && ms.connection.connected);
-      calyConn  = !!(cl && cl.connection && cl.connection.connected);
-      nylasConn = !!(ny && ny.connection && ny.connection.connected);
-      msCfg     = !!(ms && ms.configured);
-      calyCfg   = !!(cl && cl.configured);
-      nylasCfg  = !!(ny && ny.configured);
+      const gg = providers.find((p) => p.key === 'google');
+      msConn     = !!(ms && ms.connection && ms.connection.connected);
+      calyConn   = !!(cl && cl.connection && cl.connection.connected);
+      googleConn = !!(gg && gg.connection && gg.connection.connected);
+      msCfg      = !!(ms && ms.configured);
+      calyCfg    = !!(cl && cl.configured);
+      googleCfg  = !!(gg && gg.configured);
     } catch (err) {
       body.innerHTML = `<div class="empty">Couldn't read integrations: ${escapeHtml(err.message)}</div>`;
       return;
     }
 
-    if (!msConn && !calyConn && !nylasConn) {
+    if (!msConn && !calyConn && !googleConn) {
       body.innerHTML = `
         <div class="empty">
           <p>No connected calendar yet.</p>
-          <p class="kb-subtle">${(msCfg || calyCfg || nylasCfg)
+          <p class="kb-subtle">${(msCfg || calyCfg || googleCfg)
             ? 'Connect one on the <a href="#integrations">Integrations page</a> and try again.'
             : 'None of the calendar providers are configured. Set their env vars and connect from <a href="#integrations">Integrations</a>.'}</p>
         </div>`;
       return;
     }
 
-    const [msRes, calyRes, nylasRes] = await Promise.allSettled([
-      msConn    ? fetchJson('/api/integrations/microsoft/events?days=21') : Promise.resolve({ events: [] }),
-      calyConn  ? fetchJson('/api/integrations/calendly/events?days=30')  : Promise.resolve({ events: [] }),
-      nylasConn ? fetchJson('/api/integrations/calendar/events?days=21')  : Promise.resolve({ events: [] }),
+    const [msRes, calyRes, googleRes] = await Promise.allSettled([
+      msConn     ? fetchJson('/api/integrations/microsoft/events?days=21') : Promise.resolve({ events: [] }),
+      calyConn   ? fetchJson('/api/integrations/calendly/events?days=30')  : Promise.resolve({ events: [] }),
+      googleConn ? fetchJson('/api/integrations/google/events?days=21')    : Promise.resolve({ events: [] }),
     ]);
     const errors = [];
     const events = [];
-    if (msRes.status    === 'fulfilled') events.push(...(msRes.value.events    || []));
-    else                                 errors.push(`Microsoft 365: ${msRes.reason.message}`);
-    if (calyRes.status  === 'fulfilled') events.push(...(calyRes.value.events  || []));
-    else                                 errors.push(`Calendly: ${calyRes.reason.message}`);
-    if (nylasRes.status === 'fulfilled') events.push(...(nylasRes.value.events || []));
-    else                                 errors.push(`Calendar (Nylas): ${nylasRes.reason.message}`);
+    if (msRes.status     === 'fulfilled') events.push(...(msRes.value.events     || []));
+    else                                  errors.push(`Microsoft 365: ${msRes.reason.message}`);
+    if (calyRes.status   === 'fulfilled') events.push(...(calyRes.value.events   || []));
+    else                                  errors.push(`Calendly: ${calyRes.reason.message}`);
+    if (googleRes.status === 'fulfilled') events.push(...(googleRes.value.events || []));
+    else                                  errors.push(`Google: ${googleRes.reason.message}`);
 
     events.sort((a, b) => new Date(a.start) - new Date(b.start));
     // Dedupe by (join URL + start time) — same meeting can appear in both
@@ -3414,19 +3805,13 @@
     });
   }
 
-  // Source badge mapping. Nylas events come back with `provider` set to the
-  // underlying mail provider (google / microsoft / imap), which we surface
-  // so the user can tell a Nylas-google entry from a direct-Graph entry.
+  // Source badge mapping — each direct provider tags its events with its own
+  // `provider` value so the row shows where the meeting came from.
   function sourcePill(ev) {
     const p = String(ev.provider || '').toLowerCase();
-    if (p === 'microsoft' && !ev.id?.startsWith?.('AAMk')) {
-      // Heuristic: Graph event ids start with "AAMk"; Nylas-microsoft IDs
-      // don't. When in doubt we still render M365.
-    }
     if (p === 'calendly')  return '<span class="pill pill-info" title="Calendly booking">Calendly</span>';
     if (p === 'microsoft') return '<span class="pill pill-info" title="Microsoft 365 (direct Graph)">M365</span>';
-    if (p === 'google')    return '<span class="pill pill-info" title="Google calendar (via Nylas)">Google</span>';
-    if (p === 'imap' || p === 'icloud') return '<span class="pill pill-info" title="iCloud / IMAP (via Nylas)">iCloud</span>';
+    if (p === 'google')    return '<span class="pill pill-info" title="Google Calendar">Google</span>';
     return `<span class="pill pill-info" title="${escapeHtml(p || 'calendar')}">${escapeHtml((p || 'cal').toUpperCase().slice(0, 8))}</span>`;
   }
 
@@ -3492,32 +3877,58 @@
   // event sends invites to the picked attendees on behalf of the rep.
 
   let _teamsAttendees = []; // [{ email, displayName, company }]
-  let _teamsContactsCache = []; // last MS /me/people autocomplete response
+  let _teamsContactsCache = []; // last provider /contacts autocomplete response
   let _teamsApolloCache = [];   // last Apollo autocomplete response
   let _teamsContactsTimer = null;
   // When set, the modal is in EDIT mode: submitting hits PATCH on this
   // event id instead of POSTing a new meeting. Cleared on open/close.
-  let _teamsEditContext = null; // { eventId, missionId } | null
+  let _teamsEditContext = null; // { provider, eventId, missionId, mission } | null
 
-  async function openGenerateTeamsModal(editContext) {
-    _teamsEditContext = editContext || null;
+  // The provider the meeting modal currently targets ('microsoft' | 'google').
+  // Set when the modal opens (from the connected provider, or the mission being
+  // edited). The two providers share the whole modal — only the API endpoints
+  // and a few labels differ. See ADR-0002.
+  let _meetingProvider = 'microsoft';
+  let _meetingConns = { microsoft: null, google: null };
+  const MEETING_PROVIDERS = {
+    microsoft: { api: 'microsoft', label: 'Teams meeting', evField: 'ms', reconnect: (b) => microsoftReconnect(b),
+                 dataset: { id: 'msEventId', uid: 'msIcalUid', org: 'msOrganizerEmail' } },
+    google:    { api: 'google',    label: 'Google Meet',   evField: 'g',  reconnect: (b) => googleReconnect(b),
+                 dataset: { id: 'googleEventId', uid: 'googleIcalUid', org: 'googleOrganizerEmail' } },
+  };
+  function meetingMeta(p) { return MEETING_PROVIDERS[p || _meetingProvider] || MEETING_PROVIDERS.microsoft; }
+  // Prefer Microsoft when both are connected (preserves prior behaviour);
+  // otherwise pick whichever is connected.
+  function defaultMeetingProvider() {
+    if (_meetingConns.microsoft && _meetingConns.microsoft.connected) return 'microsoft';
+    if (_meetingConns.google && _meetingConns.google.connected) return 'google';
+    return 'microsoft';
+  }
+
+  async function openGenerateTeamsModal(opts) {
+    opts = opts || {};
+    // Edit mode iff an eventId was passed; otherwise create mode.
+    _teamsEditContext = opts.eventId ? opts : null;
+    _meetingProvider = opts.provider || defaultMeetingProvider();
+    const meta = meetingMeta();
+    const attField = `${meta.evField}_attendee_emails`; // ms_attendee_emails | g_attendee_emails
 
     // Defaults — either pulled from the mission being edited, or from the
     // surrounding schedule form (create mode).
     let subject, startStr, durationMin = 30, bodyStr = '';
     if (_teamsEditContext) {
       const m = _teamsEditContext.mission || {};
-      subject = m.ms_subject || m.company_name ? `GhostStream call · ${m.company_name || ''}`.trim() : 'GhostStream call';
+      subject = m.company_name ? `DealScope call · ${m.company_name}`.trim() : 'DealScope call';
       // Convert the mission's scheduled_at (UTC ISO) into the datetime-local
       // shape the input expects.
       const d = m.scheduled_at ? new Date(m.scheduled_at) : new Date(Date.now() + 30 * 60_000);
       const pad = (n) => String(n).padStart(2, '0');
       startStr = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-      _teamsAttendees = (m.ms_attendee_emails && m.ms_attendee_emails.length ? m.ms_attendee_emails : m.prospect_emails || [])
+      _teamsAttendees = ((m[attField] && m[attField].length ? m[attField] : m.prospect_emails) || [])
         .map((email) => ({ email, displayName: email }));
     } else {
       const company = ($('missions-company') && $('missions-company').value || '').trim();
-      subject = company ? `GhostStream call · ${company}` : 'GhostStream call';
+      subject = company ? `DealScope call · ${company}` : 'DealScope call';
       const formStart = ($('missions-scheduled-at') && $('missions-scheduled-at').value) || '';
       startStr = formStart || (() => {
         const d = new Date(Date.now() + 30 * 60_000);
@@ -3539,7 +3950,7 @@
       overlay.innerHTML = `
         <div class="cal-picker teams-modal">
           <div class="cal-picker-h">
-            <span class="cal-picker-title">🎥 Generate Teams meeting</span>
+            <span class="cal-picker-title">🎥 Generate meeting</span>
             <button type="button" class="kb-link-btn cal-picker-close">✕</button>
           </div>
           <div class="cal-picker-body">
@@ -3601,14 +4012,14 @@
     $('teams-body').value     = bodyStr;
     $('teams-attendee-input').value = '';
     $('teams-modal-result').classList.add('hidden');
-    // Reflect mode in the title + submit button.
+    // Reflect mode + provider in the title + submit button.
     const titleEl  = overlay.querySelector('.cal-picker-title');
     const submitEl = $('teams-submit-btn');
     if (_teamsEditContext) {
-      if (titleEl)  titleEl.textContent = '🎥 Edit Teams meeting';
+      if (titleEl)  titleEl.textContent = `🎥 Edit ${meta.label}`;
       if (submitEl) submitEl.textContent = 'Save changes';
     } else {
-      if (titleEl)  titleEl.textContent = '🎥 Generate Teams meeting';
+      if (titleEl)  titleEl.textContent = `🎥 Generate ${meta.label}`;
       if (submitEl) submitEl.textContent = 'Create + insert URL';
     }
     renderTeamsChips();
@@ -3663,6 +4074,7 @@
     let msMatches = [];
     let apolloMatches = [];
     let msError = null;
+    const meta = meetingMeta();
     const params = new URLSearchParams();
     if (q) params.set('q', q);
     if (_missionCandidateCompanyId) params.set('companyId', _missionCandidateCompanyId);
@@ -3671,9 +4083,11 @@
     const companyForApollo = _prospectsState && _prospectsState.companies
       ? (_prospectsState.companies.find((c) => c.id === _missionCandidateCompanyId) || null) : null;
     const apolloDomain = companyForApollo && companyForApollo.domain;
+    // The rep's own address book comes from whichever calendar provider the
+    // modal targets (Microsoft /me/people or Google People API).
     const [prospectRes, msRes, apolloRes] = await Promise.allSettled([
       fetchJson(`/api/contacts?${params.toString()}`),
-      fetchJson(`/api/integrations/microsoft/contacts?q=${encodeURIComponent(q)}`),
+      fetchJson(`/api/integrations/${meta.api}/contacts?q=${encodeURIComponent(q)}`),
       apolloDomain ? fetchJson(`/api/contacts/apollo-search?domain=${encodeURIComponent(apolloDomain)}&q=${encodeURIComponent(q || '')}`) : Promise.resolve({ people: [] }),
     ]);
     if (prospectRes.status === 'fulfilled') prospectMatches = (prospectRes.value.contacts || []).slice(0, 6);
@@ -3710,7 +4124,7 @@
       if (/@/.test(q)) {
         rows += `<div class="teams-ac-row teams-ac-freeform" data-teams-pick-freeform="${escapeHtml(q)}">Add <strong>${escapeHtml(q)}</strong> as a guest</div>`;
       } else {
-        rows += `<div class="kb-subtle teams-ac-empty">No matches in your contacts${msError ? ` (Microsoft search failed: ${escapeHtml(msError)})` : ''}.</div>`;
+        rows += `<div class="kb-subtle teams-ac-empty">No matches in your contacts${msError ? ` (contacts search failed: ${escapeHtml(msError)})` : ''}.</div>`;
       }
     } else if (/@/.test(q) && !prospectMatches.some((c) => c.email.toLowerCase() === q.toLowerCase())
             && !msMatches.some((c) => c.email.toLowerCase() === q.toLowerCase())) {
@@ -3771,11 +4185,12 @@
     const submitBtn = $('teams-submit-btn');
     submitBtn.disabled = true; const orig = submitBtn.textContent;
     submitBtn.textContent = _teamsEditContext ? 'Saving…' : 'Creating…';
+    const meta = meetingMeta();
     try {
       const editing = !!_teamsEditContext;
       const url = editing
-        ? `/api/integrations/microsoft/meetings/${encodeURIComponent(_teamsEditContext.eventId)}`
-        : '/api/integrations/microsoft/meetings';
+        ? `/api/integrations/${meta.api}/meetings/${encodeURIComponent(_teamsEditContext.eventId)}`
+        : `/api/integrations/${meta.api}/meetings`;
       const r = await fetch(url, {
         method: editing ? 'PATCH' : 'POST',
         credentials: 'include',
@@ -3792,14 +4207,14 @@
       if (!r.ok) {
         if (j.code === 'CONSENT_REQUIRED') {
           // Build a richer error UI: message + a one-click reconnect button.
+          const provName = meta.api === 'google' ? 'Google' : 'Microsoft 365';
           result.classList.add('error');
           result.innerHTML = `
-            <strong>Reconnect Microsoft 365 to grant the new permissions.</strong>
-            Your existing connection was made before meeting creation was enabled, so the stored token doesn't include
-            <code>Calendars.ReadWrite</code> / <code>OnlineMeetings.ReadWrite</code>.
+            <strong>Reconnect ${escapeHtml(provName)} to grant the required permissions.</strong>
+            Your connection may have expired, or was made before meeting creation was enabled.
             <div style="margin-top:8px"><button type="button" class="primary-cta" id="teams-reconnect-btn">Disconnect &amp; reconnect now →</button></div>`;
           const rc = $('teams-reconnect-btn');
-          if (rc) rc.addEventListener('click', () => microsoftReconnect(rc));
+          if (rc) rc.addEventListener('click', () => meta.reconnect(rc));
           return;
         }
         throw new Error(j.error || `HTTP ${r.status}`);
@@ -3809,11 +4224,14 @@
         const urlEl = $('missions-url');
         if (urlEl) {
           urlEl.value = j.joinUrl;
-          // Stash the Graph identifiers so the mission form's submit handler
-          // can forward them to the API, letting Edit / Cancel work later.
-          urlEl.dataset.msEventId        = j.eventId || '';
-          urlEl.dataset.msIcalUid        = j.iCalUId || '';
-          urlEl.dataset.msOrganizerEmail = j.organizerEmail || '';
+          // Clear any stale linkage from a previous provider, then stash the
+          // current provider's identifiers so the mission form's submit handler
+          // forwards them to the API, letting Edit / Cancel work later.
+          delete urlEl.dataset.msEventId; delete urlEl.dataset.msIcalUid; delete urlEl.dataset.msOrganizerEmail;
+          delete urlEl.dataset.googleEventId; delete urlEl.dataset.googleIcalUid; delete urlEl.dataset.googleOrganizerEmail;
+          urlEl.dataset[meta.dataset.id]  = j.eventId || '';
+          urlEl.dataset[meta.dataset.uid] = j.iCalUId || '';
+          urlEl.dataset[meta.dataset.org] = j.organizerEmail || '';
         }
       }
       if (!editing && $('missions-scheduled-at') && !$('missions-scheduled-at').value) {
@@ -3841,7 +4259,7 @@
       if (failed.length === 0 && ok.length > 0) {
         result.classList.add('success');
         result.innerHTML = `
-          ✅ Teams meeting created · invite delivered to ${ok.length} attendee${ok.length === 1 ? '' : 's'} ${fromLine}.
+          ✅ ${escapeHtml(meta.label)} created · invite delivered to ${ok.length} attendee${ok.length === 1 ? '' : 's'} ${fromLine}.
           <a href="${escapeHtml(j.joinUrl)}" target="_blank" rel="noopener">Open meeting ↗</a>`;
       } else if (failed.length > 0 && ok.length > 0) {
         result.classList.add('error');
@@ -3862,7 +4280,7 @@
         // No attendees were provided — meeting exists for the rep only.
         result.classList.add('success');
         result.innerHTML = `
-          ✅ Teams meeting created on your calendar.
+          ✅ ${escapeHtml(meta.label)} created on your calendar.
           <a href="${escapeHtml(j.joinUrl)}" target="_blank" rel="noopener">Open meeting ↗</a>`;
       }
       // Only auto-close if everything succeeded; otherwise keep the modal
@@ -3884,16 +4302,29 @@
     }
   }
 
-  // Toggle the "Generate Teams meeting" button based on Microsoft connection.
-  async function refreshGenerateTeamsButton(msConn) {
+  // Toggle the "Generate meeting" button based on the Google + Microsoft
+  // connection state. Enabled when EITHER provider is connected; the modal
+  // picks the provider at open time (Microsoft preferred when both linked).
+  async function refreshGenerateMeetingButton(msConn, googleConn) {
+    _meetingConns = { microsoft: msConn || null, google: googleConn || null };
     const b = $('missions-generate-teams-btn');
     if (!b) return;
-    if (msConn && msConn.connected) {
+    const msOk = !!(msConn && msConn.connected);
+    const ggOk = !!(googleConn && googleConn.connected);
+    if (msOk || ggOk) {
       b.disabled = false;
-      b.title = `Create a Teams meeting on your Microsoft 365 calendar (${msConn.email || 'connected'})`;
+      const which = msOk && ggOk
+        ? `Microsoft 365 (${msConn.email || 'connected'}) — Google also linked`
+        : msOk ? `Microsoft 365 (${msConn.email || 'connected'})`
+               : `Google (${googleConn.email || 'connected'})`;
+      b.textContent = msOk && !ggOk ? '🎥 Generate Teams meeting'
+                    : ggOk && !msOk ? '🎥 Generate Google Meet'
+                    : '🎥 Generate meeting';
+      b.title = `Create a meeting on your calendar · ${which}`;
     } else {
       b.disabled = true;
-      b.title = 'Connect Microsoft 365 (direct) in Integrations first';
+      b.textContent = '🎥 Generate meeting';
+      b.title = 'Connect Google or Microsoft 365 in Integrations first';
     }
   }
 
@@ -4189,9 +4620,9 @@
       <div class="missions-detail-actions">
         <button class="primary-cta" id="missions-brief-now-btn">${hasBrief ? 'Re-generate brief' : 'Generate brief now'}</button>
         <button class="kb-secondary-btn" id="missions-bot-now-btn" ${recallReady ? '' : 'disabled'} title="${recallReady ? '' : 'Need a meet.google.com / zoom.us / teams URL on the mission'}">${hasBot ? 'Re-send bot now' : 'Send bot now'}</button>
-        ${m.ms_event_id ? `
-          <button class="kb-secondary-btn" id="missions-edit-teams-btn" title="Update the Outlook event + re-send invites">🎥 Edit Teams meeting</button>
-          <button class="kb-secondary-btn" id="missions-cancel-teams-btn" title="Cancel the Outlook event + notify attendees">🛑 Cancel Teams meeting</button>` : ''}
+        ${(m.ms_event_id || m.g_event_id) ? `
+          <button class="kb-secondary-btn" id="missions-edit-teams-btn" title="Update the calendar event + re-send invites">🎥 Edit ${m.g_event_id ? 'Google Meet' : 'Teams meeting'}</button>
+          <button class="kb-secondary-btn" id="missions-cancel-teams-btn" title="Cancel the calendar event + notify attendees">🛑 Cancel ${m.g_event_id ? 'Google Meet' : 'Teams meeting'}</button>` : ''}
         <span class="kb-action-hint">Generate brief: researches the web and writes your prep notes. Send bot: sends an AI notetaker to join the call (~30s).</span>
       </div>
       ${hasBrief ? `
@@ -4268,24 +4699,31 @@
       });
     }
 
-    // Edit Teams meeting — reopens the same modal in edit mode, prefilled
-    // from this mission. Only rendered when ms_event_id is set.
+    // Which provider generated this mission's meeting? g_event_id → Google,
+    // else ms_event_id → Microsoft. Drives the modal + the cancel endpoint.
+    const mtgProvider = m.g_event_id ? 'google' : 'microsoft';
+    const mtgEventId  = m.g_event_id || m.ms_event_id;
+    const mtgLabel    = mtgProvider === 'google' ? 'Google Meet' : 'Teams meeting';
+    const mtgAttendees = (mtgProvider === 'google' ? m.g_attendee_emails : m.ms_attendee_emails) || [];
+
+    // Edit meeting — reopens the modal in edit mode, prefilled from this
+    // mission. Only rendered when a provider event id is set.
     const editTeamsBtn = document.getElementById('missions-edit-teams-btn');
     if (editTeamsBtn) {
       editTeamsBtn.addEventListener('click', () => {
-        openGenerateTeamsModal({ eventId: m.ms_event_id, missionId: id, mission: m });
+        openGenerateTeamsModal({ provider: mtgProvider, eventId: mtgEventId, missionId: id, mission: m });
       });
     }
-    // Cancel Teams meeting — deletes the Outlook event + sends a CANCEL .ics
-    // to every attendee on the original invite (ms_attendee_emails).
+    // Cancel meeting — deletes the calendar event + sends a CANCEL .ics to
+    // every attendee on the original invite.
     const cancelTeamsBtn = document.getElementById('missions-cancel-teams-btn');
     if (cancelTeamsBtn) {
       cancelTeamsBtn.addEventListener('click', async () => {
-        const attendeeCount = (m.ms_attendee_emails || []).length;
-        if (!confirm(`Cancel this Teams meeting? The Outlook event will be deleted and ${attendeeCount} attendee${attendeeCount === 1 ? '' : 's'} will receive a cancellation notice from meetings@eel-global.com.`)) return;
+        const attendeeCount = mtgAttendees.length;
+        if (!confirm(`Cancel this ${mtgLabel}? The calendar event will be deleted and ${attendeeCount} attendee${attendeeCount === 1 ? '' : 's'} will receive a cancellation notice from meetings@eel-global.com.`)) return;
         cancelTeamsBtn.disabled = true; cancelTeamsBtn.textContent = 'Cancelling…';
         try {
-          const r = await fetch(`/api/integrations/microsoft/meetings/${encodeURIComponent(m.ms_event_id)}`, {
+          const r = await fetch(`/api/integrations/${mtgProvider}/meetings/${encodeURIComponent(mtgEventId)}`, {
             method: 'DELETE', credentials: 'include',
           });
           const j = await r.json().catch(() => ({}));
@@ -4293,14 +4731,14 @@
           const inv = j.invite || { sent: [] };
           const ok = inv.sent.filter((x) => x.ok).length;
           const failed = inv.sent.filter((x) => !x.ok);
-          let summary = `Teams meeting cancelled. ${ok} cancellation notice${ok === 1 ? '' : 's'} sent.`;
+          let summary = `${mtgLabel} cancelled. ${ok} cancellation notice${ok === 1 ? '' : 's'} sent.`;
           if (failed.length) summary += `\n\nFailed for: ${failed.map((f) => `${f.email} (${f.reason})`).join(', ')}`;
           alert(summary);
           await openMissionDetail(id);
         } catch (err) {
           alert(`Couldn't cancel: ${err.message}`);
           cancelTeamsBtn.disabled = false;
-          cancelTeamsBtn.textContent = '🛑 Cancel Teams meeting';
+          cancelTeamsBtn.textContent = `🛑 Cancel ${mtgLabel}`;
         }
       });
     }
@@ -4724,6 +5162,12 @@
     if (!form || form.dataset.wired === '1') return;
     form.dataset.wired = '1';
 
+    // Click-to-toggle on the Tags multi-selects (products · personas ·
+    // competitors) so a second click deselects — no Ctrl/Cmd needed.
+    enableToggleMultiSelect($('missions-product'));
+    enableToggleMultiSelect($('missions-persona'));
+    enableToggleMultiSelect($('missions-competitor'));
+
     // Snap autofill — fires on every change of the company-name input. The
     // `input` event covers typing AND datalist selection (most browsers fire
     // input when the user picks an option). Debounced lightly so we don't
@@ -4759,9 +5203,10 @@
       }
       if (_calImportMode === 'import') openAggregatedPicker();
     });
-    // "🎥 Generate Teams meeting" — opens the create-meeting modal.
+    // "🎥 Generate meeting" — opens the create-meeting modal for whichever
+    // provider is connected (Microsoft preferred when both are).
     const gtBtn = $('missions-generate-teams-btn');
-    if (gtBtn) gtBtn.addEventListener('click', openGenerateTeamsModal);
+    if (gtBtn) gtBtn.addEventListener('click', () => openGenerateTeamsModal({ provider: defaultMeetingProvider() }));
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -4787,14 +5232,19 @@
           competitorIds:  readSelectedValues($('missions-competitor')),
           notes:          $('missions-notes').value.trim() || null,
         };
-        // If the rep generated this meeting through 🎥 Generate Teams meeting,
-        // the modal stamped the resulting Graph identifiers onto the URL input
+        // If the rep generated this meeting through 🎥 Generate meeting, the
+        // modal stamped the resulting provider identifiers onto the URL input
         // as dataset attributes — forward them so the mission row carries the
-        // linkage and the detail UI can offer Edit / Cancel.
+        // linkage and the detail UI can offer Edit / Cancel. A mission carries
+        // at most one provider's linkage.
         if (urlInput && urlInput.dataset.msEventId) {
           body.msEventId        = urlInput.dataset.msEventId;
           body.msIcalUid        = urlInput.dataset.msIcalUid || null;
           body.msOrganizerEmail = urlInput.dataset.msOrganizerEmail || null;
+        } else if (urlInput && urlInput.dataset.googleEventId) {
+          body.googleEventId        = urlInput.dataset.googleEventId;
+          body.googleIcalUid        = urlInput.dataset.googleIcalUid || null;
+          body.googleOrganizerEmail = urlInput.dataset.googleOrganizerEmail || null;
         }
         const r = await fetch('/api/missions', {
           method: 'POST', credentials: 'include',
@@ -6194,6 +6644,24 @@
   function readSelectedValues(el) {
     if (!el) return [];
     return Array.from(el.selectedOptions).map((o) => o.value).filter(Boolean);
+  }
+
+  // Native <select multiple> collapses to a single pick on a plain click and
+  // needs Ctrl/Cmd-click to toggle — unintuitive, and it made tags impossible
+  // to deselect. This makes each option toggle on click (select on first,
+  // deselect on second), no modifier key needed. Wired once on the element;
+  // survives option re-renders since the handler is delegated on the <select>.
+  function enableToggleMultiSelect(el) {
+    if (!el || el.dataset.toggleWired === '1') return;
+    el.dataset.toggleWired = '1';
+    el.addEventListener('mousedown', (e) => {
+      const opt = e.target;
+      if (!opt || opt.tagName !== 'OPTION' || opt.disabled) return;
+      e.preventDefault(); // stop the browser's single-select collapse
+      opt.selected = !opt.selected;
+      el.focus();
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    });
   }
 
   // ---- Battlecard "Which of our products does this cover?" multi-select ----
@@ -8169,9 +8637,9 @@
   const CANCEL_CONTEXT_LABEL = {
     too_expensive: 'What would have felt like fair pricing?',
     missing_features: 'Which feature were you missing?',
-    not_enough_value: 'What were you hoping GhostStream would do for you?',
+    not_enough_value: 'What were you hoping DealScope would do for you?',
     switching_tool: 'Which tool are you switching to?',
-    temporary_need: 'What did you use GhostStream for?',
+    temporary_need: 'What did you use DealScope for?',
     technical_issues: 'What went wrong? We\'ll look into it.',
     other: 'Tell us more',
   };

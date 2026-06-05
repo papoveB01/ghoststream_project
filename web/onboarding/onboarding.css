@@ -157,6 +157,12 @@ button.btn[disabled] { opacity: .6; cursor: not-allowed; transform: none; box-sh
 
 .ob-actions { display: flex; gap: 10px; margin-top: 22px; }
 .ob-actions .btn { flex: 1; }
+.ob-actions-end { justify-content: flex-end; }
+.ob-actions-split { justify-content: space-between; }
+
+/* Wizard substeps — only one visible at a time; keeps the form's column gap. */
+.ob-substep { display: flex; flex-direction: column; gap: 16px; }
+.ob-substep.hidden { display: none; }
 
 /* Done pane */
 .ob-check {

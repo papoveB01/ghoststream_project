@@ -87,16 +87,32 @@
       $('agreement-commitment').textContent = a.commitment || '—';
     }
 
-    // Video clip
+    // Video clip. Three no-video cases degrade to a placeholder instead of a
+    // broken/blank player:
+    //   - recordingExpired: purged by the workspace's retention policy
+    //   - no clip + not a demo: meeting was captured transcript-only (no video)
+    // The objection quote / speaker / status text below are populated
+    // separately, so the insight survives even with no clip.
     const clip = p.objectionClip || {};
     const video = $('video');
-    if (clip.playbackUrl) {
+    const showVideoPlaceholder = (msg) => {
+      if (video) video.style.display = 'none';
+      hide('video-mock-tag');
+      const tx = $('video-placeholder-text');
+      if (tx) tx.textContent = msg;
+      show('video-placeholder');
+    };
+    if (p.recordingExpired) {
+      showVideoPlaceholder('This recording was deleted under the workspace’s retention policy. The summary, highlights and insights below are kept.');
+    } else if (clip.playbackUrl) {
       video.src = clip.playbackUrl;
-    } else {
-      // Fallback demo asset
+      if (!clip.mock) hide('video-mock-tag');
+    } else if (clip.mock) {
+      // Demo / mock environment — keep the sample asset + the DEMO CLIP tag.
       video.src = 'https://www.w3.org/2010/05/sintel/trailer.mp4';
+    } else {
+      showVideoPlaceholder('No video recording was kept for this meeting. The insights below come from the live transcript.');
     }
-    if (!clip.mock) hide('video-mock-tag');
 
     // Email
     if (p.email) {

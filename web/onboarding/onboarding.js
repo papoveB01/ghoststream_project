@@ -26,12 +26,10 @@
     if (PLAN === 'pro' || PLAN === 'starter') {
       const name = PLAN === 'pro' ? 'Pro' : 'Starter';
       const price = PLAN === 'pro' ? '$149/mo' : '$49/mo';
-      document.title = `Get started with ${name} · GhostStream`;
-      setText('ob-identity-sub', `Create your workspace and set a password. We'll email a confirmation link, then take you to checkout to activate ${name} (${price}).`);
+      document.title = `Get started with ${name} · DealScope`;
       setText('ob-check-sub-text', `Click it to continue to checkout and activate your ${name} plan.`);
     } else {
-      document.title = 'Start free · GhostStream';
-      setText('ob-identity-sub', 'Create your workspace and set a password. We\'ll email a confirmation link, then you\'re in — free forever, no credit card required.');
+      document.title = 'Start free · DealScope';
       setText('ob-check-sub-text', 'Click it to finish — your free workspace is ready, no card needed.');
     }
   })();
@@ -43,18 +41,94 @@
   };
 
   // ---------- step / pane switching ----------
+  // The signup form is a 3-substep wizard (1 Company · 2 About you · 3 Account)
+  // inside #pane-identity; #pane-check is the 4th step (Verify email).
   const PANES = ['identity', 'check'];
-  const PANE_STEP = { identity: 1, check: 2 };
+  const MAX_SUBSTEP = 3;
+  let subStep = 1;
 
-  function showPane(name) {
-    PANES.forEach((p) => $(`pane-${p}`).classList.toggle('hidden', p !== name));
-    const step = PANE_STEP[name];
+  function setStepper(step) {
     document.querySelectorAll('#ob-steps li').forEach((li) => {
       const n = Number(li.dataset.step);
       li.classList.toggle('active', n === step);
       li.classList.toggle('done', n < step);
     });
+  }
+
+  function showSubstep(n) {
+    subStep = n;
+    document.querySelectorAll('.ob-substep').forEach((el) => {
+      el.classList.toggle('hidden', Number(el.dataset.substep) !== n);
+    });
+    setStepper(n);
+    const active = document.querySelector(`.ob-substep[data-substep="${n}"]`);
+    if (active) { const f = active.querySelector('input, select'); if (f) setTimeout(() => f.focus(), 50); }
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function showPane(name) {
+    PANES.forEach((p) => $(`pane-${p}`).classList.toggle('hidden', p !== name));
+    if (name === 'identity') showSubstep(subStep);
+    else if (name === 'check') { setStepper(4); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+  }
+
+  // ---------- light client-side validation (server is authoritative) ----------
+  const PUBLIC_MAILBOXES = new Set([
+    'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'hotmail.co.uk',
+    'live.com', 'msn.com', 'yahoo.com', 'yahoo.co.uk', 'ymail.com', 'aol.com',
+    'icloud.com', 'me.com', 'mac.com', 'proton.me', 'protonmail.com', 'pm.me',
+    'gmx.com', 'gmx.net', 'mail.com', 'zoho.com', 'yandex.com', 'fastmail.com',
+    'hey.com', 'qq.com', '163.com', '126.com',
+  ]);
+  function hostFromWebsite(website) {
+    let h = String(website || '').trim().toLowerCase();
+    h = h.replace(/^https?:\/\//, '').replace(/^www\./, '');
+    return h.split('/')[0].split('?')[0].split('#')[0].split(':')[0];
+  }
+  function emailDomainOf(email) {
+    const m = String(email || '').trim().toLowerCase().match(/@(.+)$/);
+    return m ? m[1] : '';
+  }
+  // Mirror of the server's domainsRelated: equal, or one a subdomain of the other.
+  function domainsRelated(ed, wd) {
+    if (!ed || !wd) return false;
+    return ed === wd || ed.endsWith('.' + wd) || wd.endsWith('.' + ed);
+  }
+
+  function validateStep1() {
+    clearError('err-step1');
+    const company = $('f-company').value.trim();
+    const website = $('f-website').value.trim();
+    if (!company || company.length < 2) { showError('err-step1', 'Please enter your company name.'); return false; }
+    if (!website || !hostFromWebsite(website).includes('.')) { showError('err-step1', 'Please enter a valid company website (e.g. acme.com).'); return false; }
+    if (!$('f-industry').value) { showError('err-step1', 'Please select your industry.'); return false; }
+    if (!$('f-company-size').value) { showError('err-step1', 'Please select your company size.'); return false; }
+    return true;
+  }
+  function validateStep2() {
+    clearError('err-step2');
+    if (!$('f-first-name').value.trim()) { showError('err-step2', 'Please enter your first name.'); return false; }
+    if (!$('f-last-name').value.trim())  { showError('err-step2', 'Please enter your last name.'); return false; }
+    if (!$('f-role').value)              { showError('err-step2', 'Please select your role.'); return false; }
+    const ed = emailDomainOf($('f-email').value);
+    if (!ed) { showError('err-step2', 'Please enter a valid work email.'); return false; }
+    if (PUBLIC_MAILBOXES.has(ed)) { showError('err-step2', "Please use your corporate email — public mailboxes (Gmail, Outlook…) aren't supported."); return false; }
+    const wd = hostFromWebsite($('f-website').value);
+    if (wd && !domainsRelated(ed, wd)) {
+      showError('err-step2', `Your email domain (${ed}) doesn't match your company website (${wd}). Use your work email at ${wd}.`);
+      return false;
+    }
+    return true;
+  }
+  function validateStep3() {
+    clearError('err-identity');
+    const pw = $('f-password').value, pw2 = $('f-password2').value;
+    if (pw.length < 12) { showError('err-identity', 'Password must be at least 12 characters.'); return false; }
+    if (pw !== pw2) { showError('err-identity', "The two passwords don't match."); return false; }
+    return true;
+  }
+  function validateSubstep(n) {
+    return n === 1 ? validateStep1() : n === 2 ? validateStep2() : validateStep3();
   }
 
   function showError(elId, msg) {
@@ -113,29 +187,19 @@
   // Re-used by the "Resend email" button, which simply re-POSTs the same details.
   async function submitSignup(btn) {
     clearError('err-identity');
-    const pw = $('f-password').value;
-    const pw2 = $('f-password2').value;
     const body = {
       firstName: $('f-first-name').value.trim(),
       lastName: $('f-last-name').value.trim(),
+      jobTitle: $('f-role').value,
       // Plan chosen on the landing page (?plan=starter|pro); defaults to starter.
       plan: new URLSearchParams(window.location.search).get('plan') || 'starter',
       companyName: $('f-company').value.trim(),
       industry: $('f-industry').value,
+      companySize: $('f-company-size').value,
       website: $('f-website').value.trim(),
       email: $('f-email').value.trim(),
-      password: pw,
+      password: $('f-password').value,
     };
-    if (!body.firstName || !body.lastName) {
-      showError('err-identity', 'Please enter your first and last name.');
-      return;
-    }
-    if (!body.companyName || !body.industry || !body.website || !body.email) {
-      showError('err-identity', 'Please fill in all fields.');
-      return;
-    }
-    if (pw.length < 12) { showError('err-identity', 'Password must be at least 12 characters.'); return; }
-    if (pw !== pw2) { showError('err-identity', "The two passwords don't match."); return; }
 
     btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Sending…';
     try {
@@ -145,7 +209,14 @@
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
-        showError('err-identity', data.error || `Something went wrong (HTTP ${r.status}).`);
+        // Route the server's error back to the substep that owns the field, so
+        // the message lands in context rather than on the final screen.
+        const code = data.code;
+        const msg = data.error || `Something went wrong (HTTP ${r.status}).`;
+        showPane('identity');
+        if (code === 'TENANT_EXISTS') { showSubstep(1); showError('err-step1', msg); }
+        else if (code === 'EMAIL_DOMAIN_MISMATCH' || code === 'PUBLIC_EMAIL' || code === 'EMAIL_EXISTS') { showSubstep(2); showError('err-step2', msg); }
+        else { showSubstep(3); showError('err-identity', msg); }
         return;
       }
       state.sessionId = data.sessionId;
@@ -170,8 +241,26 @@
     }
   }
 
+  // Substep nav: Next validates the current substep then advances; Back steps
+  // down. Both are type="button" so they never submit the form.
+  document.querySelectorAll('[data-ob-next]').forEach((b) => b.addEventListener('click', () => {
+    const from = Number(b.dataset.obNext);
+    if (!validateSubstep(from)) return;
+    showSubstep(Math.min(from + 1, MAX_SUBSTEP));
+  }));
+  document.querySelectorAll('[data-ob-back]').forEach((b) => b.addEventListener('click', () => {
+    showSubstep(Math.max(Number(b.dataset.obBack) - 1, 1));
+  }));
+
+  // Enter / the final "Create account" submit. On an earlier substep, Enter
+  // just advances (validating first) instead of submitting the whole form.
   $('form-identity').addEventListener('submit', (e) => {
     e.preventDefault();
+    if (subStep < MAX_SUBSTEP) {
+      if (validateSubstep(subStep)) showSubstep(subStep + 1);
+      return;
+    }
+    if (!validateSubstep(MAX_SUBSTEP)) return;
     submitSignup($('btn-identity'));
   });
 
@@ -199,6 +288,7 @@
     e.preventDefault();
     if (state.pollTimer) clearInterval(state.pollTimer);
     state.sessionId = null;
+    subStep = 1;
     showPane('identity');
   });
 
