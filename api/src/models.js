@@ -41,6 +41,7 @@ const TASKS = {
   personas:     { tier: 'flash',   env: 'GEMINI_PERSONAS_MODEL' },
   // PRO — flagship call moment-of-truth analysis (gated)
   callAnalysis: { tier: 'pro',     env: 'GEMINI_ANALYSIS_MODEL' },
+  proposal:     { tier: 'pro',     env: 'GEMINI_PROPOSAL_MODEL' },
   // CONTENT — writing (SOW / portal / follow-up)
   content:      { tier: 'content', env: 'GEMINI_CONTENT_MODEL' },
 };
