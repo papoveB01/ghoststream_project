@@ -20,7 +20,10 @@
 
   // Plan chosen on the landing page (?plan=starter|pro). Starter = $0 trial,
   // Pro = paid. Tunes the wizard copy so it matches what happens at checkout.
-  const PLAN = new URLSearchParams(window.location.search).get('plan') === 'pro' ? 'pro' : 'starter';
+  // Plan from the landing CTA: ?plan=starter|pro routes to Checkout after signup.
+  // No param (or anything else) = the FREE plan — never sent to payment.
+  const _planParam = new URLSearchParams(window.location.search).get('plan');
+  const PLAN = (_planParam === 'pro' || _planParam === 'starter') ? _planParam : 'free';
   (function tuneCopyForPlan() {
     const setText = (id, t) => { const el = $(id); if (el && t) el.textContent = t; };
     if (PLAN === 'pro' || PLAN === 'starter') {
@@ -191,8 +194,8 @@
       firstName: $('f-first-name').value.trim(),
       lastName: $('f-last-name').value.trim(),
       jobTitle: $('f-role').value,
-      // Plan chosen on the landing page (?plan=starter|pro); defaults to starter.
-      plan: new URLSearchParams(window.location.search).get('plan') || 'starter',
+      // Plan chosen on the landing page (?plan=starter|pro); 'free' otherwise.
+      plan: PLAN,
       companyName: $('f-company').value.trim(),
       industry: $('f-industry').value,
       companySize: $('f-company-size').value,

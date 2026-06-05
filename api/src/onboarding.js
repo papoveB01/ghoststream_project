@@ -176,7 +176,10 @@ router.get('/industries', (_req, res) => {
 router.post('/start', async (req, res, next) => {
   try {
     const { firstName: rawFirst, lastName: rawLast, companyName, industry, website, email: rawEmail, password, jobTitle: rawJobTitle, companySize: rawCompanySize } = req.body || {};
-    const plan = SIGNUP_PLANS.has(String((req.body && req.body.plan) || '')) ? req.body.plan : 'starter';
+    // Only an explicit paid choice routes to Checkout; everything else is FREE.
+    // (Previously defaulted to 'starter', which sent standard "Start free"
+    // signups to Stripe — wrong, especially once live keys are configured.)
+    const plan = SIGNUP_PLANS.has(String((req.body && req.body.plan) || '')) ? req.body.plan : 'free';
     const jobTitle = String(rawJobTitle || '').trim();
     const companySize = String(rawCompanySize || '').trim();
     const firstName = String(rawFirst || '').trim();
