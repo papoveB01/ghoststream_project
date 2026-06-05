@@ -13,3 +13,10 @@ build/
 
 # Local DB backups (ops/backup-db.sh)
 backups/
+
+# Local Claude skills/tooling (not part of the app)
+.claude/
+
+# Production env (secrets — never commit)
+.env.production
+.env.production.local
