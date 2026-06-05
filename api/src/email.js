@@ -42,6 +42,15 @@ function replyTo() {
   return addr ? { email: addr } : null;
 }
 
+// Staging + production share one SendGrid account/sender, so non-prod
+// environments prepend a tag (e.g. "(staging)") to every subject to make their
+// mail unmistakable in an inbox. Set EMAIL_SUBJECT_TAG in the env file; prod
+// leaves it empty.
+function tagSubject(subject) {
+  const tag = (process.env.EMAIL_SUBJECT_TAG || '').trim();
+  return tag ? `${tag} ${subject}` : subject;
+}
+
 // Hit SendGrid's /v3/user/profile to validate the API key without sending a
 // message. Returns { ok, status, scopes? } — never throws on auth failure,
 // returns { ok: false, reason } so the caller can render the diagnostic.
@@ -103,7 +112,7 @@ async function send({ to, subject, html, text, replyTo: replyToOverride, from: f
     from: fromOverride && fromOverride.email
       ? { email: fromOverride.email, name: fromOverride.name || fromAddress().name }
       : fromAddress(),
-    subject,
+    subject: tagSubject(subject),
   };
   if (html) msg.html = html;
   if (text) msg.text = text;

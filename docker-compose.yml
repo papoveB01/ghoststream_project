@@ -120,6 +120,9 @@ services:
       SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-no-reply@eel-global.com}
       SENDGRID_FROM_NAME: ${SENDGRID_FROM_NAME:-DealScope}
       SENDGRID_REPLY_TO: ${SENDGRID_REPLY_TO:-}
+      # Non-prod envs share the SendGrid sender, so they tag every subject
+      # (e.g. "(staging)"). Empty/unset in production.
+      EMAIL_SUBJECT_TAG: ${EMAIL_SUBJECT_TAG:-}
       # Calendar integrations.
       #  - Google (direct): OAuth 2.0 "Web application" client in a Google Cloud
       #    project (enable the Calendar API + People API). Add the redirect URI
