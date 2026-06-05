@@ -94,6 +94,13 @@
     // Sub-accounts nav is shown only when the plan includes it (Pro/Enterprise),
     // and never for a sub-tenant (children can't nest).
     const feats = (me.entitlements && me.entitlements.features) || [];
+    // Sidebar account-type label (was hardcoded "admin"): a normal account shows
+    // "tenant", a child workspace shows "sub-account", a platform admin "platform admin".
+    const _roleEl = $('user-role');
+    if (_roleEl) {
+      _roleEl.textContent = me.isAdmin ? 'platform admin'
+        : (me.entitlements && me.entitlements.isSubtenant) ? 'sub-account' : 'tenant';
+    }
     if (feats.includes('sub_accounts') && !(me.entitlements && me.entitlements.isSubtenant)) {
       document.querySelectorAll('.subaccounts-only').forEach((el) => el.classList.remove('hidden'));
     }
