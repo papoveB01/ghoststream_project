@@ -1343,22 +1343,30 @@
   }
 
   // ── Proposal recommendation (Phase 1) ──────────────────────────────────
-  const _recConfChip = (c) => {
+  const REC_BLOCKS = [
+    { k: 'situation',   ico: '📍', label: 'Their situation' },
+    { k: 'positioning', ico: '🎯', label: 'Recommended positioning' },
+    { k: 'outcomes',    ico: '📈', label: 'Outcomes to emphasize' },
+    { k: 'edge',        ico: '⚔️', label: 'Our edge vs alternatives' },
+    { k: 'proof',       ico: '🏆', label: 'Proof points' },
+  ];
+  const _recConf = (c) => {
     const k = String(c || '').toLowerCase();
-    const cls = k === 'high' ? 'win' : k === 'low' ? 'lose' : 'tie';
-    return `<span class="bc-verdict bc-verdict-${cls} rec-conf">${escapeHtml(k || '—')}</span>`;
+    const cls = k === 'high' ? 'hi' : k === 'low' ? 'lo' : 'mid';
+    return `<span class="rec-conf rec-conf-${cls}" title="Confidence this section is grounded in evidence"><i></i>${escapeHtml(k || '—')}</span>`;
   };
   const _recCites = (arr) => (Array.isArray(arr) && arr.length)
-    ? `<span class="rec-cite">${arr.map((n) => `[${escapeHtml(String(n))}]`).join(' ')}</span>` : '';
+    ? `<div class="rec-cites">Sources ${arr.map((n) => `<span class="rec-cite">${escapeHtml(String(n))}</span>`).join('')}</div>` : '';
   const _recAssume = (arr) => (Array.isArray(arr) && arr.length)
-    ? `<div class="rec-assume">⚠︎ Assumptions: ${arr.map((a) => escapeHtml(a)).join(' · ')}</div>` : '';
-  function _recSection(label, sec) {
+    ? `<div class="rec-assume"><span class="rec-assume-h">⚠︎ Assumptions</span>${arr.map((a) => escapeHtml(a)).join(' · ')}</div>` : '';
+  function _recBlock(ico, label, sec) {
     if (!sec || !sec.text) return '';
-    return `<div class="rec-section">
-      <div class="rec-h"><span class="rec-label">${escapeHtml(label)}</span>${_recConfChip(sec.confidence)}${_recCites(sec.citations)}</div>
-      <div class="rec-text">${escapeHtml(sec.text)}</div>
+    return `<section class="rec-block">
+      <div class="rec-block-h"><span class="rec-ico">${ico}</span><h4>${escapeHtml(label)}</h4>${_recConf(sec.confidence)}</div>
+      <div class="rec-body-text">${escapeHtml(sec.text)}</div>
+      ${_recCites(sec.citations)}
       ${_recAssume(sec.assumptions)}
-    </div>`;
+    </section>`;
   }
 
   function renderRecommendationVersion(host, prop) {
@@ -1368,25 +1376,38 @@
     const objections = Array.isArray(c.objections) ? c.objections : [];
     const gaps = Array.isArray(cov.gaps) ? cov.gaps : (Array.isArray(c.intelligenceGaps) ? c.intelligenceGaps : []);
     const score = (cov.score != null) ? cov.score : null;
-    const covCls = score == null ? 'tie' : score >= 75 ? 'win' : score >= 45 ? 'tie' : 'lose';
+    const covCls = score == null ? 'mid' : score >= 75 ? 'hi' : score >= 45 ? 'mid' : 'lo';
+    const head = c.headline || {};
     host.innerHTML = `
-      <div class="rec-meta">
-        <span class="lib-badge ${prop.status === 'FINAL' ? 'lib-badge-done' : 'lib-badge-running'}">${escapeHtml(prop.status || 'DRAFT')}</span>
-        <span class="bc-verdict bc-verdict-${covCls}">Intelligence coverage ${score == null ? '—' : escapeHtml(String(score)) + '%'}</span>
-        <span class="kb-subtle">v${escapeHtml(String(prop.version))} · ${escapeHtml(new Date(prop.created_at).toLocaleString())}</span>
-      </div>
-      ${c.headline && c.headline.text ? `<div class="rec-headline">${escapeHtml(c.headline.text)} ${_recCites(c.headline.citations)}</div>` : ''}
-      ${_recSection('Their situation', c.situation)}
-      ${_recSection('Recommended positioning', c.positioning)}
-      ${_recSection('Outcomes to emphasize', c.outcomes)}
-      ${_recSection('Our edge vs alternatives', c.edge)}
-      ${_recSection('Proof points', c.proof)}
-      ${objections.length ? `<div class="rec-section"><div class="rec-h"><span class="rec-label">Objections to preempt</span></div>
-        ${objections.map((o) => `<div class="rec-obj"><div class="rec-obj-q">“${escapeHtml(o.objection || '')}” ${_recCites(o.citations)}</div><div class="rec-obj-a">${escapeHtml(o.response || '')}</div></div>`).join('')}
-      </div>` : ''}
-      ${_recSection('Recommended next move', c.nextMove)}
-      ${gaps.length ? `<div class="rec-gaps"><strong>Intelligence gaps</strong> — what would strengthen this:<ul>${gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join('')}</ul></div>` : ''}
-      ${ev.length ? `<details class="rec-evidence"><summary>Evidence basis (${ev.length} item${ev.length === 1 ? '' : 's'})</summary><ol>${ev.map((e) => `<li>[${escapeHtml(String(e.n))}] <span class="kb-stream-pill ${/compet/i.test(e.type || '') ? 'stream-web' : 'stream-file'}">${escapeHtml(e.type || '')}</span> ${escapeHtml(e.label || '')}</li>`).join('')}</ol></details>` : ''}
+      <article class="rec-doc">
+        <header class="rec-top">
+          <div class="rec-top-main">
+            <div class="rec-eyebrow">Recommendation · v${escapeHtml(String(prop.version))}<span class="rec-status rec-status-${prop.status === 'FINAL' ? 'final' : 'draft'}">${escapeHtml(prop.status || 'DRAFT')}</span></div>
+            ${head.text ? `<h3 class="rec-headline">${escapeHtml(head.text)}</h3>` : ''}
+            ${_recCites(head.citations)}
+          </div>
+          <div class="rec-cov rec-cov-${covCls}">
+            <div class="rec-cov-num">${score == null ? '—' : escapeHtml(String(score)) + '<small>%</small>'}</div>
+            <div class="rec-cov-track"><span style="width:${score == null ? 0 : score}%"></span></div>
+            <div class="rec-cov-cap">intel coverage</div>
+          </div>
+        </header>
+        <div class="rec-blocks">
+          ${REC_BLOCKS.map((b) => _recBlock(b.ico, b.label, c[b.k])).join('')}
+          ${objections.length ? `<section class="rec-block">
+            <div class="rec-block-h"><span class="rec-ico">🛡️</span><h4>Objections to preempt</h4></div>
+            <div class="rec-objs">${objections.map((o) => `<div class="rec-obj">
+              <div class="rec-obj-q">${escapeHtml(o.objection || '')}</div>
+              <div class="rec-obj-a">${escapeHtml(o.response || '')}</div>
+              ${_recCites(o.citations)}
+            </div>`).join('')}</div>
+          </section>` : ''}
+          ${_recBlock('➡️', 'Recommended next move', c.nextMove)}
+        </div>
+        ${gaps.length ? `<div class="rec-gaps"><div class="rec-gaps-h">🔍 Intelligence gaps — what would sharpen this</div><ul>${gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join('')}</ul></div>` : ''}
+        ${ev.length ? `<details class="rec-evidence"><summary>Evidence basis · ${ev.length} item${ev.length === 1 ? '' : 's'}</summary><ol>${ev.map((e) => `<li><span class="rec-ev-n">${escapeHtml(String(e.n))}</span><span class="kb-stream-pill ${/compet/i.test(e.type || '') ? 'stream-web' : 'stream-file'}">${escapeHtml(e.type || '')}</span> ${escapeHtml(e.label || '')}</li>`).join('')}</ol></details>` : ''}
+        <div class="rec-foot">Generated ${escapeHtml(new Date(prop.created_at).toLocaleString())} · a grounded suggestion — you decide.</div>
+      </article>
     `;
   }
 
