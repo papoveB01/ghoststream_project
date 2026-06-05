@@ -21,7 +21,7 @@ const entitlements = require('./entitlements');
 // Where Enterprise "Contact sales" inquiries are emailed. Falls back to the
 // public sales alias if unset. ENTERPRISE_INQUIRY_NOTIFY is an optional
 // comma-separated list of extra recipients copied on every inquiry.
-const SALES_INQUIRY_EMAIL = process.env.SALES_INQUIRY_EMAIL || 'sales@dealscope.io';
+const SALES_INQUIRY_EMAIL = process.env.SALES_INQUIRY_EMAIL || 'contact@dealscope.io';
 const EXTRA_INQUIRY_NOTIFY = (process.env.ENTERPRISE_INQUIRY_NOTIFY || 'pbombando@gmail.com')
   .split(',').map((s) => s.trim()).filter(Boolean);
 

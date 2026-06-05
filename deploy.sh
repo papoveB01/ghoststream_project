@@ -21,5 +21,9 @@ cd "$(dirname "$0")"
 echo "[deploy] env=$ENV  file=$ENV_FILE  dir=$(pwd)"
 git pull --ff-only
 docker compose --env-file "$ENV_FILE" up -d --build
+# Rebuilding api recreates its container (new IP); the in-container nginx
+# resolves upstreams once at start, so it'd keep proxying the OLD ip and 502.
+# Bounce the proxy so it re-resolves api/capture. (Idempotent if unchanged.)
+docker compose --env-file "$ENV_FILE" restart proxy
 echo "[deploy] containers:"
 docker compose --env-file "$ENV_FILE" ps
