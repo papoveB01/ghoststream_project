@@ -253,9 +253,109 @@ async function updateVersion(tenantId, id, { status, content }) {
   return r.rows[0];
 }
 
+// ── Export: a tenant-branded, print-ready HTML document (Phase 3) ──────────
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (m) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+}
+
+function renderProposalHtml(prop, ctx) {
+  const c = prop.content_json || {};
+  const cov = prop.coverage_json || {};
+  const ev = Array.isArray(prop.citations_json) ? prop.citations_json : [];
+  const objections = Array.isArray(c.objections) ? c.objections : [];
+  const gaps = Array.isArray(cov.gaps) ? cov.gaps : [];
+  const brand = ctx.tenantName || 'DealScope';
+  const date = new Date(prop.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const sec = (label, s) => (s && s.text)
+    ? `<section><h2>${esc(label)}</h2><p>${esc(s.text)}</p></section>` : '';
+  const SECTIONS = [
+    ['Their situation', c.situation], ['Recommended positioning', c.positioning],
+    ['Outcomes to emphasize', c.outcomes], ['Our edge vs. alternatives', c.edge],
+    ['Proof points', c.proof],
+  ];
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales Recommendation — ${esc(ctx.prospectName || '')}</title>
+<style>
+  :root { --ink:#16181d; --muted:#5b616e; --line:#e4e7ec; --accent:#3c7d13; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f4f5f7; color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  .bar { position:sticky; top:0; display:flex; justify-content:flex-end; gap:8px; padding:10px 16px;
+    background:#fff; border-bottom:1px solid var(--line); }
+  .bar button { font:inherit; font-size:13px; font-weight:600; padding:8px 14px; border:1px solid var(--accent);
+    background:var(--accent); color:#fff; border-radius:6px; cursor:pointer; }
+  .page { max-width:820px; margin:22px auto; background:#fff; border:1px solid var(--line);
+    border-radius:10px; padding:48px 56px; }
+  .letterhead { display:flex; justify-content:space-between; align-items:baseline; border-bottom:2px solid var(--ink);
+    padding-bottom:14px; margin-bottom:26px; }
+  .brand { font-size:20px; font-weight:800; letter-spacing:-.01em; }
+  .doc-kind { font-size:11px; text-transform:uppercase; letter-spacing:.14em; color:var(--muted); }
+  .meta { color:var(--muted); font-size:13px; margin-bottom:4px; }
+  h1 { font-size:25px; line-height:1.25; margin:6px 0 8px; }
+  .cov { display:inline-block; font-size:12px; font-weight:600; color:var(--accent);
+    border:1px solid var(--accent); border-radius:999px; padding:2px 10px; margin-bottom:22px; }
+  section { margin:22px 0; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--accent);
+    border-bottom:1px solid var(--line); padding-bottom:5px; margin:0 0 8px; }
+  p { margin:0; }
+  .obj { margin:10px 0; padding-left:14px; border-left:3px solid var(--line); }
+  .obj-q { font-weight:700; } .obj-a { color:var(--muted); margin-top:2px; }
+  .next { background:#f0f7eb; border:1px solid #cfe6bd; border-radius:8px; padding:14px 16px; }
+  .appendix { margin-top:34px; padding-top:18px; border-top:1px solid var(--line); font-size:12.5px; color:var(--muted); }
+  .appendix h3 { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink); margin:0 0 8px; }
+  .appendix ol, .appendix ul { margin:6px 0; padding-left:20px; }
+  .foot { margin-top:26px; font-size:11px; color:var(--muted); text-align:center; }
+  @media print {
+    body { background:#fff; } .bar { display:none; }
+    .page { margin:0; border:none; border-radius:0; padding:0; max-width:none; }
+    @page { margin:18mm; }
+  }
+</style></head><body>
+  <div class="bar"><button onclick="window.print()">Print / Save as PDF</button></div>
+  <div class="page">
+    <div class="letterhead"><span class="brand">${esc(brand)}</span><span class="doc-kind">Sales Recommendation · Internal</span></div>
+    <div class="meta">Prospect: <strong>${esc(ctx.prospectName || '—')}</strong> · ${esc(date)} · v${esc(prop.version)}</div>
+    ${c.headline && c.headline.text ? `<h1>${esc(c.headline.text)}</h1>` : ''}
+    ${cov.score != null ? `<span class="cov">Intelligence coverage ${esc(cov.score)}%</span>` : ''}
+    ${SECTIONS.map(([l, s]) => sec(l, s)).join('')}
+    ${objections.length ? `<section><h2>Objections to preempt</h2>${objections.map((o) => `<div class="obj"><div class="obj-q">${esc(o.objection)}</div><div class="obj-a">${esc(o.response)}</div></div>`).join('')}</section>` : ''}
+    ${c.nextMove && c.nextMove.text ? `<section><h2>Recommended next move</h2><div class="next">${esc(c.nextMove.text)}</div></section>` : ''}
+    <div class="appendix">
+      ${gaps.length ? `<h3>Intelligence gaps</h3><ul>${gaps.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>` : ''}
+      ${ev.length ? `<h3>Evidence basis (${ev.length})</h3><ol>${ev.map((e) => `<li>${esc(e.label)} <em>(${esc(e.type)})</em></li>`).join('')}</ol>` : ''}
+    </div>
+    <div class="foot">Generated by DealScope — a grounded recommendation from your market intelligence. Review before acting.</div>
+  </div>
+</body></html>`;
+}
+
+async function exportHtml(tenantId, id) {
+  const r = await db.query(
+    `SELECT p.*, c.name AS prospect_name, t.name AS tenant_name
+       FROM proposals p
+       JOIN companies c ON c.id = p.company_id
+       JOIN tenants   t ON t.id = p.tenant_id
+      WHERE p.id = $1 AND p.tenant_id = $2`,
+    [id, tenantId]
+  );
+  const row = r.rows[0];
+  if (!row) { const e = new Error('proposal version not found'); e.status = 404; throw e; }
+  return renderProposalHtml(row, { tenantName: row.tenant_name, prospectName: row.prospect_name });
+}
+
 // ── Router (mounted at /api/proposals behind authMiddleware) ────────────────
 const router = express.Router();
 router.use(express.json());
+
+// GET /proposals/version/:id/export — tenant-branded, print-ready HTML document.
+router.get('/version/:id/export', async (req, res, next) => {
+  try {
+    const html = await exportHtml(req.tenantId, req.params.id);
+    res.set('Content-Type', 'text/html; charset=utf-8').send(html);
+  } catch (err) { next(err); }
+});
 
 // POST /proposals/:companyId/generate — synthesize a new recommendation version.
 router.post('/:companyId/generate', async (req, res, next) => {
@@ -290,4 +390,4 @@ router.get('/:companyId', async (req, res, next) => {
   catch (err) { next(err); }
 });
 
-module.exports = { router, generate, gatherEvidence, listForCompany, getVersion, updateVersion };
+module.exports = { router, generate, gatherEvidence, listForCompany, getVersion, updateVersion, exportHtml };

@@ -1416,6 +1416,7 @@
     const host = $('prospect-proposal');
     const sel = $('prospect-proposal-version');
     const finalBtn = $('prospect-proposal-final-btn');
+    const exportBtn = $('prospect-proposal-export-btn');
     const genBtn = $('prospect-proposal-gen-btn');
     if (!host) return;
     let versions = [];
@@ -1427,7 +1428,11 @@
       finalBtn.classList.remove('hidden');
       finalBtn.textContent = current.status === 'FINAL' ? '✓ Final' : '✓ Mark final';
       finalBtn.disabled = current.status === 'FINAL';
+      exportBtn.classList.remove('hidden');
     }
+    if (exportBtn) exportBtn.addEventListener('click', () => {
+      if (current) window.open(`/api/proposals/version/${encodeURIComponent(current.id)}/export`, '_blank');
+    });
     async function refresh() {
       try {
         const r = await fetchJson(`/api/proposals/${encodeURIComponent(companyId)}`);
@@ -1435,7 +1440,7 @@
       } catch (err) { status.textContent = `Couldn't load: ${err.message}`; return; }
       if (!versions.length) {
         status.textContent = 'No recommendation yet — generate one from everything we know about this prospect.';
-        sel.classList.add('hidden'); finalBtn.classList.add('hidden'); host.innerHTML = '';
+        sel.classList.add('hidden'); finalBtn.classList.add('hidden'); exportBtn.classList.add('hidden'); host.innerHTML = '';
         return;
       }
       status.textContent = '';
@@ -1570,6 +1575,7 @@
         <div class="prospect-intel-actions">
           <button class="primary-cta" id="prospect-proposal-gen-btn">✨ Generate recommendation</button>
           <select id="prospect-proposal-version" class="kb-select hidden" title="Version"></select>
+          <button class="kb-secondary-btn hidden" id="prospect-proposal-export-btn">⬇ Export</button>
           <button class="kb-secondary-btn hidden" id="prospect-proposal-final-btn">✓ Mark final</button>
         </div>
         <div class="prospect-intel-status kb-subtle" id="prospect-proposal-status">Loading…</div>
