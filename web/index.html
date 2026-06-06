@@ -301,7 +301,7 @@
           <label>Work email<input name="email" type="email" autocomplete="email" required maxlength="200"></label>
           <label>Company name<input name="company" type="text" autocomplete="organization" required maxlength="200"></label>
           <div class="cf-row">
-            <label>Industry<input name="industry" type="text" maxlength="120" placeholder="e.g. SaaS, Fintech, Manufacturing"></label>
+            <label>Industry<select name="industry" id="cf-industry"><option value="">Select…</option></select></label>
             <label>Company size
               <select name="companySize">
                 <option value="">Select…</option>
@@ -369,6 +369,12 @@
     if (!f) return;
     var status = document.getElementById('cf-status');
     var btn = document.getElementById('cf-submit');
+    // Reuse the curated industry list from onboarding (public endpoint).
+    fetch('/api/onboarding/industries').then(function (r) { return r.json(); }).then(function (d) {
+      var sel = document.getElementById('cf-industry');
+      if (!sel || !d || !d.industries) return;
+      d.industries.forEach(function (i) { var o = document.createElement('option'); o.value = i; o.textContent = i; sel.appendChild(o); });
+    }).catch(function () {});
     f.addEventListener('submit', function (e) {
       e.preventDefault();
       var data = {};
