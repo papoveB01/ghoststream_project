@@ -1100,6 +1100,24 @@
   }
 
   // Download the current research (summary + opportunities) as markdown.
+  // Download arbitrary markdown as a Word .docx via the server export endpoint.
+  async function downloadDocx(filename, markdown) {
+    try {
+      const r = await fetch('/api/export/docx', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: filename, markdown: markdown }),
+      });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || ('HTTP ' + r.status)); }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    } catch (e) { alert("Couldn't generate the Word document: " + e.message); }
+  }
+
   function downloadProspectResearch(company) {
     const r = _prospectResearch;
     if (!r) { alert('Run research first.'); return; }
@@ -1111,12 +1129,8 @@
       if (Array.isArray(o.products) && o.products.length) L.push(`Fits: ${o.products.join(', ')}`);
       L.push('');
     });
-    const blob = new Blob([L.join('\n')], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `research-${String(company.name || 'prospect').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}.md`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const slug = String(company.name || 'prospect').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    downloadDocx(`research-${slug}.docx`, L.join('\n'));
   }
 
   // ── Prospect creation modes (Manual · From CRM · Discover online) ─────────
@@ -2939,7 +2953,7 @@
           </div>
           <div class="bc-h-actions">
             <span class="bc-stale-flag hidden" id="competitor-battlecard-stale-flag">New evidence — regenerate to refresh</span>
-            ${opts.readOnly ? '' : '<button class="kb-secondary-btn" id="bc-download-btn" title="Download this battlecard as a markdown file">⬇ Download</button><button class="kb-secondary-btn" id="bc-add-evidence-btn" title="Save this battlecard as a reference snapshot in the evidence list (kept out of future regenerations)">＋ Add to evidence</button>'}
+            ${opts.readOnly ? '' : '<button class="kb-secondary-btn" id="bc-download-btn" title="Download this battlecard as a Word document">⬇ Download</button><button class="kb-secondary-btn" id="bc-add-evidence-btn" title="Save this battlecard as a reference snapshot in the evidence list (kept out of future regenerations)">＋ Add to evidence</button>'}
             <button class="kb-secondary-btn" id="bc-regen-btn">↻ Regenerate</button>
           </div>
         </div>
@@ -3023,19 +3037,14 @@
   }
 
   function wireBattlecardActions(competitor) {
-    // Download the live battlecard as a markdown file (client-side, no upload).
+    // Download the live battlecard as a Word .docx via the export endpoint.
     const dl = $('bc-download-btn');
     if (dl) dl.addEventListener('click', () => {
       if (!_currentBattlecard) return;
       const offering = _bcScope.competitorProduct ? (_lastPortfolio.offerings.find((x) => x.id === _bcScope.competitorProduct) || {}).name : null;
       const slug = `${competitor.name}-${offering || 'company-wide'}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
       const md = battlecardToMarkdown(competitor, _currentBattlecard);
-      const blob = new Blob([md], { type: 'text/markdown' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = `battlecard-${slug || 'competitor'}.md`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      downloadDocx(`battlecard-${slug || 'competitor'}.docx`, md);
     });
 
     // Save the live battlecard as a reference snapshot in this matchup's evidence

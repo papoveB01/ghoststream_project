@@ -1131,6 +1131,7 @@ app.use('/companies', auth.authMiddleware, companies.router);
 app.use('/contacts',  auth.authMiddleware, require('./contacts').router);
 app.use('/missions',  auth.authMiddleware, missions.router);
 app.use('/proposals', auth.authMiddleware, require('./proposals').router);
+app.use('/export',    auth.authMiddleware, require('./exportDocx').router);
 
 // =========================================================================
 // Knowledge Base — Dynamic Context Layer (RAG over Postgres + pgvector)
