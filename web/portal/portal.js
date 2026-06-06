@@ -385,65 +385,9 @@
   }
 
   function downloadVerifiedSow(p) {
-    const sow = p.sowSummary || {};
-    const grounding = p.grounding || {};
-    const citations = grounding.citations || [];
-    const date = new Date().toISOString().slice(0, 10);
-
-    // Group citations by stream_type so the footer reads naturally —
-    // "Verified against: 2 PDFs, 1 Website, 1 Social Post" instead of
-    // a flat citation list. Each group keeps its citation + source URL.
-    const groups = { FILE: [], WEB: [], SOCIAL: [] };
-    for (const c of citations) {
-      const st = String(c.streamType || 'FILE').toUpperCase();
-      (groups[st] || groups.FILE).push(c);
-    }
-
-    const summaryLine = streamBreakdownLabel(citations) || `${citations.length} Knowledge Base chunk(s)`;
-
-    const verificationBlock = [];
-    const groupLabel = { FILE: 'PDF / Document', WEB: 'Website', SOCIAL: 'Social Post' };
-    for (const st of ['FILE', 'WEB', 'SOCIAL']) {
-      if (groups[st].length === 0) continue;
-      verificationBlock.push(`${groupLabel[st]} sources (${groups[st].length}):`);
-      for (const c of groups[st]) {
-        const dateLabel = fmtEffectiveDate(c.effectiveDate);
-        const urlPart = c.sourceUrl ? ` <${c.sourceUrl}>` : '';
-        const datePart = dateLabel ? ` (as of ${dateLabel})` : '';
-        verificationBlock.push(`  - [${c.citation}] ${c.documentTitle || '—'}${datePart}${urlPart}`);
-      }
-      verificationBlock.push('');
-    }
-
-    const lines = [
-      'STATEMENT OF WORK — VERIFIED BY DEALSCOPE',
-      `Portal: ${p.id}`,
-      `Generated: ${date}`,
-      `Verified against: ${summaryLine}.`,
-      '',
-      'SCOPE',
-      sow.scopeOneLine || '—',
-      '',
-      'COMMITMENTS',
-      ...(sow.commitments || []).map((c) => `- ${c}`),
-      '',
-      'OUTCOME METRIC',
-      sow.outcomeMetric || '—',
-      '',
-      'TERM & EXIT',
-      sow.termAndExit || '—',
-      '',
-      'VERIFICATION FOOTER',
-      ...(verificationBlock.length ? verificationBlock : ['no citations on record']),
-    ];
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `verified-sow-${p.id}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(a.href);
+    // The server builds a rich, branded .docx from the call's SOW (verified
+    // against the knowledge base). Public endpoint — same access as the portal.
+    window.open(`/api/portals/${encodeURIComponent(p.id)}/sow.docx`, '_blank');
   }
 
   // ===================================================================
