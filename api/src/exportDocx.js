@@ -1,17 +1,21 @@
 // "Download as Word" engine. Builds rich, branded .docx documents — a running
-// header (brand + doc type), a title block, the content, and a footer with a
-// note + page numbers. Every download (research dossier, battlecard, proposal
-// recommendation, SOW) flows through here so they share one polished layout.
+// header (brand + doc type), a title block, the content (headings, bold,
+// bullets, and real tables), and a footer with a note + page numbers. Every
+// download (research, battlecard, proposal recommendation, SOW) flows through
+// here so they share one polished layout.
 
 const express = require('express');
 const {
   Document, Packer, Paragraph, TextRun, HeadingLevel,
   Header, Footer, PageNumber, BorderStyle, TabStopType, TabStopPosition,
+  Table, TableRow, TableCell, WidthType, ShadingType,
 } = require('docx');
 
 const INK = '16181D';
 const MUTED = '5B616E';
 const LINE = 'E4E7EC';
+const TBL_BORDER = 'D9DCE1';
+const TBL_HEAD = 'F1F3F5';
 
 // Inline markdown → docx TextRuns. Supports **bold**; everything else is plain.
 function parseInline(text) {
@@ -24,15 +28,56 @@ function parseInline(text) {
   return runs.length ? runs : [new TextRun(String(text))];
 }
 
-// Line-based markdown → docx paragraphs. #/##/### headings, - / * bullets,
-// **bold**, and plain paragraphs.
-function mdToParagraphs(markdown) {
+// ── GitHub-style pipe tables → docx Table ──────────────────────────────────
+function splitRow(line) {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  return s.split('|').map((c) => c.trim());
+}
+function isTableRow(line) { return /^\s*\|.*\|\s*$/.test(line); }
+function isTableSep(line) { return /^[\s|:-]+$/.test(line) && line.includes('-') && line.includes('|'); }
+
+function tableCell(text, header) {
+  const runs = header ? [new TextRun({ text: String(text), bold: true, color: INK })] : parseInline(String(text));
+  return new TableCell({
+    margins: { top: 60, bottom: 60, left: 110, right: 110 },
+    shading: header ? { type: ShadingType.CLEAR, color: 'auto', fill: TBL_HEAD } : undefined,
+    children: [new Paragraph({ children: runs })],
+  });
+}
+function makeTable(header, rows) {
+  const trs = [];
+  if (header) trs.push(new TableRow({ tableHeader: true, children: header.map((h) => tableCell(h, true)) }));
+  for (const r of rows) trs.push(new TableRow({ children: r.map((c) => tableCell(c, false)) }));
+  const thin = { style: BorderStyle.SINGLE, size: 4, color: TBL_BORDER };
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { top: thin, bottom: thin, left: thin, right: thin, insideHorizontal: thin, insideVertical: thin },
+    rows: trs,
+  });
+}
+
+// Line-based markdown → docx blocks (Paragraphs + Tables). #/##/### headings,
+// - / * bullets, **bold**, pipe tables, and plain paragraphs.
+function mdToBlocks(markdown) {
+  const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
   const out = [];
-  for (const raw of String(markdown || '').replace(/\r\n/g, '\n').split('\n')) {
-    const line = raw.replace(/\s+$/, '');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\s+$/, '');
     if (!line.trim()) continue;
-    if (line.startsWith('### ')) { out.push(new Paragraph({ text: line.slice(4), heading: HeadingLevel.HEADING_3 })); continue; }
-    if (line.startsWith('## '))  { out.push(new Paragraph({ text: line.slice(3), heading: HeadingLevel.HEADING_2 })); continue; }
+    if (isTableRow(line) && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      const header = splitRow(line);
+      const rows = [];
+      i += 2;
+      while (i < lines.length && isTableRow(lines[i])) { rows.push(splitRow(lines[i])); i++; }
+      i--;
+      out.push(makeTable(header, rows));
+      out.push(new Paragraph({ text: '', spacing: { after: 80 } }));
+      continue;
+    }
+    if (line.startsWith('### ')) { out.push(new Paragraph({ text: line.slice(4), heading: HeadingLevel.HEADING_3, spacing: { before: 120, after: 40 } })); continue; }
+    if (line.startsWith('## '))  { out.push(new Paragraph({ text: line.slice(3), heading: HeadingLevel.HEADING_2, spacing: { before: 200, after: 80 } })); continue; }
     if (line.startsWith('# '))   { out.push(new Paragraph({ text: line.slice(2), heading: HeadingLevel.HEADING_1 })); continue; }
     const bullet = line.match(/^\s*[-*]\s+(.*)$/);
     if (bullet) { out.push(new Paragraph({ children: parseInline(bullet[1]), bullet: { level: 0 } })); continue; }
@@ -75,22 +120,25 @@ function titleBlock(title, subtitle) {
   return out;
 }
 
-// The one builder everything uses. `paragraphs` is an array of docx Paragraphs.
-function buildDocx({ title, subtitle, brand, docType, paragraphs = [], footerNote } = {}) {
+// The one builder everything uses. `blocks` is an array of docx Paragraphs/Tables.
+function buildDocx({ title, subtitle, brand, docType, blocks = [], footerNote } = {}) {
   const doc = new Document({
     sections: [{
       headers: { default: headerFor(brand, docType) },
       footers: { default: footerFor(footerNote) },
-      children: [...titleBlock(title, subtitle), ...paragraphs],
+      children: [...titleBlock(title, subtitle), ...blocks],
     }],
   });
   return Packer.toBuffer(doc);
 }
 
-// Convenience: rich .docx from a markdown body + layout opts.
+// Convenience: rich .docx from a markdown body (with tables) + layout opts.
 function markdownToDocxBuffer(markdown, opts = {}) {
-  return buildDocx({ ...opts, paragraphs: mdToParagraphs(markdown) });
+  return buildDocx({ ...opts, blocks: mdToBlocks(markdown) });
 }
+
+// Escape a value so it's safe inside a markdown table cell.
+function cellSafe(s) { return String(s == null ? '' : s).replace(/\s*\n+\s*/g, ' ').replace(/\|/g, '/').trim(); }
 
 const router = express.Router();
 router.use(express.json({ limit: '1mb' }));
@@ -115,4 +163,4 @@ router.post('/docx', async (req, res) => {
   }
 });
 
-module.exports = { router, buildDocx, markdownToDocxBuffer, mdToParagraphs };
+module.exports = { router, buildDocx, markdownToDocxBuffer, cellSafe };

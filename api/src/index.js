@@ -468,12 +468,18 @@ app.get('/portals/:id/sow.docx', async (req, res, next) => {
     const p = await store.getPortal(req.params.id);
     if (!p || !p.sowSummary) return res.status(404).json({ error: 'not found' });
     const s = p.sowSummary;
+    const xdoc = require('./exportDocx');
     const cits = (p.grounding && Array.isArray(p.grounding.citations)) ? p.grounding.citations : [];
     const L = ['## Scope', s.scopeOneLine || '—', '', '## Commitments'];
     (s.commitments || []).forEach((c) => L.push(`- ${c}`));
-    L.push('', '## Outcome metric', s.outcomeMetric || '—', '', '## Term & exit', s.termAndExit || '—', '');
-    if (cits.length) { L.push('## Verification'); cits.forEach((c) => L.push(`- [${c.citation || ''}] ${c.documentTitle || '—'}`)); }
-    const buffer = await require('./exportDocx').markdownToDocxBuffer(L.join('\n'), {
+    L.push('', '## Terms', '', '| Field | Detail |', '| --- | --- |',
+      `| Outcome metric | ${xdoc.cellSafe(s.outcomeMetric || '—')} |`,
+      `| Term & exit | ${xdoc.cellSafe(s.termAndExit || '—')} |`, '');
+    if (cits.length) {
+      L.push('## Verification', '', '| Reference | Source |', '| --- | --- |');
+      cits.forEach((c) => L.push(`| [${xdoc.cellSafe(c.citation || '')}] | ${xdoc.cellSafe(c.documentTitle || '—')} |`));
+    }
+    const buffer = await xdoc.markdownToDocxBuffer(L.join('\n'), {
       title: 'Statement of Work',
       subtitle: `${p.title || 'Sales call'} · ${new Date(p.createdAt || Date.now()).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}`,
       brand: 'DealScope',

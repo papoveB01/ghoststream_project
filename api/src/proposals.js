@@ -292,13 +292,17 @@ function proposalMarkdown(prop) {
   sec('Proof points', c.proof);
   const objections = Array.isArray(c.objections) ? c.objections : [];
   if (objections.length) {
-    L.push('## Objections to preempt');
-    objections.forEach((o) => { L.push(`**${o.objection || ''}**`, o.response || '', ''); });
+    L.push('## Objections to preempt', '', '| Likely objection | How to respond |', '| --- | --- |');
+    objections.forEach((o) => L.push(`| ${exportDocx.cellSafe(o.objection)} | ${exportDocx.cellSafe(o.response)} |`));
+    L.push('');
   }
   sec('Recommended next move', c.nextMove);
   const gaps = Array.isArray(cov.gaps) ? cov.gaps : [];
   if (gaps.length) { L.push('## Intelligence gaps'); gaps.forEach((g) => L.push(`- ${g}`)); L.push(''); }
-  if (ev.length) { L.push('## Evidence basis'); ev.forEach((e) => L.push(`- [${e.n}] ${e.label} (${e.type})`)); }
+  if (ev.length) {
+    L.push('## Evidence basis', '', '| # | Source | Type |', '| --- | --- | --- |');
+    ev.forEach((e) => L.push(`| ${e.n} | ${exportDocx.cellSafe(e.label)} | ${exportDocx.cellSafe(e.type)} |`));
+  }
   return L.join('\n');
 }
 
