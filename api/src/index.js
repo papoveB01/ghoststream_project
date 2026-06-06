@@ -1148,6 +1148,9 @@ app.use('/watch', auth.authMiddleware, watch.router);
 
 app.use('/onboarding', onboarding.router);
 
+// Public website contact / demo-request form → emails the sales inbox.
+app.use('/contact', require('./contact').router);
+
 // =========================================================================
 // Calendar integrations — status/connect endpoints (admin Integrations page)
 // + the Calendly webhook receiver (auto-creates a mission on `invitee.created`).

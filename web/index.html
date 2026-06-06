@@ -102,7 +102,7 @@
           <p class="lede">DealScope is the AI sales-intelligence platform for modern revenue teams. It learns your business, surfaces your best-fit opportunities, connects to your CRM, sits in on every call, and turns the conversation into a ready-to-send proposal — grounded in your reality, never guessed.</p>
           <div class="cta-row">
             <a class="btn btn-primary" href="/onboarding/">Start free</a>
-            <a class="btn btn-ghost" href="#demo">Book a demo</a>
+            <a class="btn btn-ghost" href="#contact">Book a demo</a>
           </div>
           <div class="hero-meta">
             <span><strong>Connects</strong> to your CRM</span>
@@ -278,9 +278,49 @@
           </div>
           <div class="cta-actions">
             <a class="btn btn-primary" href="/onboarding/">start_free →</a>
-            <a class="btn btn-ghost" href="mailto:contact@dealscope.io?subject=Demo%20request">book_a_demo</a>
+            <a class="btn btn-ghost" href="#contact">book_a_demo</a>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!-- CONTACT / DEMO FORM -->
+    <section class="section grid-bg" id="contact">
+      <div class="container contact-wrap">
+        <div class="section-head">
+          <div class="label">get in touch</div>
+          <h2>Talk to us — or <span class="hl">book a demo.</span></h2>
+          <p>Tell us a little about your team and we'll be in touch within one business day.</p>
+        </div>
+        <form class="contact-form" id="contact-form" novalidate>
+          <input type="text" name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+          <div class="cf-row">
+            <label>First name<input name="firstName" type="text" autocomplete="given-name" required maxlength="120"></label>
+            <label>Last name<input name="lastName" type="text" autocomplete="family-name" required maxlength="120"></label>
+          </div>
+          <label>Work email<input name="email" type="email" autocomplete="email" required maxlength="200"></label>
+          <label>Company name<input name="company" type="text" autocomplete="organization" required maxlength="200"></label>
+          <div class="cf-row">
+            <label>Industry<input name="industry" type="text" maxlength="120" placeholder="e.g. SaaS, Fintech, Manufacturing"></label>
+            <label>Company size
+              <select name="companySize">
+                <option value="">Select…</option>
+                <option>1–10</option><option>11–50</option><option>51–200</option><option>201–1,000</option><option>1,000+</option>
+              </select>
+            </label>
+          </div>
+          <label>How can we help?
+            <select name="reason">
+              <option>Request a demo</option>
+              <option>General inquiry</option>
+              <option>Sales &amp; pricing</option>
+              <option>Partnership</option>
+            </select>
+          </label>
+          <label>Message<textarea name="message" rows="4" maxlength="4000" placeholder="What would you like to know?"></textarea></label>
+          <button type="submit" class="btn btn-primary btn-block" id="cf-submit">Send message</button>
+          <div class="cf-status" id="cf-status" role="status" aria-live="polite"></div>
+        </form>
       </div>
     </section>
 
@@ -304,7 +344,8 @@
         </div>
         <div class="footer-col">
           <div class="footer-h">company</div>
-          <a href="#demo">Contact</a>
+          <a href="#contact">Contact</a>
+          <a href="#contact">Book a demo</a>
           <a href="mailto:contact@dealscope.io">Email us</a>
         </div>
         <div class="footer-col">
@@ -322,5 +363,29 @@
     </div>
   </footer>
 
+  <script>
+  (function () {
+    var f = document.getElementById('contact-form');
+    if (!f) return;
+    var status = document.getElementById('cf-status');
+    var btn = document.getElementById('cf-submit');
+    f.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var data = {};
+      new FormData(f).forEach(function (v, k) { data[k] = v; });
+      data.type = (String(data.reason || '').toLowerCase().indexOf('demo') > -1) ? 'demo' : 'contact';
+      status.textContent = ''; status.className = 'cf-status';
+      btn.disabled = true; var t = btn.textContent; btn.textContent = 'Sending…';
+      fetch('/api/contact', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
+      }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (res) {
+          if (res.ok) { f.reset(); status.className = 'cf-status ok'; status.textContent = 'Thanks — we’ve got it. We’ll be in touch within one business day.'; }
+          else { status.className = 'cf-status err'; status.textContent = (res.j && res.j.error) || 'Something went wrong. Please email contact@dealscope.io.'; }
+        }).catch(function () { status.className = 'cf-status err'; status.textContent = 'Network error. Please email contact@dealscope.io.'; })
+        .finally(function () { btn.disabled = false; btn.textContent = t; });
+    });
+  })();
+  </script>
 </body>
 </html>
