@@ -200,7 +200,7 @@
       overlay.innerHTML = `
         <div class="cal-picker support-modal">
           <div class="cal-picker-h">
-            <span class="cal-picker-title">🛟 Help &amp; support</span>
+            <span class="cal-picker-title">Help &amp; support</span>
             <button type="button" class="kb-link-btn cal-picker-close">✕</button>
           </div>
           <div class="cal-picker-body support-body">
@@ -349,6 +349,8 @@
       if (s === sec) el.classList.remove('hidden'); else el.classList.add('hidden');
     });
     $('page-title').textContent = titleFor(sec);
+    const eb = $('page-eyebrow');
+    if (eb) eb.innerHTML = `${escapeHtml(groupFor(sec))} <b>·</b> ${escapeHtml(titleFor(sec) || '')}`;
     // Company deep-links: ?tab=<intel|products|personas> selects a tab; ?welcome=1
     // (the post-onboarding landing) arms the one-time pull-from-website bootstrap.
     // Set these BEFORE the loader so the first render lands on the right tab.
@@ -382,6 +384,13 @@
     setTimeout(() => row.classList.remove('row-highlight'), 2000);
   }
 
+  // Mono eyebrow group above the page title — mirrors the sidebar nav groups.
+  function groupFor(sec) {
+    if (['overview', 'company', 'prospects', 'competitors', 'market-signals'].includes(sec)) return 'Intelligence';
+    if (['missions', 'calendar', 'sessions', 'calls', 'calls-ops'].includes(sec)) return 'Pipeline';
+    if (['platform', 'instances', 'platform-audit', 'platform-keys'].includes(sec)) return 'Platform';
+    return 'Workspace';
+  }
   function titleFor(sec) {
     return {
       overview: 'Overview',
@@ -466,7 +475,7 @@
     if (!k.prospects) need.push(['Find your first prospects', 'prospects']);
     const activation = need.length ? `
       <div class="dash-activation">
-        <div class="dash-activation-h">⚡ Finish setting up DealScope</div>
+        <div class="dash-activation-h">Finish setting up DealScope</div>
         <div class="dash-activation-steps">${need.map(([label, sec]) => `<button class="dash-chip" data-goto="${sec}">○ ${escapeHtml(label)} →</button>`).join('')}</div>
       </div>` : '';
 
@@ -480,9 +489,9 @@
           <div class="dash-company">${escapeHtml(t.name || 'your company')} ${trialPill}</div>
         </div>
         <div class="dash-actions">
-          <button class="primary-cta" data-goto="prospects" data-pmode="discover">🔎 Discover prospects</button>
+          <button class="primary-cta" data-goto="prospects" data-pmode="discover">Discover prospects</button>
           <button class="kb-secondary-btn" data-goto="competitors">⚔ Add competitor</button>
-          <button class="kb-secondary-btn" data-goto="missions">📅 Schedule</button>
+          <button class="kb-secondary-btn" data-goto="missions">Schedule</button>
         </div>
       </div>
       ${activation}
@@ -495,11 +504,11 @@
       ${buildDashCharts(d)}
       <div class="dash-grid">
         <div class="dash-col">
-          <div class="dash-card-h">🎯 Priority opportunities</div>
+          <div class="dash-card-h">Priority opportunities</div>
           <div class="dash-opps">${opps.length ? opps.map(dashOppRow).join('') : dashEmpty('No opportunities yet — Discover prospects or run research to surface buying signals.')}</div>
         </div>
         <div class="dash-col">
-          <div class="dash-card-h">📅 Upcoming engagements</div>
+          <div class="dash-card-h">Upcoming engagements</div>
           <div class="dash-engs">${engs.length ? engs.map(dashEngRow).join('') : dashEmpty('No upcoming engagements — schedule one from a prospect or the Engagements page.')}</div>
         </div>
       </div>
@@ -589,17 +598,17 @@
     const meters = (d.usage && d.usage.meters) || [];
     const usageCard = meters.length ? `
       <div class="dash-col dash-chart-card">
-        <div class="dash-card-h">📊 Usage this ${d.usage.lifetime ? 'account' : 'month'}</div>
+        <div class="dash-card-h">Usage this ${d.usage.lifetime ? 'account' : 'month'}</div>
         <div class="dash-gauges">${meters.map(dashGauge).join('')}</div>
       </div>` : '';
     const mixCard = `
       <div class="dash-col dash-chart-card">
-        <div class="dash-card-h">🎯 Opportunity mix</div>
+        <div class="dash-card-h">Opportunity mix</div>
         ${dashStrengthDonut(d.strengthBreakdown || {})}
       </div>`;
     const trendCard = `
       <div class="dash-col dash-chart-card">
-        <div class="dash-card-h">📈 New prospects</div>
+        <div class="dash-card-h">New prospects</div>
         ${dashTrend(d.prospectTrend)}
       </div>`;
     return `<div class="dash-charts">${usageCard}${mixCard}${trendCard}</div>`;
@@ -685,7 +694,7 @@
       </button>`;
     }).join('');
     host.innerHTML = `<div class="dash-col dash-chart-card dash-rollup">
-      <div class="dash-card-h">🏢 Sub-account activity <button class="kb-link-btn dash-rollup-manage" data-goto="subaccounts">Manage →</button></div>
+      <div class="dash-card-h">Sub-account activity <button class="kb-link-btn dash-rollup-manage" data-goto="subaccounts">Manage →</button></div>
       <div class="dash-kids">${rows}</div>
     </div>`;
     host.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => { window.location.hash = '#' + b.dataset.goto; }));
@@ -715,8 +724,8 @@
           ? escapeHtml(analysis)
           : '<span class="kb-subtle">No detailed description yet — generate prospect intel to research this account and surface the “why now”.</span>'}</p>
         <div class="dash-opp-actions">
-          <button class="kb-secondary-btn" data-opp-intel="${i}">✨ Generate prospect intel</button>
-          <button class="kb-link-btn" data-opp-brief="${i}">📅 Brief an engagement →</button>
+          <button class="kb-secondary-btn" data-opp-intel="${i}">Generate prospect intel</button>
+          <button class="kb-link-btn" data-opp-brief="${i}">Brief an engagement →</button>
           <button class="kb-link-btn" data-opp-company="${escapeHtml(o.companyId)}">Open prospect →</button>
         </div>
       </div>
@@ -971,9 +980,9 @@
     const modeSection = `
       <div class="prospect-quick-banner">
         <div class="prospect-modes">
-          <button type="button" class="kb-tab${_prospectMode === 'manual' ? ' active' : ''}" data-pmode="manual">✍️ Manual</button>
-          <button type="button" class="kb-tab${_prospectMode === 'crm' ? ' active' : ''}" data-pmode="crm">🔗 From CRM</button>
-          <button type="button" class="kb-tab${_prospectMode === 'discover' ? ' active' : ''}" data-pmode="discover">🔎 Discover online</button>
+          <button type="button" class="kb-tab${_prospectMode === 'manual' ? ' active' : ''}" data-pmode="manual">Manual</button>
+          <button type="button" class="kb-tab${_prospectMode === 'crm' ? ' active' : ''}" data-pmode="crm">From CRM</button>
+          <button type="button" class="kb-tab${_prospectMode === 'discover' ? ' active' : ''}" data-pmode="discover">Discover online</button>
         </div>
         <div id="prospect-mode-panel"></div>
       </div>`;
@@ -1045,9 +1054,9 @@
     }
     _prospectResearch = r;
     const auto   = (r.sources || []).filter((s) => !s.addedManually).length;
-    const statusBadge = r.status === 'RUNNING' ? '<span class="lib-badge lib-badge-running">🔄 researching</span>'
+    const statusBadge = r.status === 'RUNNING' ? '<span class="lib-badge lib-badge-running">researching</span>'
                      : r.status === 'FAILED'  ? `<span class="lib-badge lib-badge-failed">⚠︎ failed</span>`
-                     : `<span class="lib-badge lib-badge-done">🔎 ${escapeHtml(fmtDate(r.updated_at || r.created_at))}</span>`;
+                     : `<span class="lib-badge lib-badge-done">${escapeHtml(fmtDate(r.updated_at || r.created_at))}</span>`;
     el.innerHTML = `
       ${statusBadge}
       &nbsp;·&nbsp; ${auto} web source${auto === 1 ? '' : 's'} scanned
@@ -1082,7 +1091,7 @@
         ${Array.isArray(o.products) && o.products.length ? `<div class="opp-fits"><span class="kb-subtle">Fits:</span> ${o.products.map((p) => `<span class="kb-stream-pill stream-file">${escapeHtml(p)}</span>`).join(' ')}</div>` : ''}
         ${Array.isArray(o.sources) && o.sources.length ? `<div class="opp-src kb-subtle">Sources: ${o.sources.map((n) => `[${escapeHtml(String(n))}]`).join(' ')}</div>` : ''}
         <div class="opp-actions">
-          <button type="button" class="kb-secondary-btn opp-brief" data-i="${i}">📅 Brief an engagement</button>
+          <button type="button" class="kb-secondary-btn opp-brief" data-i="${i}">Brief an engagement</button>
           <button type="button" class="kb-link-btn opp-pin" data-i="${i}">${o.pinned ? '★ Unpin' : '☆ Pin'}</button>
         </div>
       </div>`).join('');
@@ -1206,7 +1215,7 @@
       <div class="crm-pull-list">${connected.map((p) => `
         <div class="crm-pull-row">
           <span>${escapeHtml(p.label)}${p.connection.lastSyncAt ? ` <span class="kb-subtle">· last pull ${escapeHtml(fmtDate(p.connection.lastSyncAt))}</span>` : ''}</span>
-          <button class="primary-cta" data-crm-import="${escapeHtml(p.id)}">⬇ Pull prospects</button>
+          <button class="primary-cta" data-crm-import="${escapeHtml(p.id)}">Pull prospects</button>
           <span class="kb-result hidden" id="crm-result-${escapeHtml(p.id)}"></span>
         </div>`).join('')}</div>
       <div class="kb-subtle" style="margin-top:8px">Manage connections on <a href="#integrations">Integrations</a>.</div>`;
@@ -1255,7 +1264,7 @@
     const city = ($('pdisc-city').value || '').trim();
     const where = [city, country].filter(Boolean).join(', ') || (region && !/global|any/i.test(region) ? region : '');
     btn.disabled = true; const o = btn.textContent; btn.textContent = 'Searching…';
-    body.innerHTML = `<div class="kb-subtle" style="padding:12px">🔎 Searching the web for prospects${industry ? ` in ${escapeHtml(industry)}` : ''}${where ? ` · ${escapeHtml(where)}` : ''}…</div>`;
+    body.innerHTML = `<div class="kb-subtle" style="padding:12px">Searching the web for prospects${industry ? ` in ${escapeHtml(industry)}` : ''}${where ? ` · ${escapeHtml(where)}` : ''}…</div>`;
     try {
       const data = await fetchJson('/api/companies/discover', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1448,7 +1457,7 @@
           </section>` : ''}
           ${_recBlock('➡️', 'Recommended next move', c.nextMove)}
         </div>
-        ${gaps.length ? `<div class="rec-gaps"><div class="rec-gaps-h">🔍 Intelligence gaps — what would sharpen this</div><ul>${gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join('')}</ul></div>` : ''}
+        ${gaps.length ? `<div class="rec-gaps"><div class="rec-gaps-h">Intelligence gaps — what would sharpen this</div><ul>${gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join('')}</ul></div>` : ''}
         ${ev.length ? `<details class="rec-evidence"><summary>Evidence basis · ${ev.length} item${ev.length === 1 ? '' : 's'}</summary><ol>${ev.map((e) => `<li><span class="rec-ev-n">${escapeHtml(String(e.n))}</span><span class="kb-stream-pill ${/compet/i.test(e.type || '') ? 'stream-web' : 'stream-file'}">${escapeHtml(e.type || '')}</span> ${escapeHtml(e.label || '')}</li>`).join('')}</ol></details>` : ''}
         <div class="rec-foot">Generated ${escapeHtml(new Date(prop.created_at).toLocaleString())} · a grounded suggestion — you decide.</div>
       </article>
@@ -1554,18 +1563,18 @@
       <div id="prospect-watch-panel"></div>
 
       <div class="prospect-tabs">
-        <button type="button" class="kb-tab active" data-prospect-tab="signals">🔎 Signals</button>
+        <button type="button" class="kb-tab active" data-prospect-tab="signals">Signals</button>
         <button type="button" class="kb-tab" data-prospect-tab="people">👤 People (${contacts.length})</button>
-        <button type="button" class="kb-tab" data-prospect-tab="intel">📁 Intel</button>
-        <button type="button" class="kb-tab" data-prospect-tab="proposal">📝 Proposal</button>
+        <button type="button" class="kb-tab" data-prospect-tab="intel">Intel</button>
+        <button type="button" class="kb-tab" data-prospect-tab="proposal">Proposal</button>
       </div>
 
       <div class="prospect-tab-pane" data-prospect-pane="signals">
         <span class="kb-subtle">Why this company is worth a call right now. We scan their site, the web, and recent news, then match what we find to your products.</span>
         <div class="prospect-intel-actions">
-          <button class="primary-cta" id="prospect-intel-run-btn">🔎 Research / refresh</button>
+          <button class="primary-cta" id="prospect-intel-run-btn">Research / refresh</button>
           <button class="kb-secondary-btn" id="prospect-intel-reanalyze-btn">⚙︎ Re-analyze</button>
-          <button class="kb-secondary-btn" id="prospect-research-download-btn">⬇ Download</button>
+          <button class="kb-secondary-btn" id="prospect-research-download-btn">Download</button>
         </div>
         <div class="prospect-intel-status kb-subtle" id="prospect-intel-status">Loading…</div>
         <div id="prospect-opps" class="prospect-opps"></div>
@@ -1617,9 +1626,9 @@
       <div class="prospect-tab-pane hidden" data-prospect-pane="proposal">
         <span class="kb-subtle">A recommendation that pulls together everything we know — your profile, this prospect's signals, competitor intel and past calls — into how to position, which outcomes to lead with, and what objections to preempt. It's a grounded, cited suggestion; you decide. No pricing, no pipeline.</span>
         <div class="prospect-intel-actions">
-          <button class="primary-cta" id="prospect-proposal-gen-btn">✨ Generate recommendation</button>
+          <button class="primary-cta" id="prospect-proposal-gen-btn">Generate recommendation</button>
           <select id="prospect-proposal-version" class="kb-select hidden" title="Version"></select>
-          <button class="kb-secondary-btn hidden" id="prospect-proposal-export-btn">⬇ Export</button>
+          <button class="kb-secondary-btn hidden" id="prospect-proposal-export-btn">Export</button>
           <button class="kb-secondary-btn hidden" id="prospect-proposal-final-btn">✓ Mark final</button>
         </div>
         <div class="prospect-intel-status kb-subtle" id="prospect-proposal-status">Loading…</div>
@@ -1712,7 +1721,7 @@
         await fetchJson(`/api/knowledge/research/${encodeURIComponent(company.id)}`, { method: 'POST' });
         setTimeout(() => refreshProspectIntelStatus(company.id), 1000);
       } catch (err) { alert(`Couldn't start: ${err.message}`); }
-      finally { btn.disabled = false; btn.textContent = '🔎 Research / refresh'; }
+      finally { btn.disabled = false; btn.textContent = 'Research / refresh'; }
     });
     $('prospect-intel-reanalyze-btn').addEventListener('click', async (e) => {
       const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Re-analyzing…';
@@ -1833,7 +1842,7 @@
       <div class="intel-lib-h">
         <strong>${docs.length} doc${docs.length === 1 ? '' : 's'}</strong>
         <span class="kb-subtle"> · ${scopeLabel} on file</span>
-        <button class="kb-secondary-btn intel-lib-add-btn" id="intel-lib-add-btn">➕ Add intel</button>
+        <button class="kb-secondary-btn intel-lib-add-btn" id="intel-lib-add-btn">Add intel</button>
       </div>
       <div class="intel-lib-add-pane hidden" id="intel-lib-add-pane">
         <div class="prospect-intel-add-tabs">
@@ -2115,7 +2124,7 @@
     // KB Intel form's "A competitor" lane is going away.
     const quickAdd = `
       <div class="prospect-quick-banner">
-        <div class="prospect-quick-h"><strong>➕ Add a competitor</strong> — name + website; we'll pull their homepage as the first company-wide intel.</div>
+        <div class="prospect-quick-h"><strong>Add a competitor</strong> — name + website; we'll pull their homepage as the first company-wide intel.</div>
         <div class="prospect-quick-row" style="grid-template-columns: 0.7fr 1fr 1.5fr auto;">
           <input id="competitor-quick-id"   type="text" placeholder="ID (slug — e.g. gong)" maxlength="64">
           <input id="competitor-quick-name" type="text" placeholder="Name (e.g. Gong)">
@@ -2123,7 +2132,7 @@
           <button class="primary-cta" id="competitor-quick-add-btn">Add</button>
         </div>
         <div class="kb-result hidden" id="competitor-quick-result"></div>
-        <div class="prospect-quick-find">or <button type="button" class="kb-link-btn" id="competitor-find-btn">🔎 Find competitors automatically</button> — we'll search the web for rivals in a region you pick.</div>
+        <div class="prospect-quick-find">or <button type="button" class="kb-link-btn" id="competitor-find-btn">Find competitors automatically</button> — we'll search the web for rivals in a region you pick.</div>
       </div>`;
 
     if (list.length === 0) {
@@ -2298,7 +2307,7 @@
       overlay.className = 'cal-picker-overlay';
       overlay.innerHTML = `
         <div class="comp-discover-modal">
-          <div class="cal-picker-h"><span class="cal-picker-title">🔎 Find competitors</span><button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
+          <div class="cal-picker-h"><span class="cal-picker-title">Find competitors</span><button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
           <div class="comp-finder-form">
             <label class="comp-finder-field">Region
               <select id="comp-finder-region">${COMPETITOR_REGIONS.map((r) => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('')}</select>
@@ -2334,7 +2343,7 @@
     const city = ($('comp-finder-city').value || '').trim();
     const where = [city, country].filter(Boolean).join(', ') || (region && !/global|any/i.test(region) ? region : '');
     btn.disabled = true; const o = btn.textContent; btn.textContent = 'Searching…';
-    body.innerHTML = `<div class="kb-subtle" style="padding:14px">🔎 Searching the web for competitors${where ? ` in ${escapeHtml(where)}` : ''}…</div>`;
+    body.innerHTML = `<div class="kb-subtle" style="padding:14px">Searching the web for competitors${where ? ` in ${escapeHtml(where)}` : ''}…</div>`;
     try {
       const data = await fetchJson('/api/portfolio/competitors/discover', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2353,7 +2362,7 @@
   // with a one-click jump to enrich the company foundation.
   function dataHintBanner(h) {
     if (!h || !h.thin) return '';
-    return `<div class="data-hint-nudge">⚡ ${escapeHtml(h.message)}
+    return `<div class="data-hint-nudge">${escapeHtml(h.message)}
       ${h.canAutoFill ? '<button type="button" class="kb-link-btn" data-enrich-jump="1">Enrich now →</button>' : ''}</div>`;
   }
   function wireEnrichJump(scope) {
@@ -2610,7 +2619,7 @@
     const addRow = hasMainIntel
       ? `<div class="comp-node-add"><input id="comp-new-product" type="text" placeholder="Add their product (e.g. Forecast)" maxlength="200"><button class="kb-secondary-btn" id="comp-add-product-btn">＋ Add their product</button></div><div class="kb-result hidden" id="comp-add-product-result"></div>`
       : `<div class="comp-node-add-hint kb-subtle">🔒 Add Company-wide intel first to break out ${escapeHtml(competitor.name)}'s individual products.</div>`;
-    const discoverRow = `<div class="comp-discover-row"><button class="kb-secondary-btn" id="comp-discover-btn">🔎 Discover their products</button><span class="kb-subtle">Don’t know their lineup? Search the web + map it against our products.</span></div>`;
+    const discoverRow = `<div class="comp-discover-row"><button class="kb-secondary-btn" id="comp-discover-btn">Discover their products</button><span class="kb-subtle">Don’t know their lineup? Search the web + map it against our products.</span></div>`;
     host.innerHTML = `<div class="comp-node-list">${companyRow}${productRows}</div>${addRow}${discoverRow}`;
     host.querySelectorAll('[data-node]').forEach((b) => b.addEventListener('click', () => {
       _bcScope.competitorProduct = b.dataset.node || '';
@@ -2626,7 +2635,7 @@
   async function discoverCompetitorProducts(competitor, hasMainIntel) {
     const btn = $('comp-discover-btn');
     const orig = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = '🔎 Searching the web…'; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Searching the web…'; }
     try {
       const data = await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/discover-products`, { method: 'POST' });
       openDiscoveryModal(competitor, data, hasMainIntel);
@@ -2792,7 +2801,7 @@
         <div class="off-intel-tabs">
           <button type="button" class="kb-tab active" data-ev-tab="file">📄 Deck</button>
           <button type="button" class="kb-tab" data-ev-tab="url">🌐 URL</button>
-          <button type="button" class="kb-tab" data-ev-tab="web">🔎 Web search</button>
+          <button type="button" class="kb-tab" data-ev-tab="web">Web search</button>
         </div>
         <div class="off-intel-pane" data-ev-pane="file">
           <input type="file" class="ev-file" accept=".pdf,.md,.txt,.docx">
@@ -2804,7 +2813,7 @@
         </div>
         <div class="off-intel-pane hidden" data-ev-pane="web">
           <span class="kb-subtle">Search the web for "${escapeHtml(searchLabel)}", then pick which results to file.</span>
-          <button type="button" class="kb-secondary-btn ev-web-btn">🔎 Search the web</button>
+          <button type="button" class="kb-secondary-btn ev-web-btn">Search the web</button>
           <div class="ev-web-results"></div>
         </div>
         <div class="kb-result hidden ev-result"></div>
@@ -3003,7 +3012,7 @@
           </div>
           <div class="bc-h-actions">
             <span class="bc-stale-flag hidden" id="competitor-battlecard-stale-flag">New evidence — regenerate to refresh</span>
-            ${opts.readOnly ? '' : '<button class="kb-secondary-btn" id="bc-download-btn" title="Download this battlecard as a Word document">⬇ Download</button><button class="kb-secondary-btn" id="bc-add-evidence-btn" title="Save this battlecard as a reference snapshot in the evidence list (kept out of future regenerations)">＋ Add to evidence</button>'}
+            ${opts.readOnly ? '' : '<button class="kb-secondary-btn" id="bc-download-btn" title="Download this battlecard as a Word document">Download</button><button class="kb-secondary-btn" id="bc-add-evidence-btn" title="Save this battlecard as a reference snapshot in the evidence list (kept out of future regenerations)">＋ Add to evidence</button>'}
             <button class="kb-secondary-btn" id="bc-regen-btn">↻ Regenerate</button>
           </div>
         </div>
@@ -3520,7 +3529,7 @@
     const provider = sourcePill(ev);
     const joinHost = ev.url ? safeJoinHost(ev.url) : null;
     const joinBtn  = ev.url
-      ? `<a class="kb-link-btn" data-cal-open href="${escapeHtml(ev.url)}" target="_blank" rel="noopener" title="Join ${escapeHtml(joinHost || 'meeting')}">🔗 Join ${escapeHtml(joinLabel(joinHost))}</a>`
+      ? `<a class="kb-link-btn" data-cal-open href="${escapeHtml(ev.url)}" target="_blank" rel="noopener" title="Join ${escapeHtml(joinHost || 'meeting')}">Join ${escapeHtml(joinLabel(joinHost))}</a>`
       : '';
     const company = sug.companyName ? ` · <span class="kb-subtle">→ ${escapeHtml(sug.companyName)}</span>` : '';
     return `
@@ -3532,7 +3541,7 @@
         </div>
         <div class="cal-row-actions">
           ${joinBtn}
-          <button class="kb-secondary-btn" data-cal-schedule="${idx}">📅 Schedule engagement</button>
+          <button class="kb-secondary-btn" data-cal-schedule="${idx}">Schedule engagement</button>
         </div>
       </div>`;
   }
@@ -3731,7 +3740,7 @@
         <div class="kb-subtle">${last}</div>
         ${sline}
         <div class="integration-actions">
-          <button class="primary-cta" data-crm-import="${escapeHtml(p.id)}">⬇ Pull prospects</button>
+          <button class="primary-cta" data-crm-import="${escapeHtml(p.id)}">Pull prospects</button>
           <button class="kb-secondary-btn" data-crm-disconnect="${escapeHtml(p.id)}">Disconnect</button>
         </div>
         <div class="kb-result hidden" id="crm-result-${escapeHtml(p.id)}"></div>`;
@@ -3932,7 +3941,7 @@
     } catch (err) {
       crmResult(provider, err.message, 'error');
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = '⬇ Pull prospects'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Pull prospects'; }
     }
   }
 
@@ -3957,8 +3966,8 @@
   }
 
   // ── Schedule-form imports (calendar via Google / Microsoft, or Calendly) ──
-  // "📅 Check upcoming meetings" aggregates upcoming events from every connected
-  // source (also offers Connect if configured-but-not-linked); "🗓️ From
+  // "Check upcoming meetings" aggregates upcoming events from every connected
+  // source (also offers Connect if configured-but-not-linked); "From
   // Calendly" lists upcoming Calendly-booked events. Either opens the same
   // picker modal; choosing an event prefills the form from its `suggestion`.
 
@@ -3996,7 +4005,7 @@
 
     if (anyConnected) {
       _calImportMode = 'import'; nb.disabled = false;
-      nb.textContent = '📅 Check upcoming meetings';
+      nb.textContent = 'Check upcoming meetings';
       const bits = [];
       if (msConn     && msConn.connected)     bits.push('Microsoft 365');
       if (googleConn && googleConn.connected) bits.push('Google');
@@ -4004,11 +4013,11 @@
       nb.title = `Aggregated from ${bits.join(' + ')}`;
     } else if (anyConfigured) {
       _calImportMode = 'connect'; nb.disabled = false;
-      nb.textContent = '📅 Connect a calendar';
+      nb.textContent = 'Connect a calendar';
       nb.title = 'Connect Google, Microsoft 365 or Calendly on the Integrations page';
     } else {
       _calImportMode = 'disabled'; nb.disabled = true;
-      nb.textContent = '📅 Check upcoming meetings';
+      nb.textContent = 'Check upcoming meetings';
       nb.title = 'No calendar provider configured — set env vars first';
     }
 
@@ -4144,7 +4153,7 @@
     return `
       <div class="cal-event-row" role="button" tabindex="0" data-cal-pick="${i}">
         <div class="cal-event-title">${escapeHtml(ev.title || '(no title)')} ${sourcePill(ev)}</div>
-        <div class="cal-event-meta">${escapeHtml(when)}${ev.url ? ' · 🔗 has link' : ''}${attStr ? ' · ' + escapeHtml(attStr) : ''}</div>
+        <div class="cal-event-meta">${escapeHtml(when)}${ev.url ? ' · has link' : ''}${attStr ? ' · ' + escapeHtml(attStr) : ''}</div>
         ${sug.companyName ? `<div class="cal-event-sug">→ fills: <strong>${escapeHtml(sug.companyName)}</strong>${sug.companyDomain ? ` <span class="kb-subtle">(${escapeHtml(sug.companyDomain)})</span>` : ''}</div>` : ''}
       </div>`;
   }
@@ -4827,7 +4836,7 @@
     let p;
     try { const r = await fetchJson(`/api/portals/${encodeURIComponent(portalId)}`); p = r.portal; }
     catch {
-      host.innerHTML = `<div class="missions-recording-card"><div class="missions-recording-h">📊 Recording & analysis</div><div class="rec-actions"><a class="primary-cta" href="/portal/?id=${escapeHtml(portalId)}" target="_blank" rel="noopener">▶ Open recording ↗</a></div></div>`;
+      host.innerHTML = `<div class="missions-recording-card"><div class="missions-recording-h">Recording & analysis</div><div class="rec-actions"><a class="primary-cta" href="/portal/?id=${escapeHtml(portalId)}" target="_blank" rel="noopener">▶ Open recording ↗</a></div></div>`;
       return;
     }
     const objection = p && p.moments && p.moments.objection && p.moments.objection.quote;
@@ -4835,7 +4844,7 @@
     const participants = ((p && p.participants) || []).map((x) => x.name || x.role).filter(Boolean);
     host.innerHTML = `
       <div class="missions-recording-card">
-        <div class="missions-recording-h">📊 Recording & analysis</div>
+        <div class="missions-recording-h">Recording & analysis</div>
         ${participants.length ? `<div class="kb-subtle rec-participants">${participants.map(escapeHtml).join(' · ')}</div>` : ''}
         ${objection ? `<div class="rec-moment"><span class="rec-label">Top objection</span> “${escapeHtml(objection)}”</div>` : ''}
         ${sow ? `<div class="rec-moment"><span class="rec-label">SOW</span> ${escapeHtml(String(sow).slice(0, 240))}${String(sow).length > 240 ? '…' : ''}</div>` : ''}
@@ -5376,7 +5385,7 @@
     // Quick-add affordance: opens the inline form for a richer add (name +
     // role + email persisted as a contact for next time).
     rows += `<div class="teams-ac-row teams-ac-freeform" data-mission-ac-quickadd>
-      ➕ Add a new contact (name + email + role)
+      Add a new contact (name + email + role)
     </div>`;
 
     host.innerHTML = rows;
@@ -5657,9 +5666,9 @@
     host.innerHTML = `
       <div id="foundation-health"></div>
       <div class="prospect-tabs">
-        <button type="button" class="kb-tab${_companyTab === 'intel' ? ' active' : ''}" data-company-tab="intel">📁 Intel</button>
-        <button type="button" class="kb-tab${_companyTab === 'products' ? ' active' : ''}" data-company-tab="products">📦 Products (${products.length})</button>
-        <button type="button" class="kb-tab${_companyTab === 'personas' ? ' active' : ''}" data-company-tab="personas">👥 Personas (${personas.length})</button>
+        <button type="button" class="kb-tab${_companyTab === 'intel' ? ' active' : ''}" data-company-tab="intel">Intel</button>
+        <button type="button" class="kb-tab${_companyTab === 'products' ? ' active' : ''}" data-company-tab="products">Products (${products.length})</button>
+        <button type="button" class="kb-tab${_companyTab === 'personas' ? ' active' : ''}" data-company-tab="personas">Personas (${personas.length})</button>
       </div>
       <div class="prospect-tab-pane" id="company-tab-body"></div>`;
     host.querySelectorAll('[data-company-tab]').forEach((t) => t.addEventListener('click', () => {
@@ -5701,7 +5710,7 @@
             <strong>Data foundation</strong>
             <div class="kb-subtle">Richer data = sharper, more localized discovery. <span title="${escapeHtml(enrichedNote)}">${escapeHtml(enrichedNote)}</span></div>
           </div>
-          <button class="primary-cta" id="foundation-enrich-btn">✨ Enrich from web</button>
+          <button class="primary-cta" id="foundation-enrich-btn">Enrich from web</button>
         </div>
         ${gaps ? `<ul class="foundation-gaps">${gaps}</ul>` : '<div class="kb-subtle" style="margin-top:8px">Your foundation looks strong. 🎉</div>'}
         <div class="kb-result hidden" id="foundation-enrich-result"></div>
@@ -5730,7 +5739,7 @@
     } catch (err) {
       if (result) { result.classList.remove('hidden', 'success'); result.classList.add('error'); result.textContent = `Couldn't enrich: ${err.message}`; }
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = '✨ Enrich from web'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Enrich from web'; }
     }
   }
 
@@ -5746,7 +5755,7 @@
             <div class="company-field-label">Pull from your website</div>
             <p class="kb-subtle" style="margin:2px 0 0">We read your homepage and pick up your products so you can confirm what we found.</p>
           </div>
-          <button class="kb-secondary-btn" id="company-pull-btn">🔄 Pull from website</button>
+          <button class="kb-secondary-btn" id="company-pull-btn">Pull from website</button>
         </div>
         <div id="company-pull-card"></div>
       </div>`;
@@ -5766,7 +5775,7 @@
   // runs, so the new owner watches their products/ICP appear, then refresh.
   function watchWelcomeEnrichment() {
     const host = $('foundation-health');
-    if (host) host.innerHTML = '<div class="foundation-card"><div class="kb-subtle">✨ Building your company foundation from your website, Apollo &amp; news… this usually takes under a minute.</div></div>';
+    if (host) host.innerHTML = '<div class="foundation-card"><div class="kb-subtle">Building your company foundation from your website, Apollo &amp; news… this usually takes under a minute.</div></div>';
     let n = 0;
     const tick = async () => {
       n++;
@@ -5997,7 +6006,7 @@
       <div class="company-prod-section"><div class="company-field-label">Competitors it faces</div><div id="company-prod-competitors" class="kb-subtle">Loading…</div></div>
       <div class="company-prod-section"><div class="company-field-label">AI product analysis</div><div id="company-prod-analysis" class="kb-subtle">Loading…</div></div>
       <div class="company-prod-section">
-        <div class="company-field-label">Filed intel <button class="kb-secondary-btn company-prod-add-intel-btn" id="company-prod-add-intel">📁 Create intel for this product</button></div>
+        <div class="company-field-label">Filed intel <button class="kb-secondary-btn company-prod-add-intel-btn" id="company-prod-add-intel">Create intel for this product</button></div>
         <p class="kb-subtle" style="margin:0 0 8px">${INTEL_EXPLAINER}</p>
         <div id="company-prod-docs" class="intel-lib-list company-intel-grid">Loading…</div>
       </div>`;
@@ -6097,7 +6106,7 @@
           <textarea id="cf-objectives" rows="2" placeholder="What you're trying to achieve">${escapeHtml(p.objectives || '')}</textarea>
           <div class="cf-actions">
             <button class="primary-cta" id="cf-save">Save foundation</button>
-            <button class="kb-secondary-btn" id="cf-draft">✨ Draft with AI</button>
+            <button class="kb-secondary-btn" id="cf-draft">Draft with AI</button>
             <span class="kb-subtle" id="cf-result"></span>
           </div>
         </div>
@@ -6275,7 +6284,7 @@
       </details>`;
     const actions = [];
     if (opts.keyPointsAction) {
-      actions.push(`<button class="kb-link-btn ci-kp-btn" data-kb-keypoints="${escapeHtml(d.id)}">${points.length ? '↻ refresh analysis' : '✨ generate analysis'}</button>`);
+      actions.push(`<button class="kb-link-btn ci-kp-btn" data-kb-keypoints="${escapeHtml(d.id)}">${points.length ? '↻ refresh analysis' : 'generate analysis'}</button>`);
     }
     if (opts.deletable) {
       actions.push(`<button class="kb-link-btn" data-kb-delete="${escapeHtml(d.id)}">Delete</button>`);
@@ -6388,7 +6397,7 @@
     const isUnverified = (doc.metadata || {}).relevanceVerified === false;
     actions.innerHTML = `
       ${isUnverified ? `<button class="kb-secondary-btn" data-intel-doc-confirm="${escapeHtml(doc.id)}">✓ Confirm it's about this competitor</button>` : ''}
-      <button class="kb-secondary-btn" data-intel-doc-keypoints="${escapeHtml(doc.id)}">${points.length ? '↻ Refresh analysis' : '✨ Generate analysis'}</button>
+      <button class="kb-secondary-btn" data-intel-doc-keypoints="${escapeHtml(doc.id)}">${points.length ? '↻ Refresh analysis' : 'Generate analysis'}</button>
       <button class="kb-secondary-btn danger" data-intel-doc-delete="${escapeHtml(doc.id)}">Delete</button>
     `;
 
@@ -7449,9 +7458,9 @@
     const prospectBadge = (id) => {
       const r = researchByCompany.get(id);
       if (!r) return '';
-      if (r.status === 'RUNNING') return ` <span class="lib-badge lib-badge-running">🔄 researching</span>`;
+      if (r.status === 'RUNNING') return ` <span class="lib-badge lib-badge-running">researching</span>`;
       if (r.status === 'FAILED')  return ` <span class="lib-badge lib-badge-failed">⚠︎ research failed</span>`;
-      return ` <span class="lib-badge lib-badge-done">🔎 researched · ${escapeHtml(fmtDate(r.updated_at || r.created_at))}</span>`;
+      return ` <span class="lib-badge lib-badge-done">researched · ${escapeHtml(fmtDate(r.updated_at || r.created_at))}</span>`;
     };
 
     host.innerHTML =
@@ -7608,7 +7617,7 @@
   function renderResearchPanel(companyId, r) {
     if (!r) {
       return `<div class="research-panel research-empty">
-        <button class="kb-link-btn research-btn" data-research-start="${escapeHtml(companyId)}">🔍 Deep research</button>
+        <button class="kb-link-btn research-btn" data-research-start="${escapeHtml(companyId)}">Deep research</button>
         <span class="kb-subtle">— scrape their site &amp; recent public news, then map openings to your portfolio</span>
       </div>`;
     }
@@ -7656,7 +7665,7 @@
       ? `<div class="kb-subtle research-portfolio-hint">⚠︎ No product portfolio on file — the products below are capability categories. Add your product lines on the <strong>Company</strong> page and re-run so these map to your actual catalogue.</div>`
       : '';
     return `<div class="research-panel research-done">
-      <div class="research-h">🔎 Deep research <span class="kb-subtle" style="font-weight:400">· ${fmtNum(r.source_count)} source${r.source_count === 1 ? '' : 's'} · ${escapeHtml(fmtDate(r.updated_at || r.created_at))}</span>
+      <div class="research-h">Deep research <span class="kb-subtle" style="font-weight:400">· ${fmtNum(r.source_count)} source${r.source_count === 1 ? '' : 's'} · ${escapeHtml(fmtDate(r.updated_at || r.created_at))}</span>
         <button class="kb-link-btn research-btn" data-research-rerun="${escapeHtml(companyId)}">↻ re-run</button></div>
       ${r.summary ? `<div class="research-summary">${escapeHtml(r.summary)}</div>` : ''}
       ${noPortfolioHint}
@@ -8123,7 +8132,7 @@
       </div>
       <div class="watch-actions">
         <button class="primary-cta" id="wp-save">Save</button>
-        <button class="kb-secondary-btn" id="wp-run" title="Research this ${noun} right now">⚡ Run now</button>
+        <button class="kb-secondary-btn" id="wp-run" title="Research this ${noun} right now">Run now</button>
         <span class="kb-result hidden" id="wp-result"></span>
       </div>
     </div>`;

@@ -60,8 +60,7 @@ body {
   align-items: center;
   justify-content: center;
   background:
-    radial-gradient(ellipse 800px 400px at 30% 20%, rgba(60,125,19,0.08), transparent 60%),
-    radial-gradient(ellipse 700px 400px at 70% 80%, rgba(99,102,241,0.06), transparent 60%),
+    radial-gradient(ellipse 800px 400px at 30% 20%, rgba(30,125,69,0.07), transparent 60%),
     var(--surface);
   padding: 40px 20px;
 }
@@ -260,7 +259,7 @@ body {
 .profile-hero { display: flex; align-items: center; gap: 18px; }
 .profile-hero-avatar {
   width: 60px; height: 60px; border-radius: 50%; flex-shrink: 0;
-  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  background: var(--accent);
   color: #fff; display: flex; align-items: center; justify-content: center;
   font-size: 22px; font-weight: 700; letter-spacing: 0.02em;
 }
@@ -360,7 +359,7 @@ body {
 .credit-bal-tile {
   display: flex; align-items: center; gap: 14px; flex: 1; min-width: 220px;
   padding: 16px 18px; border-radius: var(--radius, 12px);
-  background: linear-gradient(135deg, var(--accent-light), var(--surface-2));
+  background: var(--surface-2);
   border: 1px solid var(--accent);
 }
 .cbt-icon { font-size: 26px; line-height: 1; }
@@ -659,15 +658,18 @@ body {
   background: var(--bg);
   border: 1px solid var(--border-2);
   color: var(--text-2);
-  padding: 7px 13px;
+  padding: 7px 12px;
   border-radius: var(--radius-sm);
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
   font-family: inherit;
   transition: all .12s;
+  display: inline-flex; align-items: center; gap: 7px;
 }
 .refresh-btn:hover { background: #fff; color: var(--text); border-color: #b9bdb4; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+.btn-ic { width: 14px; height: 14px; flex: none; }
+.refresh-btn:hover .btn-ic { color: var(--accent); }
 
 /* ── Recording & privacy settings card ── */
 .rec-privacy-card {
@@ -962,7 +964,7 @@ table.dt tr.row-clickable { cursor: pointer; }
 }
 
 .kb-hero {
-  background: linear-gradient(135deg, var(--accent-light) 0%, #fff 60%);
+  background: var(--accent-light);
   border: 1px solid var(--accent-soft);
   padding: 22px 26px;
   margin-bottom: 22px;
@@ -1059,7 +1061,7 @@ table.dt tr.row-clickable { cursor: pointer; }
   gap: 12px;
   margin: 14px 0;
   padding: 12px 14px;
-  border: 1px solid #bfdbfe;
+  border: 1px solid var(--border-2);
   border-left: 4px solid #2563eb;
   border-radius: var(--radius-sm);
   background: #eff6ff;
@@ -1127,7 +1129,7 @@ details.schedule-advanced > .schedule-advanced-body {
 .schedule-import-row {
   margin-bottom: 14px;
   padding: 10px 14px;
-  border: 1px solid #bfdbfe;
+  border: 1px solid var(--border-2);
   border-radius: var(--radius-sm);
   background: #f5f9ff;
 }
@@ -1364,7 +1366,7 @@ details.schedule-advanced > .schedule-advanced-body {
   align-items: center;
   gap: 4px;
   background: #eef5e6;
-  border: 1px solid #c7d2fe;
+  border: 1px solid var(--border-2);
   border-radius: 999px;
   padding: 2px 8px 2px 10px;
   font-size: 12.5px;
@@ -1436,7 +1438,7 @@ details.schedule-advanced > .schedule-advanced-body {
   border: 1px solid #e5e7eb; border-radius: 6px; background: #f8fafc;
   color: var(--muted); font-size: 14px; line-height: 1; align-self: start;
 }
-.prospects-grid.left-collapsed .list-show-rail:hover { background: #eef2ff; color: var(--accent); }
+.prospects-grid.left-collapsed .list-show-rail:hover { background: var(--accent-light); color: var(--accent); }
 .prospects-list-h {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
@@ -1444,7 +1446,7 @@ details.schedule-advanced > .schedule-advanced-body {
   border: 0; background: transparent; cursor: pointer; color: var(--muted);
   font-size: 15px; line-height: 1; padding: 0 2px; border-radius: 4px;
 }
-.list-collapse-btn:hover { color: var(--accent); background: #eef2ff; }
+.list-collapse-btn:hover { color: var(--accent); background: var(--accent-light); }
 .prospects-list {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1868,8 +1870,8 @@ details.schedule-advanced > .schedule-advanced-body {
 
 /* Key points / opportunity points / competitive points — a nice callout */
 .intel-doc-body .ci-keypoints {
-  background: linear-gradient(135deg, #eef5e6 0%, #f1f6ea 100%);
-  border: 1px solid #c7d2fe;
+  background: var(--accent-light);
+  border: 1px solid var(--accent-soft);
   border-radius: 8px;
   padding: 14px 18px;
   margin-bottom: 20px;
@@ -1978,7 +1980,7 @@ details.schedule-advanced > .schedule-advanced-body {
 .intel-doc-prose a {
   color: #1d4ed8;
   text-decoration: none;
-  border-bottom: 1px solid #c7d2fe;
+  border-bottom: 1px solid var(--border-2);
 }
 .intel-doc-prose a:hover { border-bottom-color: #1d4ed8; }
 .intel-doc-prose code {
@@ -2056,8 +2058,8 @@ details.schedule-advanced > .schedule-advanced-body {
 
 /* Executive summary — the headline */
 .ca-summary {
-  background: linear-gradient(135deg, #ecfdf5 0%, #f0fdf4 100%);
-  border: 1px solid #a7f3d0;
+  background: var(--accent-light);
+  border: 1px solid var(--accent-soft);
   border-radius: 8px;
   padding: 14px 18px;
   margin-bottom: 20px;
@@ -2206,8 +2208,8 @@ details.schedule-advanced > .schedule-advanced-body {
 
 /* Product analysis variants (TENANT + PRODUCT_INTEL) */
 .ca-summary-product {
-  background: linear-gradient(135deg, #eff6ff 0%, #f0f9ff 100%);
-  border-color: #bfdbfe;
+  background: var(--surface-2);
+  border-color: var(--border);
 }
 .ca-summary-product .ca-label { color: #1d4ed8; }
 .ca-summary-product p { color: #1e3a8a; }
@@ -2698,7 +2700,7 @@ details.schedule-advanced > .schedule-advanced-body {
 .kb-preview-cmp {
   border: 1px solid var(--accent-soft);
   border-radius: var(--radius-sm);
-  background: linear-gradient(180deg, var(--accent-light), #fff 60px);
+  background: var(--accent-light);
   padding: 12px;
   display: flex; flex-direction: column; gap: 10px;
 }
