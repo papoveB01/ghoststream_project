@@ -514,13 +514,13 @@ const PROSPECTS_SCHEMA = {
   properties: {
     prospects: {
       type: 'array',
-      description: 'Companies that are strong POTENTIAL CUSTOMERS for OUR company/products, supported by the findings — especially ones showing a recent buying signal. Do not invent companies the findings do not support; exclude OUR own company.',
+      description: 'Real companies that are strong POTENTIAL CUSTOMERS for OUR company/products — they fit our ICP; especially ones showing a recent buying signal. Use market knowledge + findings, but only REAL companies (never invent); exclude OUR own company and competitors.',
       items: {
         type: 'object',
         properties: {
           name:       { type: 'string', description: 'The prospect company\'s name.' },
           domain:     { type: 'string', description: 'Their primary website domain (e.g. acme.com) if evident, else empty string.' },
-          signal:     { type: 'string', description: 'The recent buying signal / why-now (e.g. "rolled out a new core banking system", "raised Series B", "expanding to 3 new markets").' },
+          signal:     { type: 'string', description: 'The recent buying signal / why-now if one is evidenced in the findings (e.g. "rolled out a new core banking system", "raised Series B", "expanding to 3 new markets"). If this is a known ICP-fit company but the findings show no fresh event, give a short fit-based rationale instead — do NOT fabricate a specific event.' },
           matchedProductIds: { type: 'array', items: { type: 'string' }, description: 'The ids of OUR products that fit the need this signal creates, chosen ONLY from the provided product id list. Empty if none clearly fits.' },
           fitReason:  { type: 'string', description: 'One sentence: why our product(s) meet the need the signal creates.' },
           priority:   { type: 'integer', description: 'How strong + timely a prospect, 1 (low) to 5 (critical: clear product fit AND a fresh, relevant signal).' },
@@ -589,22 +589,28 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
     : '(no products on file — leave matchedProductIds empty for all)';
 
   const prompt =
-    'You are a B2B sales-prospecting analyst. Using ONLY the web findings below, identify COMPANIES ' +
-    'that are strong POTENTIAL CUSTOMERS for OUR company — businesses that MATCH WHO WE SELL TO (our ICP, ' +
-    'in ===OUR COMPANY===) and would BUY our product. ' +
-    'CRITICAL: do NOT return companies that are like US (peers/competitors/other vendors of our kind of ' +
-    'product), and do NOT return our suppliers — only our BUYERS. Prefer ones showing a recent buying ' +
-    'signal relevant to that buyer type (new location/opening, expansion, hiring, funding, tech adoption, ' +
-    'leadership/regulatory change). ' +
+    'You are a B2B sales-prospecting analyst with strong, current knowledge of this company\'s target ' +
+    'market. Identify real COMPANIES that are strong POTENTIAL CUSTOMERS for OUR company — businesses that ' +
+    'MATCH WHO WE SELL TO (our ICP, in ===OUR COMPANY===) and would BUY our product.\n' +
+    'USE BOTH your market knowledge AND the web findings below: name the real, specific companies that fit ' +
+    'our ICP in the target segment/region — do not settle for only the names that happen to appear in the ' +
+    'findings. The findings are supporting evidence (buying signals, recency, specifics), NOT the limit of ' +
+    'what you may list. Only include companies that REALLY EXIST — never invent a company.\n' +
+    'CRITICAL: return only our BUYERS — do NOT return companies like US (peers/competitors/other vendors of ' +
+    'our kind of product) or our suppliers. ' +
     (indIsAny ? '' : `Our target customer segment is "${ind}" — find buyers in/around it (not companies like us). `) +
     (regionIsGlobal ? '' : `Focus on companies in or serving ${regionLabel}. `) +
-    'For each company: the signal (why now), which of OUR products fit (ids from the list) + a one-sentence ' +
-    'fit reason, and priority 1-5 (5 = critical: clear ICP/product fit AND a fresh relevant signal).\n' +
+    'For each company: the signal/why-now, which of OUR products fit (ids from the list) + a one-sentence ' +
+    'fit reason, and priority 1-5.\n' +
+    'SIGNALS & PRIORITY: rank highest (4-5) the companies with a FRESH, specific buying signal evidenced in ' +
+    'the findings (new opening/expansion, hiring, funding, tech adoption, leadership/regulatory change). A ' +
+    'real ICP-fit company with NO fresh signal in the findings is still useful — include it with a short ' +
+    'fit-based rationale as its signal and a LOWER priority (1-2). Never fabricate a specific event the ' +
+    'findings do not support.\n' +
     CONTACT_INSTRUCTION + '\n' +
-    'Aim for BREADTH: list EVERY distinct company in the findings that plausibly matches our ICP ' +
-    `(up to ${PROSPECT_MAX}). Include lower-priority ones too (rank them 1-2).\n` +
-    'Rules: only companies the findings actually support (don\'t invent); EXCLUDE our own company and our ' +
-    'competitors; matchedProductIds MUST be from the provided ids (or empty); keep strings short; ignore boilerplate.\n\n' +
+    `Aim for BREADTH: list every distinct REAL company that plausibly matches our ICP (up to ${PROSPECT_MAX}).\n` +
+    'Rules: REAL companies only (never invent); EXCLUDE our own company and our competitors; matchedProductIds ' +
+    'MUST be from the provided ids (or empty); keep strings short; ignore boilerplate.\n\n' +
     `===OUR COMPANY===\n${ctx}\n\n` +
     `===OUR PRODUCTS (choose matchedProductIds from these ids)===\n${portfolio}\n\n` +
     (indIsAny ? '' : `===TARGET CUSTOMER SEGMENT===\n${ind}\n\n`) +
