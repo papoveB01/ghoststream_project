@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DealScope — Intelligence Console (redesign preview)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* paper + ink */
+  --paper:#f3f4f1;          /* cool-neutral canvas */
+  --surface:#ffffff;
+  --surface-2:#fafbf9;
+  --hair:#e3e5e0;           /* hairline border */
+  --hair-2:#d3d6cf;
+  --ink:#15181b;            /* near-black text */
+  --ink-2:#54595f;
+  --muted:#8c9197;
+  /* graphite rail */
+  --rail:#15181b;
+  --rail-2:#1d2125;
+  --rail-line:#2a2f34;
+  --rail-text:#a7adb4;
+  --rail-dim:#6f757c;
+  /* signal accent — evolved DealScope green */
+  --accent:#1e7d45;
+  --accent-deep:#176336;
+  --accent-wash:#e9f3ec;
+  --accent-line:#bfe0cb;
+  /* semantics */
+  --amber:#bd6a0c;
+  --amber-wash:#fbf0df;
+  --red:#bf3b2f;
+  --red-wash:#fbe9e7;
+  --radius:6px;
+  --radius-sm:5px;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  --sans:'Hanken Grotesk',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{font-size:15px}
+body{
+  font-family:var(--sans);
+  color:var(--ink);
+  background:var(--paper);
+  -webkit-font-smoothing:antialiased;
+  line-height:1.5;
+}
+/* faint engineered grid on the canvas for atmosphere */
+.app{
+  display:grid;
+  grid-template-columns:248px 1fr;
+  min-height:100vh;
+}
+/* ───────────────────────── sidebar ───────────────────────── */
+.rail{
+  background:var(--rail);
+  color:var(--rail-text);
+  display:flex;flex-direction:column;
+  border-right:1px solid #000;
+  position:sticky;top:0;height:100vh;
+}
+.brand{
+  display:flex;align-items:center;gap:10px;
+  padding:18px 18px 16px;
+}
+.brand-mark{
+  width:30px;height:30px;border-radius:7px;
+  background:linear-gradient(150deg,var(--accent),var(--accent-deep));
+  display:grid;place-items:center;color:#fff;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.25);
+}
+.brand-mark svg{display:block}
+.brand-name{font-weight:700;letter-spacing:-.01em;font-size:17px;color:#fff}
+.brand-name b{color:var(--accent)}
+.rail-tag{
+  font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--rail-dim);padding:0 18px 14px;
+}
+.nav{padding:4px 10px;overflow-y:auto;flex:1}
+.nav-group{font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--rail-dim);padding:16px 10px 7px}
+.nav a{
+  display:flex;align-items:center;gap:10px;
+  padding:7px 10px;border-radius:6px;
+  color:var(--rail-text);text-decoration:none;font-size:13.5px;font-weight:500;
+  position:relative;transition:background .12s,color .12s;
+}
+.nav a .ic{width:16px;height:16px;opacity:.85;flex:none}
+.nav a:hover{background:rgba(255,255,255,.045);color:#e9ebed}
+.nav a.active{background:rgba(30,125,69,.16);color:#fff}
+.nav a.active::before{
+  content:"";position:absolute;left:-10px;top:6px;bottom:6px;width:3px;
+  border-radius:0 3px 3px 0;background:var(--accent);
+}
+.nav a .badge{margin-left:auto;font-family:var(--mono);font-size:10px;background:var(--amber);color:#fff;border-radius:20px;padding:1px 6px;font-weight:600}
+.rail-foot{border-top:1px solid var(--rail-line);padding:12px}
+.user{display:flex;align-items:center;gap:10px;padding:7px 8px;border-radius:8px;cursor:pointer}
+.user:hover{background:rgba(255,255,255,.04)}
+.avatar{width:32px;height:32px;border-radius:8px;background:#2a2f34;color:#e9ebed;display:grid;place-items:center;font-weight:700;font-size:13px;border:1px solid var(--rail-line)}
+.user-meta{min-width:0}
+.user-name{color:#eef0f1;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.user-sub{font-family:var(--mono);font-size:10px;color:var(--rail-dim);letter-spacing:.04em}
+.plan-chip{margin-left:auto;font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;color:var(--accent);border:1px solid rgba(30,125,69,.4);border-radius:5px;padding:2px 6px}
+
+/* ───────────────────────── content ───────────────────────── */
+.main{min-width:0;display:flex;flex-direction:column}
+.topbar{
+  display:flex;align-items:flex-end;justify-content:space-between;gap:16px;
+  padding:22px 32px 18px;border-bottom:1px solid var(--hair);
+  background:linear-gradient(180deg,#fbfcfa,var(--paper));
+  position:sticky;top:0;z-index:5;
+}
+.crumb{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+.crumb b{color:var(--accent)}
+h1{font-size:25px;font-weight:700;letter-spacing:-.02em}
+.actions{display:flex;gap:8px}
+.btn{
+  font-family:var(--sans);font-size:12.5px;font-weight:600;
+  border:1px solid var(--hair-2);background:var(--surface);color:var(--ink-2);
+  padding:7px 13px;border-radius:var(--radius-sm);cursor:pointer;
+  display:inline-flex;align-items:center;gap:7px;transition:all .12s;
+}
+.btn:hover{border-color:#b9bdb4;color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.btn .ic{width:14px;height:14px}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent-deep);border-color:var(--accent-deep);color:#fff}
+.page{padding:24px 32px 56px;display:flex;flex-direction:column;gap:22px}
+
+/* eyebrow */
+.eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+
+/* KPI strip */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.kpi{
+  background:var(--surface);border:1px solid var(--hair);border-radius:var(--radius);
+  padding:15px 16px;position:relative;overflow:hidden;
+}
+.kpi::after{content:"";position:absolute;inset:0 auto 0 0;width:2px;background:var(--hair-2)}
+.kpi.up::after{background:var(--accent)}
+.kpi.alert::after{background:var(--amber)}
+.kpi .label{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.kpi .num{font-family:var(--mono);font-weight:600;font-size:30px;letter-spacing:-.02em;margin-top:8px;font-feature-settings:"tnum"}
+.kpi .delta{font-family:var(--mono);font-size:11.5px;margin-top:4px;display:inline-flex;align-items:center;gap:5px}
+.delta.pos{color:var(--accent)}
+.delta.neg{color:var(--red)}
+.delta.flat{color:var(--muted)}
+
+/* card */
+.grid-2{display:grid;grid-template-columns:1.6fr 1fr;gap:18px;align-items:start}
+.card{background:var(--surface);border:1px solid var(--hair);border-radius:var(--radius)}
+.card-h{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--hair)}
+.card-h h3{font-size:14px;font-weight:700;letter-spacing:-.01em}
+.card-h .meta{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.04em}
+.card-b{padding:6px 0}
+
+/* table */
+table{width:100%;border-collapse:collapse}
+thead th{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+  text-align:left;font-weight:500;padding:9px 16px;border-bottom:1px solid var(--hair);
+}
+tbody td{padding:11px 16px;border-bottom:1px solid #f0f1ee;font-size:13.5px}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--surface-2)}
+.co{font-weight:600}
+.co small{display:block;font-family:var(--mono);font-size:10.5px;color:var(--muted);font-weight:400;margin-top:1px}
+.num-cell{font-family:var(--mono);font-feature-settings:"tnum";color:var(--ink-2)}
+
+/* pills / badges */
+.pill{font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.04em;padding:2px 7px;border-radius:5px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.pill.t5{background:var(--red-wash);color:var(--red)}
+.pill.t4{background:var(--amber-wash);color:var(--amber)}
+.pill.t3{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--hair)}
+.pill.ok{background:var(--accent-wash);color:var(--accent-deep)}
+.chip{font-size:11px;background:var(--surface-2);border:1px solid var(--hair);color:var(--ink-2);border-radius:5px;padding:2px 7px;font-weight:500}
+.incumbent{font-family:var(--mono);font-size:10px;color:var(--amber);background:var(--amber-wash);border:1px solid #f0dcb6;border-radius:5px;padding:2px 7px;display:inline-flex;gap:5px;font-weight:600}
+
+/* foundation gauge */
+.gauge{display:flex;align-items:center;gap:16px;padding:16px}
+.ring{--p:90;width:84px;height:84px;border-radius:50%;flex:none;
+  background:conic-gradient(var(--accent) calc(var(--p)*1%),#eceee9 0);
+  display:grid;place-items:center;position:relative}
+.ring::before{content:"";position:absolute;inset:7px;border-radius:50%;background:var(--surface)}
+.ring b{position:relative;font-family:var(--mono);font-size:22px;font-weight:600}
+.gauge-meta .eyebrow{margin-bottom:2px}
+.gauge-meta h4{font-size:15px;font-weight:700}
+.gauge-meta p{font-size:12.5px;color:var(--ink-2);margin-top:3px}
+.gaps{padding:0 16px 14px;display:flex;flex-direction:column;gap:7px}
+.gap{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--ink-2)}
+.gap .dot{width:7px;height:7px;border-radius:50%;flex:none}
+.gap.miss .dot{background:var(--red)}.gap.thin .dot{background:var(--amber)}
+.gap a{color:var(--ink);font-weight:600;text-decoration:none;border-bottom:1px solid var(--hair-2)}
+
+/* list-detail */
+.ld{display:grid;grid-template-columns:280px 1fr;gap:18px;align-items:start}
+.list{background:var(--surface);border:1px solid var(--hair);border-radius:var(--radius);overflow:hidden}
+.list-h{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--hair);background:var(--surface-2)}
+.list-h span{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.list-h button{border:0;background:none;color:var(--muted);cursor:pointer;font-size:15px;line-height:1}
+.row{padding:10px 14px;border-bottom:1px solid #f0f1ee;cursor:pointer;display:flex;flex-direction:column;gap:2px;border-left:2px solid transparent}
+.row:hover{background:var(--surface-2)}
+.row.active{background:var(--accent-wash);border-left-color:var(--accent)}
+.row .name{font-weight:600;font-size:13.5px}
+.row .sub{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.detail{background:var(--surface);border:1px solid var(--hair);border-radius:var(--radius);overflow:hidden}
+.detail-head{padding:18px 20px;border-bottom:1px solid var(--hair);display:flex;justify-content:space-between;gap:16px;align-items:flex-start}
+.detail-head h2{font-size:20px;font-weight:700;letter-spacing:-.01em}
+.detail-head .url{font-family:var(--mono);font-size:11.5px;color:var(--accent);margin-top:3px}
+.detail-body{padding:18px 20px;display:flex;flex-direction:column;gap:18px}
+.def{display:grid;grid-template-columns:140px 1fr;gap:6px 18px;font-size:13px}
+.def dt{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding-top:2px}
+.def dd{color:var(--ink-2)}
+.threat-bar{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+
+/* page-load stagger */
+.reveal{opacity:0;transform:translateY(8px);animation:rise .5s cubic-bezier(.2,.7,.2,1) forwards}
+@keyframes rise{to{opacity:1;transform:none}}
+.kpis .kpi:nth-child(1){animation-delay:.02s}.kpis .kpi:nth-child(2){animation-delay:.06s}
+.kpis .kpi:nth-child(3){animation-delay:.10s}.kpis .kpi:nth-child(4){animation-delay:.14s}
+.r1{animation-delay:.16s}.r2{animation-delay:.2s}.r3{animation-delay:.24s}
+
+.swatch-note{font-family:var(--mono);font-size:10.5px;color:var(--muted);text-align:center;padding:10px}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- SIDEBAR -->
+  <aside class="rail">
+    <div class="brand">
+      <span class="brand-mark"><svg width="17" height="17" viewBox="0 0 28 28"><path d="M9 14a5 5 0 0110 0v3l2 2H7l2-2v-3z" fill="white"/></svg></span>
+      <span class="brand-name">Deal<b>Scope</b></span>
+    </div>
+    <div class="rail-tag">E&amp;EL · Workspace</div>
+    <nav class="nav">
+      <div class="nav-group">Intelligence</div>
+      <a class="active" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>Overview</a>
+      <a href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21V7l9-4 9 4v14"/><path d="M9 21v-6h6v6"/></svg>Company</a>
+      <a href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0112 0M16 6h5M18.5 3.5v5"/></svg>Prospects</a>
+      <a href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l3 6 6 .9-4.5 4.3L18 21l-6-3.2L6 21l1.5-6.8L3 9.9 9 9z"/></svg>Competitors</a>
+      <a href="#">Market signals<span class="badge">3</span></a>
+      <div class="nav-group">Pipeline</div>
+      <a href="#">Engagements</a>
+      <a href="#">Calendar</a>
+      <a href="#">Arena Practice</a>
+      <div class="nav-group">Workspace</div>
+      <a href="#">Integrations</a>
+      <a href="#">Billing</a>
+      <a href="#">Settings</a>
+    </nav>
+    <div class="rail-foot">
+      <div class="user">
+        <div class="avatar">PB</div>
+        <div class="user-meta">
+          <div class="user-name">Papove B.</div>
+          <div class="user-sub">papove@eel-global.com</div>
+        </div>
+        <span class="plan-chip">PRO</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <div class="crumb">Workspace · <b>Overview</b></div>
+        <h1>Sales intelligence cockpit</h1>
+      </div>
+      <div class="actions">
+        <button class="btn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>Search</button>
+        <button class="btn">Guide</button>
+        <button class="btn btn-primary"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12a8 8 0 018-8M20 12a8 8 0 01-8 8"/><path d="M12 4l2 2-2 2M12 20l-2-2 2-2"/></svg>Refresh</button>
+      </div>
+    </header>
+
+    <div class="page">
+      <!-- KPIS -->
+      <section class="kpis">
+        <div class="kpi up reveal"><div class="label">Active prospects</div><div class="num">128</div><div class="delta pos">▲ 12 this week</div></div>
+        <div class="kpi alert reveal"><div class="label">Open signals</div><div class="num">07</div><div class="delta flat">3 need review</div></div>
+        <div class="kpi reveal"><div class="label">Competitors tracked</div><div class="num">24</div><div class="delta flat">— stable</div></div>
+        <div class="kpi up reveal"><div class="label">Engagements · 7d</div><div class="num">05</div><div class="delta pos">▲ 2 booked</div></div>
+      </section>
+
+      <!-- GRID -->
+      <section class="grid-2">
+        <div class="card reveal r1">
+          <div class="card-h"><h3>Live opportunities</h3><span class="meta">ranked · priority</span></div>
+          <div class="card-b">
+            <table>
+              <thead><tr><th>Company</th><th>Signal</th><th>Fit</th><th style="text-align:right">Priority</th></tr></thead>
+              <tbody>
+                <tr><td class="co">Access Bank<small>accessbankplc.com</small></td><td>Expanding into a new market</td><td><span class="chip">3DSS</span></td><td style="text-align:right"><span class="pill t5">P5</span></td></tr>
+                <tr><td class="co">Ecobank<small>ecobank.com</small></td><td>Named Best Bank in Africa ’25</td><td><span class="chip">FRM</span></td><td style="text-align:right"><span class="pill t5">P5</span></td></tr>
+                <tr><td class="co">CRDB Bank<small>crdbbank.co.tz</small></td><td>28% asset market share</td><td><span class="chip">Token Hub</span></td><td style="text-align:right"><span class="pill t4">P4</span></td></tr>
+                <tr><td class="co">GTBank<small>gtbank.com</small></td><td>Expanding UK operations</td><td><span class="chip">PG</span></td><td style="text-align:right"><span class="pill t4">P4</span></td></tr>
+                <tr><td class="co">SeerBit<small>seerbit.com</small></td><td>Powering omni-channel payments</td><td><span class="chip">Orchestrator</span></td><td style="text-align:right"><span class="pill t3">P3</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card reveal r2">
+          <div class="card-h"><h3>Data foundation</h3><span class="meta">strong</span></div>
+          <div class="gauge">
+            <div class="ring" style="--p:90"><b>90</b></div>
+            <div class="gauge-meta">
+              <div class="eyebrow">Health score</div>
+              <h4>Solid footing</h4>
+              <p>Richer data → sharper discovery. Last enriched today.</p>
+            </div>
+          </div>
+          <div class="gaps">
+            <div class="gap thin"><span class="dot"></span><a href="#">Product descriptions</a> — 9 / 11 filled</div>
+            <div class="gap miss"><span class="dot"></span><a href="#">Buyer personas</a> — add 2 more</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- LIST / DETAIL (Competitors) -->
+      <div class="eyebrow reveal r2" style="margin-top:6px">Competitors · Africa</div>
+      <section class="ld reveal r3">
+        <div class="list">
+          <div class="list-h"><span>24 competitors</span><button title="Hide">«</button></div>
+          <div class="row active"><span class="name">Entersekt</span><span class="sub">3DSS · threat 5</span></div>
+          <div class="row"><span class="name">ACI Worldwide</span><span class="sub">FRM · threat 5</span></div>
+          <div class="row"><span class="name">BankservAfrica</span><span class="sub">3DSS · threat 4</span></div>
+          <div class="row"><span class="name">GPayments</span><span class="sub">3DSS · threat 4</span></div>
+          <div class="row"><span class="name">Thales Group</span><span class="sub">Token Hub · threat 4</span></div>
+          <div class="row"><span class="name">Fiserv</span><span class="sub">Token Hub · threat 3</span></div>
+        </div>
+        <div class="detail">
+          <div class="detail-head">
+            <div>
+              <div class="eyebrow">Competitor · matchup</div>
+              <h2>Entersekt</h2>
+              <div class="url">entersekt.com</div>
+            </div>
+            <span class="pill t5">THREAT 5 · CRITICAL</span>
+          </div>
+          <div class="detail-body">
+            <div class="threat-bar">
+              <span class="incumbent">⚠ Already at: Standard Bank</span>
+              <span class="chip">Threatens · Wibmo 3DSS</span>
+              <span class="pill ok">Africa presence</span>
+            </div>
+            <dl class="def">
+              <dt>What they do</dt><dd>Device-identity &amp; app-based authentication / 3-D Secure for banks and issuers.</dd>
+              <dt>Their strength</dt><dd>Deep mobile-first authentication, strong African bank footprint.</dd>
+              <dt>Where we win</dt><dd>Full-stack issuing + acquiring + fraud in one platform; faster certification.</dd>
+            </dl>
+          </div>
+        </div>
+      </section>
+
+      <div class="swatch-note">Intelligence Console — Hanken Grotesk · IBM Plex Mono · graphite + paper + signal-green · hairline structure</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
