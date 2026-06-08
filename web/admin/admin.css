@@ -34,16 +34,16 @@
   --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   --shadow: 0 1px 2px rgba(20, 22, 28, 0.05), 0 4px 14px rgba(20, 22, 28, 0.05);
 }
-/* Display + UI = Hanken Grotesk; data/labels = IBM Plex Mono (see component rules). */
+/* Display + UI = Archivo; data/labels = IBM Plex Mono (see component rules). */
 h1, h2, h3, h4, .brand-name, #page-title, .card-h {
-  font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+  font-family: 'Archivo', system-ui, -apple-system, sans-serif;
   letter-spacing: -0.01em;
 }
 
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+  font-family: 'Archivo', system-ui, -apple-system, sans-serif;
   background: var(--surface);
   color: var(--text);
   line-height: 1.55;
@@ -1834,7 +1834,7 @@ details.schedule-advanced > .schedule-advanced-body {
   flex-direction: column;
   overflow: hidden;
   box-shadow: 0 25px 60px rgba(0,0,0,0.18);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: 'Archivo', system-ui, sans-serif;
 }
 
 .intel-doc-modal .cal-picker-h {
@@ -1959,7 +1959,7 @@ details.schedule-advanced > .schedule-advanced-body {
 .intel-doc-prose h4,
 .intel-doc-prose h5,
 .intel-doc-prose h6 {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: 'Archivo', system-ui, sans-serif;
   color: #0f172a;
   font-weight: 700;
   letter-spacing: -0.01em;

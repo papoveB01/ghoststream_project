@@ -30,8 +30,8 @@
   --panel:      #15181b;          /* dark instrument panel (CTA) */
   --radius:    6px;
   --maxw:      1160px;
-  --font:      'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --display:   'Hanken Grotesk', var(--font);
+  --font:      'Archivo', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --display:   'Archivo', var(--font);
   --mono:      'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
 }
 
