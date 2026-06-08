@@ -356,17 +356,20 @@ async function ingest({
 
   // 6. Single transaction: archive prior + insert new + insert chunks.
   await db.withTx(async (client) => {
-    // Capture (and row-lock) any existing READY doc with the same (tenant,
-    // category, lower(title)) — replace-on-upload is per-tenant. We archive them
-    // AFTER inserting the new doc: superseded_by FKs the new id, and the
-    // constraint is not deferred, so the new row must exist first.
+    // Replace-on-upload is per-tenant, and two constraints pull opposite ways:
+    //   • kb_documents_tenant_ready_uniq (partial UNIQUE on status='READY') needs
+    //     the prior doc out of READY BEFORE the new READY row is inserted;
+    //   • kb_documents_superseded_by_fkey (not deferred) needs the new row to
+    //     EXIST before the prior doc can point at it.
+    // So: (1) archive prior (status only) → (2) insert new → (3) set superseded_by.
     const archived = await client.query(
-      `SELECT id FROM kb_documents
+      `UPDATE kb_documents
+          SET status = 'ARCHIVED', archived_at = now(), updated_at = now()
         WHERE tenant_id = $1
           AND category = $2
           AND lower(title) = lower($3)
           AND status = 'READY'
-        FOR UPDATE`,
+      RETURNING id`,
       [tenantId, category, title]
     );
 
@@ -415,13 +418,11 @@ async function ingest({
       ]
     );
 
-    // Now that the new doc exists, archive the prior versions and point their
-    // superseded_by at it (FK is satisfied because the new row is in place).
+    // Now that the new doc exists, point the (already-archived) prior versions'
+    // superseded_by at it — the FK is satisfied because the new row is in place.
     if (archived.rows.length) {
       await client.query(
-        `UPDATE kb_documents
-            SET status = 'ARCHIVED', archived_at = now(), superseded_by = $1, updated_at = now()
-          WHERE id = ANY($2::uuid[])`,
+        `UPDATE kb_documents SET superseded_by = $1 WHERE id = ANY($2::uuid[])`,
         [documentId, archived.rows.map((r) => r.id)]
       );
     }
