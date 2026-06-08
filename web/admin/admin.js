@@ -5729,12 +5729,32 @@
         <div id="company-pull-card"></div>
       </div>`;
     $('company-pull-btn').addEventListener('click', () => runCompanyPull());
-    // Auto-run once for a freshly-onboarded owner (?welcome=1). Re-renders won't
-    // re-trigger it (the welcome flag is consumed and a guard is set).
+    // Freshly-onboarded owner (?welcome=1): the server auto-enriches their
+    // foundation from website + Apollo + news in the background. Watch the
+    // health card populate rather than re-running the (now redundant) homepage
+    // pull, which would duplicate products.
     if (_companyWelcome && !_companyBootstrapTried) {
       _companyWelcome = false;
-      runCompanyPull();
+      _companyBootstrapTried = true;
+      watchWelcomeEnrichment();
     }
+  }
+
+  // Poll the foundation health while the post-onboarding background enrichment
+  // runs, so the new owner watches their products/ICP appear, then refresh.
+  function watchWelcomeEnrichment() {
+    const host = $('foundation-health');
+    if (host) host.innerHTML = '<div class="foundation-card"><div class="kb-subtle">✨ Building your company foundation from your website, Apollo &amp; news… this usually takes under a minute.</div></div>';
+    let n = 0;
+    const tick = async () => {
+      n++;
+      try {
+        const h = await fetchJson('/api/foundation/health');
+        if (h.enrichedAt || h.score >= 70 || n >= 7) { loaded.knowledge = false; await refreshCompany(); return; }
+      } catch { /* keep waiting */ }
+      setTimeout(tick, n < 3 ? 6000 : 12000);
+    };
+    setTimeout(tick, 6000);
   }
 
   async function runCompanyPull() {

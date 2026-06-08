@@ -30,6 +30,7 @@ const auth = require('./auth');
 const email = require('./email');
 const billing = require('./billing');
 const plans = require('./plans');
+const enrichment = require('./enrichment');
 
 // Paid plans a new signup can opt straight into from the public funnel (an
 // immediate upsell). Everyone starts on the free tier regardless; picking one of
@@ -440,6 +441,16 @@ router.post('/verify', async (req, res, next) => {
       id: owner.id, tenantId: owner.tenantId, email: owner.email,
       name: owner.name, role: owner.role, isAdmin: owner.isAdmin,
     }), auth.cookieOptions());
+
+    // Auto-enrich the brand-new tenant's foundation from multiple sources
+    // (website + Apollo + news) in the background, so by the time the owner looks
+    // around their products have descriptions and their ICP/positioning are
+    // drafted. Fire-and-forget: never blocks (or fails) onboarding.
+    setImmediate(() => {
+      db.runWithTenant(tenantRow.id, () => enrichment.enrichCompany(tenantRow.id, { force: false }))
+        .then((r) => console.log(`[onboarding] auto-enriched ${tenantRow.id}: ${JSON.stringify(r.summary)}`))
+        .catch((e) => console.warn(`[onboarding] auto-enrich failed for ${tenantRow.id}: ${(e && e.message) || e}`));
+    });
 
     res.status(201).json({ ok: true, redirectTo });
   } catch (err) { next(err); }
