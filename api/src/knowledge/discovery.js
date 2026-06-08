@@ -30,6 +30,11 @@ const PROSPECT_SCRAPE_TOP = parseInt(process.env.KB_DISCOVERY_PROSPECT_SCRAPE_TO
 // partial list if a response still gets cut off.
 const PROSPECT_MAXTOK = parseInt(process.env.KB_DISCOVERY_PROSPECT_MAXTOK || '16000', 10);
 const LIST_MAXTOK = parseInt(process.env.KB_DISCOVERY_LIST_MAXTOK || '8000', 10);
+// Competitor discovery casts a wide net like prospects — without this the few
+// brand "X competitors" aggregator pages (ZoomInfo/Craft) dominate the findings
+// and return generic consumer brands instead of real product-category rivals.
+const COMPETITOR_MAX_HITS = parseInt(process.env.KB_DISCOVERY_COMPETITOR_MAX_HITS || '32', 10);
+const COMPETITOR_SCRAPE_TOP = parseInt(process.env.KB_DISCOVERY_COMPETITOR_SCRAPE_TOP || '6', 10);
 
 const SCHEMA = {
   type: 'object',
@@ -320,7 +325,8 @@ async function generateSearchQueries({ mode, ctx, products = [], region = '', se
     const portfolio = (products || []).map((p) => `- ${p.name}${p.description ? ': ' + p.description : ''}`).join('\n') || '(none)';
     const regionLine = region && !/global|any|worldwide/i.test(region) ? `Region focus: ${region}.` : 'No region restriction.';
     const task = mode === 'competitor'
-      ? 'Generate web-search queries to find COMPANIES THAT COMPETE WITH US — vendors offering a similar product/solution to the SAME kind of buyers we sell to. Do NOT target our own customers or our buyers\' industry at large.'
+      ? 'Generate web-search queries to find VENDORS WHOSE PRODUCT DIRECTLY COMPETES WITH OURS — i.e. other companies selling the SAME PRODUCT CATEGORY (see OUR PRODUCTS) to the same kind of buyers. Target each product category by its industry term (e.g. "3-D Secure server vendors", "card tokenization platform providers", "fraud detection software for banks", "payment gateway software vendors", "card management system providers"). ' +
+        'IMPORTANT: many top competitors are GLOBAL specialist/infrastructure vendors that SERVE the region rather than being headquartered there — so include BOTH global product-category queries AND a few region-scoped ones. Do NOT target our own customers, generic consumer payment apps/wallets, or our buyers\' industry at large.'
       : 'Generate web-search queries to find OUR POTENTIAL CUSTOMERS — the businesses in WHO WE SELL TO that would BUY our product (target their type, location, recent openings/expansion/hiring). Do NOT target companies like us (peers/competitors) or our suppliers.';
     const prompt =
       'You are a B2B research assistant. ' + task + '\n' +
@@ -363,19 +369,35 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
   const ctx = buildContext({ name, positioning, objectives, idealCustomerProfile })
     + (buyerMarket ? `\nOur customers/market are located in: ${buyerMarket}` : '');
 
-  // Name/product-anchored rivals + LLM-generated "same solution, same buyers"
-  // queries. (Dropped the old "companies like <name>" query — it invited
-  // industry-peer drift.) Falls back to the anchored set if generation fails.
+  // LLM-generated product-category queries are FIRST so they fill (and get
+  // scraped into) the findings — the brand-anchored "X competitors" queries go
+  // LAST because they mostly return generic aggregator listicles (ZoomInfo/Craft)
+  // that name household consumer brands as "competitors" and otherwise dominate.
+  // Two passes of category queries: GLOBAL (so the findings actually contain the
+  // major infrastructure-software vendors — which serve the region but aren't
+  // headquartered there) AND region-scoped (regional players). Without the
+  // global pass every result is a local PSP and the model can't surface the
+  // global category leaders. Global pages go first so they're in the findings.
+  const [genGlobal, genRegion] = await Promise.all([
+    generateSearchQueries({ mode: 'competitor', ctx, products: ourProducts, region: '' }),
+    regionIsGlobal ? Promise.resolve([]) : generateSearchQueries({ mode: 'competitor', ctx, products: ourProducts, region: regionLabel }),
+  ]);
   const baseQueries = [
     `${name} competitors${regionTerm ? ' ' + regionTerm : ''}`,
-    `${name} alternatives`,
-    `top competitors of ${name}${regionTerm ? ' in ' + regionTerm : ''}`,
   ];
-  if (topProducts.length) baseQueries.push(`${topProducts[0]} competitors${regionTerm ? ' ' + regionTerm : ''}`);
-  const genQueries = await generateSearchQueries({ mode: 'competitor', ctx, products: ourProducts, region: regionLabel });
-  const queries = [...new Set([...baseQueries, ...genQueries])];
+  if (topProducts.length) baseQueries.push(`${topProducts[0]} competitors`);
+  // Interleave regional + global so BOTH segments get scraped into the findings
+  // (a flat concat let whichever came first dominate → all-regional or all-global).
+  const zipped = [];
+  for (let i = 0; i < Math.max(genRegion.length, genGlobal.length); i++) {
+    if (genRegion[i]) zipped.push(genRegion[i]);
+    if (genGlobal[i]) zipped.push(genGlobal[i]);
+  }
+  const queries = [...new Set([...zipped, ...baseQueries])];
 
-  const findings = await gatherFromQueries(queries);
+  // Wide net (like prospect discovery) so the category-specific results — not the
+  // few brand listicles — make up the findings the model reasons over.
+  const findings = await gatherFromQueries(queries, { maxHits: COMPETITOR_MAX_HITS, scrapeTop: COMPETITOR_SCRAPE_TOP, searchLimit: 6 });
   if (!findings.text || findings.text.length < 40) return { competitors: [] };
 
   const ourIds = new Set((ourProducts || []).map((p) => p && p.id).filter(Boolean));
@@ -385,26 +407,41 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
     : '(no products on file — leave threatToProductIds empty for all)';
 
   const prompt =
-    'You are a competitive-intelligence analyst. Using ONLY the web findings below, ' +
-    'list companies that DIRECTLY compete with OUR company (===OUR COMPANY===) — i.e. they offer a ' +
-    'SIMILAR product/solution to the SAME buyers we sell to (see WHO WE SELL TO). ' +
-    'Do NOT list our own customers, our suppliers, or unrelated companies that merely operate in our ' +
-    'buyers\' industry. ' +
+    'You are a competitive-intelligence analyst with deep, current knowledge of this company\'s industry ' +
+    'and its vendor landscape. Identify the companies whose PRODUCT directly competes with one of OUR ' +
+    'PRODUCTS (===OUR PRODUCTS===) — i.e. they sell the SAME PRODUCT CATEGORY (e.g. a rival 3-D Secure ' +
+    'server, card tokenization platform, fraud/risk engine, payment gateway/processor, or card-management ' +
+    'system) to the same kind of buyers.\n' +
+    'USE BOTH your own market knowledge AND the web findings below: name the real, specific vendors that ' +
+    'genuinely compete in each of our product categories — do not settle for whatever generic names happen ' +
+    'to appear in the findings. The findings are supporting evidence (recency, regional presence, specifics), ' +
+    'NOT the limit of what you may list. Only include companies that REALLY EXIST and genuinely offer a ' +
+    'competing product (never invent a company).\n' +
+    'STRONGLY PREFER specialist / infrastructure / software vendors that match our product categories ' +
+    '(including GLOBAL vendors that serve the target market). DEPRIORITIZE / EXCLUDE generic consumer ' +
+    'payment apps & wallets, money-transfer/remittance services, and SMB merchant-account resellers unless ' +
+    'they directly sell one of our product categories. When a household-name consumer brand and a specialist ' +
+    'vendor both fit, prefer the specialist. Be sure to ALSO include the major GLOBAL bank / issuer / ' +
+    'acquirer infrastructure-software vendors for our product categories (e.g. rival 3-D Secure servers, ' +
+    'tokenization, fraud, card-management and gateway software sold to banks) — not only regional payment ' +
+    'service providers. Do NOT list our own customers or suppliers. ' +
     (regionIsGlobal
-      ? 'Cover competitors broadly. '
-      : `Focus on competitors operating in or serving the target region: ${regionLabel}. `) +
+      ? 'Cover the most relevant competitors broadly. '
+      : `Prioritise competitors operating in or SERVING the target region: ${regionLabel} (they need NOT be headquartered there — global vendors serving it count, and are often the most important). `) +
+    (regionIsGlobal ? '' : `Return a BLEND: BOTH the major global category leaders AND the most significant vendors operating in / serving ${regionLabel}. `) +
+    'Aim for a useful, reasonably comprehensive list (up to ~15), ordered by how directly they threaten us.\n' +
     'For EACH competitor, also assess: their main strength; which of OUR products (by id, from the ' +
     'list) they most directly THREATEN; and a threatLevel 1-5 (5 = critical / head-on) weighing ' +
     'product overlap, their strength, and market presence.\n' +
     (prospectNames.length
-      ? 'Also, for each competitor, set incumbentAtProspects to any names from ===OUR PROSPECTS=== that the ' +
-        'findings indicate this competitor ALREADY serves / is a vendor to (an entrenched incumbent at that ' +
-        'account). Use ONLY names from that list; empty array if the findings show none — do not guess.\n'
+      ? 'Also, for each competitor, set incumbentAtProspects to any names from ===OUR PROSPECTS=== that you ' +
+        'know or the findings indicate this competitor ALREADY serves / is a vendor to (an entrenched ' +
+        'incumbent at that account). Use ONLY names from that list; empty array if none — do not guess.\n'
       : '') +
     CONTACT_INSTRUCTION + '\n' +
-    'Rules: only list companies the findings actually support (don\'t invent); EXCLUDE our own ' +
+    'Rules: only REAL companies that genuinely offer a competing product; EXCLUDE our own ' +
     'company; one company per row; keep strings short; threatToProductIds MUST be chosen from the ' +
-    'provided ids (or empty); give the primary website domain only if evident; ignore website ' +
+    'provided ids (or empty); give the primary website domain only if you are confident; ignore website ' +
     'boilerplate (cookie/nav/legal).\n\n' +
     `===OUR COMPANY===\n${ctx}\n\n` +
     `===OUR PRODUCTS (choose threatToProductIds from these ids)===\n${portfolio}\n\n` +
