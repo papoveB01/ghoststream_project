@@ -945,6 +945,24 @@
     await renderProspects(host);
   }
 
+  // Collapsible left column (shared by Prospects + Competitors). State persists
+  // in localStorage so it survives the frequent re-renders these pages do.
+  function isLeftCollapsed(key) { try { return localStorage.getItem('gs_collapse_' + key) === '1'; } catch { return false; } }
+  function setLeftCollapsed(key, v) { try { localStorage.setItem('gs_collapse_' + key, v ? '1' : '0'); } catch { /* ignore */ } }
+  const collapseRail = '<button type="button" class="list-show-rail" data-list-collapse title="Show list">☰</button>';
+  const collapseBtn = '<button type="button" class="list-collapse-btn" data-list-collapse title="Hide list">«</button>';
+  function wireListCollapse(host, key) {
+    const grid = host.querySelector('.prospects-grid');
+    if (!grid) return;
+    grid.classList.toggle('left-collapsed', isLeftCollapsed(key));
+    host.querySelectorAll('[data-list-collapse]').forEach((b) => b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const collapsed = !grid.classList.contains('left-collapsed');
+      grid.classList.toggle('left-collapsed', collapsed);
+      setLeftCollapsed(key, collapsed);
+    }));
+  }
+
   async function renderProspects(host) {
     const companies = _prospectsState.companies;
     const selectedId = _prospectsState.selectedCompanyId;
@@ -983,8 +1001,9 @@
     host.innerHTML = `
       ${modeSection}
       <div class="prospects-grid">
+        ${collapseRail}
         <div class="prospects-list">
-          <div class="prospects-list-h">${companies.length} prospect${companies.length === 1 ? '' : 's'}</div>
+          <div class="prospects-list-h"><span>${companies.length} prospect${companies.length === 1 ? '' : 's'}</span>${collapseBtn}</div>
           <div class="prospects-list-rows">
             ${companies.map((c) => `
               <div class="prospect-row ${c.id === selectedId ? 'active' : ''}" data-prospect-pick="${escapeHtml(c.id)}" role="button" tabindex="0">
@@ -1005,6 +1024,7 @@
       });
     });
     if (selected) wireProspectDetail(host, selected);
+    wireListCollapse(host, 'prospects');
     wireProspectModes(host);
   }
 
@@ -2117,8 +2137,9 @@
     host.innerHTML = `
       ${quickAdd}
       <div class="prospects-grid">
+        ${collapseRail}
         <div class="prospects-list">
-          <div class="prospects-list-h">${list.length} competitor${list.length === 1 ? '' : 's'}</div>
+          <div class="prospects-list-h"><span>${list.length} competitor${list.length === 1 ? '' : 's'}</span>${collapseBtn}</div>
           <div class="prospects-list-rows">
             ${list.map((c) => `
               <div class="comp-row-wrap ${c.id === selectedId ? 'active' : ''}">
@@ -2160,6 +2181,7 @@
       });
     });
     if (selected) wireCompetitorDetail(host, selected);
+    wireListCollapse(host, 'competitors');
     wireCompetitorQuickAdd(host);
   }
 

@@ -1363,6 +1363,25 @@ details.schedule-advanced > .schedule-advanced-body {
   gap: 16px;
   min-height: 400px;
 }
+/* Collapsible left column — give the detail pane the full width on demand. */
+.prospects-grid.left-collapsed { grid-template-columns: auto 1fr; }
+.prospects-grid.left-collapsed .prospects-list { display: none; }
+.list-show-rail { display: none; }
+.prospects-grid.left-collapsed .list-show-rail {
+  display: flex; align-items: flex-start; justify-content: center;
+  width: 30px; padding: 8px 0; cursor: pointer;
+  border: 1px solid #e5e7eb; border-radius: 6px; background: #f8fafc;
+  color: var(--muted); font-size: 14px; line-height: 1; align-self: start;
+}
+.prospects-grid.left-collapsed .list-show-rail:hover { background: #eef2ff; color: var(--accent); }
+.prospects-list-h {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.list-collapse-btn {
+  border: 0; background: transparent; cursor: pointer; color: var(--muted);
+  font-size: 15px; line-height: 1; padding: 0 2px; border-radius: 4px;
+}
+.list-collapse-btn:hover { color: var(--accent); background: #eef2ff; }
 .prospects-list {
   border: 1px solid #e5e7eb;
   border-radius: 6px;
