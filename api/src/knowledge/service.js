@@ -356,20 +356,18 @@ async function ingest({
 
   // 6. Single transaction: archive prior + insert new + insert chunks.
   await db.withTx(async (client) => {
-    // Soft-archive any existing READY doc with the same (tenant, category,
-    // lower(title)) — replace-on-upload is per-tenant.
+    // Capture (and row-lock) any existing READY doc with the same (tenant,
+    // category, lower(title)) — replace-on-upload is per-tenant. We archive them
+    // AFTER inserting the new doc: superseded_by FKs the new id, and the
+    // constraint is not deferred, so the new row must exist first.
     const archived = await client.query(
-      `UPDATE kb_documents
-          SET status = 'ARCHIVED',
-              archived_at = now(),
-              superseded_by = $1,
-              updated_at = now()
-        WHERE tenant_id = $2
-          AND category = $3
-          AND lower(title) = lower($4)
+      `SELECT id FROM kb_documents
+        WHERE tenant_id = $1
+          AND category = $2
+          AND lower(title) = lower($3)
           AND status = 'READY'
-      RETURNING id`,
-      [documentId, tenantId, category, title]
+        FOR UPDATE`,
+      [tenantId, category, title]
     );
 
     const resolvedEffectiveDate =
@@ -416,6 +414,17 @@ async function ingest({
         scope,
       ]
     );
+
+    // Now that the new doc exists, archive the prior versions and point their
+    // superseded_by at it (FK is satisfied because the new row is in place).
+    if (archived.rows.length) {
+      await client.query(
+        `UPDATE kb_documents
+            SET status = 'ARCHIVED', archived_at = now(), superseded_by = $1, updated_at = now()
+          WHERE id = ANY($2::uuid[])`,
+        [documentId, archived.rows.map((r) => r.id)]
+      );
+    }
 
     // Bulk-insert chunks. We parametrize each row explicitly — pg won't accept
     // a single VALUES list for a heterogeneous batch of vectors without it.
