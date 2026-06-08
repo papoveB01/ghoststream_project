@@ -284,9 +284,10 @@ const COMPETITORS_SCHEMA = {
           theirStrength: { type: 'string', description: 'One short phrase: this competitor\'s main strength / why buyers pick them.' },
           threatToProductIds: { type: 'array', items: { type: 'string' }, description: 'The ids of OUR products this competitor most directly threatens, chosen ONLY from the provided product id list. Empty array if none of ours overlaps.' },
           threatLevel: { type: 'integer', description: 'How directly/severely they compete with us, 1 (minimal) to 5 (critical / head-on). Weigh overlap with our products, their strength, and market presence.' },
+          incumbentAtProspects: { type: 'array', items: { type: 'string' }, description: 'Names chosen ONLY from the provided OUR PROSPECTS list that the findings indicate this competitor ALREADY works with / serves / is a vendor to. Empty array if none — do NOT guess.' },
           ...CONTACT_PROPS,
         },
-        required: ['name', 'description', 'website', 'region', 'whyRelevant', 'theirStrength', 'threatToProductIds', 'threatLevel', ...CONTACT_REQUIRED],
+        required: ['name', 'description', 'website', 'region', 'whyRelevant', 'theirStrength', 'threatToProductIds', 'threatLevel', 'incumbentAtProspects', ...CONTACT_REQUIRED],
       },
     },
   },
@@ -344,9 +345,13 @@ async function generateSearchQueries({ mode, ctx, products = [], region = '', se
 // Find companies that compete with OUR company, optionally focused on a region.
 // Returns { competitors: [...] } (possibly empty) or null on hard failure.
 // Read-only research: no ingest, no storage (the rep adds the relevant ones).
-async function discoverCompetitors({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', buyerMarket = '' } = {}) {
+async function discoverCompetitors({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', buyerMarket = '', prospects = [] } = {}) {
   const name = String(companyName || '').trim();
   if (!name) return null;
+  // Our existing prospects → let the model flag competitors already entrenched at
+  // them ("incumbent at account"). Names only; capped to keep the prompt lean.
+  const prospectNames = [...new Set((prospects || []).map((p) => String((p && p.name) || p || '').trim()).filter(Boolean))].slice(0, 60);
+  const prospectSet = new Map(prospectNames.map((n) => [n.toLowerCase(), n]));
 
   const regionLabel = String(region || '').trim();
   const regionIsGlobal = !regionLabel || /global|any|worldwide/i.test(regionLabel);
@@ -391,6 +396,11 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
     'For EACH competitor, also assess: their main strength; which of OUR products (by id, from the ' +
     'list) they most directly THREATEN; and a threatLevel 1-5 (5 = critical / head-on) weighing ' +
     'product overlap, their strength, and market presence.\n' +
+    (prospectNames.length
+      ? 'Also, for each competitor, set incumbentAtProspects to any names from ===OUR PROSPECTS=== that the ' +
+        'findings indicate this competitor ALREADY serves / is a vendor to (an entrenched incumbent at that ' +
+        'account). Use ONLY names from that list; empty array if the findings show none — do not guess.\n'
+      : '') +
     CONTACT_INSTRUCTION + '\n' +
     'Rules: only list companies the findings actually support (don\'t invent); EXCLUDE our own ' +
     'company; one company per row; keep strings short; threatToProductIds MUST be chosen from the ' +
@@ -398,6 +408,7 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
     'boilerplate (cookie/nav/legal).\n\n' +
     `===OUR COMPANY===\n${ctx}\n\n` +
     `===OUR PRODUCTS (choose threatToProductIds from these ids)===\n${portfolio}\n\n` +
+    (prospectNames.length ? `===OUR PROSPECTS (choose incumbentAtProspects ONLY from these names)===\n${prospectNames.join('\n')}\n\n` : '') +
     (regionIsGlobal ? '' : `===TARGET REGION===\n${regionLabel}\n\n`) +
     `===WEB FINDINGS===\n${findings.text}`;
 
@@ -430,6 +441,11 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
         : [];
       let threatLevel = Number.isFinite(c.threatLevel) ? Math.round(c.threatLevel) : 3;
       threatLevel = Math.max(1, Math.min(5, threatLevel));
+      // Keep only incumbent flags that match an actual prospect name (the model
+      // is told to use the provided list; this enforces it).
+      const incumbentAtProspects = Array.isArray(c.incumbentAtProspects)
+        ? [...new Set(c.incumbentAtProspects.map((n) => prospectSet.get(String(n || '').trim().toLowerCase())).filter(Boolean))]
+        : [];
       competitors.push({
         name: cName,
         description: String(c.description || '').trim(),
@@ -440,6 +456,7 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
         threatToProductIds: threatIds,
         threatToProductNames: threatIds.map((id) => byId.get(id)).filter(Boolean),
         threatLevel,
+        incumbentAtProspects,
         ...pickContact(c),
       });
       if (competitors.length >= MAX_PRODUCTS) break;

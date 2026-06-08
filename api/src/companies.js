@@ -12,6 +12,7 @@ const discovery = require('./knowledge/discovery');
 const gating = require('./gating');
 const auth = require('./auth');
 const watchSchedule = require('./watchSchedule');
+const foundation = require('./foundation');
 
 // Strip protocol / www / path → bare host, for comparing a prospect domain
 // against the tenant's own domain.
@@ -246,7 +247,8 @@ router.post('/discover', gating.requireFeature('discovery'), gating.requireCapac
     const existing = await db.query(`SELECT lower(name) AS n FROM companies WHERE tenant_id = $1`, [req.tenantId]);
     const have = new Set(existing.rows.map((r) => r.n));
     const prospects = result.prospects.map((p) => ({ ...p, exists: have.has(p.name.toLowerCase()) }));
-    res.json({ prospects, region, industry });
+    const dataHints = await foundation.dataHints(req.tenantId);
+    res.json({ prospects, region, industry, dataHints });
   } catch (err) { next(err); }
 });
 

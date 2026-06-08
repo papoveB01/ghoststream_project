@@ -746,6 +746,42 @@ body {
 }
 .pill-ok { background: #ecfdf5; color: var(--success); }
 .pill-warn { background: #fff7ed; color: var(--warn); }
+.pill-bad { background: #fef2f2; color: var(--danger, #dc2626); }
+
+/* ── Data Foundation: health card + enrichment + nudges ─────────────────── */
+.foundation-card {
+  border: 1px solid var(--border); border-radius: 12px;
+  background: var(--surface); padding: 14px 16px; margin-bottom: 16px;
+}
+.foundation-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.foundation-score { display: flex; align-items: baseline; gap: 6px; }
+.foundation-num { font-size: 28px; font-weight: 800; line-height: 1; }
+.foundation-meta { flex: 1; min-width: 180px; }
+.foundation-head .primary-cta { white-space: nowrap; }
+.foundation-gaps { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
+.found-gap { font-size: 13px; padding-left: 18px; position: relative; }
+.found-gap::before { content: '●'; position: absolute; left: 0; top: 0; }
+.found-gap.found-missing::before { color: var(--danger, #dc2626); }
+.found-gap.found-thin::before { color: var(--warn, #d97706); }
+.found-gap a { font-weight: 600; }
+
+.data-hint-nudge {
+  background: #fffbeb; border: 1px solid #fde68a; color: #92400e;
+  border-radius: 10px; padding: 10px 12px; margin: 10px 0; font-size: 13px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.data-hint-nudge .kb-link-btn { color: #92400e; font-weight: 700; text-decoration: underline; }
+
+.comp-incumbent {
+  margin-top: 4px; font-size: 12px; font-weight: 600;
+  color: #b45309; background: #fffbeb; border: 1px solid #fde68a;
+  border-radius: 6px; padding: 2px 6px; display: inline-block;
+}
+.product-ai-badge {
+  font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--accent); background: var(--accent-light); border-radius: 6px;
+  padding: 1px 6px; margin-left: 6px; vertical-align: middle;
+}
 .pill-cached { background: var(--accent-light); color: var(--accent); }
 .pill-inline { background: var(--surface-2); color: var(--text-2); }
 

@@ -1241,7 +1241,7 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ region, industry, country, city }),
       });
-      renderProspectCandidates(body, (data && data.prospects) || []);
+      renderProspectCandidates(body, (data && data.prospects) || [], data && data.dataHints);
     } catch (err) {
       body.innerHTML = `<div class="kb-result error" style="margin:12px">${escapeHtml(err.message)}</div>`;
     } finally { btn.disabled = false; btn.textContent = o; }
@@ -1259,9 +1259,10 @@
     return bits.length ? `<div class="kb-subtle" style="margin-top:3px;line-height:1.5">${bits.join(' · ')}</div>` : '';
   }
 
-  function renderProspectCandidates(body, list) {
+  function renderProspectCandidates(body, list, dataHints) {
     if (!list.length) {
-      body.innerHTML = '<div class="empty" style="padding:16px">No prospects surfaced. Try a different region or industry.</div>';
+      body.innerHTML = `${dataHintBanner(dataHints)}<div class="empty" style="padding:16px">No prospects surfaced. Try a different region or industry.</div>`;
+      wireEnrichJump(body);
       return;
     }
     const rows = list.map((c, i) => {
@@ -1280,12 +1281,14 @@
       </tr>`;
     }).join('');
     body.innerHTML = `
+      ${dataHintBanner(dataHints)}
       <table class="comp-discover-table">
         <thead><tr><th>Priority</th><th>Company</th><th>Signal / why now</th><th>Fits (our products)</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
       <div class="kb-subtle" style="padding:2px 0 10px">Ranked by priority — best product fit and freshest buying signal first.</div>
       <div class="kb-result hidden" id="pcand-result"></div>`;
+    wireEnrichJump(body);
     body.querySelectorAll('.pcand-add').forEach((b) => b.addEventListener('click', () => addProspectCandidate(list[Number(b.dataset.i)], b)));
   }
 
@@ -2315,7 +2318,7 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ region, country, city }),
       });
-      renderCompetitorCandidates(body, (data && data.competitors) || []);
+      renderCompetitorCandidates(body, (data && data.competitors) || [], data && data.dataHints);
     } catch (err) {
       body.innerHTML = `<div class="kb-result error" style="margin:14px">${escapeHtml(err.message)}</div>`;
     } finally { btn.disabled = false; btn.textContent = o; }
@@ -2324,9 +2327,22 @@
   const THREAT_LABELS = { 5: 'Critical', 4: 'High', 3: 'Medium', 2: 'Low', 1: 'Minimal' };
   function threatLabel(l) { return THREAT_LABELS[l] || 'Medium'; }
 
-  function renderCompetitorCandidates(body, comps) {
+  // A nudge banner shown above thin discovery results (and in empty states),
+  // with a one-click jump to enrich the company foundation.
+  function dataHintBanner(h) {
+    if (!h || !h.thin) return '';
+    return `<div class="data-hint-nudge">⚡ ${escapeHtml(h.message)}
+      ${h.canAutoFill ? '<button type="button" class="kb-link-btn" data-enrich-jump="1">Enrich now →</button>' : ''}</div>`;
+  }
+  function wireEnrichJump(scope) {
+    (scope || document).querySelectorAll('[data-enrich-jump]').forEach((b) =>
+      b.addEventListener('click', () => { location.hash = '#company?tab=intel'; setTimeout(() => { const e = $('foundation-enrich-btn'); if (e) e.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 300); }));
+  }
+
+  function renderCompetitorCandidates(body, comps, dataHints) {
     if (!comps.length) {
-      body.innerHTML = '<div class="empty" style="padding:16px">No competitors surfaced. Try a different region, or add one manually.</div>';
+      body.innerHTML = `${dataHintBanner(dataHints)}<div class="empty" style="padding:16px">No competitors surfaced. Try a different region, or add one manually.</div>`;
+      wireEnrichJump(body);
       return;
     }
     // Backend already orders by competing threat (highest first).
@@ -2336,9 +2352,12 @@
         ? c.threatToProductNames.map((n) => `<span class="kb-stream-pill stream-file">${escapeHtml(n)}</span>`).join(' ')
         : '<span class="kb-subtle">general</span>';
       const sub = [c.website ? `<a href="https://${escapeHtml(c.website)}" target="_blank" rel="noopener">${escapeHtml(c.website)}</a>` : '', c.region ? escapeHtml(c.region) : ''].filter(Boolean).join(' · ');
+      const incumbent = (c.incumbentAtProspects && c.incumbentAtProspects.length)
+        ? `<div class="comp-incumbent" title="Already working with your prospect(s)">⚠ Already at: ${c.incumbentAtProspects.map((n) => escapeHtml(n)).join(', ')}</div>`
+        : '';
       return `
       <tr data-cand="${i}">
-        <td class="dt-name"><strong>${escapeHtml(c.name)}</strong>${sub ? `<div class="kb-subtle">${sub}</div>` : ''}${contactLines(c)}</td>
+        <td class="dt-name"><strong>${escapeHtml(c.name)}</strong>${sub ? `<div class="kb-subtle">${sub}</div>` : ''}${incumbent}${contactLines(c)}</td>
         <td class="dt-what">${escapeHtml(c.description || '')}</td>
         <td class="dt-their">${escapeHtml(c.theirStrength || c.whyRelevant || '')}</td>
         <td class="dt-vs">${threatens}</td>
@@ -2347,12 +2366,14 @@
       </tr>`;
     }).join('');
     body.innerHTML = `
+      ${dataHintBanner(dataHints)}
       <table class="comp-discover-table">
         <thead><tr><th>Company</th><th>What they do</th><th>Their strength</th><th>Threatens (our products)</th><th>Threat</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
       <div class="kb-subtle" style="padding:2px 0 12px">Ranked by competing threat — most direct first.</div>
       <div class="kb-result hidden" id="cand-result"></div>`;
+    wireEnrichJump(body);
     body.querySelectorAll('.cand-add').forEach((b) => b.addEventListener('click', () => addCompetitorCandidate(comps[Number(b.dataset.i)], b)));
   }
 
@@ -5612,6 +5633,7 @@
     if (!host) return;
     const { products, personas } = _companyData;
     host.innerHTML = `
+      <div id="foundation-health"></div>
       <div class="prospect-tabs">
         <button type="button" class="kb-tab${_companyTab === 'intel' ? ' active' : ''}" data-company-tab="intel">📁 Intel</button>
         <button type="button" class="kb-tab${_companyTab === 'products' ? ' active' : ''}" data-company-tab="products">📦 Products (${products.length})</button>
@@ -5625,6 +5647,69 @@
     if (_companyTab === 'products') renderCompanyProductsTab(body);
     else if (_companyTab === 'personas') renderCompanyPersonasTab(body);
     else renderCompanyIntelTab(body);
+    loadFoundationHealth();
+  }
+
+  // ── Foundation Coach: data-completeness score + one-click multi-source enrich ─
+  const FOUND_BAND = { strong: 'pill-ok', fair: 'pill-warn', sparse: 'pill-bad' };
+  async function loadFoundationHealth() {
+    const host = $('foundation-health');
+    if (!host) return;
+    let h;
+    try { h = await fetchJson('/api/foundation/health'); }
+    catch { host.innerHTML = ''; return; }
+    renderFoundationHealth(host, h);
+  }
+
+  function renderFoundationHealth(host, h) {
+    const gaps = (h.topGaps || []).map((g) =>
+      `<li class="found-gap found-${g.status}">
+         <a href="${escapeHtml(g.deepLink)}">${escapeHtml(g.label)}</a>
+         <span class="kb-subtle">— ${escapeHtml(g.suggestion)}</span>
+       </li>`).join('');
+    const enrichedNote = h.enrichedAt ? `Last enriched ${escapeHtml(fmtDate(h.enrichedAt))}` : 'Never enriched from web';
+    host.innerHTML = `
+      <div class="foundation-card">
+        <div class="foundation-head">
+          <div class="foundation-score">
+            <span class="foundation-num">${h.score}</span><span class="kb-subtle">/100</span>
+            <span class="pill ${FOUND_BAND[h.band] || 'pill-warn'}">${escapeHtml((h.band || '').toUpperCase())}</span>
+          </div>
+          <div class="foundation-meta">
+            <strong>Data foundation</strong>
+            <div class="kb-subtle">Richer data = sharper, more localized discovery. <span title="${escapeHtml(enrichedNote)}">${escapeHtml(enrichedNote)}</span></div>
+          </div>
+          <button class="primary-cta" id="foundation-enrich-btn">✨ Enrich from web</button>
+        </div>
+        ${gaps ? `<ul class="foundation-gaps">${gaps}</ul>` : '<div class="kb-subtle" style="margin-top:8px">Your foundation looks strong. 🎉</div>'}
+        <div class="kb-result hidden" id="foundation-enrich-result"></div>
+      </div>`;
+    const btn = $('foundation-enrich-btn');
+    if (btn) btn.addEventListener('click', runFoundationEnrich);
+  }
+
+  async function runFoundationEnrich() {
+    const btn = $('foundation-enrich-btn');
+    const result = $('foundation-enrich-result');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Reading website, Apollo & news…'; }
+    if (result) result.classList.add('hidden');
+    try {
+      const r = await fetchJson('/api/foundation/enrich', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const s = r.summary || {};
+      const parts = [];
+      if (s.profileFields && s.profileFields.length) parts.push(`filled ${s.profileFields.join(', ')}`);
+      if (s.productsBackfilled) parts.push(`${s.productsBackfilled} product description${s.productsBackfilled === 1 ? '' : 's'}`);
+      if (s.productsCreated) parts.push(`${s.productsCreated} new product${s.productsCreated === 1 ? '' : 's'}`);
+      if (s.personasCreated) parts.push(`${s.personasCreated} persona${s.personasCreated === 1 ? '' : 's'}`);
+      const msg = parts.length ? `Enriched from ${(s.sources || []).join(', ') || 'web'} — ${parts.join(', ')}. Review & edit anything below.` : 'Nothing new to add — your foundation is already filled.';
+      if (result) { result.classList.remove('hidden', 'error'); result.classList.add('success'); result.textContent = msg; }
+      loaded.knowledge = false;
+      await refreshCompany();
+    } catch (err) {
+      if (result) { result.classList.remove('hidden', 'success'); result.classList.add('error'); result.textContent = `Couldn't enrich: ${err.message}`; }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '✨ Enrich from web'; }
+    }
   }
 
   // ── Pull-from-website bootstrap (post-onboarding "confirm what we found") ──
@@ -5837,7 +5922,7 @@
     const rows = products.length
       ? products.map((p) => `
           <tr>
-            <td><strong>${escapeHtml(p.name)}</strong> <span class="mono kb-subtle">${escapeHtml(p.id)}</span></td>
+            <td><strong>${escapeHtml(p.name)}</strong> <span class="mono kb-subtle">${escapeHtml(p.id)}</span>${p.ai_enriched ? '<span class="product-ai-badge" title="AI-enriched — review &amp; edit">AI</span>' : ''}</td>
             <td class="truncate">${escapeHtml(p.description || '—')}</td>
             <td>${fmtNum(p.doc_count)}</td>
             <td class="pf-actions-cell">

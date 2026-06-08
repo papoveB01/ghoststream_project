@@ -1140,6 +1140,9 @@ app.post('/portals/:id/reanalyze', auth.authMiddleware, async (req, res, next) =
 // =========================================================================
 
 app.use('/portfolio', auth.authMiddleware, portfolio.router);
+
+// Data foundation — health score + multi-source company enrichment.
+app.use('/foundation', auth.authMiddleware, require('./foundation').router);
 app.use('/crm', auth.authMiddleware, gating.requireFeatureWrite(plans.FEATURES.CRM), auth.requireRoleWrite('manager'), require('./crm').router);
 app.use('/dashboard', auth.authMiddleware, require('./dashboard').router);
 

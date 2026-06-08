@@ -30,7 +30,7 @@ for (const [resource, conf] of Object.entries(TABLES)) {
   // personas don't — so only widen the select/patch for competitors.
   const contactCols = resource === 'competitors'
     ? ', e.website, e.country, e.city, e.address, e.phone, e.email, e.watch_enabled, e.watch_frequency, e.watch_day, e.watch_timezone, e.watch_email_digest, e.watch_next_run_at, e.watch_last_run_at'
-    : '';
+    : (resource === 'products' ? ', e.ai_enriched' : '');
   router.get(`/${resource}`, async (req, res, next) => {
     try {
       const r = await db.query(
@@ -234,6 +234,7 @@ const discovery = require('./knowledge/discovery');
 const keypoints = require('./knowledge/keypoints');
 const redis = require('./redis');
 const companyBrief = require('./companyBrief');
+const foundation = require('./foundation');
 const gating = require('./gating');
 
 // ── Company bootstrap (pull-from-website + confirm) ────────────────────────
@@ -872,6 +873,9 @@ router.post('/competitors/discover', gating.requireFeature('competitor_research'
       [req.tenantId]
     )).rows;
 
+    // Our existing prospects → competitor analysis flags any competitor already
+    // entrenched at one of them ("incumbent at account").
+    const prospectRows = await db.query(`SELECT name FROM companies WHERE tenant_id = $1`, [req.tenantId]);
     const result = await discovery.discoverCompetitors({
       companyName: tenant.name,
       ourProducts,
@@ -880,6 +884,7 @@ router.post('/competitors/discover', gating.requireFeature('competitor_research'
       idealCustomerProfile: prof.ideal_customer_profile || '',
       region,
       buyerMarket,
+      prospects: prospectRows.rows,
     });
     if (!result) {
       await gating.refundCapacity(req); // don't charge for a failed discovery
@@ -891,7 +896,8 @@ router.post('/competitors/discover', gating.requireFeature('competitor_research'
     const existing = await db.query(`SELECT lower(name) AS n FROM competitors WHERE tenant_id = $1`, [req.tenantId]);
     const have = new Set(existing.rows.map((r) => r.n));
     const competitors = result.competitors.map((c) => ({ ...c, exists: have.has(c.name.toLowerCase()) }));
-    res.json({ competitors, region });
+    const dataHints = await foundation.dataHints(req.tenantId);
+    res.json({ competitors, region, dataHints });
   } catch (err) { next(err); }
 });
 
