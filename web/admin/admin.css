@@ -775,7 +775,7 @@ body {
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
 }
-.card-b { padding: 20px 22px; }
+.card-b { padding: 16px 18px; }
 .card-b.table-wrap { padding: 0; overflow-x: auto; }
 
 /* Definition list inside card-b */
@@ -967,7 +967,8 @@ table.dt tr.row-clickable { cursor: pointer; }
 }
 
 .kb-hero {
-  background: var(--accent-light);
+  background: var(--surface-2);
+  border-left: 2px solid var(--accent);
   border: 1px solid var(--accent-soft);
   padding: 22px 26px;
   margin-bottom: 22px;
@@ -1877,7 +1878,8 @@ details.schedule-advanced > .schedule-advanced-body {
 
 /* Key points / opportunity points / competitive points — a nice callout */
 .intel-doc-body .ci-keypoints {
-  background: var(--accent-light);
+  background: var(--surface-2);
+  border-left: 2px solid var(--accent);
   border: 1px solid var(--accent-soft);
   border-radius: 8px;
   padding: 14px 18px;
@@ -2065,7 +2067,8 @@ details.schedule-advanced > .schedule-advanced-body {
 
 /* Executive summary — the headline */
 .ca-summary {
-  background: var(--accent-light);
+  background: var(--surface-2);
+  border-left: 2px solid var(--accent);
   border: 1px solid var(--accent-soft);
   border-radius: 8px;
   padding: 14px 18px;
