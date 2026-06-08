@@ -881,7 +881,10 @@ router.post('/competitors/discover', gating.requireFeature('competitor_research'
       region,
       buyerMarket,
     });
-    if (!result) return res.status(502).json({ error: 'discovery could not find competitors right now — try again' });
+    if (!result) {
+      await gating.refundCapacity(req); // don't charge for a failed discovery
+      return res.status(502).json({ error: 'discovery could not find competitors right now — try again' });
+    }
 
     // Flag candidates we already track (by case-insensitive name) so the UI can
     // show "already added" instead of a dead Add button.

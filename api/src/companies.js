@@ -238,7 +238,10 @@ router.post('/discover', gating.requireFeature('discovery'), gating.requireCapac
       idealCustomerProfile: prof.ideal_customer_profile || '',
       region, industry,
     });
-    if (!result) return res.status(502).json({ error: 'discovery could not find prospects right now — try again' });
+    if (!result) {
+      await gating.refundCapacity(req); // don't charge for a failed discovery
+      return res.status(502).json({ error: 'discovery could not find prospects right now — try again' });
+    }
 
     const existing = await db.query(`SELECT lower(name) AS n FROM companies WHERE tenant_id = $1`, [req.tenantId]);
     const have = new Set(existing.rows.map((r) => r.n));

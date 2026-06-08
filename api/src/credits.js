@@ -81,6 +81,25 @@ async function tryConsume(tenantId, meter) {
   return r.rows.length > 0;
 }
 
+// Put a refunded unit back (mirrors tryConsume's selection: the soonest-expiring
+// still-unexpired grant). Used when a credit-funded action fails and we roll the
+// charge back. Best-effort — if every grant has since expired the unit is lost.
+async function restore(tenantId, meter) {
+  const kind = kindForMeter(meter);
+  await db.query(
+    `UPDATE credit_grants
+        SET remaining = remaining + 1
+      WHERE id = (
+        SELECT id FROM credit_grants
+         WHERE tenant_id = $1 AND kind = $2 AND expires_at > now()
+         ORDER BY expires_at ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT 1
+      )`,
+    [tenantId, kind]
+  );
+}
+
 // Live balance per kind (unexpired, remaining>0) for the Billing UI:
 //   { engagements: { remaining, nextExpiry }, research: { remaining, nextExpiry } }
 async function summary(tenantId) {
@@ -98,4 +117,4 @@ async function summary(tenantId) {
   return out;
 }
 
-module.exports = { CREDIT_TTL_DAYS, PACKS, PACKS_LIST: Object.values(PACKS), packFor, catalog, kindForMeter, grant, tryConsume, summary };
+module.exports = { CREDIT_TTL_DAYS, PACKS, PACKS_LIST: Object.values(PACKS), packFor, catalog, kindForMeter, grant, tryConsume, restore, summary };

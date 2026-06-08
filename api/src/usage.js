@@ -86,4 +86,24 @@ async function consume(tenantId, meter, cap, opts = {}) {
   return r.rows[0].count;
 }
 
-module.exports = { currentPeriod, current, summary, consume };
+// Give back a unit consumed by consume() when the action ultimately failed (e.g.
+// discovery returned no usable result → 502). `consumed` is consume()'s return
+// value: Infinity (unlimited — nothing to refund), { credit:true } (came from a
+// purchased credit → restore one), or a number (came from the plan counter →
+// decrement, floored at 0). Best-effort; never throws into the caller.
+async function refund(tenantId, meter, consumed, opts = {}) {
+  if (consumed == null || consumed === Infinity) return;
+  if (typeof consumed === 'object' && consumed.credit) {
+    const credits = require('./credits');
+    if (credits.restore) await credits.restore(tenantId, meter);
+    return;
+  }
+  const period = periodFor(opts.lifetime);
+  await db.query(
+    `UPDATE usage_counters SET count = GREATEST(count - 1, 0), updated_at = now()
+      WHERE tenant_id = $1 AND meter = $2 AND period = $3`,
+    [tenantId, meter, period]
+  );
+}
+
+module.exports = { currentPeriod, current, summary, consume, refund };

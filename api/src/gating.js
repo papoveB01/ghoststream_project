@@ -102,7 +102,10 @@ function requireCapacity(meter) {
       // User-initiated action: spill over to purchased add-on credits once the
       // plan allowance is spent (credits.js). 402 only if neither has room.
       // lifetime: free-tier caps are lifetime (never reset), not monthly.
-      await usage.consume(req.tenantId, meter, cap, { useCredits: true, lifetime: ent.lifetimeCaps });
+      const consumed = await usage.consume(req.tenantId, meter, cap, { useCredits: true, lifetime: ent.lifetimeCaps });
+      // Remember what we charged so a handler can refund it if the action fails
+      // (e.g. discovery returns no usable result → 502). See refundCapacity().
+      req._capacity = { meter, consumed, lifetime: ent.lifetimeCaps };
       next();
     } catch (err) {
       if (err.code === 'USAGE_LIMIT') {
@@ -113,6 +116,21 @@ function requireCapacity(meter) {
   };
 }
 
+// Refund the unit a prior requireCapacity() charged on this request — call from
+// a handler when the action failed AFTER the meter was consumed, so a failure
+// doesn't burn the tenant's allowance. Idempotent (only refunds once) and
+// best-effort (a refund error is logged, never thrown to the client).
+async function refundCapacity(req) {
+  const c = req && req._capacity;
+  if (!c) return;
+  req._capacity = null;
+  try {
+    await usage.refund(req.tenantId, c.meter, c.consumed, { lifetime: c.lifetime });
+  } catch (err) {
+    console.warn(`[gating] refundCapacity(${c.meter}) failed: ${(err && err.message) || err}`);
+  }
+}
+
 // Gate only mutating requests on a router (so listing/GET stays available to
 // every plan while connect/create/import etc. need the feature).
 function requireFeatureWrite(feature) {
@@ -120,4 +138,4 @@ function requireFeatureWrite(feature) {
   return (req, res, next) => (req.method === 'GET' ? next() : guard(req, res, next));
 }
 
-module.exports = { billingGate, requireFeature, requireFeatureWrite, requireCapacity, ensureEntitlements };
+module.exports = { billingGate, requireFeature, requireFeatureWrite, requireCapacity, refundCapacity, ensureEntitlements };

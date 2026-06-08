@@ -24,6 +24,12 @@ const MAX_PRODUCTS = parseInt(process.env.KB_DISCOVERY_MAX_PRODUCTS || '12', 10)
 const PROSPECT_MAX = parseInt(process.env.KB_DISCOVERY_PROSPECT_MAX || '30', 10);
 const PROSPECT_MAX_HITS = parseInt(process.env.KB_DISCOVERY_PROSPECT_MAX_HITS || '28', 10);
 const PROSPECT_SCRAPE_TOP = parseInt(process.env.KB_DISCOVERY_PROSPECT_SCRAPE_TOP || '4', 10);
+// Output-token budgets for the structured JSON. The previous 4000 cap truncated
+// the prospect list (30 rows × contact fields) mid-string → invalid JSON → the
+// whole discovery 502'd. Sized generously now; parseItemsLoose also salvages a
+// partial list if a response still gets cut off.
+const PROSPECT_MAXTOK = parseInt(process.env.KB_DISCOVERY_PROSPECT_MAXTOK || '16000', 10);
+const LIST_MAXTOK = parseInt(process.env.KB_DISCOVERY_LIST_MAXTOK || '8000', 10);
 
 const SCHEMA = {
   type: 'object',
@@ -67,6 +73,39 @@ async function withRetry(fn, tries = 3) {
     }
   }
   throw lastErr;
+}
+
+// Parse the model's structured-JSON array, tolerating truncation. A response cut
+// off at the output-token cap leaves an unterminated string → JSON.parse throws;
+// rather than fail the whole discovery we salvage every COMPLETE array-element
+// object that did make it (the partial final one is dropped). Returns null only
+// when there's no usable output at all (so callers can treat that as a failure).
+function parseItemsLoose(text, key) {
+  const s = String(text == null ? '' : text);
+  if (!s.trim()) return null;
+  try {
+    const p = JSON.parse(s);
+    return Array.isArray(p[key]) ? p[key] : [];
+  } catch {
+    // Salvage: extract objects that open one level inside the wrapper (i.e. the
+    // array elements), ignoring braces inside strings. Brackets aren't counted,
+    // so an element sits at brace-depth 1 even though it's inside the array.
+    const out = [];
+    let depth = 0, start = -1, inStr = false, esc = false;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === '{') { if (depth === 1) start = i; depth++; }
+      else if (ch === '}') { depth--; if (depth === 1 && start >= 0) { try { out.push(JSON.parse(s.slice(start, i + 1))); } catch { /* skip */ } start = -1; } }
+    }
+    return out;
+  }
 }
 
 // Run a set of web searches (deduped by URL) + scrape the top few hits for
@@ -171,14 +210,14 @@ async function discoverCompetitorProducts({ competitorName, competitorDomain = '
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         temperature: 0.2,
-        maxOutputTokens: 2000,
+        maxOutputTokens: LIST_MAXTOK,
         responseMimeType: 'application/json',
         responseSchema: SCHEMA,
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));
-    const parsed = JSON.parse(resp.text);
-    const raw = Array.isArray(parsed.products) ? parsed.products : [];
+    const raw = parseItemsLoose(resp.text, 'products');
+    if (raw === null) return null; // no usable model output → caller 502s (no charge)
     const products = raw
       // Keep only products the model attributes to THIS competitor (drop rivals'
       // products that leaked in from comparison/roundup findings).
@@ -369,14 +408,14 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         temperature: 0.2,
-        maxOutputTokens: 2000,
+        maxOutputTokens: LIST_MAXTOK,
         responseMimeType: 'application/json',
         responseSchema: COMPETITORS_SCHEMA,
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));
-    const parsed = JSON.parse(resp.text);
-    const raw = Array.isArray(parsed.competitors) ? parsed.competitors : [];
+    const raw = parseItemsLoose(resp.text, 'competitors');
+    if (raw === null) return null; // no usable model output → caller 502s (no charge)
     const ownName = name.toLowerCase();
     const seen = new Set();
     const competitors = [];
@@ -525,14 +564,14 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         temperature: 0.3,
-        maxOutputTokens: 4000,
+        maxOutputTokens: PROSPECT_MAXTOK,
         responseMimeType: 'application/json',
         responseSchema: PROSPECTS_SCHEMA,
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));
-    const parsed = JSON.parse(resp.text);
-    const raw = Array.isArray(parsed.prospects) ? parsed.prospects : [];
+    const raw = parseItemsLoose(resp.text, 'prospects');
+    if (raw === null) return null; // no usable model output → caller 502s (no charge)
     const ownName = name.toLowerCase();
     const seen = new Set();
     const prospects = [];
