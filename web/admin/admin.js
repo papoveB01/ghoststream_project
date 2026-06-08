@@ -490,7 +490,7 @@
         </div>
         <div class="dash-actions">
           <button class="primary-cta" data-goto="prospects" data-pmode="discover">Discover prospects</button>
-          <button class="kb-secondary-btn" data-goto="competitors">⚔ Add competitor</button>
+          <button class="kb-secondary-btn" data-goto="competitors">Add competitor</button>
           <button class="kb-secondary-btn" data-goto="missions">Schedule</button>
         </div>
       </div>
@@ -514,7 +514,7 @@
       </div>
       <div id="dash-subaccounts"></div>
       <div class="dash-foundation">
-        <span class="dash-found-h">🧱 Foundation</span>
+        <span class="dash-found-h">Foundation</span>
         ${dashFound(f.profileSet, 'Positioning')}
         ${dashFound(f.products > 0, `${fmtNum(f.products)} Products`)}
         ${dashFound(f.personas > 0, `${fmtNum(f.personas)} Personas`)}
@@ -1564,7 +1564,7 @@
 
       <div class="prospect-tabs">
         <button type="button" class="kb-tab active" data-prospect-tab="signals">Signals</button>
-        <button type="button" class="kb-tab" data-prospect-tab="people">👤 People (${contacts.length})</button>
+        <button type="button" class="kb-tab" data-prospect-tab="people">People (${contacts.length})</button>
         <button type="button" class="kb-tab" data-prospect-tab="intel">Intel</button>
         <button type="button" class="kb-tab" data-prospect-tab="proposal">Proposal</button>
       </div>
@@ -1846,8 +1846,8 @@
       </div>
       <div class="intel-lib-add-pane hidden" id="intel-lib-add-pane">
         <div class="prospect-intel-add-tabs">
-          <button class="kb-tab active" id="intel-lib-tab-file" data-intel-lib-tab="file">📄 File</button>
-          <button class="kb-tab" id="intel-lib-tab-web" data-intel-lib-tab="web">🌐 URL</button>
+          <button class="kb-tab active" id="intel-lib-tab-file" data-intel-lib-tab="file">File</button>
+          <button class="kb-tab" id="intel-lib-tab-web" data-intel-lib-tab="web">URL</button>
         </div>
         ${scope === 'COMPETITOR' ? `
         <div class="intel-mode-row" id="intel-lib-mode-row">
@@ -2799,8 +2799,8 @@
     host.innerHTML = `
       <div class="comp-add-ev">
         <div class="off-intel-tabs">
-          <button type="button" class="kb-tab active" data-ev-tab="file">📄 Deck</button>
-          <button type="button" class="kb-tab" data-ev-tab="url">🌐 URL</button>
+          <button type="button" class="kb-tab active" data-ev-tab="file">Deck</button>
+          <button type="button" class="kb-tab" data-ev-tab="url">URL</button>
           <button type="button" class="kb-tab" data-ev-tab="web">Web search</button>
         </div>
         <div class="off-intel-pane" data-ev-pane="file">
@@ -2974,7 +2974,7 @@
     return `
       <div class="bc-card bc-empty">
         <div class="bc-h">
-          <h3 style="margin:0">⚔ Battlecard · ${escapeHtml(competitor.name)}</h3>
+          <h3 style="margin:0">Battlecard · ${escapeHtml(competitor.name)}</h3>
           <button class="primary-cta" id="bc-regen-btn">Generate battlecard</button>
         </div>
         <p class="kb-subtle" style="margin:8px 0 0 0">No battlecard yet. Add at least one piece of evidence below, then click "Generate battlecard" to synthesise the talk track, objection handlers, and migration story from it.</p>
@@ -2990,7 +2990,7 @@
                        : `Roughly tied (${adv >= 0 ? '+' : ''}${adv}%)`;
     const edited = Array.isArray(bc.editedSections) ? bc.editedSections : [];
     const editPill = (key) => edited.includes(key)
-      ? '<span class="bc-edit-pill" title="You have a manual edit on this section">✎ edited</span>' : '';
+      ? '<span class="bc-edit-pill" title="You have a manual edit on this section">edited</span>' : '';
     // Read-only history view: a banner replaces the live actions, and the
     // per-section edit / regenerate controls are hidden via the modifier class.
     const ver = opts.readOnly ? opts.version : null;
@@ -3007,7 +3007,7 @@
         ${banner}
         <div class="bc-h">
           <div>
-            <h3 style="margin:0">⚔ Battlecard · ${escapeHtml(competitor.name)}</h3>
+            <h3 style="margin:0">Battlecard · ${escapeHtml(competitor.name)}</h3>
             <div class="bc-verdict bc-verdict-${verdictClass}">${escapeHtml(verdictLabel)}</div>
           </div>
           <div class="bc-h-actions">
@@ -5875,7 +5875,7 @@
         menu.innerHTML = `
           <div class="company-sugg-intel-label">Add intel for this product <span class="kb-subtle">(optional — fetched when you finish)</span></div>
           <div class="company-sugg-intel-fields">
-            <label class="company-sugg-file">📄 Deck / file <input type="file" accept=".pdf,.md,.txt,.docx" data-pfile="${i}"></label>
+            <label class="company-sugg-file">Deck / file <input type="file" accept=".pdf,.md,.txt,.docx" data-pfile="${i}"></label>
             <input type="url" class="company-sugg-url" placeholder="https://product-page…" data-purl="${i}">
           </div>
           <div class="company-sugg-status" data-pstatus="${i}"></div>`;
@@ -6015,7 +6015,7 @@
     fetchJson(`/api/portfolio/products/${encodeURIComponent(productId)}/competitors`).then((c) => {
       const comps = c.competitors || [];
       $('company-prod-competitors').innerHTML = comps.length
-        ? comps.map((x) => `<a class="kb-stream-pill stream-file" href="#competitors">⚔ ${escapeHtml(x.name)}</a>`).join(' ')
+        ? comps.map((x) => `<a class="kb-stream-pill stream-file" href="#competitors">${escapeHtml(x.name)}</a>`).join(' ')
         : '<span class="kb-subtle">None pinned — pin this product to a competitor on the Competitors page.</span>';
     }).catch(() => { $('company-prod-competitors').textContent = '—'; });
     try {
@@ -6279,7 +6279,7 @@
     // (see wireDocDetails). Every doc has text, so it's always offered.
     const detailHtml = `
       <details class="ci-detail">
-        <summary>📄 View full document</summary>
+        <summary>View full document</summary>
         <div class="ci-detail-body" data-doc-fulltext="${escapeHtml(d.id)}"></div>
       </details>`;
     const actions = [];
@@ -6305,7 +6305,7 @@
           <div class="ci-title">${title}</div>
           <div class="ci-meta">
             ${streamPill}
-            ${opts.compProductName ? `<span class="kb-stream-pill ci-comp-product" title="Filed under their product">⚔ ${escapeHtml(opts.compProductName)}</span>` : ''}
+            ${opts.compProductName ? `<span class="kb-stream-pill ci-comp-product" title="Filed under their product">${escapeHtml(opts.compProductName)}</span>` : ''}
             ${(d.metadata || {}).relevanceVerified === false ? `<span class="kb-stream-pill warning ci-unverified" title="${escapeHtml((d.metadata || {}).relevanceReason || 'Flagged as a possible mismatch — open to review &amp; confirm')}">⚠ Unverified</span>` : ''}
             <span>${escapeHtml(prettyCategory(d.category))}</span>
             <span>${fmtNum(d.chunk_count)} chunk${d.chunk_count === 1 ? '' : 's'}</span>
@@ -6388,7 +6388,7 @@
       ${(doc.metadata || {}).relevanceVerified === false ? `<div class="kb-result warning intel-doc-quarantine">⚠ <strong>Quarantined — possible mismatch.</strong> ${escapeHtml((doc.metadata || {}).relevanceReason || 'The content may not be about this competitor.')} It's excluded from the battlecard until you confirm it below.</div>` : ''}
       ${contentHtml}
       ${renderScoreboard(md.assessment)}
-      <div class="intel-doc-fulltext-h">📄 Full indexed text</div>
+      <div class="intel-doc-fulltext-h">Full indexed text</div>
       <div class="intel-doc-fulltext" data-doc-fulltext="${escapeHtml(doc.id)}">
         <div class="kb-subtle">Loading full document…</div>
       </div>
@@ -6751,7 +6751,7 @@
     return `
       <details class="ci-scoreboard">
         <summary>
-          <span class="sb-title">⚔ Competitive scoreboard</span>
+          <span class="sb-title">Competitive scoreboard</span>
           <span class="sb-verdict sb-${verdictClass}">${escapeHtml(verdictLabel)}</span>
         </summary>
         <div class="sb-body">
@@ -8090,7 +8090,7 @@
     const noun = scope === 'PROSPECT' ? 'prospect' : 'competitor';
     if (!available) {
       return `<div class="watch-panel">
-        <div class="watch-panel-h">📡 Market Watch</div>
+        <div class="watch-panel-h">Market Watch</div>
         <div class="upsell-note">Monitoring is a <strong>Pro</strong> feature. <a href="#billing">Upgrade your plan</a> to have the AI track this ${noun} for new developments — funding, launches, leadership moves and more.</div>
       </div>`;
     }
@@ -8101,7 +8101,7 @@
     const next = e.watch_next_run_at ? new Date(e.watch_next_run_at).toLocaleString() : null;
     const last = e.watch_last_run_at ? new Date(e.watch_last_run_at).toLocaleString() : null;
     return `<div class="watch-panel">
-      <div class="watch-panel-h">📡 Market Watch
+      <div class="watch-panel-h">Market Watch
         <label class="watch-switch"><input type="checkbox" id="wp-enabled" ${on ? 'checked' : ''}> Watch this ${noun}</label>
       </div>
       <div class="watch-panel-body${on ? '' : ' hidden'}" id="wp-body">
@@ -8243,7 +8243,7 @@
     if (!findings.length) {
       host.innerHTML = `<div class="empty" style="padding:20px 0">
         No market signals yet. Open a <a href="#prospects">prospect</a> or <a href="#competitors">competitor</a>,
-        turn on its <strong>📡 Market Watch</strong> panel and pick a schedule, and the AI will start surfacing
+        turn on its <strong>Market Watch</strong> panel and pick a schedule, and the AI will start surfacing
         developments here.</div>`;
       return;
     }
