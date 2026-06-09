@@ -209,11 +209,16 @@ router.get('/:id/last-mission-tags', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/', async (req, res, next) => {
+// Manual "Add a prospect" (paste a name + website). Charged against the
+// `discovery` meter just like the online sweep (POST /discover) — adding a
+// prospect by hand is the same billable unit as discovering one. A duplicate
+// (or any failure) means no new prospect was created, so the unit is refunded.
+router.post('/', gating.requireFeature('discovery'), gating.requireCapacity('discovery'), async (req, res, next) => {
   try {
     const c = await create(req.tenantId, req.body || {});
     res.status(201).json({ company: c });
   } catch (err) {
+    await gating.refundCapacity(req);
     if (err.code === '23505') return res.status(409).json({ error: 'company with this name already exists' });
     next(err);
   }

@@ -59,6 +59,19 @@ for (const [resource, conf] of Object.entries(TABLES)) {
       if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(id)) {
         return res.status(400).json({ error: 'id must be slug-shaped: [a-z0-9_-], 1-64 chars' });
       }
+      // Dedupe by name within the tenant: the background foundation enrichment
+      // (enrichment.js) may have already created this entity under a different
+      // id scheme ("<slug>-<tenant8>"). Converge on the existing row rather than
+      // minting a parallel duplicate. (products also carries a DB-level unique
+      // guard on (tenant_id, lower(name)) — migration 0048 — which the catch
+      // below turns into a clean 409 if a concurrent create still races in.)
+      const dup = await db.query(
+        `SELECT * FROM ${conf.table} WHERE tenant_id = $1 AND lower(name) = lower($2) LIMIT 1`,
+        [req.tenantId, name]
+      );
+      if (dup.rows[0]) {
+        return res.status(200).json({ [resource.replace(/s$/, '')]: dup.rows[0] });
+      }
       const r = await db.query(
         `INSERT INTO ${conf.table} (id, tenant_id, name, description)
               VALUES ($1, $2, $3, $4) RETURNING *`,
@@ -67,7 +80,7 @@ for (const [resource, conf] of Object.entries(TABLES)) {
       res.status(201).json({ [resource.replace(/s$/, '')]: r.rows[0] });
     } catch (err) {
       if (err.code === '23505') {
-        return res.status(409).json({ error: `${resource.replace(/s$/, '')} with this id already exists` });
+        return res.status(409).json({ error: `${resource.replace(/s$/, '')} already exists` });
       }
       next(err);
     }

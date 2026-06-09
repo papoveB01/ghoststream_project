@@ -5776,15 +5776,14 @@
         });
         const payload = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(payload.error || `HTTP ${r.status}`);
-        result.classList.remove('hidden');
-        result.classList.add('success');
-        result.innerHTML = `<strong>Scheduled.</strong> Mission ID: <span class="mono">${escapeHtml(payload.mission.id.slice(0,8))}</span>. <a href="#" id="missions-go-detail">View detail</a>`;
         form.reset();
         clearMissionAttendees();
-        document.getElementById('missions-go-detail').addEventListener('click', (ev) => {
-          ev.preventDefault();
-          openMissionDetail(payload.mission.id);
-        });
+        result.classList.add('hidden');
+        // Confirm, then take the rep straight to the Upcoming tab so the new
+        // engagement is visible. Previously success left them on the schedule
+        // pane with only a small inline note, so it looked like nothing happened.
+        toast('Engagement scheduled — opening Upcoming.');
+        await switchMissionsTab('upcoming');
       } catch (err) {
         result.classList.remove('hidden');
         result.classList.add('error');

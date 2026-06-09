@@ -29,7 +29,13 @@ router.post('/', gating.requireFeature('engagements'), gating.requireCapacity('e
   try {
     const mission = await service.schedule(req.tenantId, req.body || {});
     res.status(201).json({ mission });
-  } catch (err) { next(err); }
+  } catch (err) {
+    // requireCapacity charged one engagement before we ran; a failed schedule
+    // (validation error, own-company, etc.) must give it back so the tenant
+    // isn't billed for a meeting that never existed.
+    await gating.refundCapacity(req);
+    next(err);
+  }
 });
 
 // GET /missions?when=upcoming|past&status=...
