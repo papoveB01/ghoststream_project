@@ -1083,6 +1083,54 @@ table.dt tr.row-clickable { cursor: pointer; }
 }
 .snap-banner a { color: inherit; text-decoration: underline; }
 
+/* New-vs-existing prospect badge under the schedule form's Company field.
+   Mirrors the server-side find-or-create dedup so the rep knows whether
+   scheduling will reuse a prospect or create one. */
+.prospect-match {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.prospect-match .prospect-match-icon { font-size: 13px; line-height: 1; }
+.prospect-match strong { font-weight: 600; }
+.prospect-match.is-existing { color: var(--accent); }
+.prospect-match.is-new { color: var(--warn); }
+
+/* Post-engagement "pull intelligence" nudge — a fixed toast that appears when a
+   new prospect's engagement completes. Action navigates to the prospect's
+   Signals tab and starts a research run. */
+.intel-prompt {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 1000;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  border: 1px solid var(--accent-soft, var(--border-2));
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+  animation: intel-prompt-in 160ms ease-out;
+}
+@keyframes intel-prompt-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.intel-prompt-body { display: flex; align-items: flex-start; gap: 10px; }
+.intel-prompt-icon { font-size: 18px; line-height: 1.2; }
+.intel-prompt-title { font-size: 13.5px; line-height: 1.4; }
+.intel-prompt-title strong { font-weight: 600; }
+.intel-prompt-sub { margin-top: 3px; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+.intel-prompt-actions { display: flex; align-items: center; gap: 14px; }
+.intel-prompt-actions .primary-cta { padding: 7px 14px; font-size: 13px; }
+
 /* Schedule-form "More options" — collapsed by default. The visible part of
    the form stays at three fields (Company · When · URL); domain, contact,
    attendees, tags and notes hide in here until the rep opens them or until

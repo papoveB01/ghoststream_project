@@ -93,6 +93,16 @@ async function findOrCreate(tenantId, { name, domain, primaryContact, country, c
     }
     return row;
   }
+  // No name match. Before creating, try matching by domain — a calendar event's
+  // company-name heuristic (derived from an attendee's email domain) often
+  // differs from how the prospect was originally saved (e.g. "Acme Corp" vs
+  // "Acme"). Matching on domain here prevents a duplicate prospect per meeting.
+  // Callers (mission scheduling) already strip public-mail domains before
+  // passing one in, so this only ever matches real company domains.
+  if (domain) {
+    const byDomain = await findByDomain(tenantId, domain);
+    if (byDomain) return byDomain;
+  }
   return create(tenantId, { name: name.trim(), domain, primaryContact, country, city, address, phone, email });
 }
 

@@ -1734,6 +1734,16 @@
     const dlBtn = $('prospect-research-download-btn');
     if (dlBtn) dlBtn.addEventListener('click', () => downloadProspectResearch(company));
 
+    // One-shot: arrived from the "pull intelligence" prompt after a new
+    // prospect's engagement completed → jump to Signals + start research.
+    if (window._pendingIntelPull && window._pendingIntelPull === company.id) {
+      window._pendingIntelPull = null;
+      const signalsTab = host.querySelector('[data-prospect-tab="signals"]');
+      if (signalsTab) signalsTab.click();
+      const runBtn = $('prospect-intel-run-btn');
+      if (runBtn) runBtn.click();
+    }
+
     // ── Intel: add a note → filed as a retrievable prospect doc (unified store) ──
     const noteBtn = $('prospect-note-add-btn');
     if (noteBtn) noteBtn.addEventListener('click', async () => {
@@ -4191,10 +4201,53 @@
     }
     // Snap-autofill the tags from past missions against this company.
     snapAutofillForCompany($('missions-company').value);
+    // Tell the rep whether this calendar event maps to an existing prospect or
+    // will create a brand-new one when they schedule (matched on name + domain).
+    updateProspectMatchBadge();
     const result = $('missions-form-result');
     if (result) {
       result.classList.remove('hidden', 'error'); result.classList.add('success');
       result.innerHTML = `Pulled from your calendar: <strong>${escapeHtml(ev.title || 'meeting')}</strong>. Review and adjust below, then schedule.`;
+    }
+  }
+
+  // Normalize a domain/URL down to its bare host (drops protocol, www, path).
+  function normProspectHost(d) {
+    if (!d) return '';
+    return String(d).trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0].toLowerCase();
+  }
+
+  // Match the schedule form's company-name + domain against the tenant's known
+  // prospects (loaded into _missionsCompanyByName by populateScheduleForm).
+  // Name match wins; otherwise fall back to a domain match — mirrors the
+  // server's companies.findOrCreate dedup so the badge predicts the real outcome.
+  function findProspectMatch(name, domain) {
+    const nm = String(name || '').trim().toLowerCase();
+    if (nm && _missionsCompanyByName.has(nm)) return _missionsCompanyByName.get(nm);
+    const host = normProspectHost(domain);
+    if (host) {
+      for (const c of _missionsCompanyByName.values()) {
+        if (normProspectHost(c.domain) === host) return c;
+      }
+    }
+    return null;
+  }
+
+  // Render the new-vs-existing prospect badge under the company field.
+  function updateProspectMatchBadge() {
+    const el = $('missions-prospect-match');
+    if (!el) return;
+    const name = (($('missions-company') || {}).value || '').trim();
+    const domain = (($('missions-domain') || {}).value || '').trim();
+    if (!name && !domain) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+    const match = findProspectMatch(name, domain);
+    el.classList.remove('hidden', 'is-new', 'is-existing');
+    if (match) {
+      el.classList.add('is-existing');
+      el.innerHTML = `<span class="prospect-match-icon">✓</span> Existing prospect: <strong>${escapeHtml(match.name)}</strong>${match.domain ? ` <span class="kb-subtle">(${escapeHtml(match.domain)})</span>` : ''}`;
+    } else {
+      el.classList.add('is-new');
+      el.innerHTML = `<span class="prospect-match-icon">✨</span> New prospect — <strong>${escapeHtml(name || domain)}</strong> will be added when you schedule.`;
     }
   }
 
@@ -4773,6 +4826,17 @@
         await loadMissionsList(when);
       });
     });
+
+    // After rendering Past, surface a one-time "pull intelligence" nudge for the
+    // most recent completed engagement against a still-un-researched prospect —
+    // covers the case where the rep wasn't watching the detail when it finished.
+    if (when === 'past') {
+      const prompted = intelPromptedSet();
+      const candidate = rows
+        .filter((m) => m.status === 'COMPLETED' && m.company_id && !prompted.has(m.id))
+        .sort((a, b) => new Date(b.scheduled_at || 0) - new Date(a.scheduled_at || 0))[0];
+      if (candidate) maybePromptIntelForCompletedMission(candidate);
+    }
   }
 
   function missionRow(m) {
@@ -5069,6 +5133,133 @@
           cancelTeamsBtn.textContent = `🛑 Cancel ${mtgLabel}`;
         }
       });
+    }
+
+    // Watch for completion. If the call hasn't finished processing yet, poll so
+    // we can nudge the rep to pull intelligence the moment the engagement flips
+    // to COMPLETED. If it's already COMPLETED, offer the pull right away.
+    if (['COMPLETED', 'CANCELLED', 'FAILED'].includes(String(m.status))) {
+      stopMissionCompletionPoll();
+      if (m.status === 'COMPLETED') maybePromptIntelForCompletedMission(m);
+    } else {
+      startMissionCompletionPoll(id);
+    }
+  }
+
+  // ── New-prospect intelligence nudge (post-engagement) ────────────────────
+  // When an engagement against a brand-new prospect completes, offer to jump to
+  // the prospect's Signals tab and pull intelligence. "New prospect" = a company
+  // with no completed (or running) research run yet. We only nudge once per
+  // engagement, persisted in localStorage so a reload doesn't re-nag.
+
+  let _missionDetailPollTimer = null;
+  let _missionDetailPollId = null;
+
+  function stopMissionCompletionPoll() {
+    if (_missionDetailPollTimer) { clearTimeout(_missionDetailPollTimer); _missionDetailPollTimer = null; }
+    _missionDetailPollId = null;
+  }
+
+  function startMissionCompletionPoll(missionId) {
+    stopMissionCompletionPoll();
+    _missionDetailPollId = missionId;
+    let polls = 0;
+    const tick = async () => {
+      // Bail if a newer detail opened or the rep navigated off the detail pane.
+      if (_missionDetailPollId !== missionId) return;
+      const pane = $('missions-pane-detail');
+      if (!pane || pane.classList.contains('hidden')) { stopMissionCompletionPoll(); return; }
+      if (++polls > 40) { stopMissionCompletionPoll(); return; } // ~10 min cap
+      try {
+        const d = await fetchJson(`/api/missions/${missionId}`);
+        const mm = d.mission;
+        if (mm && mm.status === 'COMPLETED') {
+          stopMissionCompletionPoll();
+          renderEngagementRecording(mm, missionId); // portal likely exists now
+          maybePromptIntelForCompletedMission(mm);
+          return;
+        }
+        if (mm && (mm.status === 'CANCELLED' || mm.status === 'FAILED')) { stopMissionCompletionPoll(); return; }
+      } catch { /* transient — keep polling */ }
+      _missionDetailPollTimer = setTimeout(tick, 15000);
+    };
+    _missionDetailPollTimer = setTimeout(tick, 15000);
+  }
+
+  function intelPromptedSet() {
+    try { return new Set(JSON.parse(localStorage.getItem('ds_intel_prompted') || '[]')); }
+    catch { return new Set(); }
+  }
+  function markIntelPrompted(missionId) {
+    try {
+      const s = intelPromptedSet(); s.add(missionId);
+      // Keep the list bounded — only recent ids matter.
+      localStorage.setItem('ds_intel_prompted', JSON.stringify([...s].slice(-200)));
+    } catch { /* ignore */ }
+  }
+
+  // Resolve whether a completed engagement warrants an intelligence nudge.
+  // Returns {id, name, missionId} for the prospect, or null.
+  async function intelPullCandidate(m) {
+    if (!m || m.status !== 'COMPLETED' || !m.company_id) return null;
+    if (intelPromptedSet().has(m.id)) return null;
+    // Authoritative "new prospect" check: skip if research is already done or
+    // in flight. A null/FAILED run still counts as "no intelligence yet".
+    try {
+      const data = await fetchJson(`/api/knowledge/research/${encodeURIComponent(m.company_id)}`);
+      const r = data.research;
+      if (r && (r.status === 'DONE' || r.status === 'RUNNING')) return null;
+    } catch { /* treat as no research */ }
+    return { id: m.company_id, name: m.company_name || 'this prospect', missionId: m.id };
+  }
+
+  async function maybePromptIntelForCompletedMission(m) {
+    try {
+      const cand = await intelPullCandidate(m);
+      if (cand) showIntelPrompt(cand);
+    } catch { /* non-fatal */ }
+  }
+
+  function showIntelPrompt(cand) {
+    const old = document.getElementById('intel-prompt');
+    if (old) old.remove();
+    const el = document.createElement('div');
+    el.id = 'intel-prompt';
+    el.className = 'intel-prompt';
+    el.setAttribute('role', 'status');
+    el.innerHTML = `
+      <div class="intel-prompt-body">
+        <span class="intel-prompt-icon">✨</span>
+        <div>
+          <div class="intel-prompt-title">Engagement with <strong>${escapeHtml(cand.name)}</strong> is complete</div>
+          <div class="intel-prompt-sub">New prospect — pull intelligence now to map the opportunity?</div>
+        </div>
+      </div>
+      <div class="intel-prompt-actions">
+        <button class="primary-cta" id="intel-prompt-go">Pull intelligence</button>
+        <button class="kb-link-btn" id="intel-prompt-dismiss">Dismiss</button>
+      </div>`;
+    document.body.appendChild(el);
+    document.getElementById('intel-prompt-dismiss').addEventListener('click', () => {
+      markIntelPrompted(cand.missionId); el.remove();
+    });
+    document.getElementById('intel-prompt-go').addEventListener('click', () => {
+      markIntelPrompted(cand.missionId); el.remove();
+      startProspectIntelPull(cand.id);
+    });
+  }
+
+  // Navigate to the prospect's Signals tab and kick off a research run. Re-runs
+  // the prospects loader (loaded=false) so wireProspectDetail re-binds and the
+  // one-shot _pendingIntelPull below fires after render.
+  async function startProspectIntelPull(companyId) {
+    _prospectsState.selectedCompanyId = companyId;
+    window._pendingIntelPull = companyId;
+    loaded.prospects = false;
+    if ((window.location.hash || '').replace('#', '') === 'prospects') {
+      await switchSection('prospects', {});
+    } else {
+      window.location.hash = '#prospects';
     }
   }
 
@@ -5504,6 +5695,7 @@
     if (companyInput) {
       let snapTimer = null;
       companyInput.addEventListener('input', () => {
+        updateProspectMatchBadge();
         if (snapTimer) clearTimeout(snapTimer);
         snapTimer = setTimeout(() => {
           snapAutofillForCompany(companyInput.value);
@@ -5511,10 +5703,13 @@
         }, 200);
       });
       companyInput.addEventListener('change', () => {
+        updateProspectMatchBadge();
         snapAutofillForCompany(companyInput.value);
         loadAttendeeCandidatesForCompany(companyInput.value);
       });
     }
+    const domainInput = $('missions-domain');
+    if (domainInput) domainInput.addEventListener('input', updateProspectMatchBadge);
     wireAttendeePicker();
 
     // Schedule-import buttons — wired once; enabled/disabled per connection
