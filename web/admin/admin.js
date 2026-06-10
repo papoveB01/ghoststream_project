@@ -159,7 +159,7 @@
         { element: nav('company'),      popover: { title: '2 · Company foundation', description: 'Built automatically from your website on day one — your products, positioning and personas. Every AI output is grounded here.', side: 'right', align: 'start' } },
         { element: nav('prospects'),    popover: { title: '3 · Find prospects', description: 'Add them manually, pull from your CRM, or let AI <b>discover</b> companies showing a buying signal — ranked by priority and matched to your products (≈ 3 credits a run).', side: 'right', align: 'start' } },
         { element: nav('competitors'),  popover: { title: '4 · Know your competitors', description: 'Auto-discover rivals by region, pull their real product lineup, and generate battlecards — so you walk in knowing how to win.', side: 'right', align: 'start' } },
-        { element: nav('missions'),     popover: { title: '5 · Run the call', description: 'Schedule an engagement; the AI joins, records, and turns the meeting into a Sales Portal + SOW — with a pre-call brief ready beforehand.', side: 'right', align: 'start' } },
+        { element: nav('missions'),     popover: { title: '5 · Run the call', description: 'Schedule an engagement; the AI joins, records, and turns the meeting into a Note Taker Report with a consolidated summary — pre-call brief ready beforehand.', side: 'right', align: 'start' } },
         { element: nav('integrations'), popover: { title: '6 · Connect your stack', description: 'Link your calendar and CRM (HubSpot is live) to pull prospects and auto-schedule. Optional — but it supercharges everything.', side: 'right', align: 'start' } },
         { element: '#tour-btn',         popover: { title: 'You\'re all set 🚀', description: 'Start by reviewing your <b>Company</b> foundation, then <b>Discover</b> your first prospects. Replay this tour any time from here.', side: 'bottom', align: 'end' } },
       ],
@@ -4231,7 +4231,7 @@
         <label class="rec-toggle">
           <input type="checkbox" id="rec-video" ${s.videoEnabled ? 'checked' : ''} ${dis}>
           <span><strong>Record video of meetings</strong><br>
-          <span class="kb-subtle">Off = the notetaker still joins and transcribes for your AI summary, SOW &amp; coaching — but no video is ever stored.</span></span>
+          <span class="kb-subtle">Off = the notetaker still joins and transcribes for your AI summary, consolidated report &amp; coaching — but no video is ever stored.</span></span>
         </label>
       </div>
       <div class="rec-row rec-retention">
@@ -5336,14 +5336,16 @@
       return;
     }
     const objection = p && p.moments && p.moments.objection && p.moments.objection.quote;
-    const sow = p && p.sowSummary;
+    // Consolidated report one-liner (new shape), falling back to the legacy
+    // SOW scope line on portals analysed before the rename.
+    const reportLine = p && ((p.report && p.report.overview) || (p.sowSummary && p.sowSummary.scopeOneLine)) || '';
     const participants = ((p && p.participants) || []).map((x) => x.name || x.role).filter(Boolean);
     host.innerHTML = `
       <div class="missions-recording-card">
         <div class="missions-recording-h">Recording & analysis</div>
         ${participants.length ? `<div class="kb-subtle rec-participants">${participants.map(escapeHtml).join(' · ')}</div>` : ''}
         ${objection ? `<div class="rec-moment"><span class="rec-label">Top objection</span> “${escapeHtml(objection)}”</div>` : ''}
-        ${sow ? `<div class="rec-moment"><span class="rec-label">SOW</span> ${escapeHtml(String(sow).slice(0, 240))}${String(sow).length > 240 ? '…' : ''}</div>` : ''}
+        ${reportLine ? `<div class="rec-moment"><span class="rec-label">Report</span> ${escapeHtml(reportLine.slice(0, 240))}${reportLine.length > 240 ? '…' : ''}</div>` : ''}
         <div class="rec-actions">
           <a class="primary-cta" href="/portal/?id=${escapeHtml(portalId)}" target="_blank" rel="noopener">▶ Open full recording ↗</a>
           <button class="kb-secondary-btn" id="missions-arena-btn">🎭 Practice in Arena</button>

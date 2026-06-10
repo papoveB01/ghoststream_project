@@ -127,19 +127,34 @@
       }, 1800);
     });
 
-    // SOW
-    if (p.sowSummary) {
-      $('sow-scope').textContent = p.sowSummary.scopeOneLine || '—';
-      $('sow-outcome').textContent = p.sowSummary.outcomeMetric || '—';
-      $('sow-term').textContent = p.sowSummary.termAndExit || '—';
-      const ul = document.createElement('ul');
-      (p.sowSummary.commitments || []).forEach((c) => {
-        const li = document.createElement('li');
-        li.textContent = c;
-        ul.appendChild(li);
-      });
-      $('sow-commitments').innerHTML = '';
-      $('sow-commitments').appendChild(ul);
+    // Consolidated report — current `report` shape, with a fallback mapping
+    // for legacy portals that still carry the old SOW fields.
+    const report = p.report || (p.sowSummary ? {
+      overview: p.sowSummary.scopeOneLine,
+      discussionPoints: [],
+      commitments: p.sowSummary.commitments || [],
+      risksAndObjections: [p.sowSummary.outcomeMetric, p.sowSummary.termAndExit].filter(Boolean).join(' · '),
+    } : null);
+    if (report) {
+      const fillList = (el, items) => {
+        const ul = document.createElement('ul');
+        (items || []).forEach((c) => {
+          const li = document.createElement('li');
+          li.textContent = c;
+          ul.appendChild(li);
+        });
+        el.innerHTML = '';
+        el.appendChild(ul);
+      };
+      $('report-overview').textContent = report.overview || '—';
+      $('report-risks').textContent = report.risksAndObjections || '—';
+      fillList($('report-commitments'), report.commitments);
+      if ((report.discussionPoints || []).length) {
+        fillList($('report-points'), report.discussionPoints);
+      } else {
+        $('report-points-label').style.display = 'none';
+        $('report-points').style.display = 'none';
+      }
     }
 
     // Next steps
@@ -151,11 +166,42 @@
       ns.appendChild(li);
     });
 
-    // Model pills
-
-    $('sign-btn').addEventListener('click', () => {
-      alert('SOW signing flow — coming next sprint.');
-    });
+    // Report actions: download is open to anyone with the link (same access
+    // as the portal); saving to prospect intel is a workspace action and
+    // only appears for signed-in admin viewers.
+    if (report) {
+      const dl = $('download-report-btn');
+      dl.classList.remove('hidden');
+      dl.addEventListener('click', () => {
+        window.open(`/api/portals/${encodeURIComponent(p.id)}/report.docx`, '_blank');
+      });
+      if (p.viewerRole === 'admin') {
+        const saveBtn = $('save-intel-btn');
+        saveBtn.classList.remove('hidden');
+        saveBtn.addEventListener('click', async () => {
+          const status = $('report-status');
+          saveBtn.disabled = true;
+          const label = saveBtn.textContent;
+          saveBtn.textContent = 'Saving…';
+          status.classList.add('hidden');
+          try {
+            const r = await fetch(`/api/portals/${encodeURIComponent(p.id)}/save-intel`, {
+              method: 'POST', credentials: 'include',
+            });
+            const body = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+            saveBtn.textContent = 'Saved to intel ✓';
+            status.textContent = `Saved as “${body.title}” on the prospect's profile — it now feeds briefs, research and proposals.`;
+            status.classList.remove('hidden');
+          } catch (err) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = label;
+            status.textContent = `Couldn't save: ${err.message}`;
+            status.classList.remove('hidden');
+          }
+        });
+      }
+    }
 
     // Step 8: Verified Deal Intelligence + Knowledge Gap rendering.
     renderKnowledgeAudit(p);
@@ -202,7 +248,7 @@
   //   1. Verified Intelligence banner   — always shown when grounding exists
   //   2. Fact-Check shield badges       — placed on each Moment-of-Truth card
   //   3. Knowledge Gap callouts         — manager-view only (?view=manager)
-  //   4. Download Verified SOW button   — gated on "no HIGH severity gaps"
+  //   4. HIGH-severity gap warning on the report (download stays available)
 
   function shieldSvg(size = 14) {
     return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -333,24 +379,20 @@
       section.classList.remove('hidden');
     }
 
-    // 4. Download Verified SOW — gated on no HIGH severity gaps ----------
-    const downloadBtn = $('download-verified-btn');
-    const blockNote = $('sow-block-note');
-    if (hasGrounding && !hasHighSeverity && p.sowSummary) {
-      downloadBtn.classList.remove('hidden');
-      downloadBtn.addEventListener('click', () => downloadVerifiedSow(p));
-    } else if (hasGrounding && hasHighSeverity) {
-      // High-severity gap detected — explicitly block the download so the
-      // rep doesn't ship a contract that contradicts the company's own KB.
-      blockNote.textContent =
-        '⚠ Download blocked: HIGH-severity Knowledge Gap detected. ' +
-        'A manager must review the flagged claims before this SOW can be sent.';
-      blockNote.classList.remove('hidden');
+    // 4. High-severity gap warning on the report ------------------------
+    // The report stays downloadable (it's a record of the meeting, not a
+    // contract), but a HIGH-severity Knowledge Gap is surfaced loudly so a
+    // manager reviews the flagged claims before sharing it onward.
+    if (hasGrounding && hasHighSeverity) {
+      const status = $('report-status');
+      status.textContent =
+        '⚠ HIGH-severity Knowledge Gap detected on this call — review the flagged claims below before sharing this report.';
+      status.classList.remove('hidden');
     }
   }
 
   function prettyAuditTarget(which) {
-    return ({ objection: 'Moment of Truth', agreement: 'Agreement', sow: 'Statement of Work' })[which] || which;
+    return ({ objection: 'Moment of Truth', agreement: 'Agreement', report: 'Meeting Report' })[which] || which;
   }
 
   // "2 PDFs, 1 Website, 1 Social Post" — Omni-Sync source-type breakdown.
@@ -372,12 +414,6 @@
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return null;
     return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-  }
-
-  function downloadVerifiedSow(p) {
-    // The server builds a rich, branded .docx from the call's SOW (verified
-    // against the knowledge base). Public endpoint — same access as the portal.
-    window.open(`/api/portals/${encodeURIComponent(p.id)}/sow.docx`, '_blank');
   }
 
   // ===================================================================

@@ -11,14 +11,14 @@
 //                 claim that contradicts the KB as a "Knowledge Gap" citing
 //                 the offending chunk(s).
 //   STAGE 2 (Flash): draft the human-readable artifacts (follow-up email +
-//                 SOW summary) from the structured moments.
+//                 consolidated report) from the structured moments.
 
 const gemini = require('./gemini');
 const retrieval = require('./knowledge/retrieval');
 
 const { modelFor } = require('./models');
 const ANALYSIS_MODEL = modelFor('callAnalysis');   // flagship moment-of-truth → PRO (gated)
-const CONTENT_MODEL = modelFor('content');          // SOW / portal writing
+const CONTENT_MODEL = modelFor('content');          // report / portal writing
 const ENTITY_MODEL = modelFor('callEntities');      // cheap entity extraction → LITE
 
 // ---------------------------------------------------------------- STAGE 0
@@ -251,8 +251,8 @@ async function findMoments(transcript, { groundedKnowledge, preCallBrief } = {})
 
 // ---------------------------------------------------------------- STAGE 2
 //
-// Lightweight writer model produces the follow-up email + SOW summary
-// using the structured moments from stage 1.
+// Lightweight writer model produces the follow-up email + the consolidated
+// meeting report using the structured moments from stage 1.
 
 const FOLLOWUP_SCHEMA = {
   type: 'object',
@@ -265,18 +265,18 @@ const FOLLOWUP_SCHEMA = {
       },
       required: ['subject', 'bodyPlainText'],
     },
-    sowSummary: {
+    report: {
       type: 'object',
       properties: {
-        scopeOneLine: { type: 'string' },
-        commitments: { type: 'array', items: { type: 'string' } },
-        outcomeMetric: { type: 'string' },
-        termAndExit: { type: 'string' },
+        overview: { type: 'string', description: '2-3 sentence consolidated overview of the meeting: who met, why, and where the deal stands.' },
+        discussionPoints: { type: 'array', items: { type: 'string' }, description: 'The 3-6 key topics actually discussed, each one line, specific.' },
+        commitments: { type: 'array', items: { type: 'string' }, description: 'Who committed to what, with any numbers/dates quoted.' },
+        risksAndObjections: { type: 'string', description: 'Objections or risks raised and how (or whether) they were addressed. One short paragraph; "None raised." if none.' },
       },
-      required: ['scopeOneLine', 'commitments', 'outcomeMetric', 'termAndExit'],
+      required: ['overview', 'discussionPoints', 'commitments', 'risksAndObjections'],
     },
   },
-  required: ['email', 'sowSummary'],
+  required: ['email', 'report'],
 };
 
 async function draftFollowups({ transcript, moments }) {
@@ -289,9 +289,10 @@ async function draftFollowups({ transcript, moments }) {
         parts: [
           {
             text:
-              'You are the writer that turns a Moment-of-Truth into a follow-up email and a draft SOW. ' +
-              'Tone: concise, specific, no sales clichés. Quote numbers the rep already gave. ' +
-              'Email body must be EXACTLY three sentences. No greeting/signature.\n\n' +
+              'You are the writer that turns a sales call into a follow-up email and a CONSOLIDATED MEETING REPORT. ' +
+              'Tone: concise, specific, no sales clichés. Quote numbers the participants actually gave; never invent. ' +
+              'Email body must be EXACTLY three sentences. No greeting/signature. ' +
+              'The report consolidates the whole meeting: a short overview, the key discussion points, every commitment made (by either side), and the risks/objections raised.\n\n' +
               `## Call summary\n${moments.summary}\n\n` +
               '## Prospect agreement\n' +
               `${moments.agreement.quote}\n` +
@@ -399,7 +400,7 @@ async function runPipeline(transcript, {
   return {
     moments: stage1.moments,
     email: stage2.email,
-    sowSummary: stage2.sowSummary,
+    report: stage2.report,
     grounding: {
       kbReady,
       entities: entities ? entities.entities : [],

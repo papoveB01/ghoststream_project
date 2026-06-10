@@ -74,7 +74,7 @@
 
       <!-- ENGAGEMENT OVERRIDE — manager re-scopes which KB lane the fact-check
            drew from. Re-running analysis with a new profile replaces the
-           portal's moments/email/sow/gaps in place. Hidden until manager view. -->
+           portal's moments/email/report/gaps in place. Hidden until manager view. -->
       <section class="engagement-panel hidden" id="engagement-panel" role="region" aria-label="Engagement override">
         <div class="engagement-head">
           <span class="gap-section-eyebrow">MANAGER VIEW</span>
@@ -153,7 +153,7 @@
           </div>
         </div>
 
-        <!-- RIGHT: email + SOW + next steps -->
+        <!-- RIGHT: email + consolidated report + next steps -->
         <div class="portal-col">
           <div class="card">
             <div class="card-h">
@@ -169,29 +169,29 @@
           <div class="card">
             <div class="card-h">
               <div class="card-h-eyebrow">
-                SOW · DRAFT
-                <span class="fact-check-slot" data-fact-check="sow"></span>
+                CONSOLIDATED REPORT
+                <span class="fact-check-slot" data-fact-check="report"></span>
               </div>
-              <div class="card-h-title">Statement of Work</div>
+              <div class="card-h-title">Meeting Report</div>
             </div>
             <dl class="sow">
-              <dt>Scope</dt><dd id="sow-scope">—</dd>
-              <dt>Commitments</dt><dd id="sow-commitments">—</dd>
-              <dt>Outcome metric</dt><dd id="sow-outcome">—</dd>
-              <dt>Term &amp; exit</dt><dd id="sow-term">—</dd>
+              <dt>Overview</dt><dd id="report-overview">—</dd>
+              <dt id="report-points-label">Discussed</dt><dd id="report-points">—</dd>
+              <dt>Commitments</dt><dd id="report-commitments">—</dd>
+              <dt>Risks &amp; objections</dt><dd id="report-risks">—</dd>
             </dl>
             <div class="sow-actions">
-              <button class="primary-cta" id="sign-btn">Sign SOW</button>
-              <button class="verified-cta hidden" id="download-verified-btn" type="button">
+              <button class="primary-cta hidden" id="save-intel-btn" type="button">Save to prospect intel</button>
+              <button class="verified-cta hidden" id="download-report-btn" type="button">
                 <span class="verified-cta-shield" aria-hidden="true">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
                     <path d="M12 2 4 5v6c0 5 3.5 9.5 8 11 4.5-1.5 8-6 8-11V5l-8-3z" fill="currentColor"/>
                     <path d="m8.5 12.5 2.5 2.5 4.5-5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                   </svg>
                 </span>
-                Download Verified SOW
+                Download .docx
               </button>
-              <div class="sow-block-note hidden" id="sow-block-note"></div>
+              <div class="sow-block-note hidden" id="report-status"></div>
             </div>
           </div>
 

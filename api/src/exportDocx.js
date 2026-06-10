@@ -1,7 +1,7 @@
 // "Download as Word" engine. Builds rich, branded .docx documents — a running
 // header (brand + doc type), a title block, the content (headings, bold,
 // bullets, and real tables), and a footer with a note + page numbers. Every
-// download (research, battlecard, proposal recommendation, SOW) flows through
+// download (research, battlecard, proposal recommendation, meeting report) flows through
 // here so they share one polished layout.
 
 const express = require('express');

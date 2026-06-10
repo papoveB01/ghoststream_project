@@ -323,7 +323,7 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
 
     // STEP 3 — video ingest + clip. Skipped entirely in transcript-only mode
     // (recording privacy — meta.captureVideo=false): the meeting was still
-    // transcribed + analysed above, so the portal / SOW / coaching are
+    // transcribed + analysed above, so the portal / report / coaching are
     // unaffected; we simply never store a recording. Same try/catch story
     // otherwise: the transcript stays even if ingest fails.
     const captureVideo = !(m.meta && m.meta.captureVideo === false);
@@ -355,7 +355,7 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
       participants: transcript.participants,
       moments: pipeline.moments,
       email: pipeline.email,
-      sowSummary: pipeline.sowSummary,
+      report: pipeline.report,
       grounding: pipeline.grounding,
       objectionClip,
       videoUid,
@@ -429,7 +429,7 @@ app.post('/first-loop', async (req, res, next) => {
       participants: transcript.participants,
       moments: pipeline.moments,
       email: pipeline.email,
-      sowSummary: pipeline.sowSummary,
+      report: pipeline.report,
       grounding: pipeline.grounding,
       objectionClip: clip,
       videoUid: ingest.uid,
@@ -459,44 +459,114 @@ app.post('/first-loop', async (req, res, next) => {
 // =========================================================================
 
 // Portal data is split into two trust tiers:
-//   - CUSTOMER tier (no auth): moments+email+sow+grounding citations are
+//   - CUSTOMER tier (no auth): moments+email+report+grounding citations are
 //     visible (these are the customer-facing "Verified" trust signal), but
 //     `moments.knowledgeGaps` is stripped — those are internal performance
 //     observations and could be a liability if a prospect sees them.
 //   - MANAGER tier (valid admin cookie): full payload including gap content.
 //
 // `audit` is ALWAYS included with the count + a hasHighSeverity flag computed
-// server-side. That lets the client gate the "Download Verified SOW" button
+// server-side. That lets the client surface the gap warning on the report
 // without ever seeing the gap contents — a client-only gate could be
 // bypassed by a customer toggling `?view=manager`.
-// GET /portals/:id/sow.docx — the call's Statement of Work as a rich Word doc.
-// Public, like the Sales Portal view itself (prospect-facing shared link).
-app.get('/portals/:id/sow.docx', async (req, res, next) => {
+// The consolidated report as markdown — shared by the .docx export and the
+// save-to-intel flow. Handles both the current `report` shape and legacy
+// portals that still carry the old `sowSummary` fields.
+function consolidatedReportMarkdown(p) {
+  const L = [];
+  const r = p.report || null;
+  const s = p.sowSummary || null;
+  if (!r && !s) return null;
+  L.push('## Overview', (r && r.overview) || (s && s.scopeOneLine) || '—', '');
+  const points = r && Array.isArray(r.discussionPoints) ? r.discussionPoints : [];
+  if (points.length) {
+    L.push('## Key discussion points');
+    points.forEach((d) => L.push(`- ${d}`));
+    L.push('');
+  }
+  L.push('## Commitments');
+  const commitments = (r && r.commitments) || (s && s.commitments) || [];
+  if (commitments.length) commitments.forEach((c) => L.push(`- ${c}`));
+  else L.push('- —');
+  L.push('', '## Risks & objections',
+    (r && r.risksAndObjections) || [s && s.outcomeMetric, s && s.termAndExit].filter(Boolean).join(' · ') || '—', '');
+  const next = (p.moments && Array.isArray(p.moments.nextSteps)) ? p.moments.nextSteps : [];
+  if (next.length) {
+    L.push('## Next steps');
+    next.forEach((n) => L.push(`- ${n}`));
+    L.push('');
+  }
+  return L.join('\n');
+}
+
+// GET /portals/:id/report.docx — the consolidated meeting report as a rich
+// Word doc. Public, like the Sales Portal view itself (shared link). The old
+// /sow.docx path stays as an alias so links in sent emails keep working.
+async function reportDocxHandler(req, res, next) {
   try {
     const p = await store.getPortal(req.params.id);
-    if (!p || !p.sowSummary) return res.status(404).json({ error: 'not found' });
-    const s = p.sowSummary;
+    const md = p && consolidatedReportMarkdown(p);
+    if (!md) return res.status(404).json({ error: 'not found' });
     const xdoc = require('./exportDocx');
+    const L = [md];
     const cits = (p.grounding && Array.isArray(p.grounding.citations)) ? p.grounding.citations : [];
-    const L = ['## Scope', s.scopeOneLine || '—', '', '## Commitments'];
-    (s.commitments || []).forEach((c) => L.push(`- ${c}`));
-    L.push('', '## Terms', '', '| Field | Detail |', '| --- | --- |',
-      `| Outcome metric | ${xdoc.cellSafe(s.outcomeMetric || '—')} |`,
-      `| Term & exit | ${xdoc.cellSafe(s.termAndExit || '—')} |`, '');
     if (cits.length) {
       L.push('## Verification', '', '| Reference | Source |', '| --- | --- |');
       cits.forEach((c) => L.push(`| [${xdoc.cellSafe(c.citation || '')}] | ${xdoc.cellSafe(c.documentTitle || '—')} |`));
     }
     const buffer = await xdoc.markdownToDocxBuffer(L.join('\n'), {
-      title: 'Statement of Work',
+      title: 'Consolidated Meeting Report',
       subtitle: `${p.title || 'Sales call'} · ${new Date(p.createdAt || Date.now()).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}`,
       brand: 'DealScope',
-      docType: 'Statement of Work · Verified',
+      docType: 'Consolidated Meeting Report',
       footerNote: 'Generated by DealScope · verified against your knowledge base',
     });
     res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    res.set('Content-Disposition', `attachment; filename="statement-of-work-${req.params.id}.docx"`);
+    res.set('Content-Disposition', `attachment; filename="meeting-report-${req.params.id}.docx"`);
     res.send(buffer);
+  } catch (err) { next(err); }
+}
+app.get('/portals/:id/report.docx', reportDocxHandler);
+app.get('/portals/:id/sow.docx', reportDocxHandler); // legacy links
+
+// POST /portals/:id/save-intel — persist the consolidated report as a
+// PROSPECT-scoped KB document on the linked company, so it feeds briefs,
+// research and proposals like any other intel. Authed (workspace members
+// only — never the public share link), tenant-checked against the meeting.
+app.post('/portals/:id/save-intel', async (req, res, next) => {
+  try {
+    const claims = auth.verifyToken(auth.tokenFromRequest(req));
+    if (!claims) return res.status(401).json({ error: 'sign in to save intel' });
+    const p = await store.getPortal(req.params.id);
+    if (!p) return res.status(404).json({ error: 'portal not found' });
+    const m = p.meetingId ? await store.getMeeting(p.meetingId) : null;
+    const tenantId = (m && m.meta && m.meta.tenantId) || null;
+    if (!tenantId || tenantId !== claims.tid) return res.status(404).json({ error: 'portal not found' });
+
+    // Resolve the prospect: meeting meta first, then the linked mission row.
+    let companyId = (m.meta && m.meta.missionCompanyId) || null;
+    if (!companyId && m.meta && m.meta.missionId) {
+      const mission = await missionsService.get(tenantId, m.meta.missionId).catch(() => null);
+      if (mission) companyId = mission.company_id || null;
+    }
+    if (!companyId) return res.status(400).json({ error: 'This meeting isn’t linked to a prospect — open it from an engagement to save intel.', code: 'NO_PROSPECT' });
+
+    const md = consolidatedReportMarkdown(p);
+    if (!md) return res.status(400).json({ error: 'No report on this portal yet.' });
+
+    const when = new Date(p.createdAt || Date.now()).toISOString().slice(0, 10);
+    const title = `Meeting report: ${p.title || 'Sales call'} — ${when}`;
+    const service = require('./knowledge/service');
+    const doc = await service.ingest({
+      tenantId,
+      file: { buffer: Buffer.from(`# ${title}\n\n${md}`, 'utf8'), mimetype: 'text/markdown', originalname: 'meeting-report.md' },
+      category: 'ORG_INTELLIGENCE',
+      title,
+      metadata: { isMeetingReport: true, portalId: p.id },
+      scope: 'PROSPECT',
+      companyId,
+    });
+    res.status(201).json({ ok: true, documentId: doc && doc.id ? doc.id : null, title });
   } catch (err) { next(err); }
 });
 
@@ -1080,7 +1150,7 @@ app.put('/portals/:id/engagement', auth.authMiddleware, async (req, res, next) =
 });
 
 // Re-run the analysis pipeline against the stored transcript with an
-// optional new engagement profile. Replaces moments/email/sow/grounding on
+// optional new engagement profile. Replaces moments/email/report/grounding on
 // the portal record. Requires that the meeting's transcript was persisted
 // — fixture portals (inserted directly into Redis) won't have one and the
 // endpoint refuses with 422.
@@ -1134,7 +1204,7 @@ app.post('/portals/:id/reanalyze', auth.authMiddleware, async (req, res, next) =
     // createdAt, video clip — replace the AI-generated fields.
     p.moments    = pipeline.moments;
     p.email      = pipeline.email;
-    p.sowSummary = pipeline.sowSummary;
+    p.report     = pipeline.report;
     p.grounding  = pipeline.grounding;
     p.models     = pipeline.models;
     p.usage      = pipeline.usage;
