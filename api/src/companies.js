@@ -442,6 +442,39 @@ router.get('/:id/engagements', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /companies/:id/emails — captured email threads for this prospect (emails the
+// rep sent via the composer's CC + prospect replies, filed by inbound-parse).
+// Powers the "Emails" list on the prospect Intel tab.
+router.get('/:id/emails', async (req, res, next) => {
+  try {
+    const rows = (await db.query(
+      `SELECT id, title, metadata, created_at FROM kb_documents
+        WHERE tenant_id = $1 AND company_id = $2 AND scope = 'PROSPECT'
+          AND metadata->>'source' = 'inbound-email' AND status = 'READY'
+        ORDER BY created_at DESC LIMIT 50`,
+      [req.tenantId, req.params.id]
+    )).rows;
+    const emails = rows.map((r) => {
+      const md = r.metadata || {};
+      return { id: r.id, subject: String(r.title || 'Email').replace(/^Email:\s*/i, ''), from: md.from || null, receivedAt: md.receivedAt || r.created_at };
+    });
+    res.json({ emails });
+  } catch (err) { next(err); }
+});
+
+// GET /companies/:id/emails/:docId/body — the full captured-email body, on demand.
+router.get('/:id/emails/:docId/body', async (req, res, next) => {
+  try {
+    const own = (await db.query(
+      `SELECT 1 FROM kb_documents WHERE id = $1 AND tenant_id = $2 AND company_id = $3 AND metadata->>'source' = 'inbound-email'`,
+      [req.params.docId, req.tenantId, req.params.id]
+    )).rows[0];
+    if (!own) return res.status(404).json({ error: 'email not found' });
+    const d = await require('./knowledge/service').getDocumentText(req.tenantId, req.params.docId);
+    res.json({ text: (d && d.text) || '' });
+  } catch (err) { next(err); }
+});
+
 router.patch('/:id', async (req, res, next) => {
   try {
     const c = await update(req.tenantId, req.params.id, req.body || {});

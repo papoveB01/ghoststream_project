@@ -1567,6 +1567,48 @@
     };
   }
 
+  // Captured emails for a prospect (sent via the composer's CC + prospect replies),
+  // shown on the Intel tab. Each row expands to the thread body on demand.
+  async function renderProspectEmails(companyId) {
+    const host = $('prospect-emails-host');
+    if (!host) return;
+    host.innerHTML = '';
+    let emails = [];
+    try { const r = await fetchJson(`/api/companies/${encodeURIComponent(companyId)}/emails`); emails = r.emails || []; }
+    catch { return; }
+    if (!emails.length) return; // nothing captured yet — keep the tab uncluttered
+    const rows = emails.map((e) => {
+      const d = e.receivedAt ? new Date(e.receivedAt).toLocaleString() : '';
+      return `<div class="pemail-row">
+        <div class="pemail-main">
+          <span class="pemail-subject">${escapeHtml(e.subject || '(no subject)')}</span>
+          <span class="pemail-meta">${escapeHtml(e.from || '')}${d ? ' · ' + escapeHtml(d) : ''}</span>
+        </div>
+        <button type="button" class="kb-link-btn pemail-toggle" data-id="${escapeHtml(e.id)}">View</button>
+        <pre class="pemail-body hidden" data-body="${escapeHtml(e.id)}"></pre>
+      </div>`;
+    }).join('');
+    host.innerHTML = `
+      <div class="pemail-head"><span class="pemail-title">✉ Emails</span>
+        <span class="kb-subtle">${emails.length} captured · sent (via CC) + replies for this prospect</span></div>
+      <div class="pemail-list">${rows}</div>`;
+    host.querySelectorAll('.pemail-toggle').forEach((b) => b.addEventListener('click', async () => {
+      const id = b.dataset.id;
+      const body = host.querySelector(`[data-body="${id}"]`);
+      if (!body) return;
+      if (!body.classList.contains('hidden')) { body.classList.add('hidden'); b.textContent = 'View'; return; }
+      if (body.dataset.loaded !== '1') {
+        body.textContent = 'Loading…';
+        try {
+          const r = await fetchJson(`/api/companies/${encodeURIComponent(companyId)}/emails/${encodeURIComponent(id)}/body`);
+          body.textContent = (r.text || '(empty)').replace(/^#\s*Email:.*\n+/i, '');
+          body.dataset.loaded = '1';
+        } catch (err) { body.textContent = err.message; }
+      }
+      body.classList.remove('hidden'); b.textContent = 'Hide';
+    }));
+  }
+
   function wireQuickResearch(host) {
     const btn = $('prospect-quick-run-btn');
     if (!btn || btn.dataset.wired === '1') return;
@@ -1844,6 +1886,7 @@
 
       <div class="prospect-tab-pane hidden" data-prospect-pane="intel">
         <span class="kb-subtle">Files, links, and notes you've saved about this company. They're searchable and feed both the research summary and your pre-call briefs.</span>
+        <div id="prospect-emails-host" class="prospect-emails"></div>
         <div class="prospect-note-add">
           <input id="prospect-note-title" type="text" placeholder='Note title (e.g. "From their Q3 call")'>
           <textarea id="prospect-note-text" rows="3" placeholder="Paste a note — internal context, conference notes, a forwarded email…"></textarea>
@@ -1956,6 +1999,7 @@
     const intelHost = $('prospect-intel-library-host');
     const reloadIntel = () => { if (intelHost) renderIntelLibrary({ container: intelHost, scope: 'PROSPECT', companyId: company.id, onChange: () => { loaded.prospects = false; } }); };
     reloadIntel();
+    renderProspectEmails(company.id);
 
     // ── Signals: research run / re-analyze / download ──
     refreshProspectIntelStatus(company.id);

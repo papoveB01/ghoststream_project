@@ -3916,6 +3916,28 @@ details.schedule-advanced > .schedule-advanced-body {
 }
 .ec-send:hover { background: var(--accent-hover); }
 .ec-send:active { transform: translateY(1px); }
+
+/* ── Prospect captured-emails list (Intel tab) ─────────────────────────── */
+.prospect-emails:empty { display: none; }
+.prospect-emails { margin: 6px 0 14px; }
+.pemail-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.pemail-title { font-weight: 700; font-size: 13px; color: var(--text); }
+.pemail-list { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.pemail-row {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px;
+  padding: 9px 12px; border-bottom: 1px solid var(--border); background: var(--bg);
+}
+.pemail-row:last-child { border-bottom: none; }
+.pemail-row:hover { background: var(--surface-2); }
+.pemail-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pemail-subject { font-weight: 600; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pemail-meta { font-size: 11.5px; color: var(--muted); }
+.pemail-body {
+  grid-column: 1 / -1; margin: 6px 0 0; padding: 10px 12px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); font: inherit; font-size: 12.5px;
+  line-height: 1.55; color: var(--text-2); white-space: pre-wrap; word-break: break-word;
+  max-height: 320px; overflow: auto;
+}
 .comp-threat {
   display: inline-flex; align-items: center; font-family: var(--mono); padding: 2px 7px; border-radius: 5px;
   font-size: 10px; font-weight: 600; letter-spacing: .04em; white-space: nowrap; border: 1px solid transparent;
