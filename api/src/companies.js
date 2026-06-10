@@ -209,16 +209,15 @@ router.get('/:id/last-mission-tags', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// Manual "Add a prospect" (paste a name + website). Charged against the
-// `discovery` meter just like the online sweep (POST /discover) — adding a
-// prospect by hand is the same billable unit as discovering one. A duplicate
-// (or any failure) means no new prospect was created, so the unit is refunded.
-router.post('/', gating.requireFeature('discovery'), gating.requireCapacity('discovery'), async (req, res, next) => {
+// Manual "Add a prospect" (paste a name + website). FREE — unlike the online
+// sweep (POST /discover), this runs no Gemini and no web search; it just creates
+// a record, so it doesn't consume a metered `discovery` unit. Still feature-gated
+// so it stays within plans that include prospecting.
+router.post('/', gating.requireFeature('discovery'), async (req, res, next) => {
   try {
     const c = await create(req.tenantId, req.body || {});
     res.status(201).json({ company: c });
   } catch (err) {
-    await gating.refundCapacity(req);
     if (err.code === '23505') return res.status(409).json({ error: 'company with this name already exists' });
     next(err);
   }
@@ -239,6 +238,8 @@ router.post('/discover', gating.requireFeature('discovery'), gating.requireCapac
     // global/any detection handles the broad-region fallthrough.
     const region = [city, country].filter(Boolean).join(', ') || broadRegion;
     const industry = String((req.body && req.body.industry) || '').trim();
+    // How many prospects to return this turn (max 100, clamped in discovery.js).
+    const limit = parseInt((req.body && (req.body.limit ?? req.body.count)), 10) || undefined;
     const tenant = (await db.query(`SELECT name FROM tenants WHERE id = $1`, [req.tenantId])).rows[0];
     if (!tenant || !tenant.name) return res.status(422).json({ error: 'set your company name first (Company page) so we know who to prospect for' });
     const prof = (await db.query(`SELECT positioning, objectives, ideal_customer_profile FROM tenant_profiles WHERE tenant_id = $1`, [req.tenantId])).rows[0] || {};
@@ -252,7 +253,7 @@ router.post('/discover', gating.requireFeature('discovery'), gating.requireCapac
       positioning: prof.positioning || '',
       objectives: prof.objectives || '',
       idealCustomerProfile: prof.ideal_customer_profile || '',
-      region, industry,
+      region, industry, limit,
     });
     if (!result) {
       await gating.refundCapacity(req); // don't charge for a failed discovery
@@ -322,6 +323,84 @@ router.post('/discover/add', async (req, res, next) => {
     }
 
     res.status(201).json({ company, signalSaved });
+  } catch (err) { next(err); }
+});
+
+// POST /companies/:id/find-contacts — STAGE 1 of the Apollo contact pull. Resolves
+// a missing website from the company name (Apollo org search), autofills company
+// HQ/phone (blanks only), and returns the decision-makers as cheap TEASER
+// candidates (no email revealed yet → no credit spent per person). The rep then
+// ticks who they want and calls add-contacts to reveal+save just those. Feature-
+// gated on `discovery`; not capacity-metered (Apollo enforces its own credits).
+router.post('/:id/find-contacts', gating.requireFeature('discovery'), async (req, res, next) => {
+  try {
+    const apollo = require('./knowledge/apollo');
+    if (!apollo.isConfigured()) return res.status(503).json({ error: 'Apollo is not configured on this workspace' });
+    const company = await get(req.tenantId, req.params.id);
+    if (!company) return res.status(404).json({ error: 'prospect not found' });
+
+    // Resolve a missing domain from the company name, then persist it so future
+    // pulls (and discovery/watch) have it. 422 only if we truly can't find one.
+    let domain = bareHost(company.domain || '');
+    let resolvedDomain = false;
+    if (!domain) {
+      domain = await apollo.findDomainByName(req.tenantId, company.name);
+      if (!domain) return res.status(422).json({ error: `couldn't auto-find a website for "${company.name}" — add one on the prospect, then try again`, code: 'NO_DOMAIN' });
+      resolvedDomain = true;
+      await update(req.tenantId, company.id, { domain });
+    }
+    const want = Math.max(1, Math.min(25, parseInt((req.body && req.body.limit), 10) || 12));
+
+    // Company-level enrichment — fill ONLY blank fields (never overwrite the rep).
+    let company2 = await get(req.tenantId, company.id);
+    try {
+      const org = await apollo.enrichOrganization(req.tenantId, domain);
+      if (org) {
+        const [oCity, oState, oCountry] = String(org.location || '').split(',').map((s) => s.trim());
+        const patch = {};
+        if (!company2.city && oCity) patch.city = oCity;
+        if (!company2.country && (oCountry || oState)) patch.country = oCountry || oState;
+        if (!company2.phone && org.phone) patch.phone = org.phone;
+        if (Object.keys(patch).length) company2 = (await update(req.tenantId, company.id, patch)) || company2;
+      }
+    } catch (e) { console.warn('[find-contacts] org enrich failed:', (e && e.message) || e); }
+
+    // Teaser candidates only — cheap (one search call, no per-person reveal).
+    const candidates = await apollo.searchPeople(req.tenantId, domain, { limit: want, reveal: false });
+    res.json({ ok: true, domain, resolvedDomain, company: company2, candidates });
+  } catch (err) { next(err); }
+});
+
+// POST /companies/:id/add-contacts { ids:[apolloPersonId,...] } — STAGE 2. Reveals
+// each selected Apollo person (people/match → real name + verified email; one
+// credit each) and saves them into prospect_contacts (dedupe by email).
+router.post('/:id/add-contacts', gating.requireFeature('discovery'), async (req, res, next) => {
+  try {
+    const apollo = require('./knowledge/apollo');
+    const contacts = require('./contacts');
+    if (!apollo.isConfigured()) return res.status(503).json({ error: 'Apollo is not configured on this workspace' });
+    const company = await get(req.tenantId, req.params.id);
+    if (!company) return res.status(404).json({ error: 'prospect not found' });
+    const ids = [...new Set((Array.isArray(req.body && req.body.ids) ? req.body.ids : []).map((s) => String(s || '').trim()).filter(Boolean))].slice(0, 25);
+    if (!ids.length) return res.status(400).json({ error: 'select at least one contact to add' });
+
+    let created = 0, existing = 0, failed = 0;
+    const saved = [];
+    for (const id of ids) {
+      const p = await apollo.revealPerson(req.tenantId, id);
+      if (!p || !p.email) { failed++; continue; }
+      try {
+        const c = await contacts.create(req.tenantId, req.user && req.user.sub, {
+          companyId: company.id, name: p.name, email: p.email,
+          role: p.title || 'Unknown', title: p.title || null,
+        });
+        created++; saved.push(c);
+      } catch (e) {
+        if (e.code === 'EMAIL_TAKEN') existing++;
+        else { failed++; console.warn('[add-contacts] save failed:', (e && e.message) || e); }
+      }
+    }
+    res.json({ ok: true, requested: ids.length, created, existing, failed, contacts: saved });
   } catch (err) { next(err); }
 });
 

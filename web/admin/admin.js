@@ -1245,6 +1245,9 @@
         <label class="comp-finder-field">Target customer segment
           <select id="pdisc-industry" title="The businesses you sell TO (e.g. bars, clubs, restaurants) — not your own industry"><option value="">Any segment</option></select>
         </label>
+        <label class="comp-finder-field">How many <span class="kb-subtle">(max 100)</span>
+          <input id="pdisc-limit" type="number" min="1" max="100" step="1" value="30" title="How many prospects to return this search, ranked by priority (max 100 per search).">
+        </label>
         <button type="button" class="primary-cta" id="pdisc-search">Search</button>
       </div>
       <div id="pdisc-body"></div>`;
@@ -1262,13 +1265,15 @@
     const region = $('pdisc-region').value; const industry = $('pdisc-industry').value;
     const country = ($('pdisc-country').value || '').trim();
     const city = ($('pdisc-city').value || '').trim();
+    // How many to return — clamp to 1..100 (server clamps too); default 30.
+    const limit = Math.max(1, Math.min(100, parseInt($('pdisc-limit').value, 10) || 30));
     const where = [city, country].filter(Boolean).join(', ') || (region && !/global|any/i.test(region) ? region : '');
     btn.disabled = true; const o = btn.textContent; btn.textContent = 'Searching…';
-    body.innerHTML = `<div class="kb-subtle" style="padding:12px">Searching the web for prospects${industry ? ` in ${escapeHtml(industry)}` : ''}${where ? ` · ${escapeHtml(where)}` : ''}…</div>`;
+    body.innerHTML = `<div class="kb-subtle" style="padding:12px">Searching the web for up to ${limit} prospects${industry ? ` in ${escapeHtml(industry)}` : ''}${where ? ` · ${escapeHtml(where)}` : ''}…</div>`;
     try {
       const data = await fetchJson('/api/companies/discover', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region, industry, country, city }),
+        body: JSON.stringify({ region, industry, country, city, limit }),
       });
       renderProspectCandidates(body, (data && data.prospects) || [], data && data.dataHints);
     } catch (err) {
@@ -1581,7 +1586,12 @@
       </div>
 
       <div class="prospect-tab-pane hidden" data-prospect-pane="people">
-        <span class="kb-subtle">The people you deal with at this company. You'll pick from this list when you schedule a call or create a Teams meeting.</span>
+        <div class="prospect-people-head" style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+          <span class="kb-subtle">The people you deal with at this company. You'll pick from this list when you schedule a call or create a Teams meeting.</span>
+          <button class="kb-secondary-btn" id="prospect-pull-contacts" title="Find decision-makers at this company via Apollo; we'll auto-find the website if it's missing" style="white-space:nowrap">⤓ Find contacts</button>
+        </div>
+        <div class="kb-result hidden" id="prospect-pull-result" style="margin:8px 0"></div>
+        <div id="prospect-pull-picker" class="hidden" style="margin:8px 0"></div>
         ${contacts.length === 0
           ? '<div class="empty" style="padding:10px 0">No contacts yet. Add the first one below.</div>'
           : `<table class="prospect-contacts-table">
@@ -1794,6 +1804,83 @@
         await loadProspects();
       } catch (err) {
         result.classList.remove('hidden'); result.classList.add('error'); result.textContent = err.message;
+      }
+    });
+
+    // Find contacts via Apollo — two stages so we don't burn reveal credits on
+    // people the rep won't keep. Stage 1 (find-contacts): auto-resolve a missing
+    // website + list decision-makers as teasers (no email revealed yet). The rep
+    // ticks who they want; stage 2 (add-contacts) reveals+saves only those.
+    const pullBtn = $('prospect-pull-contacts');
+    if (pullBtn) pullBtn.addEventListener('click', async () => {
+      const out = $('prospect-pull-result');
+      const picker = $('prospect-pull-picker');
+      picker.classList.add('hidden'); picker.innerHTML = '';
+      out.className = 'kb-result'; out.classList.remove('hidden'); out.textContent = 'Searching Apollo for decision-makers…';
+      pullBtn.disabled = true; const lbl = pullBtn.textContent; pullBtn.textContent = 'Finding…';
+      try {
+        const r = await fetchJson(`/api/companies/${encodeURIComponent(company.id)}/find-contacts`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ limit: 12 }),
+        });
+        const cands = (r.candidates || []).filter((c) => c.id);
+        const note = r.resolvedDomain ? ` · website auto-found: <strong>${escapeHtml(r.domain)}</strong>` : '';
+        if (!cands.length) {
+          out.className = 'kb-result'; out.innerHTML = `No decision-makers found at <strong>${escapeHtml(r.domain || '')}</strong>${note}.`;
+          if (r.resolvedDomain) { loaded.prospects = false; await loadProspects(); }
+          return;
+        }
+        out.className = 'kb-result success';
+        out.innerHTML = `Found ${cands.length} decision-maker${cands.length === 1 ? '' : 's'} at <strong>${escapeHtml(r.domain)}</strong>${note}. Tick the ones to add, then “Add selected”.`;
+        const rows = cands.map((c, i) => {
+          const reachable = c.hasEmail !== false;
+          const who = escapeHtml(c.firstName || c.name || 'Unknown');
+          const title = escapeHtml(c.title || '');
+          const badge = reachable ? '<span class="kb-stream-pill stream-file" title="Email available">✉ email</span>' : '<span class="kb-subtle" title="No email on file — can\'t be added">no email</span>';
+          return `<label class="apollo-cand-row" style="display:flex;align-items:center;gap:8px;padding:5px 2px;border-bottom:1px solid var(--hairline,#eee)">
+            <input type="checkbox" data-apollo-id="${escapeHtml(c.id)}" ${reachable ? 'checked' : 'disabled'}>
+            <span style="flex:1"><strong>${who}</strong>${title ? ` — ${title}` : ''}</span>
+            ${badge}</label>`;
+        }).join('');
+        picker.innerHTML = `<div class="apollo-cand-list">${rows}</div>
+          <div style="margin-top:8px;display:flex;gap:10px;align-items:center">
+            <button class="primary-cta" id="apollo-add-selected">Add selected</button>
+            <span class="kb-subtle" id="apollo-pick-count"></span>
+          </div>`;
+        picker.classList.remove('hidden');
+        const updateCount = () => {
+          const n = picker.querySelectorAll('input[data-apollo-id]:checked').length;
+          $('apollo-pick-count').textContent = n ? `${n} selected` : 'none selected';
+          $('apollo-add-selected').disabled = !n;
+        };
+        picker.querySelectorAll('input[data-apollo-id]').forEach((cb) => cb.addEventListener('change', updateCount));
+        updateCount();
+        $('apollo-add-selected').addEventListener('click', async () => {
+          const ids = [...picker.querySelectorAll('input[data-apollo-id]:checked')].map((cb) => cb.getAttribute('data-apollo-id'));
+          if (!ids.length) return;
+          const addBtn = $('apollo-add-selected'); addBtn.disabled = true; addBtn.textContent = 'Adding…';
+          out.className = 'kb-result'; out.textContent = `Revealing ${ids.length} contact${ids.length === 1 ? '' : 's'} + saving…`;
+          try {
+            const a = await fetchJson(`/api/companies/${encodeURIComponent(company.id)}/add-contacts`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ids }),
+            });
+            const parts = [];
+            if (a.created) parts.push(`${a.created} added`);
+            if (a.existing) parts.push(`${a.existing} already on file`);
+            if (a.failed) parts.push(`${a.failed} had no reachable email`);
+            out.className = 'kb-result success'; out.textContent = `${parts.join(' · ') || 'Nothing to add'}.`;
+            picker.classList.add('hidden'); picker.innerHTML = '';
+            loaded.prospects = false; await loadProspects();
+          } catch (err) {
+            out.className = 'kb-result error'; out.textContent = err.message;
+            addBtn.disabled = false; addBtn.textContent = 'Add selected';
+          }
+        });
+      } catch (err) {
+        out.className = 'kb-result error'; out.textContent = err.message;
+      } finally {
+        pullBtn.disabled = false; pullBtn.textContent = lbl;
       }
     });
   }

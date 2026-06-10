@@ -159,14 +159,25 @@ async function enrichOrganization(tenantId, domain) {
 
 // People search at a company. `titles` overrides the leadership default;
 // `name` lets the Teams modal autocomplete pass the partial name typed.
-async function searchPeople(tenantId, domain, { titles, name, limit = 10 } = {}) {
+//
+// 2026-06-10: Apollo retired /v1/mixed_people/search for API callers (422
+// "deprecated … use mixed_people/api_search"). The replacement api_search
+// returns only TEASERS — id, first_name, title, organization, and has_email/
+// has_*_phone booleans — never the actual email/last name. To get a real
+// email you must take the teaser id and call people/match (revealPerson),
+// which spends an enrichment credit. So:
+//   reveal=false (default) → one cheap search call, teaser candidates. Used by
+//     the Teams autocomplete + dossier leadership where we only show name/title.
+//   reveal=true → search THEN people/match each has_email candidate, returning
+//     fully-revealed contacts (name + verified email). Used by "Find contacts".
+async function searchPeople(tenantId, domain, { titles, name, limit = 10, reveal = false } = {}) {
   if (!isConfigured() || !domain) return [];
   const cleaned = bareDomain(domain);
   if (!cleaned) return [];
   const titleList = Array.isArray(titles) && titles.length ? titles : DEFAULT_LEADERSHIP_TITLES;
-  // Cache key includes the title-set hash + the name query so different
-  // filters don't collide.
-  const variantKey = `${cleaned}:${titleList.join(',')}:${name || ''}:${limit}`;
+  // Cache key includes the title-set + name query + reveal flag so the teaser
+  // and revealed variants (very different cost + shape) don't collide.
+  const variantKey = `${cleaned}:${titleList.join(',')}:${name || ''}:${limit}:${reveal ? 'r' : 't'}`;
   const cached = await readCache(tenantId, 'people', variantKey);
   if (cached !== null) return cached;
   if (await tripDailyCap(tenantId)) return [];
@@ -176,12 +187,56 @@ async function searchPeople(tenantId, domain, { titles, name, limit = 10 } = {})
     per_page: Math.min(25, Math.max(1, limit)),
   };
   if (name) body.q_keywords = name;
-  const res = await apolloRequest('POST', '/v1/mixed_people/search', body);
+  const res = await apolloRequest('POST', '/v1/mixed_people/api_search', body);
   if (!res.ok) { await writeCache(tenantId, 'people', variantKey, []); return []; }
-  const raw = (res.data && (res.data.people || res.data.contacts)) || [];
-  const slim = raw.slice(0, limit).map(normalizePerson).filter(Boolean);
-  await writeCache(tenantId, 'people', variantKey, slim);
+  const candidates = ((res.data && res.data.people) || []).slice(0, limit).map(normalizeCandidate).filter(Boolean);
+  if (!reveal) { await writeCache(tenantId, 'people', variantKey, candidates); return candidates; }
+  // Reveal: enrich each candidate that has an email on file (skip the rest —
+  // no point spending a credit on a record with no email). Sequential to keep
+  // the daily-cap counter honest and avoid hammering Apollo.
+  const revealed = [];
+  for (const c of candidates) {
+    if (!c.hasEmail || !c.id) continue;
+    if (await tripDailyCap(tenantId)) break; // out of daily budget — stop revealing
+    const full = await revealPerson(tenantId, c.id);
+    if (full && full.email) revealed.push(full);
+  }
+  await writeCache(tenantId, 'people', variantKey, revealed);
+  return revealed;
+}
+
+// Reveal a person's real name + email by their Apollo id (the teaser id from
+// api_search). Costs an enrichment credit. Cached per (tenant, id). Returns the
+// normalized full person, or null on soft-failure / no match.
+async function revealPerson(tenantId, id) {
+  if (!isConfigured() || !id) return null;
+  const cached = await readCache(tenantId, 'reveal', id);
+  if (cached !== null) return cached;
+  const res = await apolloRequest('POST', '/v1/people/match', { id, reveal_personal_emails: true });
+  if (!res.ok) { await writeCache(tenantId, 'reveal', id, null); return null; }
+  const p = (res.data && res.data.person) || null;
+  if (!p) { await writeCache(tenantId, 'reveal', id, null); return null; }
+  const slim = normalizePerson(p);
+  await writeCache(tenantId, 'reveal', id, slim);
   return slim;
+}
+
+// Resolve a company's primary website domain from its NAME, via Apollo org
+// search. Used to auto-fill a prospect's missing domain so contact-pull can run.
+// Returns a bare domain (e.g. "nedbank.co.za") or null. Cached per (tenant, name).
+async function findDomainByName(tenantId, name) {
+  if (!isConfigured()) return null;
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return null;
+  const cached = await readCache(tenantId, 'orgname', key);
+  if (cached) return cached; // positive hit only — null is re-tried (cheap, rare)
+  if (await tripDailyCap(tenantId)) return null;
+  const res = await apolloRequest('POST', '/v1/organizations/search', { q_organization_name: name, per_page: 1 });
+  if (!res.ok) return null;
+  const arr = (res.data && (res.data.organizations || res.data.accounts)) || [];
+  const dom = arr[0] ? bareDomain(arr[0].primary_domain || arr[0].website_url || '') : null;
+  await writeCache(tenantId, 'orgname', key, dom || null);
+  return dom || null;
 }
 
 // Enrich one person by email — used when the rep adds a contact with
@@ -221,6 +276,8 @@ function normalizeOrg(o) {
     revenueRange: fmtRange(o.annual_revenue_printed || o.organization_revenue_printed,
                            o.estimated_annual_revenue || null) || (o.annual_revenue_printed || null),
     foundedYear:  o.founded_year || null,
+    phone:        (o.phone || o.sanitized_phone || o.primary_phone
+                   || (o.primary_phone && o.primary_phone.number) || null),
     description:  o.short_description || o.seo_description || null,
     technologies: Array.isArray(o.technology_names) ? o.technology_names.slice(0, 20) : null,
     keywords:     Array.isArray(o.keywords) ? o.keywords.slice(0, 15) : null,
@@ -231,6 +288,24 @@ function normalizeOrg(o) {
     fundingTotal: o.total_funding_printed || (o.total_funding ? `$${shortNum(o.total_funding)}` : null),
     latestFundingRound: o.latest_funding_stage || null,
     latestFundingAt:    o.latest_funding_round_date || null,
+  };
+}
+
+// Teaser from /v1/mixed_people/api_search — no real email/last name, just
+// enough to decide whether to spend a credit revealing it (has_email flag + id).
+function normalizeCandidate(p) {
+  if (!p || !p.id) return null;
+  return {
+    id:        p.id,
+    firstName: p.first_name || null,
+    // last_name comes back obfuscated in search; the real name arrives on reveal.
+    name:      [p.first_name, p.last_name].filter(Boolean).join(' ') || p.first_name || null,
+    title:     p.title || null,
+    seniority: p.seniority || null,
+    company:   (p.organization && p.organization.name) || null,
+    hasEmail:  Boolean(p.has_email),
+    hasPhone:  Boolean(p.has_direct_phone),
+    email:     null, // never present in the teaser — reveal via revealPerson(id)
   };
 }
 
@@ -263,9 +338,11 @@ function shortNum(n) {
 module.exports = {
   isConfigured,
   enrichOrganization,
+  findDomainByName,
   searchPeople,
+  revealPerson,
   enrichPerson,
   dailyUsage,
   // exposed for unit tests
-  _internals: { bareDomain, normalizeOrg, normalizePerson, shortNum },
+  _internals: { bareDomain, normalizeOrg, normalizePerson, normalizeCandidate, shortNum },
 };
