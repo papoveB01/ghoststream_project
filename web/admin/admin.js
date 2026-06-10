@@ -1521,27 +1521,39 @@
     // Populate the Cc/Bcc picker with this prospect's OTHER contacts (with email).
     const pick = $('ec-recip-pick');
     const recCc = $('ec-recip-cc'); const recBcc = $('ec-recip-bcc');
+    let pickerContacts = []; // available contacts (with email), minus the primary
     const updateRecBtns = () => { const has = !!pick.value; recCc.disabled = !has; recBcc.disabled = !has; };
+    // Rebuild the dropdown from the available contacts that haven't been added yet,
+    // so a selected email drops out of the list (and returns when its chip is removed).
+    const renderPicker = () => {
+      const taken = new Set(added.map((r) => r.email));
+      const avail = pickerContacts.filter((c) => !taken.has(c.email));
+      pick.innerHTML = avail.length
+        ? '<option value="">Add another contact…</option>' + avail.map((c) =>
+            `<option value="${escapeHtml(c.email)}">${escapeHtml(`${c.name || c.email}${c.role && c.role !== 'Unknown' ? ' · ' + c.role : ''}`)}</option>`).join('')
+        : `<option value="">${pickerContacts.length ? 'All contacts added' : 'No other contacts'}</option>`;
+      pick.disabled = !avail.length;
+      updateRecBtns();
+    };
     const renderChips = () => {
       $('ec-recip-chips').innerHTML = added.map((r, i) =>
         `<span class="ec-chip ec-chip-${r.mode}"><span class="ec-chip-mode">${r.mode}</span>${escapeHtml(r.name || r.email)}<button type="button" class="ec-chip-x" data-i="${i}" aria-label="remove">✕</button></span>`).join('');
       $('ec-recip-chips').querySelectorAll('.ec-chip-x').forEach((b) =>
-        b.addEventListener('click', () => { added.splice(Number(b.dataset.i), 1); renderChips(); }));
+        b.addEventListener('click', () => { added.splice(Number(b.dataset.i), 1); renderChips(); renderPicker(); }));
     };
     const addRecip = (mode) => {
       const email = pick.value; if (!email || email === contact.email || added.some((r) => r.email === email)) return;
-      const opt = pick.selectedOptions[0];
-      added.push({ email, name: (opt && opt.dataset.name) || '', mode });
-      pick.value = ''; updateRecBtns(); renderChips();
+      const c = pickerContacts.find((x) => x.email === email);
+      added.push({ email, name: (c && c.name) || '', mode });
+      renderChips(); renderPicker();
     };
     pick.addEventListener('change', updateRecBtns);
     recCc.addEventListener('click', () => addRecip('cc'));
     recBcc.addEventListener('click', () => addRecip('bcc'));
     if (companyId) {
       fetchJson(`/api/contacts?companyId=${encodeURIComponent(companyId)}`).then((r) => {
-        const others = (r.contacts || []).filter((c) => c.email && c.email !== contact.email);
-        if (!others.length) { pick.disabled = true; pick.innerHTML = '<option value="">No other contacts</option>'; return; }
-        others.forEach((c) => { const o = document.createElement('option'); o.value = c.email; o.dataset.name = c.name || ''; o.textContent = `${c.name || c.email}${c.role && c.role !== 'Unknown' ? ' · ' + c.role : ''}`; pick.appendChild(o); });
+        pickerContacts = (r.contacts || []).filter((c) => c.email && c.email !== contact.email);
+        renderPicker();
       }).catch(() => { pick.disabled = true; });
     } else { pick.disabled = true; }
 
