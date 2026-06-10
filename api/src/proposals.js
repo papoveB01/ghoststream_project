@@ -17,6 +17,7 @@ const store = require('./store');
 const keypoints = require('./knowledge/keypoints');
 const service = require('./knowledge/service');
 const exportDocx = require('./exportDocx');
+const gating = require('./gating');
 
 const MODEL = require('./models').modelFor('proposal');
 const EVIDENCE_TEXT_CAP = parseInt(process.env.PROPOSAL_EVIDENCE_TEXT_CAP || '1800', 10);
@@ -348,9 +349,16 @@ router.get('/version/:id/export', async (req, res, next) => {
 });
 
 // POST /proposals/:companyId/generate — synthesize a new recommendation version.
-router.post('/:companyId/generate', async (req, res, next) => {
+// AI-spend endpoint (multi-layer evidence synthesis): feature-gated on the CORE
+// discovery capability and charged as one research unit (ADR-0004 — maps to
+// the v2 `research` pool; v1 tenants charge their discovery meter). The unit
+// is refunded if generation throws.
+router.post('/:companyId/generate', gating.requireFeature('discovery'), gating.requireCapacity('discovery'), async (req, res, next) => {
   try { res.json(await generate(req.tenantId, req.params.companyId, req.user && req.user.sub)); }
-  catch (err) { next(err); }
+  catch (err) {
+    await gating.refundCapacity(req);
+    next(err);
+  }
 });
 
 // GET /proposals/version/:id — one full version (declared before /:companyId).

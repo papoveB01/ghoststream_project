@@ -12,6 +12,7 @@ const parsers = require('./parsers');
 const preview = require('./preview');
 const research = require('./research');
 const auth = require('../auth');
+const gating = require('../gating');
 const db = require('../db');
 
 // Resolve the tenant a write should land in. Normal users → always their own
@@ -226,9 +227,16 @@ router.get('/research/:companyId', async (req, res, next) => {
   catch (err) { next(err); }
 });
 
-router.post('/research/:companyId', async (req, res, next) => {
+// A full research run is the priced "research run" unit (web sweep + Apollo +
+// AI synthesis — ADR-0004 §3.2): feature-gated and capacity-metered like
+// /companies/discover. The charge maps to the v2 `research` pool (v1:
+// discovery meter). Fire-and-forget: the unit is pre-charged on admission.
+router.post('/research/:companyId', gating.requireFeature('discovery'), gating.requireCapacity('discovery'), async (req, res, next) => {
   try { res.status(202).json({ ok: true, research: await research.start(req.tenantId, req.params.companyId) }); }
-  catch (err) { next(err); }
+  catch (err) {
+    await gating.refundCapacity(req); // start() itself failed → give the unit back
+    next(err);
+  }
 });
 
 // Manual addition of one source (URL or freeform note) to an existing
@@ -244,10 +252,11 @@ router.post('/research/:companyId/sources', async (req, res, next) => {
   }
 });
 
-// Re-run Gemini analysis against the existing dossier (auto + manual
+// Re-run the analysis against the existing dossier (auto + manual
 // sources). Does NOT re-fetch the web — cheap, explicit, idempotent
-// per dossier state.
-router.post('/research/:companyId/reanalyze', async (req, res, next) => {
+// per dossier state. Feature-gated but not capacity-metered (one LLM call,
+// no web/Apollo spend — a correction flow, not a new research run).
+router.post('/research/:companyId/reanalyze', gating.requireFeature('discovery'), async (req, res, next) => {
   try {
     const out = await research.reanalyze(req.tenantId, req.params.companyId);
     res.json({ research: out });
