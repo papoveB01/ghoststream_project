@@ -406,12 +406,23 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
       `EMAIL TYPE — ${cat.label}: ${cat.goal}\n` +
       (engagement ? 'Ground the email concretely in the PAST ENGAGEMENT shown in the context — reference what was actually discussed (specifics, not generic phrases), and build the next step from there.\n' : '') +
       (instruction ? `MUST REFLECT (the sender's explicit instruction — follow it closely): ${instruction}\n` : '') +
-      `Write a compelling subject line and a plain-text body. Greet the recipient by first name and end with a short sign-off from "${senderName}". Keep the body tight (~120 words, a few short sentences). Be specific and credible using the context below; NEVER invent facts, figures, or events the context does not support. Professional and warm — no clichés or spammy phrasing.\n\n` +
+      'Write a compelling subject line and a WELL-STRUCTURED, professional plain-text body. Format the body like a real business email:\n' +
+      `- A greeting on its OWN line ("Hi ${(contact.name || '').split(/\\s+/)[0] || 'there'},"), then a blank line.\n` +
+      '- 2 to 3 SHORT paragraphs (1-2 sentences each), each separated by a BLANK line. One idea per paragraph: (1) the reason for writing / hook, (2) the value or relevance to them, (3) a single clear call to action.\n' +
+      `- A sign-off on its own lines: a closing such as "Best," on one line, then "${senderName}" on the next line.\n` +
+      'Separate every paragraph with a real blank line (two newlines). Keep it concise (~110 words total). Be specific and credible using the context below; NEVER invent facts, figures, or events the context does not support. Professional and warm — no clichés, no spammy phrasing, no markdown.\n\n' +
       `===CONTEXT===\n${ctxBlock}`;
 
     const gemini = require('./gemini');
     const MODEL = require('./models').modelFor('content');
-    const SCHEMA = { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] };
+    const SCHEMA = {
+      type: 'object',
+      properties: {
+        subject: { type: 'string', description: 'A concise, specific subject line (no "Re:" unless continuing a thread).' },
+        body: { type: 'string', description: 'The plain-text email body, formatted as a professional email: a greeting on its own line, a blank line, then 2-3 short paragraphs each separated by a blank line, then a sign-off ("Best,\\n<sender name>"). Use real newline characters between paragraphs — never run sentences together.' },
+      },
+      required: ['subject', 'body'],
+    };
     let draft = {};
     try {
       const ai = gemini.getClient();
