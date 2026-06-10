@@ -42,7 +42,7 @@ function trialDaysLeft(tenant) {
 // the plan caps. Standalone tenants ignore all of this (no parent passed).
 function entitlementsFor(tenant, opts = {}) {
   if (!tenant) {
-    return { active: false, reason: 'no_tenant', planKey: null, planName: null, features: [], caps: {}, lifetimeCaps: false, daysLeft: null, isSubtenant: false, parentTenantId: null };
+    return { active: false, reason: 'no_tenant', planKey: null, planName: null, planVersion: 1, features: [], caps: {}, lifetimeCaps: false, daysLeft: null, isSubtenant: false, parentTenantId: null, seats: null, overage: null };
   }
   const isSub = !!tenant.parent_tenant_id;
   const parent = isSub ? (opts.parent || null) : null;
@@ -50,10 +50,14 @@ function entitlementsFor(tenant, opts = {}) {
   // parent row wasn't supplied (defensive), fall back to read-only.
   const billingTenant = isSub ? parent : tenant;
   const state = billingTenant ? accessState(billingTenant) : { active: false, reason: 'no_parent' };
-  const plan = plans.planFor(billingTenant ? billingTenant.plan : tenant.plan);
+  // plan_version selects the catalog (1 = grandfathered ADR-0003 caps,
+  // 2 = ADR-0004 seat-scaled caps). Sub-tenants ride the parent's version.
+  const plan = plans.planForTenant(billingTenant || tenant);
+  const planVersion = ((billingTenant || tenant).plan_version) || 1;
 
   let features = plan.features;
-  let caps = plan.caps;
+  // v2: paid extra seats grow the research/engagement allowances (ADR-0004 §4.1).
+  let caps = plans.effectiveCaps(plan, (billingTenant && billingTenant.extra_seats) || 0);
   let lifetimeCaps = !!plan.lifetimeCaps;
   let active = state.active;
   let reason = state.reason;
@@ -69,12 +73,34 @@ function entitlementsFor(tenant, opts = {}) {
     const mask = Array.isArray(tenant.feature_overrides) ? tenant.feature_overrides : ceiling;
     features = parentEntitled ? ceiling.filter((f) => mask.includes(f)) : [];
     // Parent-allocated caps override the plan caps per meter; unspecified meters
-    // fall back to the plan cap.
+    // fall back to the plan's BASE caps (a child never inherits the parent's
+    // per-seat bonuses — the parent allocates explicitly via cap_overrides).
     caps = (tenant.cap_overrides && typeof tenant.cap_overrides === 'object')
       ? { ...plan.caps, ...tenant.cap_overrides } : plan.caps;
     lifetimeCaps = false; // a sub-tenant under a paid parent uses monthly caps
     if (!parentEntitled) { active = false; reason = 'account_downgraded'; }
   }
+
+  // Seat add-on shape for the Billing UI (v2 standalone tenants only — a
+  // sub-tenant's seats are the parent's concern).
+  const seats = (!isSub && planVersion >= 2 && plan.seats) ? {
+    included: plan.seats.included,
+    extra: (tenant.extra_seats) || 0,
+    max: plan.seats.max != null ? plan.seats.max : null,
+    priceMonthly: plan.seats.priceMonthly || null,
+    perSeat: plan.seats.perSeat || null,
+  } : null;
+
+  // Metered engagement overage (ADR-0004 §6 step 5): eligible when the v2 plan
+  // defines it, the billing tenant holds a live subscription, and the metered
+  // price is configured. The actual Stripe meter event needs the CUSTOMER id —
+  // carried here so gating doesn't re-fetch the tenant row.
+  const planOverage = planVersion >= 2 && plan.overage && plan.overage.engagements;
+  const overage = (planOverage && billingTenant && billingTenant.stripe_subscription_id && plans.overagePriceIdFor(plan.key)) ? {
+    meter: 'engagements',
+    priceMonthly: plan.overage.engagements.priceMonthly,
+    customerId: billingTenant.stripe_customer_id || null,
+  } : null;
 
   return {
     active,
@@ -82,9 +108,12 @@ function entitlementsFor(tenant, opts = {}) {
     status: (billingTenant || tenant).subscription_status,
     planKey: plan.key,
     planName: plan.name,
+    planVersion,
     features,
     caps,
     lifetimeCaps,
+    seats,
+    overage,
     daysLeft: trialDaysLeft(billingTenant || tenant),
     currentPeriodEnd: (billingTenant || tenant).current_period_end || null,
     isSubtenant: isSub,
@@ -108,23 +137,24 @@ function hasFeature(ent, feature) {
   return !!ent && Array.isArray(ent.features) && ent.features.includes(feature);
 }
 
-// Client-safe projection (caps with Infinity → null).
+// Client-safe projection (caps with Infinity → null). The cap keys follow the
+// tenant's catalog version (v1: discovery/competitor_research/...; v2: the
+// merged research pool) — the Billing UI renders whichever keys arrive.
 function toJson(ent) {
+  const caps = {};
+  for (const m of plans.metersFor(ent.planVersion)) caps[m] = plans.capForJson(ent.caps[m]);
   return {
     active: ent.active,
     reason: ent.reason,
     status: ent.status || null,
     plan: ent.planKey,
     planName: ent.planName,
+    planVersion: ent.planVersion || 1,
     features: ent.features,
-    caps: {
-      discovery: plans.capForJson(ent.caps.discovery),
-      competitor_research: plans.capForJson(ent.caps.competitor_research),
-      engagements: plans.capForJson(ent.caps.engagements),
-      market_monitoring: plans.capForJson(ent.caps.market_monitoring),
-      arena: plans.capForJson(ent.caps.arena),
-    },
+    caps,
     lifetimeCaps: !!ent.lifetimeCaps,
+    seats: ent.seats || null,
+    overage: ent.overage ? { meter: ent.overage.meter, priceMonthly: ent.overage.priceMonthly } : null,
     daysLeft: ent.daysLeft,
     currentPeriodEnd: ent.currentPeriodEnd || null,
     isSubtenant: !!ent.isSubtenant,

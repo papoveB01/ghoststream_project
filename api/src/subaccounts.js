@@ -46,17 +46,20 @@ function normDomain(d) {
 // Features a parent may grant a child: the parent plan's features minus the
 // non-nestable sub_accounts capability.
 function allowedFeatures(parentTenant) {
-  return plans.planFor(parentTenant.plan).features.filter((f) => f !== plans.FEATURES.SUB_ACCOUNTS);
+  return plans.planForTenant(parentTenant).features.filter((f) => f !== plans.FEATURES.SUB_ACCOUNTS);
 }
 function sanitizeFeatures(input, allowed) {
   const set = new Set(Array.isArray(input) ? input : []);
   return allowed.filter((f) => set.has(f));
 }
-// Per-meter cap allocation, clamped to the parent plan's pool (Infinity = no cap).
+// Per-meter cap allocation, clamped to the parent plan's pool (Infinity = no
+// cap). The meter set follows the parent's catalog version (v2 = the merged
+// `research` pool instead of discovery/competitor_research).
 function sanitizeCaps(input, parentTenant) {
-  const planCaps = plans.planFor(parentTenant.plan).caps;
+  const plan = plans.planForTenant(parentTenant);
+  const planCaps = plan.caps;
   const out = {};
-  for (const meter of plans.METERS) {
+  for (const meter of plans.metersFor(parentTenant.plan_version)) {
     const raw = input && input[meter];
     if (raw == null || raw === '') continue;
     let n = parseInt(raw, 10);
@@ -106,7 +109,7 @@ router.get('/', async (req, res, next) => {
       invites,
       limit: Number.isFinite(limit) ? limit : null,
       used: await usedCount(req.tenantId),
-      grantOptions: { features: allowedFeatures(parent), caps: plans.planFor(parent.plan).caps },
+      grantOptions: { features: allowedFeatures(parent), caps: plans.planForTenant(parent).caps },
     });
   } catch (err) { next(err); }
 });
@@ -116,8 +119,20 @@ router.post('/invite', async (req, res, next) => {
   try {
     const parent = await parentRow(req);
     const limit = plans.subAccountLimitFor(parent);
-    if ((await usedCount(req.tenantId)) >= limit) {
+    const used = await usedCount(req.tenantId);
+    if (used >= limit) {
       return res.status(400).json({ error: `You've reached your sub-account limit (${Number.isFinite(limit) ? limit : '—'}). Remove one or upgrade.`, code: 'SUBACCOUNT_LIMIT' });
+    }
+    // ADR-0004: on a v2 plan the first sub-account is included, each further
+    // one is a $29/mo add-on — the Stripe quantity must go through BEFORE the
+    // invite exists (never provision unbilled capacity). v1 parents are
+    // grandfathered (their plan's sub-accounts stay free) and skip this.
+    const billing = require('./billing');
+    try {
+      await billing.syncSubtenantQuantity(parent, used + 1);
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      throw e;
     }
     const b = req.body || {};
     const inviteEmail = String(b.email || '').trim().toLowerCase().slice(0, 320);
@@ -272,6 +287,12 @@ router.delete('/invites/:id', async (req, res, next) => {
       [req.params.id, req.tenantId]
     );
     if (!r.rowCount) return res.status(404).json({ error: 'Invite not found.' });
+    // Shrink the paid sub-tenant quantity to match (prorated credit on a v2
+    // plan). Best-effort: a Stripe hiccup never blocks the revoke.
+    try {
+      const billing = require('./billing');
+      await billing.syncSubtenantQuantity(await parentRow(req), await usedCount(req.tenantId));
+    } catch (e) { console.warn('[subaccounts] subtenant qty sync after revoke failed:', e.message); }
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -313,10 +334,10 @@ publicRouter.post('/invite/:token/accept', async (req, res, next) => {
     // identity (the column is nullable; this avoids colliding with the parent's
     // unique domain).
     const childRow = (await sys().query(
-      `INSERT INTO tenants (name, domain, subscription_status, plan, parent_tenant_id, feature_overrides, cap_overrides)
-       VALUES ($1, NULL, 'ACTIVE', $2, $3, $4::jsonb, $5::jsonb)
+      `INSERT INTO tenants (name, domain, subscription_status, plan, plan_version, parent_tenant_id, feature_overrides, cap_overrides)
+       VALUES ($1, NULL, 'ACTIVE', $2, $3, $4, $5::jsonb, $6::jsonb)
        RETURNING id, name`,
-      [inv.company_name, parent.plan, inv.parent_tenant_id, JSON.stringify(inv.features || []), JSON.stringify(inv.cap_overrides || {})]
+      [inv.company_name, parent.plan, parent.plan_version || 1, inv.parent_tenant_id, JSON.stringify(inv.features || []), JSON.stringify(inv.cap_overrides || {})]
     )).rows[0];
 
     const owner = await users.create({

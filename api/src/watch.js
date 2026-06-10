@@ -24,6 +24,7 @@ const discovery = require('./knowledge/discovery');
 const keypoints = require('./knowledge/keypoints');
 const knowledge = require('./knowledge/service');
 const schedule = require('./watchSchedule');
+const costs = require('./costs');
 
 const MODEL = require('./models').modelFor('marketWatch');
 const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://dealscope.io').replace(/\/+$/, '');
@@ -113,7 +114,7 @@ async function recentFindingTitles(tenantId, scope, subjectId) {
   return r.rows.map((x) => x.title);
 }
 
-async function extractDevelopments({ name, scope, tctx, known, priorTitles, findingsText }) {
+async function extractDevelopments({ tenantId, name, scope, tctx, known, priorTitles, findingsText }) {
   const prompt =
     `You monitor the market for OUR company. Track recent, material developments about ${scope === 'PROSPECT' ? 'our PROSPECT (a company we may sell to)' : 'our COMPETITOR'} "${name}". ` +
     'Using ONLY the web findings below, list developments that are BOTH (a) recent/new and (b) material to our sales motion. ' +
@@ -130,6 +131,7 @@ async function extractDevelopments({ name, scope, tctx, known, priorTitles, find
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: { temperature: 0.3, maxOutputTokens: 2200, responseMimeType: 'application/json', responseSchema: DEV_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
   }));
+  costs.recordGemini(tenantId, 'watch.extract', MODEL, resp.usageMetadata);
   const parsed = JSON.parse(resp.text);
   return Array.isArray(parsed.developments) ? parsed.developments : [];
 }
@@ -148,7 +150,7 @@ async function runEntity(tenantId, scope, subject) {
   ]);
 
   let devs;
-  try { devs = await extractDevelopments({ name, scope, tctx, known, priorTitles, findingsText: findings.text }); }
+  try { devs = await extractDevelopments({ tenantId, name, scope, tctx, known, priorTitles, findingsText: findings.text }); }
   catch (err) { console.warn(`[watch] extract failed for ${scope} ${subject.id}: ${err.message}`); return []; }
 
   const inserted = [];
@@ -199,7 +201,7 @@ async function advanceEntity(scope, id, tenantId, e) {
 async function runEntityScheduled(e, opts = {}) {
   const advance = opts.advance !== false;
   const ent = entitlements.entitlementsFor({
-    plan: e.plan, subscription_status: e.subscription_status,
+    plan: e.plan, plan_version: e.plan_version, subscription_status: e.subscription_status,
     trial_ends_at: e.trial_ends_at, current_period_end: e.current_period_end,
   });
   const reArm = async () => { if (advance) await advanceEntity(e.scope, e.id, e.tenant_id, e); };
@@ -209,7 +211,9 @@ async function runEntityScheduled(e, opts = {}) {
     return { skipped: 'not_entitled', newCount: 0 };
   }
 
-  const cap = plans.planFor(e.plan).caps.market_monitoring ?? 0;
+  // market_monitoring keeps the same meter key in both catalog versions; the
+  // CAP differs (v1 Pro 500, v2 Pro 250) so read it off the entitlement.
+  const cap = (ent.caps && ent.caps.market_monitoring) ?? 0;
   try { await usage.consume(e.tenant_id, 'market_monitoring', cap); }
   catch (err) {
     if (err && err.code === 'USAGE_LIMIT') {
@@ -334,7 +338,7 @@ async function loadEntityForRun(tenantId, scope, id) {
   const r = await db.query(
     `SELECT '${scope}'::text AS scope, e.id::text AS id, e.name,
             e.watch_frequency, e.watch_day, e.watch_timezone, e.watch_email_digest,
-            t.id AS tenant_id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end
+            t.id AS tenant_id, t.plan, t.plan_version, t.subscription_status, t.trial_ends_at, t.current_period_end
        FROM ${tbl} e JOIN tenants t ON t.id = e.tenant_id
       WHERE e.id = $1 AND e.tenant_id = $2`,
     [id, tenantId]

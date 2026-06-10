@@ -384,10 +384,27 @@ router.post('/:id/add-contacts', gating.requireFeature('discovery'), async (req,
     const ids = [...new Set((Array.isArray(req.body && req.body.ids) ? req.body.ids : []).map((s) => String(s || '').trim()).filter(Boolean))].slice(0, 25);
     if (!ids.length) return res.status(400).json({ error: 'select at least one contact to add' });
 
-    let created = 0, existing = 0, failed = 0;
+    // Each reveal that actually hits Apollo (cache miss) books one research
+    // unit against the plan — the ADR-0004 guardrail on the only "cheap meter"
+    // cost a user can multiply with clicks. v1 tenants charge their discovery
+    // meter (same credit pool); cached reveals are free. A 402 mid-batch stops
+    // there and reports the partial result instead of failing the request.
+    const usage = require('./usage');
+    const revealOpts = {
+      charge: () => gating.chargeUnit(req, 'discovery'),
+      refund: (h) => usage.refund(req.tenantId, h.meter, h.consumed, { lifetime: h.lifetime }),
+    };
+
+    let created = 0, existing = 0, failed = 0, limited = null;
     const saved = [];
     for (const id of ids) {
-      const p = await apollo.revealPerson(req.tenantId, id);
+      let p;
+      try {
+        p = await apollo.revealPerson(req.tenantId, id, revealOpts);
+      } catch (e) {
+        if (e.code === 'USAGE_LIMIT' || e.code === 'SUBSCRIPTION_REQUIRED') { limited = e.message; break; }
+        throw e;
+      }
       if (!p || !p.email) { failed++; continue; }
       try {
         const c = await contacts.create(req.tenantId, req.user && req.user.sub, {
@@ -400,7 +417,7 @@ router.post('/:id/add-contacts', gating.requireFeature('discovery'), async (req,
         else { failed++; console.warn('[add-contacts] save failed:', (e && e.message) || e); }
       }
     }
-    res.json({ ok: true, requested: ids.length, created, existing, failed, contacts: saved });
+    res.json({ ok: true, requested: ids.length, created, existing, failed, limited, contacts: saved });
   } catch (err) { next(err); }
 });
 

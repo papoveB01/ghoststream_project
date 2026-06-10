@@ -22,6 +22,7 @@
 //      appears, and error messages strip the header out.
 
 const redis = require('../redis');
+const costs = require('../costs'); // ADR-0004 vendor-spend telemetry (fire-and-forget)
 
 const BASE = (process.env.APOLLO_BASE_URL || 'https://api.apollo.io').replace(/\/+$/, '');
 const CACHE_TTL_SEC = Math.max(60, parseInt(process.env.APOLLO_CACHE_TTL_DAYS || '7', 10) * 86400);
@@ -149,6 +150,7 @@ async function enrichOrganization(tenantId, domain) {
   if (cached !== null) return cached;
   if (await tripDailyCap(tenantId)) return null;
   const res = await apolloRequest('POST', '/v1/organizations/enrich', { domain: cleaned });
+  if (res.ok) costs.recordApollo(tenantId, 'apollo.org_enrich');
   if (!res.ok) { await writeCache(tenantId, 'org', cleaned, null); return null; }
   const o = (res.data && res.data.organization) || null;
   if (!o) { await writeCache(tenantId, 'org', cleaned, null); return null; }
@@ -170,7 +172,7 @@ async function enrichOrganization(tenantId, domain) {
 //     the Teams autocomplete + dossier leadership where we only show name/title.
 //   reveal=true → search THEN people/match each has_email candidate, returning
 //     fully-revealed contacts (name + verified email). Used by "Find contacts".
-async function searchPeople(tenantId, domain, { titles, name, limit = 10, reveal = false } = {}) {
+async function searchPeople(tenantId, domain, { titles, name, limit = 10, reveal = false, revealOpts = {} } = {}) {
   if (!isConfigured() || !domain) return [];
   const cleaned = bareDomain(domain);
   if (!cleaned) return [];
@@ -188,6 +190,7 @@ async function searchPeople(tenantId, domain, { titles, name, limit = 10, reveal
   };
   if (name) body.q_keywords = name;
   const res = await apolloRequest('POST', '/v1/mixed_people/api_search', body);
+  if (res.ok) costs.recordApollo(tenantId, 'apollo.people_search');
   if (!res.ok) { await writeCache(tenantId, 'people', variantKey, []); return []; }
   const candidates = ((res.data && res.data.people) || []).slice(0, limit).map(normalizeCandidate).filter(Boolean);
   if (!reveal) { await writeCache(tenantId, 'people', variantKey, candidates); return candidates; }
@@ -198,7 +201,7 @@ async function searchPeople(tenantId, domain, { titles, name, limit = 10, reveal
   for (const c of candidates) {
     if (!c.hasEmail || !c.id) continue;
     if (await tripDailyCap(tenantId)) break; // out of daily budget — stop revealing
-    const full = await revealPerson(tenantId, c.id);
+    const full = await revealPerson(tenantId, c.id, revealOpts);
     if (full && full.email) revealed.push(full);
   }
   await writeCache(tenantId, 'people', variantKey, revealed);
@@ -208,14 +211,29 @@ async function searchPeople(tenantId, domain, { titles, name, limit = 10, reveal
 // Reveal a person's real name + email by their Apollo id (the teaser id from
 // api_search). Costs an enrichment credit. Cached per (tenant, id). Returns the
 // normalized full person, or null on soft-failure / no match.
-async function revealPerson(tenantId, id) {
+//
+// opts.charge / opts.refund — ADR-0004 §6 step 2: a reveal is the one Apollo
+// call a user can multiply with clicks (1 credit each, $0.20 at Apollo's
+// overage rate), so user-facing callers pass a charge() that books one
+// research unit against the tenant's plan (throws 402 USAGE_LIMIT when the
+// pool and any purchased credits are both dry). Invoked only on a cache MISS —
+// a re-reveal inside the Apollo cache window costs us nothing, so the tenant
+// is charged nothing. refund(handle) rolls the unit back when the reveal
+// soft-fails after the charge. (Phone-number reveals — 5 Apollo credits — are
+// never requested by this module, so no multiplier applies.)
+async function revealPerson(tenantId, id, opts = {}) {
   if (!isConfigured() || !id) return null;
   const cached = await readCache(tenantId, 'reveal', id);
   if (cached !== null) return cached;
+  const handle = opts.charge ? await opts.charge() : null;
+  const giveBack = async () => {
+    if (handle != null && opts.refund) { try { await opts.refund(handle); } catch (e) { /* best-effort */ } }
+  };
   const res = await apolloRequest('POST', '/v1/people/match', { id, reveal_personal_emails: true });
-  if (!res.ok) { await writeCache(tenantId, 'reveal', id, null); return null; }
+  if (res.ok) costs.recordApollo(tenantId, 'apollo.reveal');
+  if (!res.ok) { await giveBack(); await writeCache(tenantId, 'reveal', id, null); return null; }
   const p = (res.data && res.data.person) || null;
-  if (!p) { await writeCache(tenantId, 'reveal', id, null); return null; }
+  if (!p) { await giveBack(); await writeCache(tenantId, 'reveal', id, null); return null; }
   const slim = normalizePerson(p);
   await writeCache(tenantId, 'reveal', id, slim);
   return slim;
@@ -232,6 +250,7 @@ async function findDomainByName(tenantId, name) {
   if (cached) return cached; // positive hit only — null is re-tried (cheap, rare)
   if (await tripDailyCap(tenantId)) return null;
   const res = await apolloRequest('POST', '/v1/organizations/search', { q_organization_name: name, per_page: 1 });
+  if (res.ok) costs.recordApollo(tenantId, 'apollo.org_search');
   if (!res.ok) return null;
   const arr = (res.data && (res.data.organizations || res.data.accounts)) || [];
   const dom = arr[0] ? bareDomain(arr[0].primary_domain || arr[0].website_url || '') : null;
@@ -249,6 +268,7 @@ async function enrichPerson(tenantId, email) {
   if (cached !== null) return cached;
   if (await tripDailyCap(tenantId)) return null;
   const res = await apolloRequest('POST', '/v1/people/match', { email: cleaned });
+  if (res.ok) costs.recordApollo(tenantId, 'apollo.person_enrich');
   if (!res.ok) { await writeCache(tenantId, 'person', cleaned, null); return null; }
   const p = (res.data && res.data.person) || null;
   if (!p) { await writeCache(tenantId, 'person', cleaned, null); return null; }

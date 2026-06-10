@@ -7,10 +7,15 @@
 //   'research'    — a shared pool for the cheap meters (discovery /
 //                   competitor_research / market_monitoring / arena).
 //
-// Pricing is deliberately ~38% margin (round credit counts over the 55% target —
-// a knowing trade, see ADR-0003 / project memory). Credits expire 90 days after
+// Pricing: $2.00/engagement credit and $0.38/research credit. At the current
+// cost model (ADR-0004 §3.2: engagement ~$1.00 after Recall's 2026 price cut,
+// research run ~$0.12) that's ~47% and ~65% worst-case margin — the old
+// "~38%, a knowing trade" note from ADR-0003 is obsolete; both packs clear
+// the 35%-at-full-utilization floor outright. Credits expire 90 days after
 // purchase. Consumption is the spill-over from usage.consume once the plan cap
-// is hit (user-initiated actions only — see usage.consume `useCredits`).
+// is hit (user-initiated actions only — see usage.consume `useCredits`); on a
+// v2 Pro plan the metered $2.50 engagement overage sits BEHIND credits in the
+// fall-through order (allowance → credits → metered).
 
 const db = require('./db');
 

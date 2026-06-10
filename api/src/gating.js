@@ -16,6 +16,7 @@ const auth = require('./auth');
 const tenants = require('./tenants');
 const entitlements = require('./entitlements');
 const usage = require('./usage');
+const plans = require('./plans');
 
 // Writes that must stay reachable while inactive so the user can recover
 // (sign in/out, manage billing, edit their own profile/password, finish signup).
@@ -91,23 +92,40 @@ function requireFeature(feature) {
   };
 }
 
+// Charge one unit of `meter` against the caller's plan, mapped through the
+// tenant's catalog version (v2 folds discovery/competitor_research into the
+// shared `research` pool — ADR-0004), spilling to purchased credits and — for
+// engagements on an overage-eligible v2 subscription — to the $2.50 Stripe
+// meter as the last resort. Returns the consume() handle for refunds.
+async function chargeUnit(req, meter) {
+  const ent = await ensureEntitlements(req);
+  if (!ent.active) {
+    const e = new Error('Your subscription is inactive.');
+    e.status = 402; e.code = 'SUBSCRIPTION_REQUIRED'; e.reason = ent.reason;
+    throw e;
+  }
+  const counterKey = plans.meterKey(ent.planVersion, meter);
+  const cap = ent.caps ? ent.caps[counterKey] : 0;
+  const opts = { useCredits: true, lifetime: ent.lifetimeCaps };
+  if (counterKey === 'engagements' && ent.overage && ent.overage.customerId) {
+    const billing = require('./billing');
+    opts.useOverage = () => billing.recordEngagementOverage(ent.overage.customerId, req.tenantId);
+  }
+  const consumed = await usage.consume(req.tenantId, counterKey, cap, opts);
+  return { meter: counterKey, consumed, lifetime: ent.lifetimeCaps };
+}
+
 function requireCapacity(meter) {
   return async (req, res, next) => {
     try {
-      const ent = await ensureEntitlements(req);
-      if (!ent.active) {
-        return res.status(402).json({ error: 'Your subscription is inactive.', code: 'SUBSCRIPTION_REQUIRED', reason: ent.reason });
-      }
-      const cap = ent.caps ? ent.caps[meter] : 0;
-      // User-initiated action: spill over to purchased add-on credits once the
-      // plan allowance is spent (credits.js). 402 only if neither has room.
-      // lifetime: free-tier caps are lifetime (never reset), not monthly.
-      const consumed = await usage.consume(req.tenantId, meter, cap, { useCredits: true, lifetime: ent.lifetimeCaps });
       // Remember what we charged so a handler can refund it if the action fails
       // (e.g. discovery returns no usable result → 502). See refundCapacity().
-      req._capacity = { meter, consumed, lifetime: ent.lifetimeCaps };
+      req._capacity = await chargeUnit(req, meter);
       next();
     } catch (err) {
+      if (err.code === 'SUBSCRIPTION_REQUIRED') {
+        return res.status(402).json({ error: err.message, code: 'SUBSCRIPTION_REQUIRED', reason: err.reason });
+      }
       if (err.code === 'USAGE_LIMIT') {
         return res.status(402).json({ error: err.message, code: 'USAGE_LIMIT', meter });
       }
@@ -138,4 +156,4 @@ function requireFeatureWrite(feature) {
   return (req, res, next) => (req.method === 'GET' ? next() : guard(req, res, next));
 }
 
-module.exports = { billingGate, requireFeature, requireFeatureWrite, requireCapacity, refundCapacity, ensureEntitlements };
+module.exports = { billingGate, requireFeature, requireFeatureWrite, requireCapacity, refundCapacity, ensureEntitlements, chargeUnit };

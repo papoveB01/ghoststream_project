@@ -389,8 +389,8 @@ router.post('/verify', async (req, res, next) => {
     const paidChoice = SIGNUP_PLANS.has(s.plan) ? s.plan : null;
 
     const tenantRow = (await db.query(
-      `INSERT INTO tenants (name, domain, subscription_status, plan, trial_ends_at, company_size)
-       VALUES ($1, $2, 'TRIAL', 'trial', NULL, $3)
+      `INSERT INTO tenants (name, domain, subscription_status, plan, trial_ends_at, company_size, plan_version)
+       VALUES ($1, $2, 'TRIAL', 'trial', NULL, $3, 2)
        RETURNING id, name, domain, subscription_status, plan, trial_ends_at`,
       [s.companyName, s.websiteDomain, s.companySize || null]
     )).rows[0];

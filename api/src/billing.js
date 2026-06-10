@@ -46,16 +46,14 @@ router.get('/', async (req, res, next) => {
     // Free tier meters are lifetime; paid tiers are monthly. Read the matching bucket.
     const used = await usage.summary(req.tenantId, { lifetime: ent.lifetimeCaps });
     const creditBalance = await credits.summary(req.tenantId);
+    // Usage keys follow the tenant's catalog version (v1: discovery/competitor;
+    // v2: the merged research pool) — same keys as the caps in toJson.
+    const usedOut = {};
+    for (const m of plans.metersFor(ent.planVersion)) usedOut[m] = used[m] || 0;
     res.json({
       billing: {
         ...entitlements.toJson(ent),
-        usage: {
-          discovery: used.discovery || 0,
-          competitor_research: used.competitor_research || 0,
-          engagements: used.engagements || 0,
-          market_monitoring: used.market_monitoring || 0,
-          arena: used.arena || 0,
-        },
+        usage: usedOut,
         credits: creditBalance,
         stripeConfigured: isConfigured(),
         manageable: !!(tenant && tenant.stripe_subscription_id),
@@ -86,27 +84,37 @@ async function ensureCustomerFor(tenantId, email) {
 // .status on bad plan / missing price. Exported so onboarding can start the
 // trial right after account creation.
 async function createCheckout({ tenantId, email, plan, trial = false, successUrl, cancelUrl }) {
-  const planDef = plans.PLANS[plan];
+  // Checkout always sells the v2 catalog (ADR-0004). Grandfathered v1 tenants
+  // keep their v1 caps/prices only as long as they don't buy a new plan —
+  // applySubscription flips plan_version to 2 when a v2 price lands.
+  const planDef = plans.PLANS_V2[plan];
   if (!planDef || !planDef.selfServe) { const e = new Error('That plan is not available for self-serve checkout.'); e.status = 400; throw e; }
-  const price = plans.priceIdFor(plan);
+  const price = plans.priceIdFor(plan, 2);
   if (!price) { const e = new Error(`No Stripe price configured for the ${planDef.name} plan.`); e.status = 503; e.code = 'PRICE_NOT_CONFIGURED'; throw e; }
 
   const customerId = await ensureCustomerFor(tenantId, email);
-  const subData = { metadata: { tenantId, plan } };
+  const meta = { tenantId, plan, planVersion: '2' };
+  const subData = { metadata: meta };
   if (trial && plans.trialDaysFor(plan) > 0) {
     subData.trial_period_days = plans.trialDaysFor(plan);
     // Card required up front; if somehow missing at trial end, cancel (no charge).
     subData.trial_settings = { end_behavior: { missing_payment_method: 'cancel' } };
   }
+  const lineItems = [{ price, quantity: 1 }];
+  // Attach the metered engagement-overage price when the plan defines it
+  // (Pro): $0 until a unit past allowance + credits is actually consumed.
+  // Metered prices take no quantity.
+  const overagePrice = plans.overagePriceIdFor(plan);
+  if (overagePrice) lineItems.push({ price: overagePrice });
   return stripe().checkout.sessions.create({
     mode: 'subscription',
     customer: customerId,
-    line_items: [{ price, quantity: 1 }],
+    line_items: lineItems,
     success_url: successUrl,
     cancel_url: cancelUrl,
     allow_promotion_codes: true,
     payment_method_collection: 'always', // collect a card even for the $0 trial
-    metadata: { tenantId, plan },
+    metadata: meta,
     subscription_data: subData,
   });
 }
@@ -414,12 +422,111 @@ router.post('/enterprise-inquiry', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── Add-ons: seats, sub-tenants, metered overage (ADR-0004) ───────────────
+
+// Find the subscription item for an add-on price and set its quantity (0 =
+// remove the item). Prorated, so a mid-cycle seat is billed for the remainder
+// of the period only.
+async function setAddonQuantity(tenant, priceId, qty) {
+  const sub = await stripe().subscriptions.retrieve(tenant.stripe_subscription_id);
+  const item = ((sub.items && sub.items.data) || []).find((it) => it && it.price && it.price.id === priceId);
+  if (item) {
+    if (qty <= 0) await stripe().subscriptionItems.del(item.id, { proration_behavior: 'create_prorations' });
+    else await stripe().subscriptionItems.update(item.id, { quantity: qty, proration_behavior: 'create_prorations' });
+  } else if (qty > 0) {
+    await stripe().subscriptionItems.create({ subscription: sub.id, price: priceId, quantity: qty, proration_behavior: 'create_prorations' });
+  }
+}
+
+// POST /billing/seats { extraSeats } — buy/shed paid seats on a v2 plan. Each
+// paid seat grows the research/engagement allowances per plans.PLANS_V2
+// seats.perSeat; the Stripe seat item's quantity mirrors tenants.extra_seats.
+router.post('/seats', async (req, res, next) => {
+  try {
+    if (!isConfigured()) return res.status(503).json({ error: 'Billing is not configured yet.', code: 'BILLING_NOT_CONFIGURED' });
+    const tenant = await tenants.get(req.tenantId, { fresh: true });
+    if (tenant.parent_tenant_id) return res.status(400).json({ error: 'Seats are managed on the parent account.' });
+    if ((tenant.plan_version || 1) < 2) return res.status(400).json({ error: 'Seat add-ons are available after you move to a current plan — re-choose your plan to switch.', code: 'PLAN_VERSION' });
+    const plan = plans.planForTenant(tenant);
+    if (!plan.seats || !plan.seats.priceMonthly) return res.status(400).json({ error: `The ${plan.name} plan doesn't support extra seats.` });
+    if (!tenant.stripe_subscription_id) return res.status(400).json({ error: 'No active subscription — choose a plan first.' });
+    const seatPrice = plans.seatPriceIdFor(plan.key);
+    if (!seatPrice) return res.status(503).json({ error: 'Seat pricing is not configured yet.', code: 'PRICE_NOT_CONFIGURED' });
+
+    let extra = parseInt(req.body && req.body.extraSeats, 10);
+    if (!Number.isFinite(extra) || extra < 0) return res.status(400).json({ error: 'extraSeats must be a non-negative integer.' });
+    // Plan seat ceiling (Starter: 3 total). No ceiling configured → sane clamp.
+    const maxExtra = plan.seats.max != null ? Math.max(0, plan.seats.max - plan.seats.included) : 200;
+    if (extra > maxExtra) return res.status(400).json({ error: `The ${plan.name} plan supports at most ${maxExtra} extra seat${maxExtra === 1 ? '' : 's'}.` });
+
+    await setAddonQuantity(tenant, seatPrice, extra);
+    await tenants.update(req.tenantId, { extra_seats: extra });
+    const ent = await entitlements.resolveEntitlementsFor(await tenants.get(req.tenantId, { fresh: true }));
+    res.json({ ok: true, extraSeats: extra, entitlements: entitlements.toJson(ent) });
+  } catch (err) { next(err); }
+});
+
+// Mirror a v2 parent's PAID sub-tenant count onto the Stripe sub-tenant item
+// (used + pending invites, minus the plan's included allowance). Called by
+// subaccounts.js around invite/revoke. v1 parents are grandfathered (their 5
+// sub-tenants stay free) → no-op. Throws with .status when billing must block
+// the mutation (price unconfigured / no live subscription).
+async function syncSubtenantQuantity(parentTenant, usedCount) {
+  const plan = plans.planForTenant(parentTenant);
+  if ((parentTenant.plan_version || 1) < 2 || !plan.subTenants) return { paid: 0, grandfathered: true };
+  const paid = Math.max(0, usedCount - plan.subTenants.included);
+  if (paid === 0) {
+    // Dropping to/staying within the included allowance never blocks.
+    if (isConfigured() && parentTenant.stripe_subscription_id) {
+      const priceId = plans.subTenantPriceIdFor(plan.key);
+      if (priceId) await setAddonQuantity(parentTenant, priceId, 0).catch((e) => console.warn('[billing] subtenant qty sync failed:', e.message));
+    }
+    return { paid: 0 };
+  }
+  if (!isConfigured()) { const e = new Error('Billing is not configured yet.'); e.status = 503; e.code = 'BILLING_NOT_CONFIGURED'; throw e; }
+  if (!parentTenant.stripe_subscription_id) { const e = new Error('Additional sub-accounts need an active subscription.'); e.status = 402; e.code = 'SUBSCRIPTION_REQUIRED'; throw e; }
+  const priceId = plans.subTenantPriceIdFor(plan.key);
+  if (!priceId) { const e = new Error('Sub-account pricing is not configured yet.'); e.status = 503; e.code = 'PRICE_NOT_CONFIGURED'; throw e; }
+  await setAddonQuantity(parentTenant, priceId, paid);
+  return { paid };
+}
+
+// One engagement past allowance + credits → one Stripe billing-meter event
+// against the $2.50 metered price (57% margin at ~$1.00 COGS — ADR-0004
+// §4.3). The metered price is attached at checkout; the meter aggregates by
+// stripe_customer_id. Returns false (→ caller 402s) when unbillable.
+const OVERAGE_METER_EVENT = process.env.STRIPE_OVERAGE_METER_EVENT || 'engagement_overage';
+async function recordEngagementOverage(customerId, tenantId) {
+  if (!isConfigured() || !customerId) return false;
+  await stripe().billing.meterEvents.create({
+    event_name: OVERAGE_METER_EVENT,
+    payload: { value: '1', stripe_customer_id: customerId },
+  });
+  console.log(`[billing] engagement overage metered for tenant ${tenantId}`);
+  return true;
+}
+
 // ── Webhook ──────────────────────────────────────────────────────────────
-function planKeyFromPrice(sub) {
-  const priceId = sub.items && sub.items.data && sub.items.data[0] && sub.items.data[0].price && sub.items.data[0].price.id;
-  if (!priceId) return null;
-  for (const key of ['starter', 'pro']) if (plans.priceIdFor(key) === priceId) return key;
+// Match the subscription's BASE plan price against both catalogs (a v2 sub
+// also carries seat / overage items — scan every item, not just the first).
+function planFromPrices(sub) {
+  const items = (sub.items && sub.items.data) || [];
+  for (const it of items) {
+    const priceId = it && it.price && it.price.id;
+    if (!priceId) continue;
+    for (const key of ['starter', 'pro']) {
+      if (plans.priceIdFor(key, 2) === priceId) return { key, version: 2 };
+      if (plans.priceIdFor(key, 1) === priceId) return { key, version: 1 };
+    }
+  }
   return null;
+}
+// The quantity of the plan's seat add-on item on the subscription (0 = none).
+function extraSeatsFromItems(sub, planKey) {
+  const seatPrice = plans.seatPriceIdFor(planKey);
+  if (!seatPrice) return 0;
+  const item = ((sub.items && sub.items.data) || []).find((it) => it && it.price && it.price.id === seatPrice);
+  return item ? Math.max(0, item.quantity || 0) : 0;
 }
 function mapStatus(s) {
   // Stripe 'trialing' → our TRIAL so the existing trial-countdown banner works;
@@ -434,7 +541,11 @@ async function applySubscription(sub) {
   const tenantId = (sub.metadata && sub.metadata.tenantId) || await tenants.findIdByStripeCustomer(sub.customer);
   if (!tenantId) { console.warn('[billing] no tenant for subscription', sub.id); return; }
   const status = mapStatus(sub.status);
-  const planKey = (sub.metadata && sub.metadata.plan) || planKeyFromPrice(sub);
+  const fromPrices = planFromPrices(sub);
+  const planKey = (sub.metadata && sub.metadata.plan) || (fromPrices && fromPrices.key);
+  // Catalog version: metadata wins (set by our checkout), else the price match.
+  const metaVersion = parseInt(sub.metadata && sub.metadata.planVersion, 10);
+  const planVersion = Number.isFinite(metaVersion) ? metaVersion : (fromPrices && fromPrices.version) || null;
   const patch = {
     stripe_subscription_id: sub.id,
     current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
@@ -444,11 +555,17 @@ async function applySubscription(sub) {
   };
   if (status) patch.subscription_status = status;
   // Set the plan on both trial and paid states (the trial IS the Starter plan).
-  if (planKey && (status === 'ACTIVE' || status === 'TRIAL')) patch.plan = planKey;
+  if (planKey && (status === 'ACTIVE' || status === 'TRIAL')) {
+    patch.plan = planKey;
+    if (planVersion) patch.plan_version = planVersion;
+    // Mirror the seat add-on quantity so entitlements scale allowances even
+    // when the seat count was changed Stripe-side (portal / sales).
+    if (planVersion >= 2) patch.extra_seats = extraSeatsFromItems(sub, planKey);
+  }
   // Drive the trial-end date from Stripe so the countdown banner is accurate.
   patch.trial_ends_at = sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null;
   await tenants.update(tenantId, patch);
-  console.log(`[billing] tenant ${tenantId} → ${status || '(unchanged)'} / ${planKey || '(unchanged)'} (sub ${sub.id})`);
+  console.log(`[billing] tenant ${tenantId} → ${status || '(unchanged)'} / ${planKey || '(unchanged)'} v${planVersion || '?'} (sub ${sub.id})`);
 }
 
 async function webhook(req, res) {
@@ -501,6 +618,7 @@ async function webhook(req, res) {
             stripe_subscription_id: null,
             current_period_end: null,
             cancel_at_period_end: false,
+            extra_seats: 0, // seat add-ons die with the subscription
           });
           console.log(`[billing] tenant ${tenantId} subscription ended → downgraded to Free (sub ${sub.id})`);
         }
@@ -515,4 +633,4 @@ async function webhook(req, res) {
   }
 }
 
-module.exports = { router, webhook, isConfigured, createCheckout, applySubscription };
+module.exports = { router, webhook, isConfigured, createCheckout, applySubscription, recordEngagementOverage, syncSubtenantQuantity };

@@ -46,6 +46,12 @@ async function summary(tenantId, { lifetime = false } = {}) {
 // leave it off so a scheduled job never silently drains a tenant's credits.
 // A credit-funded unit is NOT added to the monthly counter (the counter tracks
 // plan-allowance usage; credits are a separate bucket).
+//
+// opts.useOverage — async callback, the LAST resort after allowance and credits
+// (ADR-0004 metered engagement overage). Resolving truthy means the unit was
+// billed as pay-per-use (a Stripe meter event) → returns { overage: true }.
+// Only gating wires this, and only for engagements on an overage-eligible v2
+// subscription — never for background jobs.
 async function consume(tenantId, meter, cap, opts = {}) {
   if (!Number.isFinite(cap)) return Infinity; // unlimited
   // A zero (or negative) cap means the plan can't perform this action at all.
@@ -79,6 +85,16 @@ async function consume(tenantId, meter, cap, opts = {}) {
       const credits = require('./credits');
       if (await credits.tryConsume(tenantId, meter)) return { credit: true };
     }
+    // Then metered pay-per-use, when the caller wired it (v2 engagement
+    // overage). A failed meter event falls through to the 402 — never admit
+    // an unbilled unit.
+    if (opts.useOverage) {
+      try {
+        if (await opts.useOverage()) return { overage: true };
+      } catch (e) {
+        console.warn(`[usage] overage billing failed for ${meter}: ${(e && e.message) || e}`);
+      }
+    }
     const e = new Error(`Monthly limit reached for this action (${cap}/mo on your plan). Buy add-on credits or upgrade for a higher limit.`);
     e.status = 402; e.code = 'USAGE_LIMIT';
     throw e;
@@ -96,6 +112,12 @@ async function refund(tenantId, meter, consumed, opts = {}) {
   if (typeof consumed === 'object' && consumed.credit) {
     const credits = require('./credits');
     if (credits.restore) await credits.restore(tenantId, meter);
+    return;
+  }
+  if (typeof consumed === 'object' && consumed.overage) {
+    // A Stripe meter event can't be cleanly retracted; the path is rare (an
+    // engagement that failed AFTER admission). Log it for manual credit.
+    console.warn(`[usage] overage unit for ${meter} (tenant ${tenantId}) not refundable — review for manual credit`);
     return;
   }
   const period = periodFor(opts.lifetime);

@@ -8,7 +8,8 @@ const CACHE_TTL_MS = 30_000;
 const _cache = new Map(); // tenantId -> { tenant, exp }
 
 const COLUMNS = `
-  id, name, domain, subscription_status, plan, trial_ends_at, current_period_end,
+  id, name, domain, subscription_status, plan, plan_version, extra_seats,
+  trial_ends_at, current_period_end,
   stripe_customer_id, stripe_subscription_id, cancel_at_period_end, suspended_at,
   parent_tenant_id, max_subtenants, feature_overrides, cap_overrides, created_at, updated_at
 `;
@@ -32,6 +33,7 @@ const UPDATABLE = new Set([
   'name', 'domain', 'subscription_status', 'plan', 'trial_ends_at',
   'current_period_end', 'stripe_customer_id', 'stripe_subscription_id', 'suspended_at',
   'cancel_at_period_end', 'parent_tenant_id', 'max_subtenants', 'feature_overrides', 'cap_overrides',
+  'plan_version', 'extra_seats',
 ]);
 async function update(tenantId, patch) {
   const sets = []; const vals = []; let i = 1;

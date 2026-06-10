@@ -15,6 +15,7 @@ const gemini = require('../gemini');
 const web = require('./web');
 const keypoints = require('./keypoints');
 const apollo = require('./apollo');
+const costs = require('../costs');
 
 const MODEL = require('../models').modelFor('research');
 const SITE_MAP_LIMIT    = parseInt(process.env.RESEARCH_SITE_MAP_LIMIT || '40', 10);
@@ -334,6 +335,7 @@ async function analyze(tenantId, name, dossier) {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: { temperature: 0.3, maxOutputTokens: 2600, responseMimeType: 'application/json', responseSchema: ANALYSIS_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
   }));
+  costs.recordGemini(tenantId, 'research.analyze', MODEL, resp.usageMetadata);
   const parsed = JSON.parse(resp.text);
   const opportunities = (Array.isArray(parsed.opportunities) ? parsed.opportunities : [])
     .map((o) => ({

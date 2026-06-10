@@ -9172,6 +9172,7 @@
   const METER_LABELS = {
     discovery: 'Prospect discovery runs',
     competitor_research: 'Competitor research runs',
+    research: 'Research runs', // v2 merged pool (prospect + competitor + reveals)
     engagements: 'Engagements scheduled',
     market_monitoring: 'Market Watch checks',
     arena: 'Arena practice sessions',
@@ -9321,6 +9322,7 @@
     catch (err) { $('bill-summary').innerHTML = `<div class="empty">Couldn't load billing: ${escapeHtml(err.message)}</div>`; return; }
     renderBillingSummary(data.billing);
     renderBillingUsage(data.billing);
+    renderBillingSeats(data.billing);
     renderBillingCredits(data.billing, data.creditPacks || []);
     renderBillingPlans(data.billing, data.plans || []);
     // Keep the top banner + sidebar credit chip in sync with the freshest state.
@@ -9370,7 +9372,12 @@
   }
 
   function renderBillingUsage(b) {
-    const meters = ['discovery', 'competitor_research', 'engagements', 'market_monitoring', 'arena'];
+    // Meter keys follow the tenant's catalog version: v1 splits discovery /
+    // competitor research, v2 has the merged research pool. The API sends
+    // matching keys in caps + usage — render whichever arrive.
+    const meters = (b.planVersion || 1) >= 2
+      ? ['research', 'engagements', 'market_monitoring', 'arena']
+      : ['discovery', 'competitor_research', 'engagements', 'market_monitoring', 'arena'];
     $('bill-usage').innerHTML = meters.map((m) => {
       const cap = b.caps ? b.caps[m] : null;
       const used = (b.usage && b.usage[m]) || 0;
@@ -9390,6 +9397,63 @@
         ? 'One-time allowance on the Free plan — upgrade for monthly limits, or buy credits to keep going.'
         : 'Resets on the 1st of each month (UTC).'
     }</div>`;
+  }
+
+  // Seats (v2 plans) — paid extra seats grow the monthly research/engagement
+  // allowances; the card only shows on a live v2 subscription whose plan sells
+  // seats (Starter/Pro). Sub-tenants manage seats on the parent.
+  function renderBillingSeats(b) {
+    const card = $('bill-seats-card');
+    if (!card) return;
+    const s = b.seats;
+    const eligible = s && s.priceMonthly && b.manageable && !b.isSubtenant;
+    if (!eligible) { card.classList.add('hidden'); return; }
+    card.classList.remove('hidden');
+    const total = (s.included || 0) + (s.extra || 0);
+    const maxExtra = s.max != null ? Math.max(0, s.max - s.included) : 200;
+    const perBits = [];
+    if (s.perSeat && s.perSeat.research) perBits.push(`+${s.perSeat.research} research runs`);
+    if (s.perSeat && s.perSeat.engagements) perBits.push(`+${s.perSeat.engagements} engagements`);
+    const per = perBits.length ? ` Each extra seat adds ${perBits.join(' and ')} to your monthly allowance.` : '';
+    $('bill-seats').innerHTML = `
+      <div class="bill-summary-row">
+        <div>
+          <div class="bill-plan-name">${total} seat${total === 1 ? '' : 's'} <span class="pill pill-ok">${s.included} included</span></div>
+          <div class="bill-sub">Extra seats are $${s.priceMonthly}/mo, prorated to your billing period.${per}</div>
+        </div>
+        <div class="bill-summary-actions">
+          <button class="kb-secondary-btn" id="seat-minus">−</button>
+          <span class="bill-plan-name" id="seat-extra-num">${s.extra} extra</span>
+          <button class="kb-secondary-btn" id="seat-plus">＋</button>
+          <button class="primary-cta hidden" id="seat-save">Update seats</button>
+        </div>
+      </div>`;
+    let pending = s.extra || 0;
+    const refresh = () => {
+      $('seat-extra-num').textContent = `${pending} extra`;
+      $('seat-minus').disabled = pending <= 0;
+      $('seat-plus').disabled = pending >= maxExtra;
+      $('seat-save').classList.toggle('hidden', pending === (s.extra || 0));
+    };
+    refresh();
+    $('seat-minus').addEventListener('click', () => { pending = Math.max(0, pending - 1); refresh(); });
+    $('seat-plus').addEventListener('click', () => { pending = Math.min(maxExtra, pending + 1); refresh(); });
+    $('seat-save').addEventListener('click', async () => {
+      const btn = $('seat-save');
+      btn.disabled = true; btn.textContent = 'Updating…';
+      try {
+        await fetchJson('/api/billing/seats', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ extraSeats: pending }),
+        });
+        toast('Seats updated.', 'ok');
+        loadBilling();
+      } catch (err) {
+        toast(`Couldn't update seats: ${err.message}`, 'warn');
+        btn.disabled = false; btn.textContent = 'Update seats';
+      }
+    });
   }
 
   // Add-on credits — top-ups that kick in once a monthly cap is spent. Engagement
@@ -9492,17 +9556,37 @@
       // Enterprise is custom-priced — never surface per-meter caps (or "unlimited")
       // on its card; volume is set in the sales conversation.
       const isEnterprise = !!p.contactSales;
+      const isV2 = (p.version || 1) >= 2;
       const gated = (p.features || []).map((f) => {
-        const label = escapeHtml(FEATURE_LABELS[f] || f);
+        // v2 merges prospect + competitor research into one metered pool —
+        // render them as a single line carrying the shared cap.
+        if (isV2 && f === 'competitor_research') return '';
+        let label = escapeHtml(FEATURE_LABELS[f] || f);
+        let capKey = f;
+        if (isV2 && f === 'discovery') { label = 'Prospect &amp; competitor research'; capKey = 'research'; }
         // Skip a feature the plan can't actually use (cap 0, e.g. Market Watch on Starter).
-        if (METERED_FEATURES.has(f) && p.caps && p.caps[f] === 0) return '';
-        const cap = (!isEnterprise && METERED_FEATURES.has(f) && p.caps && f in p.caps)
-          ? ` <span class="plan-cap">${capBadge(p.caps[f], p.lifetimeCaps)}</span>` : '';
+        if (METERED_FEATURES.has(f) && p.caps && p.caps[capKey] === 0) return '';
+        const cap = (!isEnterprise && METERED_FEATURES.has(f) && p.caps && capKey in p.caps)
+          ? ` <span class="plan-cap">${capBadge(p.caps[capKey], p.lifetimeCaps)}</span>` : '';
         return `<li>${label}${cap}</li>`;
       }).join('');
+      // v2 commercial shape: included seats (+price per extra), paid
+      // sub-accounts, metered engagement overage.
+      const extras = [];
+      if (!isEnterprise && p.seats && p.seats.included != null) {
+        const inc = `${p.seats.included} seat${p.seats.included === 1 ? '' : 's'} included`;
+        const extra = p.seats.priceMonthly ? ` · +$${p.seats.priceMonthly}/mo per extra seat` : '';
+        extras.push(`<li>${inc}${extra}</li>`);
+      }
+      if (!isEnterprise && p.subTenants) {
+        extras.push(`<li>${p.subTenants.included} sub-account included · +$${p.subTenants.priceMonthly}/mo each</li>`);
+      }
+      if (!isEnterprise && p.overage && p.overage.engagements) {
+        extras.push(`<li>$${p.overage.engagements.toFixed(2)} per engagement past your allowance</li>`);
+      }
       const included = ALWAYS_INCLUDED.map((l) => `<li>${l}</li>`).join('');
       const enterpriseLead = isEnterprise ? '<li>Volume tailored to your team</li>' : '';
-      const feats = enterpriseLead + gated + included;
+      const feats = enterpriseLead + gated + extras.join('') + included;
       let btn;
       if (isCurrent) {
         btn = `<button class="primary-cta" disabled>Current plan</button>`;
@@ -9860,13 +9944,19 @@
   // and edit modals. `selected`/`caps` prefill the current grant when editing.
   function saFeatureRows(grant, selected, caps) {
     selected = selected || []; caps = caps || {};
+    // v2 parents allocate the merged `research` pool (grant.caps carries a
+    // `research` key) — the cap input rides on the discovery row, labelled by
+    // the meter, and the competitor row gets none (same shared pool).
+    const v2 = !!(grant.caps && 'research' in grant.caps);
+    const meterOf = (f) => (v2 && (f === 'discovery' || f === 'competitor_research')) ? 'research' : f;
     return (grant.features || []).map((f) => {
-      const metered = METERED_FEATURES.has(f);
-      const max = grant.caps && Number.isFinite(grant.caps[f]) ? grant.caps[f] : null;
+      const meter = meterOf(f);
+      const metered = METERED_FEATURES.has(f) && !(v2 && f === 'competitor_research');
+      const max = grant.caps && Number.isFinite(grant.caps[meter]) ? grant.caps[meter] : null;
       const checked = selected.includes(f);
-      const capVal = caps[f] != null ? caps[f] : '';
+      const capVal = caps[meter] != null ? caps[meter] : '';
       const capInput = metered
-        ? `<input type="number" min="0" ${max != null ? `max="${max}"` : ''} class="sa-cap" data-meter="${f}" placeholder="${max != null ? max : '∞'}" value="${checked ? escapeHtml(String(capVal)) : ''}" ${checked ? '' : 'disabled'}>`
+        ? `<input type="number" min="0" ${max != null ? `max="${max}"` : ''} class="sa-cap" data-meter="${meter}" placeholder="${max != null ? max : '∞'}" value="${checked ? escapeHtml(String(capVal)) : ''}" ${checked ? '' : 'disabled'}>`
         : '';
       return `<label class="sa-feat">
         <input type="checkbox" class="sa-feat-cb" value="${f}" ${checked ? 'checked' : ''}>

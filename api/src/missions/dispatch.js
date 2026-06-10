@@ -10,6 +10,7 @@
 // on the button shouldn't either.
 
 const recall   = require('../recall');
+const costs    = require('../costs');
 const store    = require('../store');
 const service  = require('./service');
 const integrations = require('../integrations');
@@ -111,6 +112,7 @@ async function dispatchBot(tenantId, missionId, { force = false, botName } = {})
     meta: { ...meeting.meta, bot },
   });
 
+  costs.recordRecallDispatch(tenantId, 'missions.dispatch', { missionId, botId: bot.id });
   await service.setRecallBotId(tenantId, missionId, bot.id);
 
   return { alreadyDispatched: false, botId: bot.id, meeting, bot, mission };
