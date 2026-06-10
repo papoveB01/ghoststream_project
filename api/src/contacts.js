@@ -14,8 +14,49 @@
 
 const express = require('express');
 const db = require('./db');
+const gating = require('./gating');
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+// Outreach email categories. Each shapes the AI's goal/tone; `engagement: true`
+// pulls the prospect's most recent completed engagement into the context.
+const EMAIL_CATEGORIES = {
+  cold: {
+    label: 'Cold outreach',
+    goal: 'A first-touch cold email — no prior relationship. Open with a specific, relevant reason for reaching out (a buying signal / why-now, or a sharp insight about their business), state the value we offer in one line, and close with a low-friction ask (a brief reply or a short call). Short, human, curiosity-driven.',
+    engagement: false,
+  },
+  followup: {
+    label: 'Follow-up',
+    goal: 'A follow-up after a previous email or touchpoint that got no reply. Briefly reference the prior outreach, add one new piece of value or a fresh angle, and make a soft, easy CTA. Polite and concise — never guilt-trip.',
+    engagement: false,
+  },
+  postcall: {
+    label: 'Post-call / engagement',
+    goal: 'A follow-up after a recent call or meeting. Reference what was discussed, reinforce the value or next step that emerged, and propose a clear next action. Warm and specific to the conversation.',
+    engagement: true,
+  },
+  reengage: {
+    label: 'Re-engagement',
+    goal: 'Re-engage a prospect who has gone quiet. Use a recent development or signal about their business as a natural reason to reconnect, remind them of the value, and keep the CTA low-pressure.',
+    engagement: false,
+  },
+  meeting: {
+    label: 'Meeting request',
+    goal: 'Request a specific meeting or demo: one clear value reason to meet plus a single concrete CTA to book time. Brief and direct.',
+    engagement: false,
+  },
+  proposal: {
+    label: 'Proposal / next-steps',
+    goal: 'Summarize a recommendation / proposed next steps, tying our products to the needs evidenced in the prospect intel. Confident and value-led with a clear next step.',
+    engagement: true,
+  },
+  other: {
+    label: 'Other',
+    goal: 'Write the email to accomplish what the sender describes in their instruction. Use a professional, warm B2B sales tone.',
+    engagement: false,
+  },
+};
 
 // Best-effort: find a personas row whose name matches the given role text
 // (case-insensitive). Returns the persona_id or null.
@@ -250,6 +291,104 @@ router.get('/apollo-search', async (req, res, next) => {
     if (!domain) return res.json({ people: [] });
     const people = await apollo.searchPeople(req.tenantId, domain, { name: q || undefined, limit: 6 });
     res.json({ people });
+  } catch (err) { next(err); }
+});
+
+// GET /contacts/email-categories — the category options for the composer UI.
+router.get('/email-categories', (req, res) => {
+  res.json({ categories: Object.entries(EMAIL_CATEGORIES).map(([key, c]) => ({ key, label: c.label })) });
+});
+
+// POST /contacts/:id/draft-email { category, instruction } — AI-draft an outreach
+// email TO this contact, grounded in our company + the prospect's intel/signals
+// (and last engagement for post-call/proposal). Returns { to, cc, subject, body };
+// the UI opens it in the rep's mail client via mailto. The cc is the prospect's
+// inbound-parse address so the sent mail + any reply-all are captured as intel.
+router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req, res, next) => {
+  try {
+    const contact = await get(req.tenantId, req.params.id);
+    if (!contact) return res.status(404).json({ error: 'contact not found' });
+    if (!contact.email) return res.status(422).json({ error: 'this contact has no email address yet' });
+    const cat = EMAIL_CATEGORIES[String((req.body && req.body.category) || 'cold').toLowerCase()] || EMAIL_CATEGORIES.cold;
+    const instruction = String((req.body && req.body.instruction) || '').trim().slice(0, 1000);
+
+    // Sender + our-company context.
+    const tenant = (await db.query(`SELECT name FROM tenants WHERE id = $1`, [req.tenantId])).rows[0] || {};
+    const prof = (await db.query(`SELECT positioning, ideal_customer_profile FROM tenant_profiles WHERE tenant_id = $1`, [req.tenantId])).rows[0] || {};
+    const products = (await db.query(`SELECT name, description FROM products WHERE tenant_id = $1 ORDER BY lower(name) LIMIT 12`, [req.tenantId])).rows;
+    const u = (await db.query(`SELECT first_name, last_name FROM users WHERE id = $1`, [req.user && req.user.sub])).rows[0] || {};
+    const senderName = [u.first_name, u.last_name].filter(Boolean).join(' ').trim() || tenant.name || 'the team';
+
+    // Prospect intel: latest research synthesis + signals; last engagement when relevant.
+    const research = (await db.query(
+      `SELECT summary, opportunities FROM prospect_research WHERE tenant_id = $1 AND company_id = $2 AND status = 'DONE' ORDER BY created_at DESC LIMIT 1`,
+      [req.tenantId, contact.company_id]
+    )).rows[0] || {};
+    const signals = Array.isArray(research.opportunities)
+      ? research.opportunities.map((o) => `- ${(o && (o.title || o.summary)) || (typeof o === 'string' ? o : '')}`).filter((s) => s.length > 3).slice(0, 6).join('\n')
+      : '';
+    let engagement = '';
+    if (cat.engagement) {
+      const m = (await db.query(
+        `SELECT notes, scheduled_at FROM scheduled_meetings WHERE tenant_id = $1 AND company_id = $2 AND status = 'COMPLETED' ORDER BY scheduled_at DESC LIMIT 1`,
+        [req.tenantId, contact.company_id]
+      )).rows[0];
+      if (m && m.notes) engagement = `Most recent engagement notes: ${String(m.notes).slice(0, 600)}`;
+    }
+
+    const ctxBlock = [
+      `OUR COMPANY: ${tenant.name || ''}`,
+      prof.positioning ? `What we do: ${String(prof.positioning).slice(0, 600)}` : '',
+      products.length ? `Our products: ${products.map((p) => p.name + (p.description ? ` (${String(p.description).slice(0, 80)})` : '')).join('; ')}` : '',
+      `PROSPECT COMPANY: ${contact.company_name || ''}${contact.company_domain ? ` (${contact.company_domain})` : ''}`,
+      `RECIPIENT: ${contact.name}${contact.role && contact.role !== 'Unknown' ? `, ${contact.role}` : ''}`,
+      research.summary ? `What we know about them: ${String(research.summary).slice(0, 1200)}` : '',
+      signals ? `Recent signals / opportunities:\n${signals}` : '',
+      engagement,
+    ].filter(Boolean).join('\n');
+
+    const prompt =
+      `You are an expert B2B sales writer composing a SHORT outreach email that ${senderName} will send to ${contact.name}.\n` +
+      `EMAIL TYPE — ${cat.label}: ${cat.goal}\n` +
+      (instruction ? `MUST REFLECT (the sender's explicit instruction — follow it closely): ${instruction}\n` : '') +
+      `Write a compelling subject line and a plain-text body. Greet the recipient by first name and end with a short sign-off from "${senderName}". Keep the body tight (~120 words, a few short sentences). Be specific and credible using the context below; NEVER invent facts, figures, or events the context does not support. Professional and warm — no clichés or spammy phrasing.\n\n` +
+      `===CONTEXT===\n${ctxBlock}`;
+
+    const gemini = require('./gemini');
+    const MODEL = require('./models').modelFor('content');
+    const SCHEMA = { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] };
+    let draft = {};
+    try {
+      const ai = gemini.getClient();
+      const resp = await ai.models.generateContent({
+        model: MODEL,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: { temperature: 0.6, maxOutputTokens: 1200, responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
+      });
+      draft = JSON.parse(resp.text);
+    } catch (e) {
+      console.warn('[draft-email] generation failed:', (e && e.message) || e);
+      return res.status(502).json({ error: 'could not draft the email right now — try again' });
+    }
+
+    // CC the prospect's inbound-parse address so the outbound email (and any
+    // reply-all from the prospect) is ingested as prospect intel + engagement log.
+    let cc = null, ccCapture = false;
+    try {
+      const info = await require('./inboundEmail').inboxInfo(req.tenantId, contact.company_id);
+      if (info && info.configured && info.address) { cc = info.address; ccCapture = true; }
+    } catch { /* capture is best-effort — draft still returns */ }
+
+    res.json({
+      ok: true,
+      to: contact.email,
+      cc,
+      ccCapture,
+      subject: String(draft.subject || '').trim(),
+      body: String(draft.body || '').trim(),
+      category: cat.label,
+      contactName: contact.name,
+    });
   } catch (err) { next(err); }
 });
 

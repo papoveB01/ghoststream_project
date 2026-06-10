@@ -1428,6 +1428,101 @@
     }
   }
 
+  // ── AI email composer ─────────────────────────────────────────────────────
+  // Drafts an outreach email to a prospect contact (category + free-text intent),
+  // then hands it to the rep's own mail client via mailto — with the prospect's
+  // inbound-parse address CC'd so the send + any reply-all feed prospect intel.
+  const EMAIL_CATS_FALLBACK = [
+    { key: 'cold', label: 'Cold outreach' }, { key: 'followup', label: 'Follow-up' },
+    { key: 'postcall', label: 'Post-call / engagement' }, { key: 'reengage', label: 'Re-engagement' },
+    { key: 'meeting', label: 'Meeting request' }, { key: 'proposal', label: 'Proposal / next-steps' },
+    { key: 'other', label: 'Other' },
+  ];
+  let _emailCatsCache = null;
+  async function emailCategories() {
+    if (_emailCatsCache) return _emailCatsCache;
+    try { const r = await fetchJson('/api/contacts/email-categories'); _emailCatsCache = (r.categories && r.categories.length) ? r.categories : EMAIL_CATS_FALLBACK; }
+    catch { _emailCatsCache = EMAIL_CATS_FALLBACK; }
+    return _emailCatsCache;
+  }
+
+  async function openEmailComposer(contact) {
+    let overlay = $('email-composer-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'email-composer-overlay';
+      overlay.className = 'cal-picker-overlay';
+      document.body.appendChild(overlay);
+    }
+    const cats = await emailCategories();
+    overlay.innerHTML = `
+      <div class="comp-discover-modal email-composer">
+        <div class="cal-picker-h"><span class="cal-picker-title">Email ${escapeHtml(contact.name || 'contact')}</span><button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
+        <div class="email-composer-body" style="padding:4px 2px">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+            <label class="comp-finder-field" style="margin:0">Category
+              <select id="ec-category">${cats.map((c) => `<option value="${escapeHtml(c.key)}">${escapeHtml(c.label)}</option>`).join('')}</select>
+            </label>
+            <label class="comp-finder-field" style="margin:0;flex:1;min-width:240px">What should this email reflect? <span class="kb-subtle">(optional)</span>
+              <input id="ec-instruction" type="text" placeholder="e.g. mention our new tokenization product; we already serve their competitor">
+            </label>
+            <button type="button" class="primary-cta" id="ec-generate">Generate draft</button>
+          </div>
+          <div class="kb-subtle" style="margin:8px 0">To: <strong>${escapeHtml(contact.email || '')}</strong></div>
+          <div id="ec-draft" class="hidden">
+            <label class="comp-finder-field" style="display:block;margin:6px 0">Subject
+              <input id="ec-subject" type="text" style="width:100%">
+            </label>
+            <label class="comp-finder-field" style="display:block;margin:6px 0">Message
+              <textarea id="ec-body" rows="10" style="width:100%"></textarea>
+            </label>
+            <div id="ec-cc-note" class="kb-subtle" style="margin-top:2px"></div>
+          </div>
+          <div class="kb-result hidden" id="ec-result"></div>
+        </div>
+        <div class="comp-discover-foot" style="display:flex;gap:10px;justify-content:flex-end">
+          <button type="button" class="kb-secondary-btn" id="ec-cancel">Close</button>
+          <button type="button" class="primary-cta hidden" id="ec-open">Open in email app</button>
+        </div>
+      </div>`;
+    overlay.classList.remove('hidden');
+    let lastCc = null;
+    const close = () => overlay.classList.add('hidden');
+    overlay.querySelector('.cal-picker-close').onclick = close;
+    $('ec-cancel').onclick = close;
+    overlay.onclick = (e) => { if (e.target === overlay) close(); };
+
+    $('ec-generate').onclick = async () => {
+      const gen = $('ec-generate'); gen.disabled = true; const o = gen.textContent; gen.textContent = 'Drafting…';
+      const res = $('ec-result'); res.className = 'kb-result'; res.classList.remove('hidden'); res.textContent = 'Writing a draft from the prospect context…';
+      try {
+        const r = await fetchJson(`/api/contacts/${encodeURIComponent(contact.id)}/draft-email`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ category: $('ec-category').value, instruction: $('ec-instruction').value.trim() }),
+        });
+        $('ec-subject').value = r.subject || '';
+        $('ec-body').value = r.body || '';
+        lastCc = r.cc || null;
+        $('ec-cc-note').textContent = r.ccCapture
+          ? `A copy is captured to DealScope (CC ${r.cc}) so the email and any reply-all feed this prospect's intel.`
+          : 'Note: inbound capture isn’t configured for this workspace, so replies won’t be auto-filed.';
+        $('ec-draft').classList.remove('hidden');
+        $('ec-open').classList.remove('hidden');
+        res.classList.add('hidden');
+      } catch (err) {
+        res.className = 'kb-result error'; res.textContent = err.message;
+      } finally { gen.disabled = false; gen.textContent = o; }
+    };
+
+    $('ec-open').onclick = () => {
+      const cc = lastCc ? `cc=${encodeURIComponent(lastCc)}&` : '';
+      const href = `mailto:${encodeURIComponent(contact.email || '')}?${cc}subject=${encodeURIComponent($('ec-subject').value || '')}&body=${encodeURIComponent($('ec-body').value || '')}`;
+      // Anchor-click rather than location.href so the SPA isn't navigated away.
+      const a = document.createElement('a'); a.href = href; a.style.display = 'none';
+      document.body.appendChild(a); a.click(); a.remove();
+    };
+  }
+
   function wireQuickResearch(host) {
     const btn = $('prospect-quick-run-btn');
     if (!btn || btn.dataset.wired === '1') return;
@@ -1684,6 +1779,7 @@
                     <td><input type="text" data-contact-field="role"  value="${escapeHtml(ct.role)}" maxlength="100"></td>
                     <td>${ct.persona_name ? `<span class="pill pill-info">${escapeHtml(ct.persona_name)}</span>` : '<span class="kb-subtle">—</span>'}</td>
                     <td>
+                      <button class="kb-link-btn" data-contact-email="${escapeHtml(ct.id)}" ${ct.email ? '' : 'disabled'} title="${ct.email ? 'Draft an email to this contact with AI' : 'Add an email address first'}">✉ Email</button>
                       <button class="kb-link-btn" data-contact-save="${escapeHtml(ct.id)}">Save</button>
                       <button class="kb-link-btn danger" data-contact-delete="${escapeHtml(ct.id)}">Delete</button>
                     </td>
@@ -1787,6 +1883,11 @@
           loaded.prospects = false;
           await loadProspects();
         } catch (err) { alert(`Couldn't delete: ${err.message}`); }
+      }));
+    host.querySelectorAll('[data-contact-email]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const ct = (contacts || []).find((x) => String(x.id) === String(b.dataset.contactEmail));
+        if (ct) openEmailComposer(ct);
       }));
 
     // ── Tabs (Signals / People / Intel / Proposal) ──
