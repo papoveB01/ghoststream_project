@@ -265,6 +265,66 @@ async function listForMission(tenantId, missionId) {
 
 // ── HTTP router ─────────────────────────────────────────────────────────
 
+// Build the "past engagement" context block for follow-up / post-call drafts.
+// A touchpoint id is `call:<scheduled_meeting_id>` or `email:<kb_document_id>`
+// (a bare id is treated as a call, for back-compat). Selecting one grounds the
+// draft on exactly that touchpoint; auto-mode (no id) pulls the latest call AND
+// the latest captured email thread so the AI sees the recent history either way.
+async function gatherEngagementContext(tenantId, companyId, engagementId) {
+  const eid = String(engagementId || '').trim();
+  const blocks = [];
+
+  async function callBlock(m) {
+    if (!m) return null;
+    const bits = [`Date: ${new Date(m.scheduled_at).toISOString().slice(0, 10)}`];
+    if (m.portal_id) {
+      try {
+        const p = await require('./store').getPortal(m.portal_id);
+        if (p) {
+          if (p.title) bits.push(`Call: ${p.title}`);
+          const names = (Array.isArray(p.participants) ? p.participants : []).map((x) => (x && (x.name || x.displayName)) || (typeof x === 'string' ? x : '')).filter(Boolean);
+          if (names.length) bits.push(`Participants: ${names.join(', ')}`);
+          if (p.sowSummary) bits.push(`What was discussed: ${String(p.sowSummary).slice(0, 1100)}`);
+          const obj = p.moments && p.moments.objection;
+          const objText = obj && (obj.quote || obj.summary || obj.context);
+          if (objText) bits.push(`Key moment / objection raised: ${String(objText).slice(0, 300)}`);
+        }
+      } catch { /* portal gone — date + notes still useful */ }
+    }
+    if (m.notes) bits.push(`Notes: ${String(m.notes).slice(0, 500)}`);
+    return `PAST CALL (ground concretely in THIS conversation):\n${bits.join('\n')}`;
+  }
+  async function emailBlock(docId) {
+    try {
+      const d = await require('./knowledge/service').getDocumentText(tenantId, docId);
+      if (!d || !d.text) return null;
+      return `CAPTURED EMAIL THREAD (ground concretely in THIS exchange — continue it naturally):\n${String(d.text).slice(0, 1500)}`;
+    } catch { return null; }
+  }
+  const latestCall = () => db.query(
+    `SELECT id, scheduled_at, notes, portal_id FROM scheduled_meetings WHERE tenant_id = $1 AND company_id = $2 AND status = 'COMPLETED' ORDER BY scheduled_at DESC LIMIT 1`,
+    [tenantId, companyId]
+  ).then((r) => r.rows[0]);
+  const latestEmailId = () => db.query(
+    `SELECT id FROM kb_documents WHERE tenant_id = $1 AND company_id = $2 AND scope = 'PROSPECT' AND metadata->>'source' = 'inbound-email' AND status = 'READY' ORDER BY created_at DESC LIMIT 1`,
+    [tenantId, companyId]
+  ).then((r) => r.rows[0] && r.rows[0].id);
+
+  if (eid.startsWith('email:')) {
+    const b = await emailBlock(eid.slice(6)); if (b) blocks.push(b);
+  } else if (eid) {
+    const callId = eid.startsWith('call:') ? eid.slice(5) : eid;
+    const m = (await db.query(`SELECT id, scheduled_at, notes, portal_id FROM scheduled_meetings WHERE id = $1 AND tenant_id = $2 AND company_id = $3`, [callId, tenantId, companyId])).rows[0];
+    const b = await callBlock(m); if (b) blocks.push(b);
+  } else {
+    // Auto: latest call + latest captured email thread (whichever exist).
+    const [m, emailId] = await Promise.all([latestCall(), latestEmailId()]);
+    const cb = await callBlock(m); if (cb) blocks.push(cb);
+    if (emailId) { const eb = await emailBlock(emailId); if (eb) blocks.push(eb); }
+  }
+  return blocks.join('\n\n');
+}
+
 const router = express.Router();
 router.use(express.json());
 
@@ -328,44 +388,7 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
       ? research.opportunities.map((o) => `- ${(o && (o.title || o.summary)) || (typeof o === 'string' ? o : '')}`).filter((s) => s.length > 3).slice(0, 6).join('\n')
       : '';
     let engagement = '';
-    if (cat.engagement) {
-      // A specific engagement may be chosen in the composer; else use the most
-      // recent completed one. Pull the call's content from its portal so the AI
-      // grounds the email in what was actually discussed — not generic lines.
-      const eid = String((req.body && req.body.engagementId) || '').trim();
-      let m = null;
-      if (eid) {
-        m = (await db.query(
-          `SELECT id, scheduled_at, notes, portal_id FROM scheduled_meetings WHERE id = $1 AND tenant_id = $2 AND company_id = $3`,
-          [eid, req.tenantId, contact.company_id]
-        )).rows[0];
-      }
-      if (!m) {
-        m = (await db.query(
-          `SELECT id, scheduled_at, notes, portal_id FROM scheduled_meetings WHERE tenant_id = $1 AND company_id = $2 AND status = 'COMPLETED' ORDER BY scheduled_at DESC LIMIT 1`,
-          [req.tenantId, contact.company_id]
-        )).rows[0];
-      }
-      if (m) {
-        const bits = [`Date: ${new Date(m.scheduled_at).toISOString().slice(0, 10)}`];
-        if (m.portal_id) {
-          try {
-            const p = await require('./store').getPortal(m.portal_id);
-            if (p) {
-              if (p.title) bits.push(`Call: ${p.title}`);
-              const names = (Array.isArray(p.participants) ? p.participants : []).map((x) => (x && (x.name || x.displayName)) || (typeof x === 'string' ? x : '')).filter(Boolean);
-              if (names.length) bits.push(`Participants: ${names.join(', ')}`);
-              if (p.sowSummary) bits.push(`What was discussed: ${String(p.sowSummary).slice(0, 1100)}`);
-              const obj = p.moments && p.moments.objection;
-              const objText = obj && (obj.quote || obj.summary || obj.context);
-              if (objText) bits.push(`Key moment / objection raised: ${String(objText).slice(0, 300)}`);
-            }
-          } catch { /* portal gone — date + notes still useful */ }
-        }
-        if (m.notes) bits.push(`Notes: ${String(m.notes).slice(0, 500)}`);
-        engagement = `PAST ENGAGEMENT (ground the email concretely in THIS conversation):\n${bits.join('\n')}`;
-      }
-    }
+    if (cat.engagement) engagement = await gatherEngagementContext(req.tenantId, contact.company_id, req.body && req.body.engagementId);
 
     const ctxBlock = [
       `OUR COMPANY: ${tenant.name || ''}`,

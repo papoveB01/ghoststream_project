@@ -1480,10 +1480,10 @@
             <button type="button" class="ec-generate" id="ec-generate"><span class="ec-spark">✦</span> Generate draft</button>
           </div>
           <div class="ec-engagement hidden" id="ec-engagement-wrap">
-            <label class="ec-field">Based on engagement
-              <select id="ec-engagement"><option value="">Most recent engagement (auto)</option></select>
+            <label class="ec-field">Based on touchpoint
+              <select id="ec-engagement"><option value="">Most recent touchpoint (auto)</option></select>
             </label>
-            <span class="ec-engagement-hint kb-subtle">The AI will ground the email in this conversation.</span>
+            <span class="ec-engagement-hint kb-subtle">Grounds the email in this past call or email thread.</span>
           </div>
           <div id="ec-draft" class="ec-draft hidden">
             <label class="ec-field">Subject
@@ -1522,12 +1522,13 @@
         const r = await fetchJson(`/api/companies/${encodeURIComponent(companyId)}/engagements`);
         const engs = r.engagements || [];
         sel.innerHTML = engs.length
-          ? '<option value="">Most recent engagement (auto)</option>' + engs.map((e) => {
-              const d = e.scheduledAt ? new Date(e.scheduledAt).toLocaleDateString() : '';
-              const lbl = [d, e.title || (e.notes ? e.notes.slice(0, 44) : '')].filter(Boolean).join(' · ');
-              return `<option value="${escapeHtml(e.id)}">${escapeHtml(lbl || 'Engagement')}</option>`;
+          ? '<option value="">Most recent touchpoint (auto)</option>' + engs.map((e) => {
+              const d = e.at ? new Date(e.at).toLocaleDateString() : '';
+              const icon = e.type === 'EMAIL' ? '✉' : '📞';
+              const lbl = [icon, d, e.title].filter(Boolean).join(' · ');
+              return `<option value="${escapeHtml(e.id)}">${escapeHtml(lbl)}</option>`;
             }).join('')
-          : '<option value="">No past engagements found</option>';
+          : '<option value="">No past calls or emails found</option>';
       } catch { sel.dataset.loaded = ''; sel.innerHTML = '<option value="">Couldn’t load engagements</option>'; }
     };
     $('ec-category').addEventListener('change', updateEngagementPicker);

@@ -404,26 +404,40 @@ router.post('/:id/add-contacts', gating.requireFeature('discovery'), async (req,
   } catch (err) { next(err); }
 });
 
-// GET /companies/:id/engagements — past (completed) engagements for this prospect,
-// each labelled with its call title/summary (from the portal). Powers the email
-// composer's "based on engagement" picker for follow-up / post-call drafts.
+// GET /companies/:id/engagements — past touchpoints for this prospect: completed
+// CALLS (labelled by their portal title) and captured EMAIL threads (inbound-parse
+// intel). Each carries a typed composite id (`call:<id>` / `email:<id>`). Powers
+// the email composer's "based on engagement" picker for follow-up / post-call.
 router.get('/:id/engagements', async (req, res, next) => {
   try {
-    const rows = (await db.query(
+    const store = require('./store');
+    const engagements = [];
+    // Completed calls.
+    const calls = (await db.query(
       `SELECT id, scheduled_at, notes, portal_id FROM scheduled_meetings
         WHERE tenant_id = $1 AND company_id = $2 AND status = 'COMPLETED'
         ORDER BY scheduled_at DESC LIMIT 20`,
       [req.tenantId, req.params.id]
     )).rows;
-    const store = require('./store');
-    const engagements = [];
-    for (const r of rows) {
-      let title = null, hasSummary = false;
-      if (r.portal_id) {
-        try { const p = await store.getPortal(r.portal_id); if (p) { title = p.title || null; hasSummary = Boolean(p.sowSummary); } } catch { /* portal gone — fall back to date */ }
-      }
-      engagements.push({ id: r.id, scheduledAt: r.scheduled_at, notes: r.notes || null, portalId: r.portal_id || null, title, hasSummary });
+    for (const r of calls) {
+      let title = null;
+      if (r.portal_id) { try { const p = await store.getPortal(r.portal_id); if (p) title = p.title || null; } catch { /* fall back to date */ } }
+      engagements.push({ id: `call:${r.id}`, type: 'CALL', at: r.scheduled_at, title: title || (r.notes ? String(r.notes).slice(0, 60) : 'Call') });
     }
+    // Captured email threads (inbound-parse intel filed as PROSPECT docs).
+    const emails = (await db.query(
+      `SELECT id, title, metadata, created_at FROM kb_documents
+        WHERE tenant_id = $1 AND company_id = $2 AND scope = 'PROSPECT'
+          AND metadata->>'source' = 'inbound-email' AND status = 'READY'
+        ORDER BY created_at DESC LIMIT 20`,
+      [req.tenantId, req.params.id]
+    )).rows;
+    for (const r of emails) {
+      const md = r.metadata || {};
+      engagements.push({ id: `email:${r.id}`, type: 'EMAIL', at: md.receivedAt || r.created_at, title: (r.title || 'Email').replace(/^Email:\s*/i, '') });
+    }
+    // Most recent first across both types.
+    engagements.sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
     res.json({ engagements });
   } catch (err) { next(err); }
 });
