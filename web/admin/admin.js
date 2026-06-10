@@ -1455,34 +1455,44 @@
       document.body.appendChild(overlay);
     }
     const cats = await emailCategories();
+    const initial = (contact.name || 'contact').trim().charAt(0).toUpperCase() || '✉';
     overlay.innerHTML = `
-      <div class="comp-discover-modal email-composer">
-        <div class="cal-picker-h"><span class="cal-picker-title">Email ${escapeHtml(contact.name || 'contact')}</span><button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
-        <div class="email-composer-body" style="padding:4px 2px">
-          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-            <label class="comp-finder-field" style="margin:0">Category
+      <div class="email-composer">
+        <div class="ec-head">
+          <div class="ec-head-id">
+            <span class="ec-avatar">${escapeHtml(initial)}</span>
+            <div>
+              <div class="ec-head-title">Compose email</div>
+              <div class="ec-head-sub">to ${escapeHtml(contact.name || 'contact')}${contact.role ? ` · ${escapeHtml(contact.role)}` : ''}</div>
+            </div>
+          </div>
+          <button type="button" class="ec-close cal-picker-close" aria-label="Close">✕</button>
+        </div>
+        <div class="ec-to"><span class="ec-to-label">To</span><span class="ec-to-addr">${escapeHtml(contact.email || '')}</span></div>
+        <div class="ec-body">
+          <div class="ec-controls">
+            <label class="ec-field ec-field-cat">Category
               <select id="ec-category">${cats.map((c) => `<option value="${escapeHtml(c.key)}">${escapeHtml(c.label)}</option>`).join('')}</select>
             </label>
-            <label class="comp-finder-field" style="margin:0;flex:1;min-width:240px">What should this email reflect? <span class="kb-subtle">(optional)</span>
+            <label class="ec-field ec-field-intent">What should this email reflect? <span class="ec-opt">optional</span>
               <input id="ec-instruction" type="text" placeholder="e.g. mention our new tokenization product; we already serve their competitor">
             </label>
-            <button type="button" class="primary-cta" id="ec-generate">Generate draft</button>
+            <button type="button" class="ec-generate" id="ec-generate"><span class="ec-spark">✦</span> Generate draft</button>
           </div>
-          <div class="kb-subtle" style="margin:8px 0">To: <strong>${escapeHtml(contact.email || '')}</strong></div>
-          <div id="ec-draft" class="hidden">
-            <label class="comp-finder-field" style="display:block;margin:6px 0">Subject
-              <input id="ec-subject" type="text" style="width:100%">
+          <div id="ec-draft" class="ec-draft hidden">
+            <label class="ec-field">Subject
+              <input id="ec-subject" type="text" class="ec-subject">
             </label>
-            <label class="comp-finder-field" style="display:block;margin:6px 0">Message
-              <textarea id="ec-body" rows="10" style="width:100%"></textarea>
+            <label class="ec-field">Message
+              <textarea id="ec-body" rows="11" class="ec-message"></textarea>
             </label>
-            <div id="ec-cc-note" class="kb-subtle" style="margin-top:2px"></div>
+            <div id="ec-cc-note" class="ec-cc-note"></div>
           </div>
           <div class="kb-result hidden" id="ec-result"></div>
         </div>
-        <div class="comp-discover-foot" style="display:flex;gap:10px;justify-content:flex-end">
+        <div class="ec-foot">
           <button type="button" class="kb-secondary-btn" id="ec-cancel">Close</button>
-          <button type="button" class="primary-cta hidden" id="ec-open">Open in email app</button>
+          <button type="button" class="ec-send hidden" id="ec-open">✉ Open in email app</button>
         </div>
       </div>`;
     overlay.classList.remove('hidden');
@@ -1503,9 +1513,9 @@
         $('ec-subject').value = r.subject || '';
         $('ec-body').value = r.body || '';
         lastCc = r.cc || null;
-        $('ec-cc-note').textContent = r.ccCapture
-          ? `A copy is captured to DealScope (CC ${r.cc}) so the email and any reply-all feed this prospect's intel.`
-          : 'Note: inbound capture isn’t configured for this workspace, so replies won’t be auto-filed.';
+        $('ec-cc-note').innerHTML = r.ccCapture
+          ? `<span class="ec-cc-ok">✓ captured</span> A copy goes to DealScope (CC ${escapeHtml(r.cc)}) so this email — and any reply — feeds the prospect's intel.`
+          : `<span class="ec-cc-warn">!</span> Inbound capture isn’t configured, so replies won’t be auto-filed.`;
         $('ec-draft').classList.remove('hidden');
         $('ec-open').classList.remove('hidden');
         res.classList.add('hidden');
