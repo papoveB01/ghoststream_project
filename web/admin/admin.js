@@ -1229,6 +1229,35 @@
   const PROSPECT_PRIO = { 5: 'Critical', 4: 'High', 3: 'Medium', 2: 'Low', 1: 'Watch' };
   function prioLabel(l) { return PROSPECT_PRIO[l] || 'Medium'; }
 
+  // ── Discovery result persistence ─────────────────────────────────────────
+  // Keep the last prospect / competitor online-discovery results (+ the form
+  // inputs that produced them) so they survive navigating away and back — and a
+  // full page reload — within the browser tab. Cleared when the tab closes.
+  const DISCOVERY_CACHE = { prospects: 'ds.discover.prospects', competitors: 'ds.discover.competitors' };
+  function saveDiscovery(kind, data) {
+    try { sessionStorage.setItem(DISCOVERY_CACHE[kind], JSON.stringify(data)); } catch { /* quota/full — non-fatal */ }
+  }
+  function loadDiscovery(kind) {
+    try { const r = sessionStorage.getItem(DISCOVERY_CACHE[kind]); return r ? JSON.parse(r) : null; } catch { return null; }
+  }
+  // Mark a candidate as tracked in the persisted results (by name) so a restored
+  // view shows "✓ tracked" instead of an Add button after it's been added.
+  function markDiscoveryAdded(kind, name) {
+    const cached = loadDiscovery(kind);
+    const arr = cached && cached[kind];
+    if (!Array.isArray(arr)) return;
+    const m = arr.find((x) => x && x.name === name);
+    if (m && !m.exists) { m.exists = true; saveDiscovery(kind, cached); }
+  }
+  // Restore a saved region/country/city tuple, honouring the region→country
+  // dependency (wireRegionCountry repopulates country options per region).
+  function restoreRegionCountryCity(f, regionId, countryId, cityId) {
+    const r = $(regionId), c = $(countryId), city = cityId ? $(cityId) : null;
+    if (r && f.region != null) { r.value = f.region; if (typeof r.onchange === 'function') r.onchange(); }
+    if (c && f.country != null) c.value = f.country;
+    if (city && f.city != null) city.value = f.city;
+  }
+
   async function renderProspectDiscoverMode(panel) {
     panel.innerHTML = `
       <div class="prospect-quick-h"><strong>Discover prospects online</strong> — we find the businesses you sell to (your ideal customer profile) showing a buying signal, rank them, and show why. Set your "who you sell to" on the Company page for best results.</div>
@@ -1258,6 +1287,16 @@
     } catch { /* dropdown stays at "Any industry" */ }
     $('pdisc-search').addEventListener('click', runProspectDiscover);
     wireRegionCountry('pdisc-region', 'pdisc-country');
+    // Restore the last search (form inputs + results) so they persist across
+    // navigation and reload until a new search replaces them.
+    const cached = loadDiscovery('prospects');
+    if (cached) {
+      const f = cached.inputs || {};
+      restoreRegionCountryCity(f, 'pdisc-region', 'pdisc-country', 'pdisc-city');
+      if (f.limit != null && $('pdisc-limit')) $('pdisc-limit').value = f.limit;
+      if (f.industry != null && $('pdisc-industry')) $('pdisc-industry').value = f.industry;
+      if (cached.prospects && cached.prospects.length) renderProspectCandidates($('pdisc-body'), cached.prospects, cached.dataHints);
+    }
   }
 
   async function runProspectDiscover() {
@@ -1275,7 +1314,9 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ region, industry, country, city, limit }),
       });
-      renderProspectCandidates(body, (data && data.prospects) || [], data && data.dataHints);
+      const prospects = (data && data.prospects) || [];
+      renderProspectCandidates(body, prospects, data && data.dataHints);
+      saveDiscovery('prospects', { inputs: { region, industry, country, city, limit }, prospects, dataHints: (data && data.dataHints) || null });
     } catch (err) {
       body.innerHTML = `<div class="kb-result error" style="margin:12px">${escapeHtml(err.message)}</div>`;
     } finally { btn.disabled = false; btn.textContent = o; }
@@ -1377,10 +1418,11 @@
       });
       btn.textContent = r.signalSaved ? '✓ Added · signal saved' : '✓ Added';
       btn.classList.add('ev-added');
+      markDiscoveryAdded('prospects', c.name);
       loaded.prospects = false; // list refreshes on next visit / refresh
       if (r.company && r.company.id) _prospectsState.selectedCompanyId = r.company.id;
     } catch (err) {
-      if (/already exists/i.test(err.message)) { btn.textContent = '✓ Exists'; btn.classList.add('ev-added'); return; }
+      if (/already exists/i.test(err.message)) { btn.textContent = '✓ Exists'; btn.classList.add('ev-added'); markDiscoveryAdded('prospects', c.name); return; }
       btn.disabled = false; btn.textContent = '＋ Add prospect';
       const rr = $('pcand-result'); if (rr) { rr.classList.remove('hidden', 'success'); rr.classList.add('error'); rr.textContent = `${c.name}: ${err.message}`; }
     }
@@ -2463,10 +2505,18 @@
       overlay.querySelector('.cal-picker-close').addEventListener('click', finderDone);
       document.addEventListener('keydown', _finderEsc);
     }
-    $('comp-finder-body').innerHTML = `<div class="kb-subtle" style="padding:14px">Pick a region and hit Search. We'll find companies that compete with you, based on your own profile and products.</div>`;
     $('comp-finder-search').onclick = runCompetitorFinderSearch;
     $('comp-finder-done').onclick = finderDone;
     wireRegionCountry('comp-finder-region', 'comp-finder-country');
+    // Restore the last competitor search (inputs + results) if there is one, so
+    // reopening the finder doesn't wipe what was found. Else show the prompt.
+    const cached = loadDiscovery('competitors');
+    if (cached && cached.competitors && cached.competitors.length) {
+      restoreRegionCountryCity(cached.inputs || {}, 'comp-finder-region', 'comp-finder-country', 'comp-finder-city');
+      renderCompetitorCandidates($('comp-finder-body'), cached.competitors, cached.dataHints);
+    } else {
+      $('comp-finder-body').innerHTML = `<div class="kb-subtle" style="padding:14px">Pick a region and hit Search. We'll find companies that compete with you, based on your own profile and products.</div>`;
+    }
     overlay.classList.remove('hidden');
   }
 
@@ -2484,7 +2534,9 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ region, country, city }),
       });
-      renderCompetitorCandidates(body, (data && data.competitors) || [], data && data.dataHints);
+      const competitors = (data && data.competitors) || [];
+      renderCompetitorCandidates(body, competitors, data && data.dataHints);
+      saveDiscovery('competitors', { inputs: { region, country, city }, competitors, dataHints: (data && data.dataHints) || null });
     } catch (err) {
       body.innerHTML = `<div class="kb-result error" style="margin:14px">${escapeHtml(err.message)}</div>`;
     } finally { btn.disabled = false; btn.textContent = o; }
@@ -2561,10 +2613,11 @@
       });
       btn.textContent = r.intelFiled ? '✓ Added · unlocked' : '✓ Added';
       btn.classList.add('ev-added');
+      markDiscoveryAdded('competitors', c.name);
       _finderAddedAny = true;
       _competitorsState.selectedId = (r.competitor || {}).id || id;
     } catch (err) {
-      if (/already exists/i.test(err.message)) { btn.textContent = '✓ Exists'; btn.classList.add('ev-added'); return; }
+      if (/already exists/i.test(err.message)) { btn.textContent = '✓ Exists'; btn.classList.add('ev-added'); markDiscoveryAdded('competitors', c.name); return; }
       btn.disabled = false; btn.textContent = '＋ Add';
       const rr = $('cand-result'); if (rr) { rr.classList.remove('hidden', 'success'); rr.classList.add('error'); rr.textContent = `${c.name}: ${err.message}`; }
     }
