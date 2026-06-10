@@ -84,16 +84,23 @@ async function ensureCustomerFor(tenantId, email) {
 // .status on bad plan / missing price. Exported so onboarding can start the
 // trial right after account creation.
 async function createCheckout({ tenantId, email, plan, trial = false, successUrl, cancelUrl }) {
-  // Checkout always sells the v2 catalog (ADR-0004). Grandfathered v1 tenants
-  // keep their v1 caps/prices only as long as they don't buy a new plan —
-  // applySubscription flips plan_version to 2 when a v2 price lands.
+  // Checkout sells the v2 catalog (ADR-0004). Grandfathered v1 tenants keep
+  // their v1 caps/prices only as long as they don't buy a new plan —
+  // applySubscription flips plan_version when the purchased price lands.
+  //
+  // Run-up fallback: until the v2 Stripe prices are created and configured
+  // (STRIPE_PRICE_*_V2), keep selling the v1 catalog rather than 503ing live
+  // upgrades. v1 caps are strictly more generous than the v2 cards, so a
+  // fallback buyer never gets less than advertised.
   const planDef = plans.PLANS_V2[plan];
   if (!planDef || !planDef.selfServe) { const e = new Error('That plan is not available for self-serve checkout.'); e.status = 400; throw e; }
-  const price = plans.priceIdFor(plan, 2);
+  let version = 2;
+  let price = plans.priceIdFor(plan, 2);
+  if (!price) { version = 1; price = plans.priceIdFor(plan, 1); }
   if (!price) { const e = new Error(`No Stripe price configured for the ${planDef.name} plan.`); e.status = 503; e.code = 'PRICE_NOT_CONFIGURED'; throw e; }
 
   const customerId = await ensureCustomerFor(tenantId, email);
-  const meta = { tenantId, plan, planVersion: '2' };
+  const meta = { tenantId, plan, planVersion: String(version) };
   const subData = { metadata: meta };
   if (trial && plans.trialDaysFor(plan) > 0) {
     subData.trial_period_days = plans.trialDaysFor(plan);
@@ -102,9 +109,9 @@ async function createCheckout({ tenantId, email, plan, trial = false, successUrl
   }
   const lineItems = [{ price, quantity: 1 }];
   // Attach the metered engagement-overage price when the plan defines it
-  // (Pro): $0 until a unit past allowance + credits is actually consumed.
+  // (v2 Pro): $0 until a unit past allowance + credits is actually consumed.
   // Metered prices take no quantity.
-  const overagePrice = plans.overagePriceIdFor(plan);
+  const overagePrice = version >= 2 ? plans.overagePriceIdFor(plan) : null;
   if (overagePrice) lineItems.push({ price: overagePrice });
   return stripe().checkout.sessions.create({
     mode: 'subscription',
