@@ -16,7 +16,7 @@
     // Standalone elements that rise on their own.
     var solo = document.querySelectorAll('.section-head, .cta-card, .logos-row');
     // Grids whose children stagger in.
-    var grids = document.querySelectorAll('.pillars, .features, .steps, .pricing, .stats');
+    var grids = document.querySelectorAll('.pillars, .features, .steps, .pricing, .stats, .addons');
 
     var targets = [];
     solo.forEach(function (el) { el.setAttribute('data-reveal', ''); targets.push(el); });

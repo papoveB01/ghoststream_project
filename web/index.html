@@ -58,7 +58,14 @@
           "AI meeting assistant for Zoom, Teams and Google Meet",
           "Automatic, grounded proposal recommendations"
         ],
-        "offers": { "@type": "Offer", "category": "SaaS", "price": "0", "priceCurrency": "USD" }
+        "offers": {
+          "@type": "AggregateOffer",
+          "category": "SaaS",
+          "lowPrice": "0",
+          "highPrice": "149",
+          "priceCurrency": "USD",
+          "offerCount": "4"
+        }
       },
       {
         "@type": "FAQPage",
@@ -66,7 +73,9 @@
           { "@type": "Question", "name": "Does DealScope connect to my CRM?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Connect HubSpot in one paste to bring your companies and contacts in — no CSV exports. Salesforce, Zoho and more are on the way." } },
           { "@type": "Question", "name": "Does the AI join my sales meetings?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. DealScope's AI joins your Zoom, Microsoft Teams or Google Meet calls and captures everything so your reps stay fully present — then the follow-up is ready within about a minute of the call ending." } },
           { "@type": "Question", "name": "Is my data private?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. DealScope uses strict tenant isolation, encryption in transit and at rest, email-verified onboarding and per-tenant recording controls. Your data never trains anyone else's model." } },
-          { "@type": "Question", "name": "Do I need a credit card to start?", "acceptedAnswer": { "@type": "Answer", "text": "No. The Free plan needs no credit card and lets you try the core platform. Upgrade or add credits whenever you're ready." } }
+          { "@type": "Question", "name": "Do I need a credit card to start?", "acceptedAnswer": { "@type": "Answer", "text": "No. The Free plan needs no credit card and lets you try the core platform. Upgrade or add credits whenever you're ready." } },
+          { "@type": "Question", "name": "What happens when I hit a monthly limit?", "acceptedAnswer": { "@type": "Answer", "text": "You're never silently cut off. Buy a one-time credit pack on any plan, or on Pro keep going at $2.50 per extra AI-joined call. Limits reset on the 1st of each month." } },
+          { "@type": "Question", "name": "How do seats work?", "acceptedAnswer": { "@type": "Answer", "text": "Plans include seats (Starter 1, Pro 2). Each extra seat is a flat monthly price and grows your monthly research and call allowances, so a bigger team gets a bigger plan automatically." } }
         ]
       }
     ]
@@ -81,6 +90,7 @@
       <a class="brand" href="#top"><span class="brand-mark"><span>D</span></span> DealScope</a>
       <nav class="nav-links" aria-label="Primary">
         <a href="#platform">Platform</a>
+        <a href="#how">How it works</a>
         <a href="#pricing">Pricing</a>
         <a href="#faq">FAQ</a>
       </nav>
@@ -99,7 +109,7 @@
         <div>
           <span class="hero-pill"><span class="dot"></span> New · An AI in every meeting</span>
           <h1>Know your market.<br>Find your next deal.<br><span class="hl">Win the call.</span></h1>
-          <p class="lede">DealScope is the AI sales-intelligence platform for modern revenue teams. It learns your business, surfaces your best-fit opportunities, connects to your CRM, sits in on every call, and turns the conversation into a ready-to-send proposal — grounded in your reality, never guessed.</p>
+          <p class="lede">DealScope is AI sales intelligence for revenue teams. It learns your business, finds the accounts most likely to buy, sits in on every sales call, and turns each conversation into a ready-to-send proposal — grounded in your data, never guessed.</p>
           <div class="cta-row">
             <a class="btn btn-primary" href="/onboarding/">Start free</a>
             <a class="btn btn-ghost" href="#contact">Book a demo</a>
@@ -195,6 +205,39 @@
       </div>
     </section>
 
+    <!-- HOW IT WORKS — the 4-step run from signup to signed -->
+    <section class="section" id="how">
+      <div class="container">
+        <div class="section-head">
+          <div class="label">how it works</div>
+          <h2>From signup to signed, in <span class="hl">four moves.</span></h2>
+          <p>No imports to babysit, no playbooks to write. Sign up, point DealScope at your business, and the intelligence starts compounding the same day.</p>
+        </div>
+        <ol class="steps steps-4">
+          <li>
+            <span class="sn">teach</span>
+            <h4>It learns your business</h4>
+            <p>Connect your CRM and calendar, or just your website. DealScope builds your foundation — products, positioning, buyer personas, ideal customer profile — in about a minute.</p>
+          </li>
+          <li>
+            <span class="sn">discover</span>
+            <h4>Your market, ranked</h4>
+            <p>It sweeps the market for accounts that match your ICP, scores each one, builds competitor battlecards, and keeps watch for new signals — funding, hires, launches.</p>
+          </li>
+          <li>
+            <span class="sn">meet</span>
+            <h4>An AI on every call</h4>
+            <p>You get a brief before the meeting. The AI joins your Zoom, Teams or Meet call and captures everything — your follow-up is ready about a minute after you hang up.</p>
+          </li>
+          <li>
+            <span class="sn">close</span>
+            <h4>Proposals from proof</h4>
+            <p>Every conversation becomes a grounded, per-prospect proposal recommendation — what to lead with, which products fit, and why — cited from your own intel.</p>
+          </li>
+        </ol>
+      </div>
+    </section>
+
     <!-- WHY -->
     <section class="section grid-bg" id="why">
       <div class="container">
@@ -210,45 +253,83 @@
       </div>
     </section>
 
+    <!-- THE MATH — value anchor ahead of pricing -->
+    <section class="section grid-bg" id="value">
+      <div class="container">
+        <div class="section-head">
+          <div class="label">the math</div>
+          <h2>Cheaper than a <span class="hl">single lead list.</span></h2>
+          <p>B2B teams pay hundreds of dollars per marketing-sourced lead. On DealScope, a researched, signal-ranked prospect — with the battlecard to win it — costs you less than a coffee.</p>
+        </div>
+        <div class="stats">
+          <div class="stat" data-n="1"><div class="stat-num">$0.65</div><div class="stat-label">per researched prospect on Starter — scored, cited &amp; matched to your products</div></div>
+          <div class="stat" data-n="2"><div class="stat-num">$237</div><div class="stat-label">industry-average blended cost per B2B SaaS lead — before anyone qualifies it</div></div>
+          <div class="stat" data-n="3"><div class="stat-num">~60<span>s</span></div><div class="stat-label">from signup to your first signal map — DealScope learns your business itself</div></div>
+          <div class="stat" data-n="4"><div class="stat-num">~1<span>min</span></div><div class="stat-label">after each call ends, the follow-up and intel are already written</div></div>
+        </div>
+      </div>
+    </section>
+
     <!-- PRICING -->
     <section class="section" id="pricing">
       <div class="container">
         <div class="section-head">
           <div class="label">pricing</div>
-          <h2>Pay for <span class="hl">outcomes,</span> not seats.</h2>
-          <p>Every plan includes the full platform and a monthly pool of AI credits — so you only pay for the work the AI actually does. Start free, top up anytime, no surprise bills.</p>
+          <h2>Simple plans that <span class="hl">grow with your team.</span></h2>
+          <p>Every plan includes the whole platform. Allowances scale with seats, and a hot month never hits a wall — top up with credits or, on Pro, just pay $2.50 a call past your allowance. No surprise tier jumps.</p>
         </div>
         <div class="pricing">
           <div class="plan">
             <div class="plan-name">Free</div>
             <div class="plan-price">$0</div>
-            <div class="plan-line">Kick the tires.</div>
+            <div class="plan-seats">1 seat · no credit card</div>
+            <div class="plan-line">Prove it on your own pipeline.</div>
             <a class="btn btn-ghost btn-block" href="/onboarding/">Start free</a>
-            <ul class="plan-list"><li><strong>No credit card</strong></li><li>Try AI prospect discovery</li><li>A competitor battlecard &amp; matchup</li><li>An AI-joined call</li><li>Company foundation &amp; personas</li><li>Upgrade or add credits anytime</li></ul>
+            <ul class="plan-list"><li><strong>No credit card, ever</strong></li><li>5 research runs to try</li><li>1 AI-joined call to try</li><li>Company foundation &amp; personas</li><li>Pay-as-you-go with credit packs</li></ul>
           </div>
           <div class="plan">
             <div class="plan-name">Starter</div>
             <div class="plan-price">$49<span>/mo</span></div>
-            <div class="plan-line">For the hungry freelancer.</div>
+            <div class="plan-seats">1 seat · +$19/mo per extra (up to 3)</div>
+            <div class="plan-line">For founders &amp; first reps.</div>
             <a class="btn btn-ghost btn-block" href="/onboarding/?plan=starter">Get Starter</a>
-            <ul class="plan-list"><li>Generous monthly AI credits</li><li>Prospect &amp; competitor intelligence</li><li>AI-joined meetings</li><li>Rep practice &amp; coaching</li><li>Company foundation &amp; personas</li><li>Email support</li></ul>
+            <ul class="plan-list"><li><strong>75 research runs</strong> /mo</li><li><strong>10 AI-joined calls</strong> /mo</li><li>25 Arena practice sessions /mo</li><li>Each extra seat adds +25 runs &amp; +5 calls</li><li>Top-up credit packs</li><li>Email support</li></ul>
           </div>
           <div class="plan featured">
             <div class="plan-badge">most popular</div>
             <div class="plan-name">Pro</div>
             <div class="plan-price">$149<span>/mo</span></div>
-            <div class="plan-line">For high-growth teams.</div>
+            <div class="plan-seats">2 seats included · +$35/mo per extra</div>
+            <div class="plan-line">For growing revenue teams.</div>
             <a class="btn btn-primary btn-block" href="/onboarding/?plan=pro">Get Pro</a>
-            <ul class="plan-list"><li>Everything in Starter, plus:</li><li>Higher monthly limits</li><li>Unlimited practice &amp; scorecards</li><li>Market monitoring, CRM sync &amp; Calendly</li><li>Team sub-account workspaces</li><li>API access &amp; priority support</li></ul>
+            <ul class="plan-list"><li><strong>250 research runs</strong> /mo</li><li><strong>30 AI-joined calls</strong> /mo</li><li>Each extra seat adds +25 runs &amp; +15 calls</li><li>Market Watch — 250 checks /mo</li><li>100 Arena sessions /mo</li><li>CRM sync, Calendly &amp; API access</li><li>1 sub-account workspace · +$29/mo each</li><li>Past your allowance? $2.50/call — never blocked</li></ul>
           </div>
           <div class="plan">
             <div class="plan-name">Enterprise</div>
             <div class="plan-price">Custom</div>
+            <div class="plan-seats">seats &amp; volume to fit your org</div>
             <div class="plan-line">For revenue orgs at scale.</div>
             <a class="btn btn-ghost btn-block" href="mailto:contact@dealscope.io?subject=Enterprise%20plan">Talk to sales</a>
-            <ul class="plan-list"><li>Volume-rated usage</li><li>More seats</li><li>Sub-account workspaces (custom)</li><li>Dedicated onboarding</li><li>SSO, SCIM, audit logs</li><li>Dedicated CSM</li></ul>
+            <ul class="plan-list"><li>Volume-rated calls &amp; research</li><li>Custom seats &amp; sub-accounts</li><li>Custom Market Watch volume</li><li>Dedicated onboarding &amp; CSM</li><li>Security review &amp; DPA support</li></ul>
           </div>
         </div>
+
+        <!-- flexible spend — the three ways a plan stretches -->
+        <div class="addons">
+          <div class="addon">
+            <div class="label">extra seats</div>
+            <p>Bring the whole team. Each paid seat grows your monthly research-run and call allowances — value scales with headcount, price scales with it fairly.</p>
+          </div>
+          <div class="addon">
+            <div class="label">credit packs</div>
+            <p>One-time top-ups when a month runs hot: 25 extra calls for $50, or 50 research credits for $19. Valid 90 days, on any plan — even Free.</p>
+          </div>
+          <div class="addon">
+            <div class="label">overage on pro</div>
+            <p>Blow past everything mid-quarter? Pro keeps going at $2.50 per extra AI-joined call. You're never locked out of a meeting that matters.</p>
+          </div>
+        </div>
+        <p class="price-defs"><span class="on">research run</span> = one AI deep-dive on a prospect or competitor — sources gathered, scored, cited &nbsp;·&nbsp; <span class="on">AI-joined call</span> = the AI briefing you before, attending, and writing the follow-up for one meeting</p>
       </div>
     </section>
 
@@ -264,6 +345,8 @@
           <div class="feature"><h4>Does the AI join my meetings?</h4><p>Yes. It joins your Zoom, Microsoft Teams or Google Meet calls and captures everything so your reps stay present — with the follow-up ready about a minute after the call ends.</p></div>
           <div class="feature"><h4>Is my data private?</h4><p>Strict tenant isolation, encryption in transit and at rest, email-verified onboarding and per-tenant recording controls. Your data never trains anyone else's model.</p></div>
           <div class="feature"><h4>Do I need a credit card to start?</h4><p>No. The Free plan needs no card and lets you try the core platform. Upgrade or add credits whenever you're ready.</p></div>
+          <div class="feature"><h4>What happens when I hit a monthly limit?</h4><p>You're never silently cut off. Buy a one-time credit pack on any plan, or on Pro simply keep going at $2.50 per extra call. Limits reset on the 1st of each month.</p></div>
+          <div class="feature"><h4>How do seats work?</h4><p>Plans include seats (Starter 1, Pro 2). Each extra seat is a flat monthly price and grows your research and call allowances — so a bigger team gets a bigger plan automatically.</p></div>
         </div>
       </div>
     </section>
@@ -338,6 +421,7 @@
         <div class="footer-col">
           <div class="footer-h">product</div>
           <a href="#platform">Platform</a>
+          <a href="#how">How it works</a>
           <a href="#pricing">Pricing</a>
           <a href="#faq">FAQ</a>
           <a href="/onboarding/">Start free</a>
