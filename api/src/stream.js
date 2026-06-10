@@ -63,7 +63,9 @@ async function createClip({ videoUid, startSeconds, endSeconds, label }) {
       label: label || null,
     };
   }
-  const r = await http('POST', `/stream/${videoUid}/clip`, {
+  // Cloudflare's clip endpoint is account-level (POST /stream/clip) with the
+  // source video named in the body — NOT /stream/<uid>/clip, which 404s.
+  const r = await http('POST', `/stream/clip`, {
     clippedFromVideoUID: videoUid,
     startTimeSeconds: startSeconds,
     endTimeSeconds: endSeconds,

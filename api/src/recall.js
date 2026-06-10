@@ -87,7 +87,14 @@ async function createBot({ meetingUrl, botName = 'DealScope Notetaker', webhookU
   };
   // Post a recording notice to the meeting chat the moment the bot joins.
   if (noticeMessage && String(noticeMessage).trim()) {
-    body.chat = { on_bot_join: { message: String(noticeMessage).trim().slice(0, 4000) } };
+    // Recall.ai requires send_to alongside the message; omitting it returns
+    // 400 {"chat":{"on_bot_join":{"send_to":["This field is required."]}}}.
+    body.chat = {
+      on_bot_join: {
+        message: String(noticeMessage).trim().slice(0, 4000),
+        send_to: 'everyone',
+      },
+    };
   }
   return http('POST', '/bot/', body);
 }

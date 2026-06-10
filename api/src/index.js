@@ -328,14 +328,22 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
     // otherwise: the transcript stays even if ingest fails.
     const captureVideo = !(m.meta && m.meta.captureVideo === false);
     const videoUid = (captureVideo && videoUrl) ? (await stream.ingestFromUrl(videoUrl, transcript.meetingTitle)).uid : null;
-    const objectionClip = videoUid
-      ? await stream.createClip({
+    // Clip generation is best-effort: a just-ingested copy-from-URL video may
+    // not be encoded yet, so clipping can fail. That must NOT block the portal
+    // (which still carries the full recording via videoUid). Degrade to no clip.
+    let objectionClip = null;
+    if (videoUid) {
+      try {
+        objectionClip = await stream.createClip({
           videoUid,
           startSeconds: pipeline.moments.objection.startSeconds,
           endSeconds: pipeline.moments.objection.endSeconds,
           label: 'Moment of Truth — Objection',
-        })
-      : null;
+        });
+      } catch (e) {
+        console.warn('[process] objection clip failed (non-fatal):', (e && e.message) || e);
+      }
+    }
 
     // STEP 4 — portal + final meeting state. Order matters: createPortal first
     // so we can record the portalId in the same updateMeeting that flips
