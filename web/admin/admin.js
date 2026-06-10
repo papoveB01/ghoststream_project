@@ -1299,7 +1299,9 @@
       wireEnrichJump(body);
       return;
     }
-    const rows = list.map((c, i) => {
+    // One row of the results table. `i` is the index into the ORIGINAL list so
+    // the Add button stays correct even when the view is filtered.
+    const rowHtml = (c, i) => {
       const lvl = c.priority || 3;
       const fits = (c.matchedProductNames && c.matchedProductNames.length)
         ? c.matchedProductNames.map((n) => `<span class="kb-stream-pill stream-file">${escapeHtml(n)}</span>`).join(' ')
@@ -1313,17 +1315,53 @@
         <td class="dt-vs">${fits}</td>
         <td class="dt-act">${c.exists ? '<span class="kb-subtle">✓ tracked</span>' : `<button type="button" class="kb-secondary-btn pcand-add" data-i="${i}">＋ Add prospect</button>`}</td>
       </tr>`;
-    }).join('');
+    };
+
+    // Filter options drawn from the results: category = priority tier present,
+    // product = distinct matched product names present.
+    const catsPresent = [...new Set(list.map((c) => c.priority || 3))].sort((a, b) => b - a);
+    const prodsPresent = [...new Set(list.flatMap((c) => c.matchedProductNames || []))].filter(Boolean).sort((a, b) => a.localeCompare(b));
+    const catOptions = ['<option value="">All categories</option>'].concat(catsPresent.map((p) => `<option value="${p}">${prioLabel(p)}</option>`)).join('');
+    const prodOptions = ['<option value="">All products</option>'].concat(prodsPresent.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`)).join('');
+
     body.innerHTML = `
       ${dataHintBanner(dataHints)}
+      <div class="prospect-result-filters" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin:4px 0 8px">
+        <label class="comp-finder-field" style="margin:0">Category
+          <select id="pcand-filter-cat">${catOptions}</select>
+        </label>
+        <label class="comp-finder-field" style="margin:0">Product
+          <select id="pcand-filter-prod">${prodOptions}</select>
+        </label>
+        <span class="kb-subtle" id="pcand-filter-count" style="padding-bottom:6px"></span>
+      </div>
       <table class="comp-discover-table">
         <thead><tr><th>Priority</th><th>Company</th><th>Signal / why now</th><th>Fits (our products)</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
+        <tbody id="pcand-tbody"></tbody>
       </table>
       <div class="kb-subtle" style="padding:2px 0 10px">Ranked by priority — best product fit and freshest buying signal first.</div>
       <div class="kb-result hidden" id="pcand-result"></div>`;
+
+    const tbody = $('pcand-tbody');
+    const applyFilters = () => {
+      const cat = $('pcand-filter-cat').value;
+      const prod = $('pcand-filter-prod').value;
+      const shown = [];
+      list.forEach((c, i) => {
+        if (cat && String(c.priority || 3) !== cat) return;
+        if (prod && !(c.matchedProductNames || []).includes(prod)) return;
+        shown.push(rowHtml(c, i));
+      });
+      tbody.innerHTML = shown.length
+        ? shown.join('')
+        : '<tr><td colspan="5" class="kb-subtle" style="padding:14px">No prospects match these filters.</td></tr>';
+      $('pcand-filter-count').textContent = `Showing ${shown.length} of ${list.length}`;
+      tbody.querySelectorAll('.pcand-add').forEach((b) => b.addEventListener('click', () => addProspectCandidate(list[Number(b.dataset.i)], b)));
+    };
+    $('pcand-filter-cat').addEventListener('change', applyFilters);
+    $('pcand-filter-prod').addEventListener('change', applyFilters);
+    applyFilters();
     wireEnrichJump(body);
-    body.querySelectorAll('.pcand-add').forEach((b) => b.addEventListener('click', () => addProspectCandidate(list[Number(b.dataset.i)], b)));
   }
 
   async function addProspectCandidate(c, btn) {
