@@ -3884,6 +3884,12 @@ details.schedule-advanced > .schedule-advanced-body {
 .ec-generate:active { transform: translateY(1px); }
 .ec-generate:disabled { opacity: .55; cursor: default; }
 .ec-spark { color: var(--accent-soft); font-size: 12px; }
+.ec-engagement {
+  margin-top: 12px; display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
+  padding: 11px 12px; border-radius: var(--radius-sm); background: var(--accent-light); border: 1px solid var(--accent-soft);
+}
+.ec-engagement .ec-field { flex: 1; min-width: 220px; }
+.ec-engagement-hint { font-size: 11.5px; padding-bottom: 9px; }
 .ec-draft { margin-top: 15px; padding-top: 15px; border-top: 1px dashed var(--border-2); display: flex; flex-direction: column; gap: 12px; }
 .email-composer .ec-subject { width: 100%; font-weight: 600; font-size: 14px; }
 .email-composer .ec-message { width: 100%; line-height: 1.65; resize: vertical; min-height: 190px; background: var(--surface-2); }

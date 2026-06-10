@@ -404,6 +404,30 @@ router.post('/:id/add-contacts', gating.requireFeature('discovery'), async (req,
   } catch (err) { next(err); }
 });
 
+// GET /companies/:id/engagements — past (completed) engagements for this prospect,
+// each labelled with its call title/summary (from the portal). Powers the email
+// composer's "based on engagement" picker for follow-up / post-call drafts.
+router.get('/:id/engagements', async (req, res, next) => {
+  try {
+    const rows = (await db.query(
+      `SELECT id, scheduled_at, notes, portal_id FROM scheduled_meetings
+        WHERE tenant_id = $1 AND company_id = $2 AND status = 'COMPLETED'
+        ORDER BY scheduled_at DESC LIMIT 20`,
+      [req.tenantId, req.params.id]
+    )).rows;
+    const store = require('./store');
+    const engagements = [];
+    for (const r of rows) {
+      let title = null, hasSummary = false;
+      if (r.portal_id) {
+        try { const p = await store.getPortal(r.portal_id); if (p) { title = p.title || null; hasSummary = Boolean(p.sowSummary); } } catch { /* portal gone — fall back to date */ }
+      }
+      engagements.push({ id: r.id, scheduledAt: r.scheduled_at, notes: r.notes || null, portalId: r.portal_id || null, title, hasSummary });
+    }
+    res.json({ engagements });
+  } catch (err) { next(err); }
+});
+
 router.patch('/:id', async (req, res, next) => {
   try {
     const c = await update(req.tenantId, req.params.id, req.body || {});

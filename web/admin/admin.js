@@ -1446,7 +1446,7 @@
     return _emailCatsCache;
   }
 
-  async function openEmailComposer(contact) {
+  async function openEmailComposer(contact, companyId) {
     let overlay = $('email-composer-overlay');
     if (!overlay) {
       overlay = document.createElement('div');
@@ -1479,6 +1479,12 @@
             </label>
             <button type="button" class="ec-generate" id="ec-generate"><span class="ec-spark">✦</span> Generate draft</button>
           </div>
+          <div class="ec-engagement hidden" id="ec-engagement-wrap">
+            <label class="ec-field">Based on engagement
+              <select id="ec-engagement"><option value="">Most recent engagement (auto)</option></select>
+            </label>
+            <span class="ec-engagement-hint kb-subtle">The AI will ground the email in this conversation.</span>
+          </div>
           <div id="ec-draft" class="ec-draft hidden">
             <label class="ec-field">Subject
               <input id="ec-subject" type="text" class="ec-subject">
@@ -1502,13 +1508,40 @@
     $('ec-cancel').onclick = close;
     overlay.onclick = (e) => { if (e.target === overlay) close(); };
 
+    // Show the past-engagement picker for follow-up / post-call, and lazy-load
+    // this prospect's completed engagements the first time it's shown.
+    const updateEngagementPicker = async () => {
+      const wrap = $('ec-engagement-wrap'); const sel = $('ec-engagement');
+      const needs = ['followup', 'postcall'].includes($('ec-category').value);
+      wrap.classList.toggle('hidden', !needs);
+      if (!needs || sel.dataset.loaded === '1') return;
+      sel.dataset.loaded = '1';
+      if (!companyId) { sel.innerHTML = '<option value="">No prospect selected</option>'; return; }
+      sel.innerHTML = '<option value="">Loading…</option>';
+      try {
+        const r = await fetchJson(`/api/companies/${encodeURIComponent(companyId)}/engagements`);
+        const engs = r.engagements || [];
+        sel.innerHTML = engs.length
+          ? '<option value="">Most recent engagement (auto)</option>' + engs.map((e) => {
+              const d = e.scheduledAt ? new Date(e.scheduledAt).toLocaleDateString() : '';
+              const lbl = [d, e.title || (e.notes ? e.notes.slice(0, 44) : '')].filter(Boolean).join(' · ');
+              return `<option value="${escapeHtml(e.id)}">${escapeHtml(lbl || 'Engagement')}</option>`;
+            }).join('')
+          : '<option value="">No past engagements found</option>';
+      } catch { sel.dataset.loaded = ''; sel.innerHTML = '<option value="">Couldn’t load engagements</option>'; }
+    };
+    $('ec-category').addEventListener('change', updateEngagementPicker);
+    updateEngagementPicker();
+
     $('ec-generate').onclick = async () => {
       const gen = $('ec-generate'); gen.disabled = true; const o = gen.textContent; gen.textContent = 'Drafting…';
       const res = $('ec-result'); res.className = 'kb-result'; res.classList.remove('hidden'); res.textContent = 'Writing a draft from the prospect context…';
       try {
+        const engWrap = $('ec-engagement-wrap');
+        const engagementId = (engWrap && !engWrap.classList.contains('hidden') && $('ec-engagement')) ? ($('ec-engagement').value || null) : null;
         const r = await fetchJson(`/api/contacts/${encodeURIComponent(contact.id)}/draft-email`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ category: $('ec-category').value, instruction: $('ec-instruction').value.trim() }),
+          body: JSON.stringify({ category: $('ec-category').value, instruction: $('ec-instruction').value.trim(), engagementId }),
         });
         $('ec-subject').value = r.subject || '';
         $('ec-body').value = r.body || '';
@@ -1899,7 +1932,7 @@
         const id = b.dataset.contactEmail;
         const row = host.querySelector(`[data-contact-row="${id}"]`);
         const field = (f) => { const el = row && row.querySelector(`[data-contact-field="${f}"]`); return el ? el.value.trim() : ''; };
-        openEmailComposer({ id, name: field('name'), email: field('email'), role: field('role') });
+        openEmailComposer({ id, name: field('name'), email: field('email'), role: field('role') }, _prospectsState.selectedCompanyId);
       }));
     // Save only appears once a row is actually edited — keeps the row uncluttered.
     host.querySelectorAll('[data-contact-row]').forEach((row) => {

@@ -329,11 +329,42 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
       : '';
     let engagement = '';
     if (cat.engagement) {
-      const m = (await db.query(
-        `SELECT notes, scheduled_at FROM scheduled_meetings WHERE tenant_id = $1 AND company_id = $2 AND status = 'COMPLETED' ORDER BY scheduled_at DESC LIMIT 1`,
-        [req.tenantId, contact.company_id]
-      )).rows[0];
-      if (m && m.notes) engagement = `Most recent engagement notes: ${String(m.notes).slice(0, 600)}`;
+      // A specific engagement may be chosen in the composer; else use the most
+      // recent completed one. Pull the call's content from its portal so the AI
+      // grounds the email in what was actually discussed — not generic lines.
+      const eid = String((req.body && req.body.engagementId) || '').trim();
+      let m = null;
+      if (eid) {
+        m = (await db.query(
+          `SELECT id, scheduled_at, notes, portal_id FROM scheduled_meetings WHERE id = $1 AND tenant_id = $2 AND company_id = $3`,
+          [eid, req.tenantId, contact.company_id]
+        )).rows[0];
+      }
+      if (!m) {
+        m = (await db.query(
+          `SELECT id, scheduled_at, notes, portal_id FROM scheduled_meetings WHERE tenant_id = $1 AND company_id = $2 AND status = 'COMPLETED' ORDER BY scheduled_at DESC LIMIT 1`,
+          [req.tenantId, contact.company_id]
+        )).rows[0];
+      }
+      if (m) {
+        const bits = [`Date: ${new Date(m.scheduled_at).toISOString().slice(0, 10)}`];
+        if (m.portal_id) {
+          try {
+            const p = await require('./store').getPortal(m.portal_id);
+            if (p) {
+              if (p.title) bits.push(`Call: ${p.title}`);
+              const names = (Array.isArray(p.participants) ? p.participants : []).map((x) => (x && (x.name || x.displayName)) || (typeof x === 'string' ? x : '')).filter(Boolean);
+              if (names.length) bits.push(`Participants: ${names.join(', ')}`);
+              if (p.sowSummary) bits.push(`What was discussed: ${String(p.sowSummary).slice(0, 1100)}`);
+              const obj = p.moments && p.moments.objection;
+              const objText = obj && (obj.quote || obj.summary || obj.context);
+              if (objText) bits.push(`Key moment / objection raised: ${String(objText).slice(0, 300)}`);
+            }
+          } catch { /* portal gone — date + notes still useful */ }
+        }
+        if (m.notes) bits.push(`Notes: ${String(m.notes).slice(0, 500)}`);
+        engagement = `PAST ENGAGEMENT (ground the email concretely in THIS conversation):\n${bits.join('\n')}`;
+      }
     }
 
     const ctxBlock = [
@@ -350,6 +381,7 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
     const prompt =
       `You are an expert B2B sales writer composing a SHORT outreach email that ${senderName} will send to ${contact.name}.\n` +
       `EMAIL TYPE — ${cat.label}: ${cat.goal}\n` +
+      (engagement ? 'Ground the email concretely in the PAST ENGAGEMENT shown in the context — reference what was actually discussed (specifics, not generic phrases), and build the next step from there.\n' : '') +
       (instruction ? `MUST REFLECT (the sender's explicit instruction — follow it closely): ${instruction}\n` : '') +
       `Write a compelling subject line and a plain-text body. Greet the recipient by first name and end with a short sign-off from "${senderName}". Keep the body tight (~120 words, a few short sentences). Be specific and credible using the context below; NEVER invent facts, figures, or events the context does not support. Professional and warm — no clichés or spammy phrasing.\n\n` +
       `===CONTEXT===\n${ctxBlock}`;
