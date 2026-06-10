@@ -1469,6 +1469,15 @@
           <button type="button" class="ec-close cal-picker-close" aria-label="Close">✕</button>
         </div>
         <div class="ec-to"><span class="ec-to-label">To</span><span class="ec-to-addr">${escapeHtml(contact.email || '')}</span></div>
+        <div class="ec-recipients" id="ec-recipients">
+          <div class="ec-recip-add">
+            <span class="ec-to-label">Cc/Bcc</span>
+            <select id="ec-recip-pick"><option value="">Add another contact…</option></select>
+            <button type="button" class="kb-link-btn" id="ec-recip-cc" disabled>+ Cc</button>
+            <button type="button" class="kb-link-btn" id="ec-recip-bcc" disabled>+ Bcc</button>
+          </div>
+          <div class="ec-recip-chips" id="ec-recip-chips"></div>
+        </div>
         <div class="ec-body">
           <div class="ec-controls">
             <label class="ec-field ec-field-cat">Category
@@ -1503,10 +1512,38 @@
       </div>`;
     overlay.classList.remove('hidden');
     let lastCc = null;
+    const added = []; // extra recipients: { email, name, mode: 'cc' | 'bcc' }
     const close = () => overlay.classList.add('hidden');
     overlay.querySelector('.cal-picker-close').onclick = close;
     $('ec-cancel').onclick = close;
     overlay.onclick = (e) => { if (e.target === overlay) close(); };
+
+    // Populate the Cc/Bcc picker with this prospect's OTHER contacts (with email).
+    const pick = $('ec-recip-pick');
+    const recCc = $('ec-recip-cc'); const recBcc = $('ec-recip-bcc');
+    const updateRecBtns = () => { const has = !!pick.value; recCc.disabled = !has; recBcc.disabled = !has; };
+    const renderChips = () => {
+      $('ec-recip-chips').innerHTML = added.map((r, i) =>
+        `<span class="ec-chip ec-chip-${r.mode}"><span class="ec-chip-mode">${r.mode}</span>${escapeHtml(r.name || r.email)}<button type="button" class="ec-chip-x" data-i="${i}" aria-label="remove">✕</button></span>`).join('');
+      $('ec-recip-chips').querySelectorAll('.ec-chip-x').forEach((b) =>
+        b.addEventListener('click', () => { added.splice(Number(b.dataset.i), 1); renderChips(); }));
+    };
+    const addRecip = (mode) => {
+      const email = pick.value; if (!email || email === contact.email || added.some((r) => r.email === email)) return;
+      const opt = pick.selectedOptions[0];
+      added.push({ email, name: (opt && opt.dataset.name) || '', mode });
+      pick.value = ''; updateRecBtns(); renderChips();
+    };
+    pick.addEventListener('change', updateRecBtns);
+    recCc.addEventListener('click', () => addRecip('cc'));
+    recBcc.addEventListener('click', () => addRecip('bcc'));
+    if (companyId) {
+      fetchJson(`/api/contacts?companyId=${encodeURIComponent(companyId)}`).then((r) => {
+        const others = (r.contacts || []).filter((c) => c.email && c.email !== contact.email);
+        if (!others.length) { pick.disabled = true; pick.innerHTML = '<option value="">No other contacts</option>'; return; }
+        others.forEach((c) => { const o = document.createElement('option'); o.value = c.email; o.dataset.name = c.name || ''; o.textContent = `${c.name || c.email}${c.role && c.role !== 'Unknown' ? ' · ' + c.role : ''}`; pick.appendChild(o); });
+      }).catch(() => { pick.disabled = true; });
+    } else { pick.disabled = true; }
 
     // Show the past-engagement picker for follow-up / post-call, and lazy-load
     // this prospect's completed engagements the first time it's shown.
@@ -1559,8 +1596,15 @@
     };
 
     $('ec-open').onclick = () => {
-      const cc = lastCc ? `cc=${encodeURIComponent(lastCc)}&` : '';
-      const href = `mailto:${encodeURIComponent(contact.email || '')}?${cc}subject=${encodeURIComponent($('ec-subject').value || '')}&body=${encodeURIComponent($('ec-body').value || '')}`;
+      // Cc = the capture address (for reply-all ingest) + any user-added Cc; Bcc = user-added Bcc.
+      const ccs = [lastCc, ...added.filter((r) => r.mode === 'cc').map((r) => r.email)].filter(Boolean);
+      const bccs = added.filter((r) => r.mode === 'bcc').map((r) => r.email);
+      const params = [];
+      if (ccs.length) params.push(`cc=${encodeURIComponent(ccs.join(','))}`);
+      if (bccs.length) params.push(`bcc=${encodeURIComponent(bccs.join(','))}`);
+      params.push(`subject=${encodeURIComponent($('ec-subject').value || '')}`);
+      params.push(`body=${encodeURIComponent($('ec-body').value || '')}`);
+      const href = `mailto:${encodeURIComponent(contact.email || '')}?${params.join('&')}`;
       // Anchor-click rather than location.href so the SPA isn't navigated away.
       const a = document.createElement('a'); a.href = href; a.style.display = 'none';
       document.body.appendChild(a); a.click(); a.remove();
