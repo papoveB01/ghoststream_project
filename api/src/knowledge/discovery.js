@@ -616,7 +616,7 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
     'fit-based rationale as its signal and a LOWER priority (1-2). Never fabricate a specific event the ' +
     'findings do not support.\n' +
     CONTACT_INSTRUCTION + '\n' +
-    `Aim for BREADTH: list every distinct REAL company that plausibly matches our ICP (up to ${want}), ordered best-fit first.\n` +
+    `TARGET COUNT — IMPORTANT: aim to actually REACH ${want} distinct REAL companies. The web findings name only a few; do NOT stop there. Draw PRIMARILY on your own up-to-date knowledge of companies that match "WHO WE SELL TO" in the target segment/region to enumerate up to ${want}, and use the findings to attach signals + set priority on the ones they cover. Companies you add from knowledge (no fresh signal) get a short fit-based rationale and a lower priority — that is expected and wanted. Only return fewer than ${want} if there genuinely are not that many real ICP-fit companies (never invent to pad). Order best-fit first.\n` +
     'Rules: REAL companies only (never invent); EXCLUDE our own company and our competitors; matchedProductIds ' +
     'MUST be from the provided ids (or empty); keep strings short; ignore boilerplate.\n\n' +
     `===OUR COMPANY===\n${ctx}\n\n` +
