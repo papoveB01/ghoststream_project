@@ -162,6 +162,16 @@ services:
       STRIPE_PRICE_STARTER: ${STRIPE_PRICE_STARTER:-}
       STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
       STRIPE_PORTAL_CONFIG_ID: ${STRIPE_PORTAL_CONFIG_ID:-}
+      # ADR-0004 v2 catalog: plan prices, per-seat add-ons, team-member
+      # workspace, and the metered engagement overage (Billing Meter event).
+      # Checkout falls back to the v1 prices while these are unset.
+      STRIPE_PRICE_STARTER_V2: ${STRIPE_PRICE_STARTER_V2:-}
+      STRIPE_PRICE_PRO_V2: ${STRIPE_PRICE_PRO_V2:-}
+      STRIPE_PRICE_SEAT_STARTER: ${STRIPE_PRICE_SEAT_STARTER:-}
+      STRIPE_PRICE_SEAT_PRO: ${STRIPE_PRICE_SEAT_PRO:-}
+      STRIPE_PRICE_SUBTENANT: ${STRIPE_PRICE_SUBTENANT:-}
+      STRIPE_PRICE_ENG_OVERAGE: ${STRIPE_PRICE_ENG_OVERAGE:-}
+      STRIPE_OVERAGE_METER_EVENT: ${STRIPE_OVERAGE_METER_EVENT:-engagement_overage}
       # Microsoft Graph (direct) — per-user calendar reads only. One multi-
       # tenant Azure AD app, registered in our Azure tenant. The originally
       # planned admin-consent + Recall Teams bot registration was dropped:
