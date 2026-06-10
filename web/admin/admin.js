@@ -1780,7 +1780,7 @@
                     <td>${ct.persona_name ? `<span class="pill pill-info">${escapeHtml(ct.persona_name)}</span>` : '<span class="kb-subtle">—</span>'}</td>
                     <td>
                       <button class="kb-link-btn" data-contact-email="${escapeHtml(ct.id)}" ${ct.email ? '' : 'disabled'} title="${ct.email ? 'Draft an email to this contact with AI' : 'Add an email address first'}">✉ Email</button>
-                      <button class="kb-link-btn" data-contact-save="${escapeHtml(ct.id)}">Save</button>
+                      <button class="kb-link-btn hidden" data-contact-save="${escapeHtml(ct.id)}" title="Save your edits to this contact">Save</button>
                       <button class="kb-link-btn danger" data-contact-delete="${escapeHtml(ct.id)}">Delete</button>
                     </td>
                   </tr>`).join('')}
@@ -1886,9 +1886,18 @@
       }));
     host.querySelectorAll('[data-contact-email]').forEach((b) =>
       b.addEventListener('click', () => {
-        const ct = (contacts || []).find((x) => String(x.id) === String(b.dataset.contactEmail));
-        if (ct) openEmailComposer(ct);
+        const id = b.dataset.contactEmail;
+        const row = host.querySelector(`[data-contact-row="${id}"]`);
+        const field = (f) => { const el = row && row.querySelector(`[data-contact-field="${f}"]`); return el ? el.value.trim() : ''; };
+        openEmailComposer({ id, name: field('name'), email: field('email'), role: field('role') });
       }));
+    // Save only appears once a row is actually edited — keeps the row uncluttered.
+    host.querySelectorAll('[data-contact-row]').forEach((row) => {
+      const save = row.querySelector('[data-contact-save]');
+      if (!save) return;
+      row.querySelectorAll('[data-contact-field]').forEach((el) =>
+        el.addEventListener('input', () => save.classList.remove('hidden')));
+    });
 
     // ── Tabs (Signals / People / Intel / Proposal) ──
     host.querySelectorAll('[data-prospect-tab]').forEach((t) => t.addEventListener('click', () => {
