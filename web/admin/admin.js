@@ -9502,16 +9502,19 @@
       </div>`;
     }
 
-    // ── Pack grid — grouped by kind, each pack a tappable card.
+    // ── Pack ledger — grouped by kind, one hairline row per pack with a
+    // compact Buy action (no full-block buttons).
     const stripeOff = !b.stripeConfigured;
-    const card = (p) => {
+    const row = (p) => {
       const dis = stripeOff ? 'disabled title="Billing not set up yet"' : '';
+      const unit = p.perCredit ? `$${p.perCredit.toFixed(2)}/credit` : '';
       return `
-        <button class="credit-pack" data-credit-pack="${escapeHtml(p.key)}" ${dis}>
-          <div class="cp-credits">${p.credits}<span>credits</span></div>
-          <div class="cp-price">$${p.priceUsd}</div>
-          <div class="cp-cta">Buy</div>
-        </button>`;
+        <div class="cp-row">
+          <span class="cp-qty">${p.credits}<i>credits</i></span>
+          <span class="cp-unit">${unit}</span>
+          <span class="cp-price">$${p.priceUsd}</span>
+          <button class="cp-buy" data-credit-pack="${escapeHtml(p.key)}" ${dis}>Buy</button>
+        </div>`;
     };
     const group = (kind, list) => {
       if (!list.length) return '';
@@ -9523,7 +9526,7 @@
             <span class="cg-title">${m.label}</span>
             <span class="cg-desc">${m.desc}</span>
           </div>
-          <div class="credit-pack-grid">${list.map(card).join('')}</div>
+          <div class="credit-pack-rows">${list.map(row).join('')}</div>
         </div>`;
     };
 

@@ -342,73 +342,101 @@ body {
 .sub-banner.warn .sub-banner-cta   { background: #b45309; }
 .sub-banner.danger .sub-banner-cta { background: #b91c1c; }
 
-/* ── Billing page ────────────────────────────────────────────────────────── */
+/* ── Billing page — "Intelligence Console" pass 2 ─────────────────────────
+   Hairline instrument styling: mono labels, tabular numbers, thin signal
+   bars, ledger rows instead of block buttons. */
+.bill-cols { display: grid; grid-template-columns: 5fr 4fr; gap: 16px; align-items: start; }
+.bill-cols > .card { margin: 0; }
+@media (max-width: 980px) { .bill-cols { grid-template-columns: 1fr; } }
+
 .bill-summary-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .bill-summary-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.bill-plan-name { font-size: 18px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 10px; }
-.bill-sub { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.bill-plan-name { font-size: 19px; font-weight: 700; letter-spacing: -0.015em; color: var(--text); display: flex; align-items: center; gap: 10px; }
+.bill-sub { font-size: 13px; color: var(--muted); margin-top: 5px; line-height: 1.55; }
 
-.usage-row { margin-bottom: 14px; }
-.usage-row:last-child { margin-bottom: 0; }
-.usage-top { display: flex; justify-content: space-between; font-size: 13px; font-weight: 500; margin-bottom: 5px; }
-.usage-top .usage-over { color: #b91c1c; font-weight: 700; }
-.usage-bar { height: 7px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
-.usage-bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.usage-row { padding: 9px 0 11px; border-bottom: 1px solid var(--border); }
+.usage-row:first-child { padding-top: 0; }
+.usage-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.usage-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 7px; }
+.usage-top span:first-child {
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--text-2);
+}
+.usage-top span:last-child { font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--text); font-feature-settings: "tnum"; }
+.usage-top .usage-over { color: #b91c1c; }
+.usage-bar { height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.usage-bar > i { display: block; height: 100%; background: var(--accent); border-radius: 2px; transition: width .5s cubic-bezier(.2,.7,.2,1); }
 .usage-bar > i.over { background: #dc2626; }
 
 /* ── Add-on credits ─────────────────────────────────────────────────────── */
-/* Balance band — prominent tiles for credits the tenant currently holds. */
+/* Balance band — slim tiles with a signal rule for credits currently held. */
 .credit-bal-band { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
 .credit-bal-tile {
-  display: flex; align-items: center; gap: 14px; flex: 1; min-width: 220px;
-  padding: 16px 18px; border-radius: var(--radius, 12px);
-  background: var(--surface-2);
-  border: 1px solid var(--accent);
+  display: flex; align-items: center; gap: 13px; flex: 1; min-width: 210px;
+  padding: 13px 16px; border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
 }
-.cbt-icon { font-size: 26px; line-height: 1; }
-.cbt-num { font-size: 30px; font-weight: 800; color: var(--text); line-height: 1; }
-.cbt-label { font-size: 13px; font-weight: 600; color: var(--text-2); margin-top: 3px; }
-.cbt-exp { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.cbt-icon { font-size: 20px; line-height: 1; opacity: .85; }
+.cbt-num { font-family: var(--mono); font-size: 24px; font-weight: 700; color: var(--text); line-height: 1; font-feature-settings: "tnum"; }
+.cbt-label { font-size: 12.5px; font-weight: 600; color: var(--text-2); margin-top: 3px; }
+.cbt-exp { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 2px; letter-spacing: .02em; }
 
 .credit-bal-empty {
-  display: flex; align-items: center; gap: 14px; margin-bottom: 20px;
-  padding: 16px 18px; border-radius: var(--radius, 12px);
+  display: flex; align-items: center; gap: 13px; margin-bottom: 20px;
+  padding: 13px 16px; border-radius: 8px;
   border: 1px dashed var(--border-2); background: var(--surface-2);
 }
 .cbe-icon {
-  width: 38px; height: 38px; flex: 0 0 38px; border-radius: 50%;
+  width: 32px; height: 32px; flex: 0 0 32px; border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
-  font-size: 22px; font-weight: 700; color: var(--accent);
+  font-size: 18px; font-weight: 700; color: var(--accent);
   background: var(--accent-light);
 }
-.cbe-title { font-size: 14px; font-weight: 700; color: var(--text); }
-.cbe-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.cbe-title { font-size: 13.5px; font-weight: 700; color: var(--text); }
+.cbe-sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
 
-/* Pack groups + cards */
-.credit-groups { display: flex; flex-direction: column; gap: 22px; }
-.credit-group-h { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-.cg-icon { font-size: 15px; }
-.cg-title { font-size: 14px; font-weight: 700; color: var(--text); }
-.cg-desc { font-size: 12.5px; color: var(--muted); }
-.credit-pack-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
-.credit-pack {
-  position: relative; text-align: center; cursor: pointer;
-  border: 1px solid var(--border); border-radius: var(--radius, 12px);
-  background: var(--bg); padding: 18px 14px 16px;
-  display: flex; flex-direction: column; align-items: center; gap: 3px;
-  transition: border-color .12s, box-shadow .12s, transform .08s;
+/* Pack groups → hairline ledger rows with a compact Buy action */
+.credit-groups { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: start; }
+@media (max-width: 900px) { .credit-groups { grid-template-columns: 1fr; } }
+.credit-group-h { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.cg-icon { font-size: 14px; }
+.cg-title {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--text);
 }
-.credit-pack:hover:not(:disabled) { border-color: var(--accent); box-shadow: 0 4px 14px rgba(0,0,0,.07); transform: translateY(-2px); }
-.credit-pack:disabled { opacity: .5; cursor: not-allowed; }
-.cp-credits { font-size: 22px; font-weight: 800; color: var(--text); line-height: 1.1; }
-.cp-credits span { display: block; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
-.cp-price { font-size: 16px; font-weight: 700; color: var(--accent); margin-top: 6px; }
-.cp-cta {
-  margin-top: 10px; width: 100%; padding: 7px 0; border-radius: 8px;
-  background: var(--accent); color: #fff; font-size: 13px; font-weight: 600;
+.cg-desc { font-size: 12px; color: var(--muted); flex-basis: 100%; line-height: 1.5; }
+.credit-pack-rows { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg); }
+.cp-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
 }
-.credit-pack:disabled .cp-cta { background: var(--border-2); }
-.credit-foot { margin-top: 18px; }
+.cp-row:last-child { border-bottom: 0; }
+.cp-qty { font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--text); min-width: 86px; font-feature-settings: "tnum"; }
+.cp-qty i { font-style: normal; font-size: 10.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-left: 5px; }
+.cp-unit { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: 1; letter-spacing: .01em; }
+.cp-price { font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--text); font-feature-settings: "tnum"; }
+.cp-buy {
+  font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: .02em;
+  padding: 5px 14px; border-radius: 6px; cursor: pointer;
+  background: transparent; color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  transition: background .12s, color .12s, border-color .12s;
+}
+.cp-buy:hover:not(:disabled) { background: var(--accent); color: #fff; border-color: var(--accent); }
+.cp-buy:disabled { opacity: .45; cursor: not-allowed; }
+.credit-foot { margin-top: 16px; }
+
+/* Seats stepper — square mono controls, count reads as an instrument value */
+#bill-seats .bill-summary-actions { gap: 8px; }
+#bill-seats .kb-secondary-btn {
+  width: 34px; height: 34px; padding: 0; display: inline-flex;
+  align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 16px; border-radius: 8px;
+}
+#bill-seats #seat-extra-num { font-family: var(--mono); font-size: 14px; min-width: 74px; text-align: center; font-feature-settings: "tnum"; }
+#bill-seats #seat-save { font-size: 13px; padding: 8px 14px; }
 
 /* ── Cancellation ───────────────────────────────────────────────────────── */
 .bill-sub-warn { color: var(--danger, #dc2626); font-weight: 600; }
@@ -506,22 +534,29 @@ body {
   box-shadow: 0 0 0 3px var(--accent-light);
 }
 
-.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
 .plan-card {
-  border: 1px solid var(--border); border-radius: var(--radius, 12px); padding: 20px;
+  border: 1px solid var(--border); border-radius: 10px; padding: 20px;
   display: flex; flex-direction: column; background: var(--bg);
+  transition: border-color .15s, box-shadow .15s;
 }
-.plan-card.current { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
-.plan-name { font-size: 16px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; }
-.plan-price { font-size: 28px; font-weight: 800; color: var(--text); margin: 8px 0 4px; }
-.plan-price span { font-size: 13px; font-weight: 500; color: var(--muted); }
-.plan-blurb { font-size: 13px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
-.plan-feats { list-style: none; margin: 0 0 16px; padding: 0; font-size: 13px; color: var(--text-2); flex: 1; }
-.plan-feats li { padding: 4px 0 4px 20px; position: relative; }
-.plan-feats li::before { content: '✓'; position: absolute; left: 0; color: var(--success); font-weight: 700; }
-.plan-cap { color: var(--muted); font-size: 12px; font-weight: 600; }
+.plan-card:hover { border-color: var(--border-2); box-shadow: 0 10px 28px -22px rgba(18,20,26,.4); }
+.plan-card.current { border-color: var(--accent); background: linear-gradient(180deg, color-mix(in srgb, var(--accent-light) 55%, var(--bg)), var(--bg) 38%); }
+.plan-name {
+  font-family: var(--mono); font-size: 12px; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--text-2);
+  display: flex; align-items: center; gap: 8px;
+}
+.plan-price { font-size: 30px; font-weight: 800; letter-spacing: -0.03em; color: var(--text); margin: 9px 0 4px; }
+.plan-price span { font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: 0; color: var(--muted); }
+.plan-blurb { font-size: 12.5px; color: var(--muted); line-height: 1.5; margin-bottom: 14px; }
+.plan-feats { list-style: none; margin: 0 0 16px; padding: 0; font-size: 12.5px; color: var(--text-2); flex: 1; }
+.plan-feats li { padding: 5px 0 5px 18px; position: relative; border-top: 1px solid var(--border); line-height: 1.45; }
+.plan-feats li:first-child { border-top: 0; }
+.plan-feats li::before { content: '+'; position: absolute; left: 1px; color: var(--accent); font-family: var(--mono); font-weight: 700; }
+.plan-cap { font-family: var(--mono); color: var(--muted); font-size: 11px; font-weight: 600; font-feature-settings: "tnum"; }
 .plan-cta { margin-top: auto; }
-.plan-cta .primary-cta, .plan-cta .kb-secondary-btn { width: 100%; text-align: center; box-sizing: border-box; display: inline-block; }
+.plan-cta .primary-cta, .plan-cta .kb-secondary-btn { width: 100%; text-align: center; box-sizing: border-box; display: inline-block; font-size: 13px; padding: 9px 12px; }
 .user-avatar {
   width: 36px; height: 36px;
   border-radius: 50%;
