@@ -484,9 +484,9 @@ async function syncSubtenantQuantity(parentTenant, usedCount) {
     return { paid: 0 };
   }
   if (!isConfigured()) { const e = new Error('Billing is not configured yet.'); e.status = 503; e.code = 'BILLING_NOT_CONFIGURED'; throw e; }
-  if (!parentTenant.stripe_subscription_id) { const e = new Error('Additional sub-accounts need an active subscription.'); e.status = 402; e.code = 'SUBSCRIPTION_REQUIRED'; throw e; }
+  if (!parentTenant.stripe_subscription_id) { const e = new Error('Additional team members need an active subscription.'); e.status = 402; e.code = 'SUBSCRIPTION_REQUIRED'; throw e; }
   const priceId = plans.subTenantPriceIdFor(plan.key);
-  if (!priceId) { const e = new Error('Sub-account pricing is not configured yet.'); e.status = 503; e.code = 'PRICE_NOT_CONFIGURED'; throw e; }
+  if (!priceId) { const e = new Error('Team-member pricing is not configured yet.'); e.status = 503; e.code = 'PRICE_NOT_CONFIGURED'; throw e; }
   await setAddonQuantity(parentTenant, priceId, paid);
   return { paid };
 }

@@ -121,7 +121,7 @@ router.post('/invite', async (req, res, next) => {
     const limit = plans.subAccountLimitFor(parent);
     const used = await usedCount(req.tenantId);
     if (used >= limit) {
-      return res.status(400).json({ error: `You've reached your sub-account limit (${Number.isFinite(limit) ? limit : '—'}). Remove one or upgrade.`, code: 'SUBACCOUNT_LIMIT' });
+      return res.status(400).json({ error: `You've reached your team-member limit (${Number.isFinite(limit) ? limit : '—'}). Remove one or upgrade.`, code: 'SUBACCOUNT_LIMIT' });
     }
     // ADR-0004: on a v2 plan the first sub-account is included, each further
     // one is a $29/mo add-on — the Stripe quantity must go through BEFORE the
@@ -172,7 +172,7 @@ router.post('/invite', async (req, res, next) => {
     <table role="presentation" width="560" style="max-width:560px;background:#fff;border-radius:12px;overflow:hidden">
       <tr><td style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:24px 28px;color:#fff">
         <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#c7d2fe;font-weight:700">DealScope</div>
-        <div style="font-size:20px;font-weight:700;margin-top:4px">You've been invited to a workspace</div>
+        <div style="font-size:20px;font-weight:700;margin-top:4px">You've been invited to join the team</div>
       </td></tr>
       <tr><td style="padding:24px 28px;color:#334155;font-size:14px;line-height:1.6">
         <p>${esc(parent.name || 'An organization')} set up a DealScope workspace for <strong>${esc(companyName)}</strong> and invited you (${esc(inviteEmail)}) to run it.</p>
@@ -252,7 +252,7 @@ router.patch('/:childId', async (req, res, next) => {
   try {
     const parent = await parentRow(req);
     const owned = await sys().query('SELECT id FROM tenants WHERE id = $1 AND parent_tenant_id = $2', [req.params.childId, req.tenantId]);
-    if (!owned.rowCount) return res.status(404).json({ error: 'Sub-account not found.' });
+    if (!owned.rowCount) return res.status(404).json({ error: 'Team member not found.' });
     const b = req.body || {};
     const sets = []; const vals = []; let i = 1;
     if (Array.isArray(b.features)) { sets.push(`feature_overrides = $${i++}::jsonb`); vals.push(JSON.stringify(sanitizeFeatures(b.features, allowedFeatures(parent)))); }
@@ -273,7 +273,7 @@ router.post('/:childId/:action(suspend|unsuspend)', async (req, res, next) => {
       `UPDATE tenants SET suspended_at = ${suspend ? 'now()' : 'NULL'}, updated_at = now()
         WHERE id = $1 AND parent_tenant_id = $2 RETURNING id`, [req.params.childId, req.tenantId]
     );
-    if (!r.rowCount) return res.status(404).json({ error: 'Sub-account not found.' });
+    if (!r.rowCount) return res.status(404).json({ error: 'Team member not found.' });
     tenants.invalidate(req.params.childId);
     res.json({ ok: true, suspended: suspend });
   } catch (err) { next(err); }

@@ -91,15 +91,15 @@
     if (isSuperadmin) {
       document.querySelectorAll('.superadmin-only').forEach((el) => el.classList.remove('hidden'));
     }
-    // Sub-accounts nav is shown only when the plan includes it (Pro/Enterprise),
+    // Team-members nav (internally: sub-accounts) is shown only when the plan includes it (Pro/Enterprise),
     // and never for a sub-tenant (children can't nest).
     const feats = (me.entitlements && me.entitlements.features) || [];
     // Sidebar account-type label (was hardcoded "admin"): a normal account shows
-    // "tenant", a child workspace shows "sub-account", a platform admin "platform admin".
+    // "tenant", a child workspace shows "team member", a platform admin "platform admin".
     const _roleEl = $('user-role');
     if (_roleEl) {
       _roleEl.textContent = me.isAdmin ? 'platform admin'
-        : (me.entitlements && me.entitlements.isSubtenant) ? 'sub-account' : 'tenant';
+        : (me.entitlements && me.entitlements.isSubtenant) ? 'team member' : 'tenant';
     }
     if (feats.includes('sub_accounts') && !(me.entitlements && me.entitlements.isSubtenant)) {
       document.querySelectorAll('.subaccounts-only').forEach((el) => el.classList.remove('hidden'));
@@ -409,7 +409,7 @@
       sessions: 'Arena Practice',
       integrations: 'Integrations',
       billing: 'Billing',
-      subaccounts: 'Sub-accounts',
+      subaccounts: 'Team members',
       settings: 'Settings',
       profile: 'Your profile',
     }[sec];
@@ -694,7 +694,7 @@
       </button>`;
     }).join('');
     host.innerHTML = `<div class="dash-col dash-chart-card dash-rollup">
-      <div class="dash-card-h">Sub-account activity <button class="kb-link-btn dash-rollup-manage" data-goto="subaccounts">Manage →</button></div>
+      <div class="dash-card-h">Team activity <button class="kb-link-btn dash-rollup-manage" data-goto="subaccounts">Manage →</button></div>
       <div class="dash-kids">${rows}</div>
     </div>`;
     host.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => { window.location.hash = '#' + b.dataset.goto; }));
@@ -9167,7 +9167,7 @@
     api_tokens: 'API / MCP access',
     calendly: 'Calendly auto-booking',
     market_monitoring: 'Market Watch monitoring',
-    sub_accounts: 'Sub-account workspaces',
+    sub_accounts: 'Team-member workspaces',
   };
   const METER_LABELS = {
     discovery: 'Prospect discovery runs',
@@ -9579,7 +9579,7 @@
         extras.push(`<li>${inc}${extra}</li>`);
       }
       if (!isEnterprise && p.subTenants) {
-        extras.push(`<li>${p.subTenants.included} sub-account included · +$${p.subTenants.priceMonthly}/mo each</li>`);
+        extras.push(`<li>${p.subTenants.included} team member included · +$${p.subTenants.priceMonthly}/mo each</li>`);
       }
       if (!isEnterprise && p.overage && p.overage.engagements) {
         extras.push(`<li>$${p.overage.engagements.toFixed(2)} per engagement past your allowance</li>`);
@@ -9929,12 +9929,12 @@
     }
   }
 
-  // ── Sub-accounts (parent → child workspaces) ───────────────────────────────
+  // ── Team members (internally: sub-accounts; parent → child workspaces) ───────────────────────────────
   let _saData = null;
   async function loadSubaccounts() {
     let d;
     try { d = await fetchJson('/api/account/subaccounts'); }
-    catch (err) { $('subaccounts-body').innerHTML = `<div class="empty">Couldn't load sub-accounts: ${escapeHtml(err.message)}</div>`; return; }
+    catch (err) { $('subaccounts-body').innerHTML = `<div class="empty">Couldn't load team members: ${escapeHtml(err.message)}</div>`; return; }
     _saData = d;
     renderSubaccounts(d);
     loadSubaccountMonitor();
@@ -9984,7 +9984,7 @@
     let m;
     try { m = await fetchJson('/api/account/subaccounts/monitor'); }
     catch (err) { $('subaccounts-monitor').innerHTML = `<div class="empty">Couldn't load activity: ${escapeHtml(err.message)}</div>`; return; }
-    if (!m.children || !m.children.length) { $('subaccounts-monitor').innerHTML = '<div class="kb-subtle">No sub-account activity yet.</div>'; return; }
+    if (!m.children || !m.children.length) { $('subaccounts-monitor').innerHTML = '<div class="kb-subtle">No team activity yet.</div>'; return; }
     const col = (label, count, rows) => `
       <div class="sam-col">
         <div class="sam-col-h">${label} <span class="sam-count">${count}</span></div>
@@ -10020,11 +10020,11 @@
         <div class="sa-info"><div class="sa-name">${escapeHtml(iv.company_name)} <span class="pill">Invite pending</span></div>
           <div class="sa-sub">${escapeHtml(iv.email)} · expires ${fmtDate(iv.expires_at)}</div></div>
         <div class="sa-actions"><button class="kb-secondary-btn" data-revoke="${escapeHtml(iv.id)}">Revoke</button></div></div>`).join('');
-    const empty = (!children && !invites) ? '<div class="kb-subtle">No sub-accounts yet — invite one to get started.</div>' : '';
+    const empty = (!children && !invites) ? '<div class="kb-subtle">No team members yet — invite one to get started.</div>' : '';
     $('subaccounts-body').innerHTML = `
       <div class="sa-head">
-        <div class="bill-sub" style="margin:0"><strong>${d.used}</strong> of <strong>${limitTxt}</strong> sub-accounts used</div>
-        <button class="primary-cta" id="sa-invite-btn" ${atLimit ? 'disabled title="Limit reached — remove one or upgrade"' : ''}>+ Invite sub-account</button>
+        <div class="bill-sub" style="margin:0"><strong>${d.used}</strong> of <strong>${limitTxt}</strong> team members used</div>
+        <button class="primary-cta" id="sa-invite-btn" ${atLimit ? 'disabled title="Limit reached — remove one or upgrade"' : ''}>+ Invite team member</button>
       </div>
       <div class="sa-list">${children}${invites}${empty}</div>`;
     if (!atLimit) $('sa-invite-btn').addEventListener('click', () => openInviteModal(d.grantOptions || { features: [], caps: {} }));
@@ -10062,13 +10062,13 @@
       ov.id = 'sa-modal-overlay'; ov.className = 'cal-picker-overlay';
       ov.innerHTML = `
         <div class="cal-picker sa-modal">
-          <div class="cal-picker-h"><span class="cal-picker-title">Invite a sub-account</span>
+          <div class="cal-picker-h"><span class="cal-picker-title">Invite a team member</span>
             <button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
           <div class="cal-picker-body">
             <div class="kb-form">
               <div class="field"><label for="sa-email">Owner email</label><input id="sa-email" type="email" placeholder="owner@yourcompany.com">
                 <div class="field-hint">Must be on your company's domain — they'll get a link to set up their workspace.</div></div>
-              <div class="field"><label>Features this sub-account can use</label>
+              <div class="field"><label>Features this team member can use</label>
                 <div class="sa-feats" id="sa-feats">${featureRows}</div>
                 <div class="field-hint">Tick a feature to enable it; set a monthly cap (blank = your plan's full pool).</div>
               </div>
@@ -10118,7 +10118,7 @@
     } finally { btn.disabled = false; btn.textContent = 'Send invite'; }
   }
 
-  // Edit an existing sub-account's feature mask / cap allocation (PATCH).
+  // Edit an existing team member's feature mask / cap allocation (PATCH).
   function closeEditChildModal() { const o = $('sa-edit-overlay'); if (o) o.classList.add('hidden'); }
   function _saEditEsc(e) { if (e.key === 'Escape') closeEditChildModal(); }
   function openEditChildModal(childId) {
@@ -10132,12 +10132,12 @@
       ov.id = 'sa-edit-overlay'; ov.className = 'cal-picker-overlay';
       ov.innerHTML = `
         <div class="cal-picker sa-modal">
-          <div class="cal-picker-h"><span class="cal-picker-title">Edit sub-account</span>
+          <div class="cal-picker-h"><span class="cal-picker-title">Edit team member</span>
             <button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
           <div class="cal-picker-body">
             <div class="kb-form">
               <p class="bill-sub" id="sa-edit-name" style="margin-top:0"></p>
-              <div class="field"><label>Features this sub-account can use</label>
+              <div class="field"><label>Features this team member can use</label>
                 <div class="sa-feats" id="sa-edit-feats"></div>
                 <div class="field-hint">Tick a feature to enable it; set a monthly cap (blank = your plan's full pool). Changes apply immediately.</div>
               </div>
@@ -10174,7 +10174,7 @@
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
       closeEditChildModal();
-      toast('Sub-account updated.');
+      toast('Team member updated.');
       loadSubaccounts();
     } catch (err) {
       result.textContent = err.message; result.className = 'kb-result error';
