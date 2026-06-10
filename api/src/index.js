@@ -532,9 +532,13 @@ app.get('/portals/:id', async (req, res, next) => {
       ? p
       : { ...p, moments: { ...(p.moments || {}), knowledgeGaps: [] } };
 
+    // Model identifiers + token usage are internal telemetry — they stay on
+    // the stored record but never ship in the report payload (any viewer).
+    const { models: _models, usage: _usage, ...pubPortal } = safe;
+
     res.json({
       portal: {
-        ...safe,
+        ...pubPortal,
         meeting: meetingForViewer,
         audit,
         viewerRole: claims ? 'admin' : 'public',

@@ -58,10 +58,6 @@
       const d = new Date(p.createdAt);
       metaParts.push(`Delivered <strong>${d.toLocaleString()}</strong>`);
     }
-    if (p.models) {
-      metaParts.push(`Analysis: <strong>${p.models.analysis}</strong>`);
-      metaParts.push(`Content: <strong>${p.models.content}</strong>`);
-    }
     $('meta').innerHTML = metaParts.join('<span class="meta-bar"></span>');
 
     // Objection
@@ -156,12 +152,6 @@
     });
 
     // Model pills
-    const pills = $('model-pills');
-    if (p.models) {
-      pills.innerHTML =
-        `<span class="meta-pill">${p.models.analysis}</span>` +
-        `<span class="meta-pill">${p.models.content}</span>`;
-    }
 
     $('sign-btn').addEventListener('click', () => {
       alert('SOW signing flow — coming next sprint.');
@@ -541,7 +531,7 @@
     };
 
     status.classList.remove('hidden', 'error', 'success');
-    status.textContent = reanalyze ? 'Saving + re-running analysis (this calls Gemini)…' : 'Saving…';
+    status.textContent = reanalyze ? 'Saving + re-running the AI analysis…' : 'Saving…';
 
     try {
       // 1. Save the override on the portal record.

@@ -288,7 +288,7 @@ def _normalize_recall_transcript(bot: dict[str, Any], transcript_raw: Any) -> di
             segments.append([round(start), round(end), role, text])
 
     return {
-        "meetingTitle": (bot.get("metadata") or {}).get("title") or "Recall.ai Call",
+        "meetingTitle": (bot.get("metadata") or {}).get("title") or "DealScope Note Taker Report",
         "durationSeconds": int(bot.get("duration_seconds") or (segments[-1][1] if segments else 0)),
         "participants": list(participants_seen.values()) or [{"role": "rep", "name": "Rep"}],
         "segments": segments,

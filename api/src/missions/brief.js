@@ -45,19 +45,19 @@ function translateGeminiError(err) {
   if (code === 429 || status === 'RESOURCE_EXHAUSTED') {
     const isBilling = /prepayment|credits|billing|quota|exceeded/i.test(body);
     const e = new Error(isBilling
-      ? "Gemini quota / billing exhausted — top up at https://ai.studio/projects (or rotate GEMINI_API_KEY) and retry."
-      : "Gemini rate limit hit — wait a moment and retry.");
+      ? "AI provider quota exhausted — retry shortly. (Ops: top up the provider account or rotate the API key.)"
+      : "AI rate limit hit — wait a moment and retry.");
     e.status = 429;
     e.code = 'GEMINI_QUOTA';
     return e;
   }
   if (code === 401 || code === 403) {
-    const e = new Error("Gemini rejected the API key (401/403). Check GEMINI_API_KEY in .env and restart the api container.");
+    const e = new Error("The AI provider rejected the request (auth). Contact support — the workspace's AI access needs attention.");
     e.status = 502; e.code = 'GEMINI_AUTH';
     return e;
   }
   if (code >= 500) {
-    const e = new Error(`Gemini upstream error (${code}): ${body.slice(0, 200)}`);
+    const e = new Error(`AI provider error (${code}) — retry in a moment.`);
     e.status = 502; e.code = 'GEMINI_UPSTREAM';
     return e;
   }
