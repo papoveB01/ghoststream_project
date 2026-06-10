@@ -610,11 +610,21 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
     (regionIsGlobal ? '' : `Focus on companies in or serving ${regionLabel}. `) +
     'For each company: the signal/why-now, which of OUR products fit (ids from the list) + a one-sentence ' +
     'fit reason, and priority 1-5.\n' +
-    'SIGNALS & PRIORITY: rank highest (4-5) the companies with a FRESH, specific buying signal evidenced in ' +
-    'the findings (new opening/expansion, hiring, funding, tech adoption, leadership/regulatory change). A ' +
-    'real ICP-fit company with NO fresh signal in the findings is still useful — include it with a short ' +
-    'fit-based rationale as its signal and a LOWER priority (1-2). Never fabricate a specific event the ' +
-    'findings do not support.\n' +
+    'PRIORITY RUBRIC — apply STRICTLY; do not bunch everything at one level:\n' +
+    '  • 5 = a FRESH, specific buying signal evidenced in the WEB FINDINGS below (new opening/expansion, ' +
+    'hiring, funding, tech adoption, leadership/regulatory change) AND a strong fit with our products.\n' +
+    '  • 4 = a buying signal evidenced in the WEB FINDINGS, but weaker/older or a looser product fit.\n' +
+    '  • 3 = NO signal, but a CORE buyer from your knowledge: fits MULTIPLE of our products, or is a flagship ' +
+    'target in a priority market.\n' +
+    '  • 2 = NO signal; a clear fit with at least one of our products; a mainstream buyer.\n' +
+    '  • 1 = NO signal; a more peripheral/smaller/adjacent fit, or only a marginal product match.\n' +
+    'HARD RULE 1: priority 4 and 5 are RESERVED for companies whose buying signal is actually evidenced in the ' +
+    '===WEB FINDINGS===. A company included from your own knowledge with no such finding MUST be 1-3 — never 4 or 5.\n' +
+    'HARD RULE 2: grade the knowledge-only companies by the 1/2/3 criteria above (product-match breadth + how ' +
+    'core a buyer) and ACTUALLY USE ALL THREE LEVELS — they are NOT all equal. Do not park them all at 3: as a ' +
+    'guide, only the clear multi-product / flagship buyers earn 3, the solid single-product fits are 2, and the ' +
+    'weaker/peripheral fits are 1. For a knowledge-only company use a short fit-based rationale as its signal; ' +
+    'never fabricate a specific event the findings do not support.\n' +
     CONTACT_INSTRUCTION + '\n' +
     `TARGET COUNT — IMPORTANT: aim to actually REACH ${want} distinct REAL companies. The web findings name only a few; do NOT stop there. Draw PRIMARILY on your own up-to-date knowledge of companies that match "WHO WE SELL TO" in the target segment/region to enumerate up to ${want}, and use the findings to attach signals + set priority on the ones they cover. Companies you add from knowledge (no fresh signal) get a short fit-based rationale and a lower priority — that is expected and wanted. Only return fewer than ${want} if there genuinely are not that many real ICP-fit companies (never invent to pad). Order best-fit first.\n` +
     'Rules: REAL companies only (never invent); EXCLUDE our own company and our competitors; matchedProductIds ' +
