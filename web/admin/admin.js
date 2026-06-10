@@ -9461,7 +9461,7 @@
   // Market Watch / Arena. Bought as one-time payments; expire 90 days after purchase.
   const CREDIT_KIND_META = {
     engagements: { label: 'Engagement credits', icon: '🎧', desc: 'Extra AI-joined calls beyond your monthly plan allowance.' },
-    research:    { label: 'Research credits',   icon: '🔍', desc: 'Cover discovery, competitor research, Market Watch &amp; Arena practice.' },
+    research:    { label: 'Research credits',   icon: '🔍', desc: 'Cover prospect &amp; competitor research, proposals, contact reveals, Market Watch &amp; Arena practice.' },
   };
   function fmtCreditDate(iso) {
     if (!iso) return '';
