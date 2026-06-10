@@ -22,6 +22,10 @@ const MAX_PRODUCTS = parseInt(process.env.KB_DISCOVERY_MAX_PRODUCTS || '12', 10)
 // Prospect discovery casts a wider net than competitor discovery (we want many
 // candidates, ranked) — its own larger caps.
 const PROSPECT_MAX = parseInt(process.env.KB_DISCOVERY_PROSPECT_MAX || '30', 10);
+// Hard ceiling for a single discovery turn — the user-facing "how many prospects"
+// field is clamped to this. Beyond ~100 a single-shot ranked list degrades (token
+// budget + relevance), so 100/turn is the cap.
+const PROSPECT_HARD_MAX = parseInt(process.env.KB_DISCOVERY_PROSPECT_HARD_MAX || '100', 10);
 const PROSPECT_MAX_HITS = parseInt(process.env.KB_DISCOVERY_PROSPECT_MAX_HITS || '28', 10);
 const PROSPECT_SCRAPE_TOP = parseInt(process.env.KB_DISCOVERY_PROSPECT_SCRAPE_TOP || '4', 10);
 // Output-token budgets for the structured JSON. The previous 4000 cap truncated
@@ -535,9 +539,13 @@ const PROSPECTS_SCHEMA = {
 
 // Find potential customers for OUR company, scoped by region + industry, ranked
 // by priority. Returns { prospects: [...] } (possibly empty) or null on failure.
-async function discoverProspects({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', industry = '' } = {}) {
+async function discoverProspects({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', industry = '', limit } = {}) {
   const name = String(companyName || '').trim();
   if (!name) return null;
+  // How many prospects this turn returns — clamped to [1, PROSPECT_HARD_MAX].
+  // Falls back to the module default when unset/invalid so existing callers are
+  // unchanged. Drives both the prompt target and the post-filter cap below.
+  const want = Math.max(1, Math.min(PROSPECT_HARD_MAX, parseInt(limit, 10) || PROSPECT_MAX));
 
   const regionLabel = String(region || '').trim();
   const regionIsGlobal = !regionLabel || /global|any|worldwide/i.test(regionLabel);
@@ -608,7 +616,7 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
     'fit-based rationale as its signal and a LOWER priority (1-2). Never fabricate a specific event the ' +
     'findings do not support.\n' +
     CONTACT_INSTRUCTION + '\n' +
-    `Aim for BREADTH: list every distinct REAL company that plausibly matches our ICP (up to ${PROSPECT_MAX}).\n` +
+    `Aim for BREADTH: list every distinct REAL company that plausibly matches our ICP (up to ${want}), ordered best-fit first.\n` +
     'Rules: REAL companies only (never invent); EXCLUDE our own company and our competitors; matchedProductIds ' +
     'MUST be from the provided ids (or empty); keep strings short; ignore boilerplate.\n\n' +
     `===OUR COMPANY===\n${ctx}\n\n` +
@@ -624,7 +632,10 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         temperature: 0.3,
-        maxOutputTokens: PROSPECT_MAXTOK,
+        // Scale the JSON budget with the requested count (~400 tok/prospect row
+        // incl. contact fields) so a large list isn't truncated mid-array; never
+        // below the default, capped to the model's output ceiling.
+        maxOutputTokens: Math.min(65000, Math.max(PROSPECT_MAXTOK, want * 400)),
         responseMimeType: 'application/json',
         responseSchema: PROSPECTS_SCHEMA,
         thinkingConfig: { thinkingBudget: 0 },
@@ -656,11 +667,12 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
         priority,
         ...pickContact(c),
       });
-      if (prospects.length >= PROSPECT_MAX) break;
     }
-    // Rank by priority (highest first), then name for stable ties.
+    // Rank by priority (highest first), then name for stable ties, THEN cap to
+    // the requested count — so the top `want` by priority are kept, not just the
+    // first `want` in model order (preserves relevance when the list is trimmed).
     prospects.sort((a, b) => (b.priority - a.priority) || a.name.localeCompare(b.name));
-    return { prospects };
+    return { prospects: prospects.slice(0, want) };
   } catch (err) {
     console.warn(`[discovery] discoverProspects failed: ${(err && err.message) || err}`);
     return null;
