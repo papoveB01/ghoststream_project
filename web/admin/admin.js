@@ -7381,16 +7381,27 @@
       : '<tr><td colspan="4" class="kb-subtle" style="padding:10px">No product lines yet.</td></tr>';
     body.innerHTML = `
       <table class="dt"><thead><tr><th>Product line</th><th>Description</th><th>Docs</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-      <div class="comp-node-add" style="margin-top:12px">
+      <div style="margin-top:12px"><button class="kb-secondary-btn" id="company-product-add-toggle">＋ Add product</button></div>
+      <div class="comp-node-add hidden" id="company-product-add-row" style="margin-top:10px">
         <input id="company-new-product-name" type="text" placeholder="New product — e.g. Fraud Solution" maxlength="200">
         <input id="company-new-product-desc" type="text" placeholder="Description (optional)">
-        <button class="kb-secondary-btn" id="company-add-product-btn">＋ Add product</button>
+        <button class="kb-secondary-btn" id="company-add-product-btn">Save</button>
+        <button class="kb-link-btn" id="company-product-add-cancel">× Cancel</button>
       </div>
       <div class="kb-result hidden" id="company-product-result"></div>`;
     body.querySelectorAll('[data-prod-open]').forEach((b) => b.addEventListener('click', () => { _companyProductOpen = b.dataset.prodOpen; renderCompanyWorkspace(); }));
     body.querySelectorAll('[data-prod-edit]').forEach((b) => b.addEventListener('click', () => companyEditEntity('products', b.dataset.prodEdit)));
     body.querySelectorAll('[data-prod-del]').forEach((b) => b.addEventListener('click', () => companyDeleteProduct(b.dataset.prodDel)));
     $('company-add-product-btn').addEventListener('click', () => companyAddEntity('products', 'company-new-product-name', 'company-new-product-desc', 'company-product-result'));
+    $('company-product-add-toggle').addEventListener('click', () => {
+      $('company-product-add-row').classList.remove('hidden');
+      $('company-product-add-toggle').classList.add('hidden');
+      $('company-new-product-name').focus();
+    });
+    $('company-product-add-cancel').addEventListener('click', () => {
+      $('company-product-add-row').classList.add('hidden');
+      $('company-product-add-toggle').classList.remove('hidden');
+    });
   }
 
   async function renderCompanyProductDetail(body, productId) {
@@ -7445,15 +7456,26 @@
     body.innerHTML = `
       <p class="kb-subtle">The types of buyer you sell to (e.g. CFO, IT lead). They shape your pre-call briefs and link automatically to contacts with a matching role.</p>
       <table class="dt"><thead><tr><th>Persona</th><th>Description</th><th>Docs</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-      <div class="comp-node-add" style="margin-top:12px">
+      <div style="margin-top:12px"><button class="kb-secondary-btn" id="company-persona-add-toggle">＋ Add persona</button></div>
+      <div class="comp-node-add hidden" id="company-persona-add-row" style="margin-top:10px">
         <input id="company-new-persona-name" type="text" placeholder="New persona — e.g. CFO" maxlength="200">
         <input id="company-new-persona-desc" type="text" placeholder="Traits / what they care about (optional)">
-        <button class="kb-secondary-btn" id="company-add-persona-btn">＋ Add persona</button>
+        <button class="kb-secondary-btn" id="company-add-persona-btn">Save</button>
+        <button class="kb-link-btn" id="company-persona-add-cancel">× Cancel</button>
       </div>
       <div class="kb-result hidden" id="company-persona-result"></div>`;
     body.querySelectorAll('[data-persona-edit]').forEach((b) => b.addEventListener('click', () => companyEditEntity('personas', b.dataset.personaEdit)));
     body.querySelectorAll('[data-persona-del]').forEach((b) => b.addEventListener('click', () => companyDeleteEntity('personas', b.dataset.personaDel)));
     $('company-add-persona-btn').addEventListener('click', () => companyAddEntity('personas', 'company-new-persona-name', 'company-new-persona-desc', 'company-persona-result'));
+    $('company-persona-add-toggle').addEventListener('click', () => {
+      $('company-persona-add-row').classList.remove('hidden');
+      $('company-persona-add-toggle').classList.add('hidden');
+      $('company-new-persona-name').focus();
+    });
+    $('company-persona-add-cancel').addEventListener('click', () => {
+      $('company-persona-add-row').classList.add('hidden');
+      $('company-persona-add-toggle').classList.remove('hidden');
+    });
   }
 
   async function renderCompanyIntelTab(body) {
