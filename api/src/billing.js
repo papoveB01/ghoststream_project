@@ -196,8 +196,53 @@ async function grantCreditsFromSession(session) {
     tenantId: m.tenantId, kind, qty, source: 'stripe',
     packKey: m.packKey, sessionId: session.id, paymentIntent: session.payment_intent || null,
   });
-  if (g) console.log(`[billing] granted ${qty} ${kind} credits to tenant ${m.tenantId} (session ${session.id})`);
+  if (g) {
+    console.log(`[billing] granted ${qty} ${kind} credits to tenant ${m.tenantId} (session ${session.id})`);
+    try { await sendCreditsPurchasedEmail(m.tenantId, pack, kind, qty, g); }
+    catch (e) { console.warn(`[billing] credits email failed for ${m.tenantId}: ${(e && e.message) || e}`); }
+  }
   return g;
+}
+
+// Receipt-style email to the workspace owners when a credit pack lands.
+async function sendCreditsPurchasedEmail(tenantId, pack, kind, qty, grant) {
+  const email = require('./email');
+  if (!email.isConfigured()) return;
+  const owners = (await db.query(
+    `SELECT email FROM users WHERE tenant_id = $1 AND role = 'owner' AND email IS NOT NULL`, [tenantId]
+  )).rows.map((r) => r.email);
+  if (!owners.length) return;
+  const tenant = await tenants.get(tenantId);
+  const KIND_LABELS = {
+    engagements: 'engagement credits — each covers one AI-joined call (brief, recording & analysis)',
+    research: 'research credits — each covers a discovery run, competitor research or contact reveal',
+  };
+  const price = pack && pack.unitAmount ? `$${(pack.unitAmount / 100).toFixed(0)}` : null;
+  const expiresAt = (grant && grant.expires_at) ? new Date(grant.expires_at) : new Date(Date.now() + credits.CREDIT_TTL_DAYS * 86400000);
+  const expires = expiresAt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const base = (process.env.APP_BASE_URL || 'https://dealscope.io').replace(/\/$/, '');
+  const subject = `Your DealScope credits are in — ${qty} ${kind === 'engagements' ? 'engagement' : 'research'} credits added`;
+  const html = `
+  <div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;color:#15181b">
+    <div style="padding:22px 0 14px"><span style="display:inline-block;background:#1e7d45;color:#fff;font-weight:800;border-radius:7px;padding:6px 11px">D</span>
+      <span style="font-size:18px;font-weight:700;margin-left:8px">DealScope</span></div>
+    <h1 style="font-size:21px;margin:6px 0 4px">Credits added 🎉</h1>
+    <p style="font-size:14.5px;line-height:1.6;color:#54595f;margin:0 0 16px">
+      <strong>${qty} ${KIND_LABELS[kind] || kind}</strong> ${price ? `(${price})` : ''} are now available in <strong>${(tenant && tenant.name) || 'your workspace'}</strong>.
+    </p>
+    <div style="border:1px solid #e3e5e0;border-radius:8px;padding:14px 18px;margin:0 0 16px;font-size:14px;line-height:1.6">
+      <div>They're drawn automatically once your monthly plan allowance is used up — nothing to configure.</div>
+      ${expires ? `<div style="color:#54595f;margin-top:6px">Unused credits expire on <strong>${expires}</strong> (90 days).</div>` : ''}
+    </div>
+    <a href="${base}/admin/#billing" style="display:inline-block;background:#1e7d45;color:#fff;text-decoration:none;font-weight:600;font-size:14px;border-radius:6px;padding:10px 18px">View balance on Billing</a>
+    <p style="font-size:12px;color:#8c9197;margin:22px 0 8px">Questions? Just reply to this email.</p>
+  </div>`;
+  const text = `Credits added: ${qty} ${KIND_LABELS[kind] || kind}${price ? ` (${price})` : ''} for ${(tenant && tenant.name) || 'your workspace'}.\n` +
+    `They're used automatically after your monthly plan allowance runs out.` +
+    (expires ? ` Unused credits expire ${expires}.` : '') +
+    `\n\nBalance: ${base}/admin/#billing`;
+  await email.send({ to: owners, subject, html, text, categories: ['credits-purchased'] });
+  console.log(`[billing] credits email sent to ${owners.join(', ')} (${qty} ${kind})`);
 }
 
 // POST /billing/confirm { sessionId } — apply a completed Checkout Session's
@@ -716,4 +761,4 @@ async function webhook(req, res) {
   }
 }
 
-module.exports = { router, webhook, isConfigured, createCheckout, applySubscription, recordEngagementOverage, syncSubtenantQuantity, sendPlanActivatedEmail };
+module.exports = { router, webhook, isConfigured, createCheckout, applySubscription, recordEngagementOverage, syncSubtenantQuantity, sendPlanActivatedEmail, sendCreditsPurchasedEmail };
