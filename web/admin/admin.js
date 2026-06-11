@@ -29,7 +29,12 @@
   const loaded = {};
   let currentSection = 'overview';
   let kbCurrentTab = 'status';
-  let missionsCurrentTab = 'upcoming';
+  // Active Engagements tab survives re-renders and reloads (session-scoped);
+  // the transient 'detail' pane is never persisted.
+  let missionsCurrentTab = (() => {
+    try { const t = sessionStorage.getItem('ds.missionsTab'); return ['upcoming', 'past', 'schedule'].includes(t) ? t : 'upcoming'; }
+    catch { return 'upcoming'; }
+  })();
   let isSuperadmin = false; // platform admin (Founders tenant) — set in init()
   let marketWatchAvailable = false; // plan includes Market Watch — set in init()
 
@@ -5986,7 +5991,7 @@
     // Default to the Upcoming list — the schedule form stays one click away
     // under "＋ Schedule". A "Brief an engagement" prefill (dashboard / prospect
     // / proposal flows) still lands directly on the form, which consumes it.
-    await switchMissionsTab(window._prefillMission ? 'schedule' : 'upcoming');
+    await switchMissionsTab(window._prefillMission ? 'schedule' : missionsCurrentTab);
   }
 
   function wireMissionsTabs() {
@@ -5999,6 +6004,7 @@
 
   async function switchMissionsTab(tab) {
     missionsCurrentTab = tab;
+    if (tab !== 'detail') { try { sessionStorage.setItem('ds.missionsTab', tab); } catch { /* non-fatal */ } }
     document.querySelectorAll('#missions-tabs .kb-tab').forEach((b) => {
       b.classList.toggle('active', b.dataset.missionsTab === tab);
     });
