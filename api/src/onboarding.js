@@ -364,6 +364,55 @@ router.get('/verify', async (req, res, next) => {
 // POST /onboarding/verify { token } — the actual provisioning, only after the
 // user confirms. Creates the tenant + owner (verified) and logs in; the
 // company-data pull happens on the Company → Intel tab they land on.
+// Getting-started welcome to the brand-new owner. Plan facts come from the
+// catalog (free tier, v2) so the copy never drifts from real entitlements.
+async function sendWelcomeEmail({ to, firstName, companyName }) {
+  const email = require('./email');
+  if (!email.isConfigured() || !to) return;
+  const plans = require('./plans');
+  const free = plans.planFor('trial', 2) || { caps: {} };
+  const researchCap = free.caps.research || 5;
+  const engCap = free.caps.engagements || 1;
+  const base = (APP_BASE_URL || 'https://dealscope.io').replace(/\/$/, '');
+  const hi = firstName ? `Welcome to DealScope, ${firstName}!` : 'Welcome to DealScope!';
+  const ws = companyName ? `the <strong>${companyName}</strong> workspace` : 'your workspace';
+  const html = `
+  <div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;color:#15181b">
+    <div style="padding:22px 0 14px"><span style="display:inline-block;background:#1e7d45;color:#fff;font-weight:800;border-radius:7px;padding:6px 11px">D</span>
+      <span style="font-size:18px;font-weight:700;margin-left:8px">DealScope</span></div>
+    <h1 style="font-size:21px;margin:6px 0 4px">${hi}</h1>
+    <p style="font-size:14.5px;line-height:1.6;color:#54595f;margin:0 0 16px">
+      Thanks for setting up ${ws}. DealScope is your AI sales-intelligence cockpit — it learns your
+      business, finds the buyers most likely to need you, sits in on your sales calls, and turns every
+      conversation into a ready-to-send follow-up.
+    </p>
+    <div style="border:1px solid #e3e5e0;border-radius:8px;padding:14px 18px;margin:0 0 16px">
+      <div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#1e7d45;margin-bottom:6px">Get the most from your first session</div>
+      <ol style="margin:0;padding-left:18px;font-size:14px;line-height:1.7">
+        <li><strong>Ground your workspace</strong> — on the Company page, hit “Enrich from web” and we'll build your positioning, products and buyer personas from your own website.</li>
+        <li><strong>Discover prospects &amp; competitors</strong> — the green “Discover” buttons run AI web research matched to who <em>you</em> sell to.</li>
+        <li><strong>Put the AI in a call</strong> — schedule an engagement and DealScope joins, briefs you beforehand, and analyses how it went.</li>
+      </ol>
+    </div>
+    <p style="font-size:14px;line-height:1.6;color:#54595f;margin:0 0 18px">
+      Your Free plan includes a one-time sample of <strong>${researchCap} AI research runs</strong> and
+      <strong>${engCap} AI-joined call${engCap === 1 ? '' : 's'}</strong> — everything else (battlecards, the Market Map, proposals) is yours to explore.
+    </p>
+    <a href="${base}/admin/" style="display:inline-block;background:#1e7d45;color:#fff;text-decoration:none;font-weight:600;font-size:14px;border-radius:6px;padding:10px 18px">Open your workspace</a>
+    <p style="font-size:12px;color:#8c9197;margin:22px 0 8px">Stuck or curious about anything? Just reply — a human reads these.</p>
+  </div>`;
+  const text = `${firstName ? `Welcome to DealScope, ${firstName}!` : 'Welcome to DealScope!'}\n\n` +
+    `Thanks for setting up ${companyName ? `the ${companyName} workspace` : 'your workspace'}.\n\n` +
+    `Get the most from your first session:\n` +
+    `1. Ground your workspace — on the Company page, hit "Enrich from web".\n` +
+    `2. Discover prospects & competitors — the green "Discover" buttons run AI web research matched to who YOU sell to.\n` +
+    `3. Put the AI in a call — schedule an engagement and DealScope joins, briefs you, and analyses how it went.\n\n` +
+    `Your Free plan includes a one-time sample of ${researchCap} AI research runs and ${engCap} AI-joined call${engCap === 1 ? '' : 's'}.\n\n` +
+    `Open your workspace: ${base}/admin/\n\nStuck or curious? Just reply — a human reads these.`;
+  await email.send({ to, subject: 'Welcome to DealScope — your sales intelligence cockpit is ready', html, text, categories: ['welcome'] });
+  console.log(`[onboarding] welcome email sent to ${to}`);
+}
+
 router.post('/verify', async (req, res, next) => {
   try {
     const token = String((req.body && req.body.token) || '');
@@ -405,6 +454,10 @@ router.post('/verify', async (req, res, next) => {
       isAdmin: false,
       emailVerified: true,
     });
+
+    // Welcome email — fire-and-forget so it never delays the signup redirect.
+    sendWelcomeEmail({ to: s.email, firstName: s.firstName, companyName: s.companyName })
+      .catch((e) => console.warn(`[onboarding] welcome email failed for ${s.email}: ${(e && e.message) || e}`));
 
     // Free signups land straight in the in-app welcome setup (no card). A paid
     // opt-in goes to Stripe Checkout (paid immediately, no trial); on success it
