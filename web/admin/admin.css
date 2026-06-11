@@ -4686,3 +4686,10 @@ details.schedule-advanced > .schedule-advanced-body {
 .pl-find-btn { color: var(--accent); border-color: var(--accent-soft); }
 .pl-find-btn:hover { background: var(--accent-light); }
 .pl-spacer { flex: 1; }
+
+/* Compact entity display header (fields hidden behind ✎ Edit details) */
+.pd-display { align-items: flex-start; }
+.pd-id { flex: 1; min-width: 0; }
+.pd-name { font-size: 19px; font-weight: 700; letter-spacing: -0.015em; color: var(--text); line-height: 1.25; }
+.pd-meta { font-size: 12.5px; margin-top: 3px; }
+.pd-edit-wrap { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 14px; background: var(--surface-2); }

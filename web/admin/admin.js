@@ -1661,6 +1661,16 @@
     if (ft) ft.addEventListener('click', () => { _prospectFormOpen = !_prospectFormOpen; renderProspects(host); });
   }
 
+  // "✎ Edit details" ↔ "× Close" toggle between the compact display header
+  // and the full field grid on an entity detail pane.
+  function wireDetailEdit(prefix, displayId) {
+    const disp = $(displayId || `${prefix}-display`), wrap = $(`${prefix}-edit-wrap`);
+    const open = $(`${prefix}-edit-btn`), close = $(`${prefix}-edit-close`);
+    if (!disp || !wrap || !open || !close) return;
+    open.addEventListener('click', () => { disp.classList.add('hidden'); wrap.classList.remove('hidden'); });
+    close.addEventListener('click', () => { wrap.classList.add('hidden'); disp.classList.remove('hidden'); });
+  }
+
   async function refreshProspectIntelStatus(companyId) {
     const el = $('prospect-intel-status');
     if (!el) return;
@@ -2560,22 +2570,34 @@
 
   function renderProspectDetail(c, contacts) {
     return `
-      <div class="prospect-detail-h">
-        <input id="prospect-name" type="text" class="prospect-name-input" value="${escapeHtml(c.name)}" maxlength="200">
+      <div class="prospect-detail-h pd-display" id="prospect-display">
+        <div class="pd-id">
+          <div class="pd-name">${escapeHtml(c.name)}</div>
+          <div class="pd-meta kb-subtle">${[c.domain, [c.city, c.country].filter(Boolean).join(', '), c.primary_contact].filter(Boolean).map(escapeHtml).join(' · ') || 'No details on file yet'}</div>
+        </div>
         <div class="prospect-detail-actions">
-          <button class="kb-secondary-btn" id="prospect-save-btn">Save</button>
+          <button class="kb-secondary-btn" id="prospect-edit-btn">✎ Edit details</button>
           <button class="kb-secondary-btn danger" id="prospect-delete-btn">Delete prospect</button>
         </div>
       </div>
-      <div class="prospect-detail-fields">
-        <label>Domain<input id="prospect-domain" type="text" value="${escapeHtml(c.domain || '')}" placeholder="acme.com"></label>
-        <label>Primary contact<input id="prospect-primary" type="text" value="${escapeHtml(c.primary_contact || '')}" placeholder="Jane Smith"></label>
-        <label>City<input id="prospect-city" type="text" value="${escapeHtml(c.city || '')}" placeholder="Houston"></label>
-        <label>Country<input id="prospect-country" type="text" value="${escapeHtml(c.country || '')}" placeholder="United States"></label>
-        <label>Address<input id="prospect-address" type="text" value="${escapeHtml(c.address || '')}" placeholder="123 Main St"></label>
-        <label>Phone<input id="prospect-phone" type="text" value="${escapeHtml(c.phone || '')}" placeholder="+1 …"></label>
-        <label>Email<input id="prospect-email" type="text" value="${escapeHtml(c.email || '')}" placeholder="contact@acme.com"></label>
-        <label>Notes<textarea id="prospect-notes" rows="2" placeholder="Anything worth remembering across engagements">${escapeHtml(c.notes || '')}</textarea></label>
+      <div class="pd-edit-wrap hidden" id="prospect-edit-wrap">
+        <div class="prospect-detail-h">
+          <input id="prospect-name" type="text" class="prospect-name-input" value="${escapeHtml(c.name)}" maxlength="200">
+          <div class="prospect-detail-actions">
+            <button class="kb-secondary-btn" id="prospect-save-btn">Save</button>
+            <button class="kb-secondary-btn" id="prospect-edit-close">× Close</button>
+          </div>
+        </div>
+        <div class="prospect-detail-fields">
+          <label>Domain<input id="prospect-domain" type="text" value="${escapeHtml(c.domain || '')}" placeholder="acme.com"></label>
+          <label>Primary contact<input id="prospect-primary" type="text" value="${escapeHtml(c.primary_contact || '')}" placeholder="Jane Smith"></label>
+          <label>City<input id="prospect-city" type="text" value="${escapeHtml(c.city || '')}" placeholder="Houston"></label>
+          <label>Country<input id="prospect-country" type="text" value="${escapeHtml(c.country || '')}" placeholder="United States"></label>
+          <label>Address<input id="prospect-address" type="text" value="${escapeHtml(c.address || '')}" placeholder="123 Main St"></label>
+          <label>Phone<input id="prospect-phone" type="text" value="${escapeHtml(c.phone || '')}" placeholder="+1 …"></label>
+          <label>Email<input id="prospect-email" type="text" value="${escapeHtml(c.email || '')}" placeholder="contact@acme.com"></label>
+          <label>Notes<textarea id="prospect-notes" rows="2" placeholder="Anything worth remembering across engagements">${escapeHtml(c.notes || '')}</textarea></label>
+        </div>
       </div>
 
       <div id="prospect-watch-panel"></div>
@@ -2665,6 +2687,7 @@
   }
 
   function wireProspectDetail(host, company) {
+    wireDetailEdit('prospect');
     mountWatchPanel('prospect-watch-panel', 'PROSPECT', company, () => { loaded.prospects = false; });
     $('prospect-save-btn').addEventListener('click', async (e) => {
       const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Saving…';
@@ -3349,22 +3372,34 @@
 
   function renderCompetitorDetail(c) {
     return `
-      <div class="prospect-detail-h comp-section-anchor" id="competitor-section-view">
-        <input id="competitor-name" type="text" class="prospect-name-input" value="${escapeHtml(c.name)}" maxlength="200">
+      <div class="prospect-detail-h pd-display comp-section-anchor" id="competitor-section-view">
+        <div class="pd-id">
+          <div class="pd-name">${escapeHtml(c.name)}</div>
+          <div class="pd-meta kb-subtle">${[c.website, [c.city, c.country].filter(Boolean).join(', ')].filter(Boolean).map(escapeHtml).join(' · ') || 'No details on file yet'}</div>
+        </div>
         <div class="prospect-detail-actions">
-          <button class="kb-secondary-btn" id="competitor-save-btn">Save</button>
+          <button class="kb-secondary-btn" id="competitor-edit-btn">✎ Edit details</button>
           <button class="kb-secondary-btn danger" id="competitor-delete-btn">Delete</button>
         </div>
       </div>
-      <div class="prospect-detail-fields">
-        <label>ID <span class="kb-subtle">(immutable)</span><input type="text" value="${escapeHtml(c.id)}" disabled></label>
-        <label>Website<input id="competitor-website" type="text" value="${escapeHtml(c.website || '')}" placeholder="acme.com"></label>
-        <label>City<input id="competitor-city" type="text" value="${escapeHtml(c.city || '')}" placeholder="Houston"></label>
-        <label>Country<input id="competitor-country" type="text" value="${escapeHtml(c.country || '')}" placeholder="United States"></label>
-        <label>Address<input id="competitor-address" type="text" value="${escapeHtml(c.address || '')}" placeholder="123 Main St"></label>
-        <label>Phone<input id="competitor-phone" type="text" value="${escapeHtml(c.phone || '')}" placeholder="+1 …"></label>
-        <label>Email<input id="competitor-email" type="text" value="${escapeHtml(c.email || '')}" placeholder="contact@acme.com"></label>
-        <label>Description<textarea id="competitor-description" rows="3" placeholder="What's their pitch? Where do they win and where do they lose?">${escapeHtml(c.description || '')}</textarea></label>
+      <div class="pd-edit-wrap hidden" id="competitor-edit-wrap">
+        <div class="prospect-detail-h">
+          <input id="competitor-name" type="text" class="prospect-name-input" value="${escapeHtml(c.name)}" maxlength="200">
+          <div class="prospect-detail-actions">
+            <button class="kb-secondary-btn" id="competitor-save-btn">Save</button>
+            <button class="kb-secondary-btn" id="competitor-edit-close">× Close</button>
+          </div>
+        </div>
+        <div class="prospect-detail-fields">
+          <label>ID <span class="kb-subtle">(immutable)</span><input type="text" value="${escapeHtml(c.id)}" disabled></label>
+          <label>Website<input id="competitor-website" type="text" value="${escapeHtml(c.website || '')}" placeholder="acme.com"></label>
+          <label>City<input id="competitor-city" type="text" value="${escapeHtml(c.city || '')}" placeholder="Houston"></label>
+          <label>Country<input id="competitor-country" type="text" value="${escapeHtml(c.country || '')}" placeholder="United States"></label>
+          <label>Address<input id="competitor-address" type="text" value="${escapeHtml(c.address || '')}" placeholder="123 Main St"></label>
+          <label>Phone<input id="competitor-phone" type="text" value="${escapeHtml(c.phone || '')}" placeholder="+1 …"></label>
+          <label>Email<input id="competitor-email" type="text" value="${escapeHtml(c.email || '')}" placeholder="contact@acme.com"></label>
+          <label>Description<textarea id="competitor-description" rows="3" placeholder="What's their pitch? Where do they win and where do they lose?">${escapeHtml(c.description || '')}</textarea></label>
+        </div>
       </div>
 
       <div id="competitor-watch-panel"></div>
@@ -3594,6 +3629,7 @@
   }
 
   async function wireCompetitorDetail(host, competitor) {
+    wireDetailEdit('competitor', 'competitor-section-view');
     mountWatchPanel('competitor-watch-panel', 'COMPETITOR', competitor, () => { loaded.competitors = false; });
     // Product-centric view: reset the matchup to "company-wide vs whole
     // portfolio" whenever a competitor opens, then load the portfolio (which
