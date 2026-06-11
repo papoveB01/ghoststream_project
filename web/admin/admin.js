@@ -1630,10 +1630,17 @@
     const selected = companies.find((c) => c.id === selectedId);
 
     host.innerHTML = `
+      <div class="prospect-add-bar">
+        <button type="button" class="kb-secondary-btn" id="prospect-form-toggle">${_prospectFormOpen ? '× Close' : '＋ Add prospects'}</button>
+        <button type="button" class="discover-cta" id="prospect-discover-shortcut">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+          Discover online
+        </button>
+      </div>
       <div class="prospects-grid">
         ${collapseRail}
         <div class="prospects-list">
-          <div class="prospects-list-h"><span>${companies.length} prospect${companies.length === 1 ? '' : 's'}</span><button type="button" class="pl-add-btn" id="prospect-form-toggle" title="Add prospects — manual, CRM pull, or AI discovery">${_prospectFormOpen ? '× Close' : '＋ Add'}</button><span class="pl-spacer"></span>${collapseBtn}</div>
+          <div class="prospects-list-h"><span>${companies.length} prospect${companies.length === 1 ? '' : 's'}</span>${collapseBtn}</div>
           <div class="prospects-list-rows">
             ${companies.map((c) => `
               <div class="prospect-row ${c.id === selectedId ? 'active' : ''}" data-prospect-pick="${escapeHtml(c.id)}" role="button" tabindex="0">
@@ -1659,6 +1666,8 @@
     if (_prospectFormOpen) wireProspectModes(host);
     const ft = $('prospect-form-toggle');
     if (ft) ft.addEventListener('click', () => { _prospectFormOpen = !_prospectFormOpen; renderProspects(host); });
+    const ds = $('prospect-discover-shortcut');
+    if (ds) ds.addEventListener('click', () => { _prospectMode = 'discover'; _prospectFormOpen = true; renderProspects(host); });
   }
 
   // "✎ Edit details" ↔ "× Close" toggle between the compact display header
@@ -3308,10 +3317,17 @@
     const selected = list.find((c) => c.id === selectedId);
 
     host.innerHTML = `
+      <div class="prospect-add-bar">
+        <button type="button" class="kb-secondary-btn" id="competitor-form-toggle">${_competitorFormOpen ? '× Close' : '＋ Add competitor'}</button>
+        <button type="button" class="discover-cta" id="competitor-find-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+          Find competitors automatically
+        </button>
+      </div>
       <div class="prospects-grid">
         ${collapseRail}
         <div class="prospects-list">
-          <div class="prospects-list-h"><span>${list.length} competitor${list.length === 1 ? '' : 's'}</span><button type="button" class="pl-add-btn" id="competitor-form-toggle" title="Add a competitor">${_competitorFormOpen ? '× Close' : '＋ Add'}</button><button type="button" class="pl-find-btn" id="competitor-find-btn" title="Find competitors automatically — AI web search">✦ Find</button><span class="pl-spacer"></span>${collapseBtn}</div>
+          <div class="prospects-list-h"><span>${list.length} competitor${list.length === 1 ? '' : 's'}</span>${collapseBtn}</div>
           <div class="prospects-list-rows">
             ${list.map((c) => `
               <div class="comp-row-wrap ${c.id === selectedId ? 'active' : ''}">
@@ -7469,14 +7485,24 @@
   // Company foundation editor (positioning / ICP / objectives) — the grounding
   // that drives discovery, briefs, and battlecards. ICP ("who we sell to") is
   // the key field: discovery targets these buyers, not companies like us.
+  let _companyFoundationEdit = false;
   function renderCompanyProfileEditor(host) {
     if (!host) return;
     const p = (_companyData && _companyData.profile) || {};
+    const hasAny = !!((p.positioning || '').trim() || (p.ideal_customer_profile || '').trim() || (p.objectives || '').trim());
+    const editing = _companyFoundationEdit || !hasAny; // nothing on file → edit directly
+    const block = (label, val, hint) => `
+      <div class="cf-block">
+        <h5>${label}</h5>
+        ${val && val.trim() ? `<p>${escapeHtml(val)}</p>` : `<p class="kb-subtle">${hint}</p>`}
+      </div>`;
     host.innerHTML = `
       <div class="card" style="margin-bottom:16px">
         <div class="card-h">Company foundation
           <span class="pf-hint">Grounds every brief, battlecard, and prospect/competitor search. Be specific about who you sell to.</span>
+          ${editing ? '' : '<span class="card-h-actions"><button type="button" class="kb-link-btn" id="cf-edit">✎ Edit</button></span>'}
         </div>
+        ${editing ? `
         <div class="card-b cf-editor">
           <label class="company-field-label">What you do (positioning)</label>
           <textarea id="cf-positioning" rows="3" placeholder="What your product is + your differentiator">${escapeHtml(p.positioning || '')}</textarea>
@@ -7487,12 +7513,24 @@
           <div class="cf-actions">
             <button class="primary-cta" id="cf-save">Save foundation</button>
             <button class="kb-secondary-btn" id="cf-draft">Draft with AI</button>
+            ${hasAny ? '<button class="kb-secondary-btn" id="cf-close">× Close</button>' : ''}
             <span class="kb-subtle" id="cf-result"></span>
           </div>
-        </div>
+        </div>` : `
+        <div class="card-b cf-display">
+          ${block('What you do', p.positioning, 'No positioning yet.')}
+          ${block('Who you sell to (ICP)', p.ideal_customer_profile, 'No ideal customer profile yet — discovery is much sharper with one.')}
+          ${block('Goals', p.objectives, 'No objectives yet.')}
+        </div>`}
       </div>`;
-    $('cf-save').addEventListener('click', saveCompanyFoundation);
-    $('cf-draft').addEventListener('click', draftCompanyFoundation);
+    if (editing) {
+      $('cf-save').addEventListener('click', async () => { _companyFoundationEdit = false; await saveCompanyFoundation(); });
+      $('cf-draft').addEventListener('click', draftCompanyFoundation);
+      const cl = $('cf-close');
+      if (cl) cl.addEventListener('click', () => { _companyFoundationEdit = false; renderCompanyProfileEditor(host); });
+    } else {
+      $('cf-edit').addEventListener('click', () => { _companyFoundationEdit = true; renderCompanyProfileEditor(host); });
+    }
   }
   async function saveCompanyFoundation() {
     try {

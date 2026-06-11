@@ -4693,3 +4693,8 @@ details.schedule-advanced > .schedule-advanced-body {
 .pd-name { font-size: 19px; font-weight: 700; letter-spacing: -0.015em; color: var(--text); line-height: 1.25; }
 .pd-meta { font-size: 12.5px; margin-top: 3px; }
 .pd-edit-wrap { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 14px; background: var(--surface-2); }
+
+/* Company foundation read-only display */
+.cf-display { display: flex; flex-direction: column; gap: 14px; }
+.cf-block h5 { margin: 0 0 4px; font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+.cf-block p { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; }
