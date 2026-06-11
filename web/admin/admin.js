@@ -2656,13 +2656,15 @@
                   </tr>`).join('')}
               </tbody>
             </table>`}
-        <div class="prospect-contact-add">
-          <h5 style="margin:14px 0 6px 0">Add a contact</h5>
+        <div style="margin-top:14px"><button class="kb-secondary-btn" id="prospect-contact-add-toggle">＋ Add a contact</button></div>
+        <div class="prospect-contact-add hidden" id="prospect-contact-add-row">
+          <h5 style="margin:0 0 6px 0">Add a contact</h5>
           <div class="prospect-contact-add-row">
             <input id="prospect-new-name"  type="text"  placeholder="Name (e.g. Jane Smith)" maxlength="200">
             <input id="prospect-new-email" type="email" placeholder="Email (e.g. jane@acme.com)">
             <input id="prospect-new-role"  type="text"  placeholder="Role (e.g. CFO)" maxlength="100">
-            <button class="primary-cta" id="prospect-new-add-btn">Add</button>
+            <button class="primary-cta" id="prospect-new-add-btn">Save</button>
+            <button class="kb-link-btn" id="prospect-contact-add-cancel">× Cancel</button>
           </div>
           <div class="kb-result hidden" id="prospect-add-result"></div>
         </div>
@@ -2697,6 +2699,12 @@
 
   function wireProspectDetail(host, company) {
     wireDetailEdit('prospect');
+    const cat = $('prospect-contact-add-toggle'), car = $('prospect-contact-add-row');
+    if (cat && car) {
+      cat.addEventListener('click', () => { car.classList.remove('hidden'); cat.classList.add('hidden'); $('prospect-new-name').focus(); });
+      const cc = $('prospect-contact-add-cancel');
+      if (cc) cc.addEventListener('click', () => { car.classList.add('hidden'); cat.classList.remove('hidden'); });
+    }
     mountWatchPanel('prospect-watch-panel', 'PROSPECT', company, () => { loaded.prospects = false; });
     $('prospect-save-btn').addEventListener('click', async (e) => {
       const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Saving…';
