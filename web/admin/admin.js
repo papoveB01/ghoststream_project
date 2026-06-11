@@ -824,12 +824,12 @@
     } else {
       emptyEl.classList.add('hidden');
       const hot = [...sigByCompany.values()].filter((e) => e.strong > 0).length;
-      foot.textContent = `${fmtNum(companies.length)} prospects · ${fmtNum(competitors.length)} competitors · ${fmtNum(hot)} with strong signals  —  drag nodes · drag background to pan · scroll to zoom`;
+      foot.textContent = `${fmtNum(companies.length)} prospects · ${fmtNum(competitors.length)} competitors · ${fmtNum(hot)} with strong signals  —  drag nodes · drag background to orbit · scroll to zoom`;
     }
 
     const LIME = '#8ce046', BLUE = '#4da3e8', INK = '#e8edf2';
     const nodes = [];
-    const center = { id: '_you', type: 'you', label: (dash && dash.tenant && dash.tenant.name) || 'You', x: 0, y: 0, r: 16, color: LIME, fx: true };
+    const center = { id: '_you', type: 'you', label: (dash && dash.tenant && dash.tenant.name) || 'You', x: 0, y: 0, z: 0, r: 16, color: LIME, fx: true };
     nodes.push(center);
     const cap = (arr, n) => arr.slice(0, n);
     // Competitor threat scale: orange → red. Criticality is how much of your
@@ -862,48 +862,65 @@
       nodes.push({ id: 'p:' + c.id, cid: c.id, type: 'pros', label: c.name, badge, meta: `${fmtNum(sig.n)} signal${sig.n === 1 ? '' : 's'}${sig.strong ? ` · ${fmtNum(sig.strong)} strong` : ''}${c.meeting_count ? ` · ${fmtNum(c.meeting_count)} engagement${c.meeting_count === 1 ? '' : 's'}` : ''}${fresh ? ` · ${fmtNum(fresh)} new development${fresh === 1 ? '' : 's'}` : ''}`, r: 5.5 + Math.min(8, sig.n * 1.6 + (c.meeting_count || 0)), color: BLUE, hot: sig.strong > 0, side: 1 });
     }
 
-    // Seed positions: competitors fan out left, prospects right.
-    // The stage can still be display:hidden (initial page load lands here via
-    // the hash) — clientWidth would read 0 and the map would render into the
-    // 640px fallback, hugging the left edge. Wait until it has a real size.
+    // The stage can still be display:hidden on a cold load — wait for size.
     const stage = canvas.parentElement;
     for (let tries = 0; tries < 120 && stage.clientWidth === 0; tries++) {
       await new Promise((r) => requestAnimationFrame(r));
     }
     let W = Math.max(640, stage.clientWidth), H = Math.max(480, stage.clientHeight);
+    let R = Math.min(W, H) * 0.36; // world shell radius
+
+    // ── 3D world — nodes live on a sphere around you; the camera orbits. ──
+    // Seed on a golden-angle sphere, competitors toward -x, prospects +x.
     nodes.forEach((n, i) => {
-      if (n.fx) { n.x = W / 2; n.y = H / 2; return; }
+      if (n.fx) return;
+      const N = nodes.length;
       const golden = i * 2.39996;
-      const spread = Math.min(W, H) * (0.18 + 0.3 * ((i % 17) / 17));
-      n.x = W / 2 + Math.cos(golden) * spread * 0.8 + (n.side || 0) * W * 0.16;
-      n.y = H / 2 + Math.sin(golden) * spread * 0.7;
+      const zf = 1 - 2 * ((i + 0.5) / N);
+      const rxy = Math.sqrt(Math.max(0, 1 - zf * zf));
+      const shell = (n.type === 'comp' ? 0.55 : 0.85) * R * (0.85 + 0.3 * ((i % 7) / 7));
+      n.x = Math.cos(golden) * rxy * shell + (n.side || 0) * R * 0.35;
+      n.y = zf * shell * 0.75;
+      n.z = Math.sin(golden) * rxy * shell;
+      n.vx = 0; n.vy = 0; n.vz = 0;
     });
-    // Spring/repulsion pre-layout (synchronous; n is small).
-    for (let t = 0; t < 260; t++) {
-      const k = 0.012;
-      for (const a of nodes) {
-        if (a.fx) continue;
-        let fx = 0, fy = 0;
-        for (const b of nodes) {
-          if (a === b) continue;
-          let dx = a.x - b.x, dy = a.y - b.y;
-          let d2 = dx * dx + dy * dy || 1;
-          const rep = 2600 / d2;
-          fx += dx * rep; fy += dy * rep;
+
+    let dragNode = null;
+    function physicsStep(t) {
+      for (let i = 0; i < nodes.length; i++) {
+        const a = nodes[i];
+        if (a.fx || a === dragNode) continue;
+        let fx = 0, fy = 0, fz = 0;
+        for (let j = 0; j < nodes.length; j++) {
+          if (i === j) continue;
+          const b = nodes[j];
+          const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+          const d2 = dx * dx + dy * dy + dz * dz || 1;
+          const rep = 5200 / d2;
+          fx += dx * rep; fy += dy * rep; fz += dz * rep;
         }
-        // spring to center, slightly longer for prospects
-        const dx = a.x - center.x, dy = a.y - center.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const rest = a.type === 'comp' ? Math.min(W, H) * 0.26 : Math.min(W, H) * 0.36;
-        const pull = (dist - rest) * 0.05;
-        fx -= (dx / dist) * pull * 18; fy -= (dy / dist) * pull * 18;
-        // cluster bias: keep types on their side
-        fx += (a.side || 0) * 0.9;
-        a.x += fx * k; a.y += fy * k;
-        a.x = Math.max(30, Math.min(W - 30, a.x));
-        a.y = Math.max(30, Math.min(H - 36, a.y));
+        // spring toward the center at the type's shell distance
+        const dist = Math.hypot(a.x, a.y, a.z) || 1;
+        const rest = (a.type === 'comp' ? 0.55 : 0.85) * R;
+        const pull = (dist - rest) * 0.05 * 18;
+        fx -= (a.x / dist) * pull; fy -= (a.y / dist) * pull; fz -= (a.z / dist) * pull;
+        fx += (a.side || 0) * 1.1;
+        // ambient life — tiny per-node breeze so the map never freezes
+        fx += Math.sin(t * 0.6 + i * 1.7) * 1.4;
+        fy += Math.cos(t * 0.5 + i * 2.3) * 1.2;
+        fz += Math.sin(t * 0.45 + i * 2.9) * 1.4;
+        a.vx = (a.vx + fx * 0.012) * 0.86;
+        a.vy = (a.vy + fy * 0.012) * 0.86;
+        a.vz = (a.vz + fz * 0.012) * 0.86;
+        const sp = Math.hypot(a.vx, a.vy, a.vz);
+        if (sp > 3) { const f = 3 / sp; a.vx *= f; a.vy *= f; a.vz *= f; }
+      }
+      for (const n of nodes) {
+        if (n.fx || n === dragNode) continue;
+        n.x += n.vx; n.y += n.vy; n.z += n.vz;
       }
     }
+    for (let t = 0; t < 200; t++) physicsStep(t * 0.016);
 
     // Hi-DPI canvas
     const ctx = canvas.getContext('2d');
@@ -911,137 +928,129 @@
       const dpr = window.devicePixelRatio || 1;
       canvas.width = W * dpr; canvas.height = H * dpr;
       canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
     fitCanvas();
-    // Keep the graph centered when the stage resizes (sidebar collapse,
-    // window resize, responsive breakpoints): rescale positions in place.
     if (_mmResize) _mmResize.disconnect();
     _mmResize = new ResizeObserver(() => {
       const nw = stage.clientWidth, nh = stage.clientHeight;
       if (!nw || !nh || (nw === W && nh === H)) return;
-      const sx = nw / W, sy = nh / H;
-      for (const n of nodes) { n.x *= sx; n.y *= sy; }
-      W = nw; H = nh;
-      fitCanvas();
+      W = nw; H = nh; R = Math.min(W, H) * 0.36;
+      fitCanvas(); // projection is origin-centered, so it recenters itself
     });
     _mmResize.observe(stage);
 
-    // ── Live interaction: continuous gentle physics + drag / pan / zoom ──
-    const view = { x: 0, y: 0, k: 1 };
-    const toWorld = (mx, my) => ({ x: (mx - view.x) / view.k, y: (my - view.y) / view.k });
-    for (const n of nodes) { n.vx = 0; n.vy = 0; }
-    let hover = null, dragNode = null, panning = null, moved = 0;
+    // ── Camera + projection ──
+    const cam = { yaw: -0.5, pitch: 0.18, dist: 1.0 };
+    const FOCAL = 1100;
+    let lastInteract = 0;
+    let hover = null, panning = null, moved = 0, lastP = null;
     canvas.style.touchAction = 'none';
 
-    function physicsStep(t) {
-      for (let i = 0; i < nodes.length; i++) {
-        const a = nodes[i];
-        if (a.fx || a === dragNode) continue;
-        let fx = 0, fy = 0;
-        for (let j = 0; j < nodes.length; j++) {
-          if (i === j) continue;
-          const b = nodes[j];
-          const dx = a.x - b.x, dy = a.y - b.y;
-          const d2 = dx * dx + dy * dy || 1;
-          const rep = 2600 / d2;
-          fx += dx * rep; fy += dy * rep;
-        }
-        // spring toward the center node at the type's rest distance
-        const dx = a.x - center.x, dy = a.y - center.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const rest = a.type === 'comp' ? Math.min(W, H) * 0.26 : Math.min(W, H) * 0.36;
-        const pull = (dist - rest) * 0.05;
-        fx -= (dx / dist) * pull * 18; fy -= (dy / dist) * pull * 18;
-        fx += (a.side || 0) * 0.9;
-        // ambient life — tiny per-node breeze so the map never freezes
-        fx += Math.sin(t * 0.6 + i * 1.7) * 1.4;
-        fy += Math.cos(t * 0.5 + i * 2.3) * 1.4;
-        // soft bounds — ease back instead of hard-clamping
-        if (a.x < 30) fx += (30 - a.x) * 2; else if (a.x > W - 30) fx -= (a.x - (W - 30)) * 2;
-        if (a.y < 30) fy += (30 - a.y) * 2; else if (a.y > H - 36) fy -= (a.y - (H - 36)) * 2;
-        a.vx = (a.vx + fx * 0.012) * 0.86;
-        a.vy = (a.vy + fy * 0.012) * 0.86;
-        const sp = Math.hypot(a.vx, a.vy);
-        if (sp > 3) { a.vx *= 3 / sp; a.vy *= 3 / sp; }
-      }
+    function project() {
+      const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+      const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
       for (const n of nodes) {
-        if (n.fx || n === dragNode) continue;
-        n.x += n.vx; n.y += n.vy;
+        const x1 = n.x * cy + n.z * sy;
+        const z1 = -n.x * sy + n.z * cy;
+        const y2 = n.y * cp - z1 * sp;
+        const z2 = n.y * sp + z1 * cp;
+        const sc = (FOCAL / (FOCAL + z2)) / cam.dist;
+        n.sx = W / 2 + x1 * sc;
+        n.sy = H / 2 + y2 * sc;
+        n.sc = sc;
+        n.depth = z2;
+        n.fade = Math.max(0.35, Math.min(1, 1 - z2 / (R * 2.6)));
       }
+    }
+    // Screen-plane delta → world delta (so dragging a node feels flat-2D).
+    function screenToWorldDelta(du, dv) {
+      const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+      const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+      const dy = dv * cp, dz1 = -dv * sp;
+      return { dx: du * cy - dz1 * sy, dy, dz: du * sy + dz1 * cy };
     }
 
     const t0 = performance.now();
     function draw(now) {
       const t = (now - t0) / 1000;
       physicsStep(t);
+      // slow auto-orbit when the cursor has been idle a moment
+      if (now - lastInteract > 2500 && !dragNode && !panning) cam.yaw += 0.0016;
+      project();
       const dpr = window.devicePixelRatio || 1;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.setTransform(dpr * view.k, 0, 0, dpr * view.k, dpr * view.x, dpr * view.y);
-      // edges
-      ctx.lineWidth = 1 / view.k;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+      // edges first (faint, depth-faded)
       for (const n of nodes) {
         if (n.fx) continue;
-        const a = 0.13 + (n.hot ? 0.12 : 0) + (hover === n ? 0.25 : 0);
+        const a = (0.13 + (n.hot ? 0.12 : 0) + (hover === n ? 0.25 : 0)) * ((n.fade + center.fade) / 2);
         ctx.strokeStyle = (n.type === 'comp' ? `rgba(239,99,61,${a})` : `rgba(77,163,232,${a})`);
+        ctx.lineWidth = Math.max(0.6, 1 * n.sc);
         ctx.beginPath();
-        ctx.moveTo(center.x, center.y);
-        ctx.lineTo(n.x, n.y);
+        ctx.moveTo(center.sx, center.sy);
+        ctx.lineTo(n.sx, n.sy);
         ctx.stroke();
       }
-      // nodes
-      for (const n of nodes) {
-        const x = n.x, y = n.y;
+      // nodes far → near so close ones draw on top
+      const order = [...nodes].sort((a, b) => b.depth - a.depth);
+      for (const n of order) {
+        const x = n.sx, y = n.sy, rr = Math.max(2.5, n.r * n.sc);
         const pulse = n.hot ? (0.65 + 0.35 * Math.sin(t * 2.2 + n.x)) : 1;
+        ctx.globalAlpha = n.fade;
         ctx.save();
         ctx.shadowColor = n.color;
-        ctx.shadowBlur = (n.fx ? 26 : n.hot ? 22 : 12) * pulse * view.k;
+        ctx.shadowBlur = (n.fx ? 26 : n.hot ? 22 : 12) * pulse * n.sc;
         ctx.fillStyle = n.color;
-        ctx.globalAlpha = n.fx ? 1 : 0.92;
-        ctx.beginPath(); ctx.arc(x, y, n.r, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
+        ctx.globalAlpha = n.fade;
         if (!n.solid) {
           ctx.fillStyle = 'rgba(10,14,19,.55)';
-          ctx.beginPath(); ctx.arc(x, y, Math.max(2, n.r - 3), 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(x, y, Math.max(2, rr - 3), 0, Math.PI * 2); ctx.fill();
         }
-        ctx.strokeStyle = n.color; ctx.lineWidth = 1.4;
-        ctx.beginPath(); ctx.arc(x, y, n.r, 0, Math.PI * 2); ctx.stroke();
-        // notification badge — engagements + new developments, top-right of node
+        ctx.strokeStyle = n.color; ctx.lineWidth = 1.4 * Math.max(0.7, n.sc);
+        ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI * 2); ctx.stroke();
+        // notification badge — engagements + new developments
         if (n.badge > 0) {
-          const bx = x + n.r * 0.85, by = y - n.r * 0.85;
+          const br = 7.5 * Math.max(0.75, n.sc);
+          const bx = x + rr * 0.85, by = y - rr * 0.85;
           const txt = n.badge > 9 ? '9+' : String(n.badge);
           ctx.save();
-          ctx.shadowColor = '#8ce046'; ctx.shadowBlur = 8;
+          ctx.shadowColor = '#8ce046'; ctx.shadowBlur = 8 * n.sc;
           ctx.fillStyle = '#8ce046';
-          ctx.beginPath(); ctx.arc(bx, by, 7.5, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
           ctx.restore();
           ctx.fillStyle = '#0c1407';
-          ctx.font = "700 9px 'IBM Plex Mono', monospace";
+          ctx.font = `700 ${Math.round(9 * Math.max(0.8, n.sc))}px 'IBM Plex Mono', monospace`;
           ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
           ctx.fillText(txt, bx, by + 0.5);
           ctx.textBaseline = 'alphabetic';
         }
         // labels: center always; big, hovered or dragged nodes too
-        if (n.fx || hover === n || dragNode === n || n.r >= 10) {
-          ctx.font = `${n.fx ? '600 13px' : '500 11px'} 'IBM Plex Mono', monospace`;
-          ctx.fillStyle = hover === n ? INK : 'rgba(232,237,242,.75)';
+        if (n.fx || hover === n || dragNode === n || n.r * n.sc >= 9) {
+          const fpx = Math.max(9, Math.min(15, (n.fx ? 13 : 11) * n.sc));
+          ctx.font = `${n.fx ? '600' : '500'} ${fpx.toFixed(1)}px 'IBM Plex Mono', monospace`;
+          ctx.fillStyle = hover === n ? INK : `rgba(232,237,242,${0.75 * n.fade})`;
           ctx.textAlign = 'center';
           const lbl = String(n.label || '').length > 22 ? String(n.label).slice(0, 21) + '…' : String(n.label || '');
-          ctx.fillText(lbl, x, y + n.r + 14);
+          ctx.fillText(lbl, x, y + rr + 13);
         }
+        ctx.globalAlpha = 1;
       }
       if (currentSection === 'market-map' && canvas.isConnected) _mmFrame = requestAnimationFrame(draw);
     }
     _mmFrame = requestAnimationFrame(draw);
 
     const hitNode = (mx, my) => {
-      const w = toWorld(mx, my);
+      // nearest-first so close nodes win over far ones behind them
+      let best = null, bestD = Infinity;
       for (const n of nodes) {
-        const dx = w.x - n.x, dy = w.y - n.y;
-        if (dx * dx + dy * dy <= (n.r + 7) * (n.r + 7)) return n;
+        const rr = Math.max(2.5, n.r * n.sc) + 7;
+        const dx = mx - n.sx, dy = my - n.sy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 <= rr * rr && n.depth < bestD) { best = n; bestD = n.depth; }
       }
-      return null;
+      return best;
     };
     const pos = (e) => {
       const rect = canvas.getBoundingClientRect();
@@ -1050,25 +1059,29 @@
 
     canvas.onpointerdown = (e) => {
       const { mx, my } = pos(e);
-      moved = 0;
+      moved = 0; lastP = { mx, my };
+      lastInteract = performance.now();
       const n = hitNode(mx, my);
-      if (n) { dragNode = n; n.vx = 0; n.vy = 0; }
-      else panning = { mx, my, vx: view.x, vy: view.y };
+      if (n) { dragNode = n; n.vx = 0; n.vy = 0; n.vz = 0; }
+      else panning = { mx, my, yaw: cam.yaw, pitch: cam.pitch };
       canvas.setPointerCapture(e.pointerId);
       canvas.style.cursor = 'grabbing';
       tip.classList.add('hidden');
     };
     canvas.onpointermove = (e) => {
       const { mx, my } = pos(e);
+      lastInteract = performance.now();
       if (dragNode) {
-        const w = toWorld(mx, my);
-        moved += Math.hypot(w.x - dragNode.x, w.y - dragNode.y) * view.k;
-        dragNode.x = w.x; dragNode.y = w.y;
+        const sc = dragNode.sc || 1;
+        const d = screenToWorldDelta((mx - lastP.mx) / sc, (my - lastP.my) / sc);
+        dragNode.x += d.dx; dragNode.y += d.dy; dragNode.z += d.dz;
+        moved += Math.hypot(mx - lastP.mx, my - lastP.my);
+        lastP = { mx, my };
         return;
       }
       if (panning) {
-        view.x = panning.vx + (mx - panning.mx);
-        view.y = panning.vy + (my - panning.my);
+        cam.yaw = panning.yaw + (mx - panning.mx) * 0.005;
+        cam.pitch = Math.max(-1.25, Math.min(1.25, panning.pitch + (my - panning.my) * 0.005));
         moved = Math.hypot(mx - panning.mx, my - panning.my);
         return;
       }
@@ -1082,7 +1095,7 @@
       } else tip.classList.add('hidden');
     };
     const endPointer = (e) => {
-      const wasDrag = dragNode, wasPan = panning;
+      const wasDrag = dragNode;
       dragNode = null; panning = null;
       canvas.style.cursor = 'default';
       try { canvas.releasePointerCapture(e.pointerId); } catch { /* already released */ }
@@ -1091,19 +1104,14 @@
         if (wasDrag.type === 'pros') { _prospectsState.selectedCompanyId = wasDrag.cid; window.location.hash = '#prospects'; }
         else if (wasDrag.type === 'comp') window.location.hash = '#competitors';
       }
-      if (wasPan && moved < 5) { /* background click — nothing */ }
     };
     canvas.onpointerup = endPointer;
     canvas.onpointercancel = endPointer;
     canvas.onmouseleave = () => { if (!dragNode && !panning) { hover = null; tip.classList.add('hidden'); } };
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const { mx, my } = pos(e);
-      const w = toWorld(mx, my);
-      const k = Math.max(0.4, Math.min(3, view.k * (e.deltaY > 0 ? 0.9 : 1.1)));
-      view.x = mx - w.x * k;
-      view.y = my - w.y * k;
-      view.k = k;
+      lastInteract = performance.now();
+      cam.dist = Math.max(0.45, Math.min(2.6, cam.dist * (e.deltaY > 0 ? 1.1 : 0.9)));
     }, { passive: false });
   }
 
