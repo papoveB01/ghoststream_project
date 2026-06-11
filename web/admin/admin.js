@@ -861,6 +861,7 @@
       if (k.doc_count > 0) addLeaf(hub, `${fmtNum(k.doc_count)} docs`);
       if (k.watch_enabled) addLeaf(hub, 'Watched');
       hub.inPlay = (t && t.overlapProspects) || [];
+      for (const nm of hub.inPlay.slice(0, 3)) addLeaf(hub, `In play: ${nm}`);
     }
     // NEW (unreviewed) market-watch findings per prospect → notification badge.
     const newSigByCompany = new Map();
@@ -878,6 +879,13 @@
       else if (sig.n) addLeaf(hub, `${fmtNum(sig.n)} signal${sig.n === 1 ? '' : 's'}`);
       if (c.meeting_count) addLeaf(hub, `${fmtNum(c.meeting_count)} engagement${c.meeting_count === 1 ? '' : 's'}`);
       if (fresh) addLeaf(hub, `${fmtNum(fresh)} new`, LIME);
+      // each opportunity becomes its own labeled satellite, like the film's
+      // metric dots — real signal titles, truncated to chip length
+      const myOpps = ((dash && dash.opportunities) || []).filter((o) => o.companyId === c.id).slice(0, 3);
+      for (const o of myOpps) addLeaf(hub, String(o.title || 'Signal').slice(0, 16), o.strength === 'strong' ? LIME : undefined);
+      // fresh development categories ("New: funding")
+      const cats = [...new Set(findings.filter((f) => f.scope === 'PROSPECT' && f.subject_id === c.id && f.status === 'NEW').map((f) => f.category).filter(Boolean))];
+      for (const cat of cats.slice(0, 2)) addLeaf(hub, `New: ${cat}`, LIME);
     }
     // Cross-links: a competitor entangled at one of our prospects gets a real
     // edge to that prospect — the web the film shows, grounded in intel.
@@ -906,7 +914,7 @@
     const hubs = nodes.filter((n) => !n.fx && !n.parent);
     hubs.forEach((n, i) => {
       const golden = i * 2.39996;
-      const shell = (n.type === 'comp' ? 0.6 : 0.95) * R * (0.7 + 0.5 * ((i % 9) / 9));
+      const shell = (n.type === 'comp' ? 0.45 : 0.72) * R * (0.7 + 0.5 * ((i % 9) / 9));
       n.x = Math.cos(golden) * shell * 1.45 + (n.side || 0) * R * 0.3;
       n.y = (((i * 7) % 11) / 11 - 0.5) * R * 0.5;
       n.z = Math.sin(golden) * shell * 0.9;
@@ -920,13 +928,30 @@
       n.vx = 0; n.vy = 0; n.vz = 0;
     });
 
+    // Decorative dust — tiny drifting motes like the film's background field.
+    // Parametric (no physics), unlabeled, never hit-tested.
+    const dust = [];
+    {
+      const D = 90;
+      for (let i = 0; i < D; i++) {
+        const golden = i * 2.39996;
+        dust.push({
+          a0: golden, r0: R * (0.25 + ((i * 13) % 23) / 23 * 1.05),
+          y0: (((i * 7) % 17) / 17 - 0.5) * R * 0.6,
+          sp: 0.02 + ((i % 5) / 5) * 0.05,
+          size: 0.9 + ((i % 4) / 4) * 1.1,
+          hue: i % 3, // 0 slate, 1 lime, 2 blue
+        });
+      }
+    }
+
     let dragNode = null;
     function physicsStep(t) {
       for (let i = 0; i < nodes.length; i++) {
         const a = nodes[i];
         if (a.fx || a === dragNode) continue;
         let fx = 0, fy = 0, fz = 0;
-        const myRep = a.parent ? 420 : 5200;
+        const myRep = a.parent ? 380 : 3400;
         for (let j = 0; j < nodes.length; j++) {
           if (i === j) continue;
           const b = nodes[j];
@@ -939,12 +964,12 @@
           // leaves ride their hub on a short tether
           const dx = a.x - a.parent.x, dy = a.y - a.parent.y, dz = a.z - a.parent.z;
           const dist = Math.hypot(dx, dy, dz) || 1;
-          const pull = (dist - 36) * 0.25 * 18;
+          const pull = (dist - 30) * 0.25 * 18;
           fx -= (dx / dist) * pull; fy -= (dy / dist) * pull; fz -= (dz / dist) * pull;
         } else {
           // hubs spring toward the center at the type's shell distance
           const dist = Math.hypot(a.x, a.y, a.z) || 1;
-          const rest = (a.type === 'comp' ? 0.6 : 0.95) * R;
+          const rest = (a.type === 'comp' ? 0.45 : 0.72) * R;
           const pull = (dist - rest) * 0.05 * 18;
           fx -= (a.x / dist) * pull; fy -= (a.y / dist) * pull; fz -= (a.z / dist) * pull;
           fx += (a.side || 0) * 1.1;
@@ -1025,6 +1050,21 @@
       const dpr = window.devicePixelRatio || 1;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
+      // dust field beneath everything
+      {
+        const cy = Math.cos(cam.yaw), syw = Math.sin(cam.yaw);
+        const cp = Math.cos(cam.pitch), sp2 = Math.sin(cam.pitch);
+        for (const d of dust) {
+          const ang = d.a0 + t * d.sp;
+          const wx = Math.cos(ang) * d.r0 * 1.45, wy = d.y0, wz = Math.sin(ang) * d.r0 * 0.9;
+          const x1 = wx * cy + wz * syw, z1 = -wx * syw + wz * cy;
+          const y2 = wy * cp - z1 * sp2, z2 = wy * sp2 + z1 * cp;
+          const sc = (FOCAL / (FOCAL + z2)) / cam.dist;
+          const fade = Math.max(0.12, Math.min(0.4, 1 - z2 / (R * 2.6)) * 0.4);
+          ctx.fillStyle = d.hue === 1 ? `rgba(140,224,70,${fade})` : d.hue === 2 ? `rgba(77,163,232,${fade})` : `rgba(170,180,191,${fade * 0.8})`;
+          ctx.beginPath(); ctx.arc(W / 2 + x1 * sc, H / 2 + y2 * sc, d.size * sc, 0, Math.PI * 2); ctx.fill();
+        }
+      }
       // edges first (faint, depth-faded)
       for (const n of nodes) {
         if (n.fx) continue;
@@ -1045,6 +1085,12 @@
         ctx.moveTo(center.sx, center.sy);
         ctx.lineTo(n.sx, n.sy);
         ctx.stroke();
+        // tiny traveller dot along the spoke — film-style edge detail
+        const f = 0.35 + 0.3 * (0.5 + 0.5 * Math.sin(t * 0.7 + n.sx * 0.01));
+        ctx.fillStyle = ctx.strokeStyle;
+        ctx.beginPath();
+        ctx.arc(center.sx + (n.sx - center.sx) * f, center.sy + (n.sy - center.sy) * f, Math.max(0.8, 1.3 * n.sc), 0, Math.PI * 2);
+        ctx.fill();
       }
       // "in play" cross-links: competitor entangled at a prospect
       for (const e of crossEdges) {
