@@ -10924,25 +10924,6 @@
         } finally { probeBtn.disabled = false; probeBtn.textContent = orig; }
       });
     }
-    const rebuildBtn = $('settings-kb-cache-rebuild-btn');
-    if (rebuildBtn && rebuildBtn.dataset.wired !== '1') {
-      rebuildBtn.dataset.wired = '1';
-      rebuildBtn.addEventListener('click', async () => {
-        const out = $('settings-kb-cache-result');
-        if (!confirm('Force a rebuild of the AI context cache for this workspace? Costs one AI call; safe to skip unless you suspect drift.')) return;
-        rebuildBtn.disabled = true; const orig = rebuildBtn.textContent; rebuildBtn.textContent = 'Rebuilding…';
-        out.classList.add('hidden'); out.classList.remove('error', 'success');
-        try {
-          await fetchJson('/api/knowledge/global-cache/rebuild', { method: 'POST' });
-          out.classList.remove('hidden'); out.classList.add('success');
-          out.textContent = 'Context cache rebuilt.';
-          await loadSettingsKbStatus();
-        } catch (err) {
-          out.classList.remove('hidden'); out.classList.add('error');
-          out.textContent = err.message;
-        } finally { rebuildBtn.disabled = false; rebuildBtn.textContent = orig; }
-      });
-    }
   }
 
   async function loadApiTokensTable() {
