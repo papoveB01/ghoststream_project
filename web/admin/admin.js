@@ -146,30 +146,72 @@
 
   // Guided product tour (Driver.js, vendored). Anchored on the persistent sidebar
   // nav so it never breaks on section switches; replayable from the Guide button.
+  // Interactive first-run: three DOING steps instead of an eight-stop narrated
+  // walk. Each step navigates to the real screen and spotlights the real
+  // control; clicking the control itself advances the run (Next = skip).
   function startTour() {
     if (!window.driver || !window.driver.js) return;
     const { driver } = window.driver.js;
-    const nav = (s) => `#nav a[data-section="${s}"]`;
-    driver({
+    let d = null;
+    // Per-step pre-navigation so each spotlighted control actually exists,
+    // shared by BOTH advance paths (Skip button and clicking the control).
+    const NAVIGATE = {
+      1: async () => { await switchSection('company'); },
+      2: async () => { _prospectMode = 'discover'; _prospectFormOpen = true; loaded.prospects = false; await switchSection('prospects'); },
+      3: async () => { loaded.overview = false; await switchSection('overview'); },
+    };
+    const goNext = async () => {
+      const next = (typeof d.getActiveIndex === 'function' ? d.getActiveIndex() : -1) + 1;
+      if (NAVIGATE[next]) { try { await NAVIGATE[next](); } catch { /* still advance */ } }
+      try { d.moveNext(); } catch { /* tour closed */ }
+    };
+    // Click-to-advance: using the spotlighted control counts the step as done
+    // (after a beat so the user sees their click land).
+    const TARGETS = { 1: '#foundation-enrich-btn', 2: '#pdisc-search' };
+    const armTarget = () => {
+      const sel = TARGETS[d.getActiveIndex()];
+      if (!sel) return;
+      const el = document.querySelector(sel);
+      if (!el || el.dataset.tourAdvance === '1') return;
+      el.dataset.tourAdvance = '1';
+      el.addEventListener('click', () => setTimeout(goNext, 700), { once: true });
+    };
+    d = driver({
       showProgress: true,
       allowClose: true,
-      overlayOpacity: 0.6,
-      nextBtnText: 'Next →',
+      overlayOpacity: 0.55,
       prevBtnText: '← Back',
       doneBtnText: 'Got it',
       popoverClass: 'gs-tour',
       onDestroyed: () => { try { localStorage.setItem('gs_tour_seen', '1'); } catch { /* ignore */ } },
       steps: [
-        { popover: { title: 'Welcome to DealScope 👋', description: 'A 30-second tour of how to go from a cold list to a closed call. You can replay it any time from <b>？ Guide</b> in the top bar.' } },
-        { element: nav('overview'),     popover: { title: '1 · Your cockpit', description: 'Priority opportunities, upcoming engagements, and your foundation health — what to do next, at a glance.', side: 'right', align: 'start' } },
-        { element: nav('company'),      popover: { title: '2 · Company foundation', description: 'Built automatically from your website on day one — your products, positioning and personas. Every AI output is grounded here.', side: 'right', align: 'start' } },
-        { element: nav('prospects'),    popover: { title: '3 · Find prospects', description: 'Add them manually, pull from your CRM, or let AI <b>discover</b> companies showing a buying signal — ranked by priority and matched to your products (≈ 3 credits a run).', side: 'right', align: 'start' } },
-        { element: nav('competitors'),  popover: { title: '4 · Know your competitors', description: 'Auto-discover rivals by region, pull their real product lineup, and generate battlecards — so you walk in knowing how to win.', side: 'right', align: 'start' } },
-        { element: nav('missions'),     popover: { title: '5 · Run the call', description: 'Schedule an engagement; the AI joins, records, and turns the meeting into a Note Taker Report with a consolidated summary — pre-call brief ready beforehand.', side: 'right', align: 'start' } },
-        { element: nav('integrations'), popover: { title: '6 · Connect your stack', description: 'Link your calendar and CRM (HubSpot is live) to pull prospects and auto-schedule. Optional — but it supercharges everything.', side: 'right', align: 'start' } },
-        { element: '#tour-btn',         popover: { title: 'You\'re all set 🚀', description: 'Start by reviewing your <b>Company</b> foundation, then <b>Discover</b> your first prospects. Replay this tour any time from here.', side: 'bottom', align: 'end' } },
+        { popover: {
+            title: 'Two minutes of doing, not reading 👋',
+            description: 'DealScope works in a simple order: <b>1 Ground → 2 Find → 3 Engage</b>. Let\'s actually do the first steps — your sidebar is numbered the same way.',
+            nextBtnText: 'Start →',
+        } },
+        { element: '#foundation-enrich-btn', popover: {
+            title: '1 · Ground your workspace',
+            description: '<b>Click “Enrich from web”.</b> We read your website and build your positioning, products and buyer personas — every brief, battlecard and discovery is grounded in this.',
+            side: 'bottom', align: 'start',
+            nextBtnText: 'Skip →',
+        } },
+        { element: '#pdisc-search', popover: {
+            title: '2 · Find your buyers',
+            description: '<b>Pick a region and click Search.</b> AI discovery finds real companies that match who YOU sell to — ranked by buying signals, never companies you already track.',
+            side: 'bottom', align: 'start',
+            nextBtnText: 'Skip →',
+        } },
+        { element: '.dash-journey', popover: {
+            title: '3 · Your path lives here',
+            description: 'This checklist on your Overview tracks the whole journey — research, decision-makers, your first AI-joined call, Market Watch. Follow it top to bottom and you\'re fully set up. Replay this guide any time from <b>Guide</b>.',
+            side: 'bottom', align: 'start',
+        } },
       ],
-    }).drive();
+      onNextClick: () => { goNext(); },
+      onHighlighted: () => { armTarget(); },
+    });
+    d.drive();
   }
 
   // ── Support panel ─────────────────────────────────────────────────────────
@@ -274,6 +316,8 @@
   // Parse a hash like "calls?status=ready&q=foo" → { section, query }.
   function parseHash(raw) {
     if (!raw) return { section: 'overview', query: {} };
+    // Friendly alias — the Engagements page lives at the legacy 'missions' route.
+    if (raw === 'engagements' || raw.startsWith('engagements?')) raw = raw.replace('engagements', 'missions');
     const [section, qs] = raw.split('?');
     const query = {};
     if (qs) {
@@ -411,7 +455,7 @@
       prospects: 'Prospects',
       competitors: 'Competitors',
       'market-map': 'Market Map',
-      'market-signals': 'Market signals',
+      'market-signals': 'Alerts',
       calendar: 'Calendar',
       calls: 'Calls',
       'calls-ops': 'Calls — Operations',
@@ -419,7 +463,7 @@
       instances: 'Instances',
       'platform-audit': 'Audit log',
       'platform-keys': 'Keys & secrets',
-      sessions: 'Arena Practice',
+      sessions: 'Call practice',
       integrations: 'Integrations',
       billing: 'Billing',
       subaccounts: 'Team members',
@@ -645,7 +689,7 @@
       </div>`;
     const watchCard = `
       <div class="dash-col dash-chart-card" id="dash-watch-card">
-        <div class="dash-card-h"><span class="dash-dot"></span>Market signals</div>
+        <div class="dash-card-h"><span class="dash-dot"></span>Alerts</div>
         <div id="dash-watch">${dashEmpty('Loading signals…')}</div>
       </div>`;
     return `<div class="dash-charts">${trendCard}${mixCard}${usageCard}</div>
@@ -682,7 +726,7 @@
     try { data = await fetchJson('/api/watch/findings?limit=24'); } catch (_) { /* gated or empty */ }
     const items = ((data && data.findings) || []).filter((f) => f.status === 'NEW').slice(0, 6);
     if (!items.length) {
-      host.innerHTML = dashEmpty('No new market signals. Turn on Market Watch for a prospect or competitor to monitor it here.');
+      host.innerHTML = dashEmpty('No new alerts. Turn on Market Watch for a prospect or competitor to monitor it here.');
       return;
     }
     host.innerHTML = `<div class="dash-signals">${items.map((f) => `
@@ -2634,7 +2678,7 @@
       <div id="prospect-watch-panel"></div>
 
       <div class="prospect-tabs">
-        <button type="button" class="kb-tab active" data-prospect-tab="signals">Signals</button>
+        <button type="button" class="kb-tab active" data-prospect-tab="signals">Why now</button>
         <button type="button" class="kb-tab" data-prospect-tab="people">People (${contacts.length})</button>
         <button type="button" class="kb-tab" data-prospect-tab="intel">Intel</button>
         <button type="button" class="kb-tab" data-prospect-tab="proposal">Proposal</button>
@@ -9803,7 +9847,7 @@
             </span>
             <span class="bell-mat" title="Materiality">${'●'.repeat(Math.max(1, Math.min(5, f.materiality || 3)))}</span>
           </button>`).join('')}
-        <button class="bell-foot" data-goto-signals="1">Review all in Market signals →</button>`;
+        <button class="bell-foot" data-goto-signals="1">Review all in Alerts →</button>`;
       panel.querySelectorAll('[data-goto-signals]').forEach((el) => el.addEventListener('click', () => {
         close();
         loaded['market-signals'] = false;
@@ -10145,7 +10189,7 @@
     research: 'Research runs', // v2 merged pool (prospect + competitor + reveals)
     engagements: 'Engagements scheduled',
     market_monitoring: 'Market Watch checks',
-    arena: 'Arena practice sessions',
+    arena: 'Call practice sessions',
   };
 
   // Top-of-page banner: trial countdown, or a paywall when inactive.
