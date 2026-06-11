@@ -2637,7 +2637,7 @@ details.schedule-advanced > .schedule-advanced-body {
 .kb-link-btn {
   background: transparent;
   border: none;
-  color: var(--danger);
+  color: var(--accent);
   padding: 0;
   font: inherit;
   cursor: pointer;
@@ -2645,6 +2645,7 @@ details.schedule-advanced > .schedule-advanced-body {
   font-size: 13px;
 }
 .kb-link-btn:hover { text-decoration: underline; }
+.kb-link-btn.danger { color: var(--danger); }
 
 /* Library card header — flex so the filter dropdown sits right of the title */
 #kb-pane-library .card-h {
