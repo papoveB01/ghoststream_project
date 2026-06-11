@@ -778,6 +778,7 @@
   // is a tiny spring/repulsion sim pre-run synchronously, then drawn with a
   // gentle ambient drift so the map feels alive without ever rearranging.
   let _mmFrame = 0; // rAF id — cancelled on every (re)load so only one loop runs
+  let _mmResize = null; // ResizeObserver — replaced on every (re)load
 
   async function loadMarketMap() {
     const canvas = $('mm-canvas');
@@ -862,8 +863,14 @@
     }
 
     // Seed positions: competitors fan out left, prospects right.
+    // The stage can still be display:hidden (initial page load lands here via
+    // the hash) — clientWidth would read 0 and the map would render into the
+    // 640px fallback, hugging the left edge. Wait until it has a real size.
     const stage = canvas.parentElement;
-    const W = Math.max(640, stage.clientWidth), H = Math.max(480, stage.clientHeight);
+    for (let tries = 0; tries < 120 && stage.clientWidth === 0; tries++) {
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    let W = Math.max(640, stage.clientWidth), H = Math.max(480, stage.clientHeight);
     nodes.forEach((n, i) => {
       if (n.fx) { n.x = W / 2; n.y = H / 2; return; }
       const golden = i * 2.39996;
@@ -899,11 +906,26 @@
     }
 
     // Hi-DPI canvas
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = W * dpr; canvas.height = H * dpr;
-    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
     const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
+    const fitCanvas = () => {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+    fitCanvas();
+    // Keep the graph centered when the stage resizes (sidebar collapse,
+    // window resize, responsive breakpoints): rescale positions in place.
+    if (_mmResize) _mmResize.disconnect();
+    _mmResize = new ResizeObserver(() => {
+      const nw = stage.clientWidth, nh = stage.clientHeight;
+      if (!nw || !nh || (nw === W && nh === H)) return;
+      const sx = nw / W, sy = nh / H;
+      for (const n of nodes) { n.x *= sx; n.y *= sy; }
+      W = nw; H = nh;
+      fitCanvas();
+    });
+    _mmResize.observe(stage);
 
     let hover = null;
     const t0 = performance.now();
