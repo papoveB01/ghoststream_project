@@ -95,7 +95,9 @@ async function consume(tenantId, meter, cap, opts = {}) {
         console.warn(`[usage] overage billing failed for ${meter}: ${(e && e.message) || e}`);
       }
     }
-    const e = new Error(`Monthly limit reached for this action (${cap}/mo on your plan). Buy add-on credits or upgrade for a higher limit.`);
+    const e = new Error(opts.lifetime
+      ? `Your plan's included allowance for this action is used up (${cap} total on the Free plan). Buy add-on credits or upgrade for a monthly allowance.`
+      : `Monthly limit reached for this action (${cap}/mo on your plan). Buy add-on credits or upgrade for a higher limit.`);
     e.status = 402; e.code = 'USAGE_LIMIT';
     throw e;
   }
