@@ -1018,28 +1018,32 @@ table.dt tr.row-clickable { cursor: pointer; }
 }
 
 /* =================== KNOWLEDGE BASE =================== */
+/* Tabs are segmented chips now — the old grey underline links were getting
+   missed. Inactive = bordered chip with full-contrast ink; active = filled. */
 .kb-tabs {
   display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 24px;
+  gap: 8px;
+  border-bottom: 0;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
 }
 .kb-tab {
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-2);
-  padding: 10px 18px;
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: 7px;
+  color: var(--text);
+  padding: 8px 16px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 600;
   cursor: pointer;
-  margin-bottom: -1px;
+  box-shadow: 0 1px 2px rgba(20,22,28,.04);
 }
-.kb-tab:hover { color: var(--text); }
+.kb-tab:hover { border-color: var(--accent); color: var(--accent); }
 .kb-tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
 }
 
 .kb-hero {
@@ -3149,26 +3153,28 @@ details.schedule-advanced > .schedule-advanced-body {
 
 /* Upload sub-tabs */
 .kb-subtabs {
-  display: flex; gap: 4px;
-  border-bottom: 1px solid var(--border);
+  display: flex; gap: 8px;
+  border-bottom: 0;
   margin-bottom: 18px;
+  flex-wrap: wrap;
 }
 .kb-subtab {
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-2);
-  padding: 8px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: 7px;
+  color: var(--text);
+  padding: 7px 14px;
   font-family: inherit;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   margin-bottom: -1px;
 }
 .kb-subtab:hover { color: var(--text); }
 .kb-subtab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
 }
 
 /* Two equal-width form fields side-by-side (used on multiple sub-forms) */
@@ -3566,26 +3572,28 @@ details.schedule-advanced > .schedule-advanced-body {
 }
 .calls-tabs {
   display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  border-bottom: 0;
+  flex-wrap: wrap;
 }
 .calls-tab {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  padding: 8px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: 7px;
+  padding: 7px 14px;
   cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-2);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 .calls-tab:hover { color: var(--text); background: var(--surface); }
 .calls-tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
   font-weight: 600;
 }
 .calls-tab-count {
@@ -4050,9 +4058,8 @@ details.schedule-advanced > .schedule-advanced-body {
 .comp-threat-1 { background: var(--surface-2); color: var(--muted); border-color: var(--border); }
 
 /* Prospect creation modes + online-discovery priority badges */
-.prospect-modes { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
-.prospect-modes .kb-tab { padding: 7px 13px; border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer; font: inherit; font-size: 13.5px; color: var(--muted); }
-.prospect-modes .kb-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.prospect-modes { display: flex; gap: 8px; margin-bottom: 14px; border-bottom: 0; flex-wrap: wrap; }
+/* mode tabs inherit the segmented-chip .kb-tab look (no underline override) */
 .prospect-discover-form { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin: 10px 0; }
 .crm-pull-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .crm-pull-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -4064,9 +4071,8 @@ details.schedule-advanced > .schedule-advanced-body {
 .prio-1 { background: var(--border); color: var(--text-2); border-color: var(--border-2); }
 
 /* =================== PROSPECTS · signals-first ============================ */
-.prospect-tabs { display: flex; gap: 6px; margin: 16px 0 12px; border-bottom: 1px solid var(--border); }
-.prospect-tabs .kb-tab { padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer; font: inherit; font-size: 13.5px; color: var(--muted); }
-.prospect-tabs .kb-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.prospect-tabs { display: flex; gap: 8px; margin: 16px 0 14px; border-bottom: 0; flex-wrap: wrap; }
+/* detail tabs (Signals/People/Intel/Proposal) inherit the segmented-chip look */
 .prospect-tab-pane { padding-top: 4px; }
 .prospect-intel-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
 .prospect-summary { margin-top: 8px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-size: 13.5px; }
@@ -4668,3 +4674,15 @@ details.schedule-advanced > .schedule-advanced-body {
   border-radius: 3px; padding: 1px 7px; white-space: nowrap;
 }
 .ec-field-prod select { min-width: 180px; }
+
+
+/* Compact add/find controls in the list-panel header */
+.pl-add-btn, .pl-find-btn {
+  border: 1px solid var(--border-2); background: var(--bg); border-radius: 5px;
+  font: inherit; font-size: 11.5px; font-weight: 700; color: var(--text);
+  padding: 3px 10px; cursor: pointer; margin-left: 8px;
+}
+.pl-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+.pl-find-btn { color: var(--accent); border-color: var(--accent-soft); }
+.pl-find-btn:hover { background: var(--accent-light); }
+.pl-spacer { flex: 1; }

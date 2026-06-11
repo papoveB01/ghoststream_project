@@ -1629,21 +1629,11 @@
     _prospectsState.contacts = contacts;
     const selected = companies.find((c) => c.id === selectedId);
 
-    const addBar = `
-      <div class="prospect-add-bar">
-        <button type="button" class="kb-secondary-btn" id="prospect-form-toggle">${_prospectFormOpen ? '× Close' : '＋ Add prospects'}</button>
-        ${_prospectFormOpen ? '' : `<button type="button" class="discover-cta" id="prospect-discover-shortcut">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
-          Discover online
-        </button>`}
-      </div>`;
     host.innerHTML = `
-      ${addBar}
-      ${_prospectFormOpen ? modeSection : ''}
       <div class="prospects-grid">
         ${collapseRail}
         <div class="prospects-list">
-          <div class="prospects-list-h"><span>${companies.length} prospect${companies.length === 1 ? '' : 's'}</span>${collapseBtn}</div>
+          <div class="prospects-list-h"><span>${companies.length} prospect${companies.length === 1 ? '' : 's'}</span><button type="button" class="pl-add-btn" id="prospect-form-toggle" title="Add prospects — manual, CRM pull, or AI discovery">${_prospectFormOpen ? '× Close' : '＋ Add'}</button><span class="pl-spacer"></span>${collapseBtn}</div>
           <div class="prospects-list-rows">
             ${companies.map((c) => `
               <div class="prospect-row ${c.id === selectedId ? 'active' : ''}" data-prospect-pick="${escapeHtml(c.id)}" role="button" tabindex="0">
@@ -1653,23 +1643,22 @@
           </div>
         </div>
         <div class="prospects-detail">
-          ${selected ? renderProspectDetail(selected, contacts) : '<div class="kb-subtle">Pick a prospect on the left.</div>'}
+          ${_prospectFormOpen ? modeSection : (selected ? renderProspectDetail(selected, contacts) : '<div class="kb-subtle">Pick a prospect on the left.</div>')}
         </div>
       </div>
     `;
     host.querySelectorAll('[data-prospect-pick]').forEach((el) => {
       el.addEventListener('click', () => {
         _prospectsState.selectedCompanyId = el.dataset.prospectPick;
+        _prospectFormOpen = false;
         renderProspects(host);
       });
     });
-    if (selected) wireProspectDetail(host, selected);
+    if (selected && !_prospectFormOpen) wireProspectDetail(host, selected);
     wireListCollapse(host, 'prospects');
     if (_prospectFormOpen) wireProspectModes(host);
     const ft = $('prospect-form-toggle');
     if (ft) ft.addEventListener('click', () => { _prospectFormOpen = !_prospectFormOpen; renderProspects(host); });
-    const ds = $('prospect-discover-shortcut');
-    if (ds) ds.addEventListener('click', () => { _prospectMode = 'discover'; _prospectFormOpen = true; renderProspects(host); });
   }
 
   async function refreshProspectIntelStatus(companyId) {
@@ -3295,21 +3284,11 @@
 
     const selected = list.find((c) => c.id === selectedId);
 
-    const addBar = `
-      <div class="prospect-add-bar">
-        <button type="button" class="kb-secondary-btn" id="competitor-form-toggle">${_competitorFormOpen ? '× Close' : '＋ Add competitor'}</button>
-        ${_competitorFormOpen ? '' : `<button type="button" class="discover-cta" id="competitor-find-btn">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
-          Find competitors automatically
-        </button>`}
-      </div>`;
     host.innerHTML = `
-      ${addBar}
-      ${_competitorFormOpen ? quickAdd : ''}
       <div class="prospects-grid">
         ${collapseRail}
         <div class="prospects-list">
-          <div class="prospects-list-h"><span>${list.length} competitor${list.length === 1 ? '' : 's'}</span>${collapseBtn}</div>
+          <div class="prospects-list-h"><span>${list.length} competitor${list.length === 1 ? '' : 's'}</span><button type="button" class="pl-add-btn" id="competitor-form-toggle" title="Add a competitor">${_competitorFormOpen ? '× Close' : '＋ Add'}</button><button type="button" class="pl-find-btn" id="competitor-find-btn" title="Find competitors automatically — AI web search">✦ Find</button><span class="pl-spacer"></span>${collapseBtn}</div>
           <div class="prospects-list-rows">
             ${list.map((c) => `
               <div class="comp-row-wrap ${c.id === selectedId ? 'active' : ''}">
@@ -3325,7 +3304,7 @@
           </div>
         </div>
         <div class="prospects-detail">
-          ${selected ? renderCompetitorDetail(selected) : '<div class="kb-subtle">Pick a competitor on the left.</div>'}
+          ${_competitorFormOpen ? quickAdd : (selected ? renderCompetitorDetail(selected) : '<div class="kb-subtle">Pick a competitor on the left.</div>')}
         </div>
       </div>
     `;
@@ -3334,6 +3313,7 @@
     host.querySelectorAll('[data-competitor-pick]').forEach((el) => {
       el.addEventListener('click', () => {
         _competitorsState.selectedId = el.dataset.competitorPick;
+        _competitorFormOpen = false;
         renderCompetitors(host);
       });
     });
@@ -3352,7 +3332,7 @@
         scrollCompetitorSection(section);
       });
     });
-    if (selected) wireCompetitorDetail(host, selected);
+    if (selected && !_competitorFormOpen) wireCompetitorDetail(host, selected);
     wireListCollapse(host, 'competitors');
     wireCompetitorQuickAdd(host);
   }
