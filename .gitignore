@@ -20,3 +20,6 @@ backups/
 # Production env (secrets — never commit)
 .env.production
 .env.production.local
+
+# Raw marketing video sources (served via Cloudflare Stream, not git)
+*.mp4
