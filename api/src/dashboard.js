@@ -36,7 +36,7 @@ router.get('/', async (req, res, next) => {
     // gauges); cached, so this is effectively free on the hot path.
     const tenantRow = await tenants.get(t);
     const ent = await entitlements.resolveEntitlementsFor(tenantRow);
-    const [usedSummary, prospectsR, prodR, persR, compR, compIntelR, intelR, engCountR, profR, oppR, engR, crmR, upcR, freshR, namesR, trendR] = await Promise.all([
+    const [usedSummary, prospectsR, prodR, persR, compR, compIntelR, intelR, engCountR, profR, oppR, engR, crmR, upcR, freshR, namesR, setupR, trendR] = await Promise.all([
       usage.summary(t, { lifetime: ent.lifetimeCaps }),
       db.query(`SELECT count(*)::int AS total,
                        count(*) FILTER (WHERE created_at >= now() - interval '7 days')::int AS new_week
@@ -74,6 +74,14 @@ router.get('/', async (req, res, next) => {
                  WHERE tenant_id = $1 AND scope = 'PROSPECT' AND status = 'NEW'
                  GROUP BY subject_id`, [t]),
       db.query(`SELECT id, name FROM companies WHERE tenant_id = $1`, [t]),
+      // Setup-checklist facts: any completed research, any saved contact, any
+      // engagement ever scheduled, any Market Watch enabled anywhere.
+      db.query(`SELECT
+          (SELECT count(*)::int FROM prospect_research WHERE tenant_id = $1 AND status = 'DONE') AS research_done,
+          (SELECT count(*)::int FROM prospect_contacts WHERE tenant_id = $1) AS contacts,
+          (SELECT count(*)::int FROM scheduled_meetings WHERE tenant_id = $1) AS meetings_ever,
+          ((SELECT count(*) FROM companies   WHERE tenant_id = $1 AND watch_enabled)
+         + (SELECT count(*) FROM competitors WHERE tenant_id = $1 AND watch_enabled))::int AS watched`, [t]),
       // New prospects per ISO week for the last 8 weeks (gaps filled with 0 so
       // the sparkline always has a fixed-width 8-bar series).
       db.query(`SELECT to_char(g.wk, 'YYYY-MM-DD') AS week, COALESCE(c.n, 0)::int AS count
@@ -167,8 +175,22 @@ router.get('/', async (req, res, next) => {
       .filter((m) => entJson.caps[m] === null || entJson.caps[m] > 0)
       .map((m) => ({ key: m, label: METER_LABELS[m], used: usedSummary[m] || 0, cap: entJson.caps[m] }));
 
+    // "Get set up" checklist — the visible journey. Each step is derivable, so
+    // it stays truthful without any per-user state to maintain.
+    const su = setupR.rows[0] || {};
+    const profileSet = !!((prof.positioning && prof.positioning.trim()) || (prof.objectives && prof.objectives.trim()));
+    const checklist = [
+      { key: 'foundation', label: 'Ground your workspace — positioning + products', done: profileSet && prodR.rows[0].n > 0, goto: 'company' },
+      { key: 'discover',   label: 'Find your first prospects',                      done: prospectsR.rows[0].total > 0,       goto: 'prospects', pmode: 'discover' },
+      { key: 'research',   label: 'Research one prospect (signals & why-now)',      done: (su.research_done || 0) > 0,        goto: 'prospects' },
+      { key: 'contacts',   label: 'Find the decision-makers',                       done: (su.contacts || 0) > 0,             goto: 'prospects' },
+      { key: 'engage',     label: 'Schedule your first AI-joined call',             done: (su.meetings_ever || 0) > 0,        goto: 'missions', mtab: 'schedule' },
+      { key: 'watch',      label: 'Turn on Market Watch for a key account',         done: (su.watched || 0) > 0,              goto: 'prospects' },
+    ];
+
     res.json({
       tenant: { name: tenant.name || 'your company', plan: tenant.subscription_status || 'TRIAL', planName: entJson.planName, trialEndsAt: tenant.trial_ends_at || null, daysLeft },
+      checklist,
       kpis: {
         prospects: prospectsR.rows[0].total,
         prospectsNewWeek: prospectsR.rows[0].new_week,

@@ -395,9 +395,12 @@
 
   // Mono eyebrow group above the page title — mirrors the sidebar nav groups.
   function groupFor(sec) {
-    if (['overview', 'company', 'prospects', 'competitors', 'market-map', 'market-signals'].includes(sec)) return 'Intelligence';
-    if (['missions', 'calendar', 'sessions', 'calls', 'calls-ops'].includes(sec)) return 'Pipeline';
-    if (['platform', 'instances', 'platform-audit', 'platform-keys'].includes(sec)) return 'Platform';
+    if (sec === 'overview') return 'Cockpit';
+    if (sec === 'company') return 'Foundation';
+    if (['prospects', 'competitors', 'market-map'].includes(sec)) return 'Find';
+    if (['missions', 'calendar', 'calls'].includes(sec)) return 'Engage';
+    if (['market-signals', 'sessions'].includes(sec)) return 'Learn';
+    if (['platform', 'instances', 'platform-audit', 'platform-keys', 'calls-ops'].includes(sec)) return 'Platform';
     return 'Workspace';
   }
   function titleFor(sec) {
@@ -477,16 +480,26 @@
       ? `<span class="pill pill-ok">${escapeHtml(planUpper)}</span>`
       : `<span class="pill pill-warn">${escapeHtml(planUpper)}${t.daysLeft != null ? ` · ${t.daysLeft} day${t.daysLeft === 1 ? '' : 's'} left` : ''}</span>`;
 
-    // Activation nudge — only while the foundation is incomplete.
-    const need = [];
-    if (!f.profileSet) need.push(['Set your company positioning', 'company']);
-    if (!f.products) need.push(['Add your products', 'company']);
-    if (!f.competitors) need.push(['Add a competitor', 'competitors']);
-    if (!k.prospects) need.push(['Find your first prospects', 'prospects']);
-    const activation = need.length ? `
-      <div class="dash-activation">
-        <div class="dash-activation-h">Finish setting up DealScope</div>
-        <div class="dash-activation-steps">${need.map(([label, sec]) => `<button class="dash-chip" data-goto="${sec}">○ ${escapeHtml(label)} →</button>`).join('')}</div>
+    // "Get set up" journey checklist — server-computed, shown until every step
+    // is done. This IS the product's flow, made visible.
+    const steps = d.checklist || [];
+    const doneN = steps.filter((x) => x.done).length;
+    const allDone = steps.length > 0 && doneN === steps.length;
+    const activation = (steps.length && !allDone) ? `
+      <div class="dash-journey">
+        <div class="dash-journey-h">
+          <span>Get set up — your path to the first AI-covered deal</span>
+          <span class="dash-journey-count">${doneN} of ${steps.length}</span>
+        </div>
+        <div class="dash-journey-bar"><i style="width:${Math.round((doneN / steps.length) * 100)}%"></i></div>
+        <div class="dash-journey-steps">
+          ${steps.map((st, i) => `
+            <button class="dash-journey-step${st.done ? ' done' : ''}" data-goto="${escapeHtml(st.goto)}" ${st.pmode ? `data-pmode="${escapeHtml(st.pmode)}"` : ''} ${st.mtab ? `data-mtab="${escapeHtml(st.mtab)}"` : ''} ${st.done ? 'title="Done — click to revisit"' : ''}>
+              <span class="dash-journey-num">${st.done ? '✓' : i + 1}</span>
+              <span class="dash-journey-label">${escapeHtml(st.label)}</span>
+              ${st.done ? '' : '<span class="dash-journey-go">→</span>'}
+            </button>`).join('')}
+        </div>
       </div>` : '';
 
     const opps = d.opportunities || [];
@@ -539,6 +552,7 @@
       const sec = b.dataset.goto;
       if (sec === 'prospects' && b.dataset.pmode) { _prospectMode = b.dataset.pmode; _prospectFormOpen = true; }
       if (sec === 'competitors' && b.closest('.dash-actions')) _competitorFormOpen = true;
+      if (b.dataset.mtab) { try { sessionStorage.setItem('ds.missionsTab', b.dataset.mtab); } catch { /* ignore */ } missionsCurrentTab = b.dataset.mtab; loaded.missions = false; }
       window.location.hash = '#' + sec;
     }));
     // Click a priority row (its header) to expand the full description.
