@@ -532,7 +532,7 @@
 
     host.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => {
       const sec = b.dataset.goto;
-      if (sec === 'prospects' && b.dataset.pmode) _prospectMode = b.dataset.pmode;
+      if (sec === 'prospects' && b.dataset.pmode) { _prospectMode = b.dataset.pmode; _prospectFormOpen = true; }
       window.location.hash = '#' + sec;
     }));
     // Click a priority row (its header) to expand the full description.
@@ -1555,6 +1555,7 @@
   let _prospectsState = { companies: [], selectedCompanyId: null, contacts: [] };
   let _prospectResearch = null; // latest research run for the open prospect (Signals tab)
   let _prospectMode = 'manual'; // creation mode: manual | crm | discover
+  let _prospectFormOpen = false; // add-form collapsed by default once prospects exist
 
   async function loadProspects() {
     const host = $('prospects-body');
@@ -1627,8 +1628,14 @@
     _prospectsState.contacts = contacts;
     const selected = companies.find((c) => c.id === selectedId);
 
+    const addBar = `
+      <div class="prospect-add-bar">
+        <button type="button" class="kb-secondary-btn" id="prospect-form-toggle">${_prospectFormOpen ? '× Close' : '＋ Add prospects'}</button>
+        ${_prospectFormOpen ? '' : '<span class="kb-subtle">Manual · From CRM · AI discovery</span>'}
+      </div>`;
     host.innerHTML = `
-      ${modeSection}
+      ${addBar}
+      ${_prospectFormOpen ? modeSection : ''}
       <div class="prospects-grid">
         ${collapseRail}
         <div class="prospects-list">
@@ -1654,7 +1661,9 @@
     });
     if (selected) wireProspectDetail(host, selected);
     wireListCollapse(host, 'prospects');
-    wireProspectModes(host);
+    if (_prospectFormOpen) wireProspectModes(host);
+    const ft = $('prospect-form-toggle');
+    if (ft) ft.addEventListener('click', () => { _prospectFormOpen = !_prospectFormOpen; renderProspects(host); });
   }
 
   async function refreshProspectIntelStatus(companyId) {
@@ -2380,8 +2389,7 @@
         // Land on the new prospect.
         _prospectsState.selectedCompanyId = companyId;
         loaded.prospects = false;
-        $('prospect-quick-name').value = '';
-        $('prospect-quick-domain').value = '';
+        _prospectFormOpen = false; // saved — give the space back to the list/detail
         await loadProspects();
         result.classList.remove('hidden'); result.classList.add('success');
         result.innerHTML = `Research started for <strong>${escapeHtml(name)}</strong>. It runs in the background (~30-60s) — refresh the page or open the prospect to watch progress.`;
@@ -2845,7 +2853,7 @@
         out.innerHTML = `Found ${cands.length} decision-maker${cands.length === 1 ? '' : 's'} at <strong>${escapeHtml(r.domain)}</strong>${note}. Tick the ones to add, then “Add selected”.`;
         const rows = cands.map((c, i) => {
           const reachable = c.hasEmail !== false;
-          const who = escapeHtml(c.firstName || c.name || 'Unknown');
+          const who = escapeHtml(c.name || c.firstName || 'Unknown');
           const title = escapeHtml(c.title || '');
           const badge = reachable ? '<span class="kb-stream-pill stream-file" title="Email available">✉ email</span>' : '<span class="kb-subtle" title="No email on file — can\'t be added">no email</span>';
           return `<label class="apollo-cand-row" style="display:flex;align-items:center;gap:8px;padding:5px 2px;border-bottom:1px solid var(--hairline,#eee)">
