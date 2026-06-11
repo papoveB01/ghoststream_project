@@ -533,6 +533,7 @@
     host.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => {
       const sec = b.dataset.goto;
       if (sec === 'prospects' && b.dataset.pmode) { _prospectMode = b.dataset.pmode; _prospectFormOpen = true; }
+      if (sec === 'competitors' && b.closest('.dash-actions')) _competitorFormOpen = true;
       window.location.hash = '#' + sec;
     }));
     // Click a priority row (its header) to expand the full description.
@@ -1631,7 +1632,10 @@
     const addBar = `
       <div class="prospect-add-bar">
         <button type="button" class="kb-secondary-btn" id="prospect-form-toggle">${_prospectFormOpen ? '× Close' : '＋ Add prospects'}</button>
-        ${_prospectFormOpen ? '' : '<span class="kb-subtle">Manual · From CRM · AI discovery</span>'}
+        ${_prospectFormOpen ? '' : `<button type="button" class="discover-cta" id="prospect-discover-shortcut">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+          Discover online
+        </button>`}
       </div>`;
     host.innerHTML = `
       ${addBar}
@@ -1664,6 +1668,8 @@
     if (_prospectFormOpen) wireProspectModes(host);
     const ft = $('prospect-form-toggle');
     if (ft) ft.addEventListener('click', () => { _prospectFormOpen = !_prospectFormOpen; renderProspects(host); });
+    const ds = $('prospect-discover-shortcut');
+    if (ds) ds.addEventListener('click', () => { _prospectMode = 'discover'; _prospectFormOpen = true; renderProspects(host); });
   }
 
   async function refreshProspectIntelStatus(companyId) {
@@ -3204,6 +3210,7 @@
   // follow-up task lists every kb_document tagged with this competitor.
 
   let _competitorsState = { competitors: [], selectedId: null };
+  let _competitorFormOpen = false; // add-form collapsed by default once competitors exist
   const COMPETITOR_REGIONS = ['Global / Any', 'North America', 'Latin America', 'Europe', 'GCC / Middle East', 'Africa', 'Asia-Pacific'];
   // Region → its countries. The flat COUNTRIES list is derived from this, and
   // selecting a region filters the country dropdown to just that region.
@@ -3288,8 +3295,17 @@
 
     const selected = list.find((c) => c.id === selectedId);
 
+    const addBar = `
+      <div class="prospect-add-bar">
+        <button type="button" class="kb-secondary-btn" id="competitor-form-toggle">${_competitorFormOpen ? '× Close' : '＋ Add competitor'}</button>
+        ${_competitorFormOpen ? '' : `<button type="button" class="discover-cta" id="competitor-find-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+          Find competitors automatically
+        </button>`}
+      </div>`;
     host.innerHTML = `
-      ${quickAdd}
+      ${addBar}
+      ${_competitorFormOpen ? quickAdd : ''}
       <div class="prospects-grid">
         ${collapseRail}
         <div class="prospects-list">
@@ -3313,6 +3329,8 @@
         </div>
       </div>
     `;
+    const cft = $('competitor-form-toggle');
+    if (cft) cft.addEventListener('click', () => { _competitorFormOpen = !_competitorFormOpen; renderCompetitors(host); });
     host.querySelectorAll('[data-competitor-pick]').forEach((el) => {
       el.addEventListener('click', () => {
         _competitorsState.selectedId = el.dataset.competitorPick;
@@ -3419,6 +3437,7 @@
         });
         _competitorsState.selectedId = (r.competitor || {}).id || id;
         loaded.competitors = false;
+        _competitorFormOpen = false; // saved — give the space back to the list/detail
         $('competitor-quick-id').value = '';
         $('competitor-quick-name').value = '';
         $('competitor-quick-website').value = '';
