@@ -4623,3 +4623,15 @@ details.schedule-advanced > .schedule-advanced-body {
   background: var(--accent); color: var(--on-accent); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
 }
 .mm-side-open:hover { background: var(--accent-hover); }
+
+/* Prominent AI-discovery CTA (competitors quick-add banner) */
+.discover-cta {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 16px; border: 0; border-radius: var(--radius-sm); cursor: pointer;
+  background: var(--accent); color: var(--on-accent);
+  font: inherit; font-size: 13.5px; font-weight: 700;
+  box-shadow: 0 1px 2px rgba(20,22,28,.08), 0 0 0 1px rgba(30,125,69,.12);
+}
+.discover-cta:hover { background: var(--accent-hover); }
+.discover-cta svg { width: 15px; height: 15px; }
+.prospect-quick-find { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
