@@ -4733,3 +4733,20 @@ details.schedule-advanced > .schedule-advanced-body {
 .dash-journey-go { color: var(--accent); font-weight: 700; }
 @media (max-width: 1100px) { .dash-journey-steps { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 720px) { .dash-journey-steps { grid-template-columns: 1fr; } }
+
+/* Next-best-action hero */
+.dash-hero-action {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  border: 1px solid var(--accent-soft); border-left: 3px solid var(--accent);
+  border-radius: var(--radius); background: var(--bg);
+  padding: 13px 16px; margin-bottom: 14px; box-shadow: var(--shadow);
+}
+.dash-hero-spark { color: var(--accent); font-size: 16px; }
+.dash-hero-text { flex: 1; font-size: 14px; font-weight: 600; min-width: 200px; }
+.dash-hero-btn { white-space: nowrap; }
+
+/* Credit microcopy on spend buttons */
+.credit-note { font-size: 10.5px; font-weight: 500; opacity: .8; font-family: var(--mono); margin-left: 4px; }
+.credit-note-dry { color: #ffd7d2; opacity: 1; }
+.kb-secondary-btn .credit-note { color: var(--muted); }
+.kb-secondary-btn .credit-note-dry { color: var(--danger); }

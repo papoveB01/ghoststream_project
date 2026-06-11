@@ -36,7 +36,7 @@ router.get('/', async (req, res, next) => {
     // gauges); cached, so this is effectively free on the hot path.
     const tenantRow = await tenants.get(t);
     const ent = await entitlements.resolveEntitlementsFor(tenantRow);
-    const [usedSummary, prospectsR, prodR, persR, compR, compIntelR, intelR, engCountR, profR, oppR, engR, crmR, upcR, freshR, namesR, setupR, trendR] = await Promise.all([
+    const [usedSummary, prospectsR, prodR, persR, compR, compIntelR, intelR, engCountR, profR, oppR, engR, crmR, upcR, freshR, namesR, setupR, contactsByCoR, trendR] = await Promise.all([
       usage.summary(t, { lifetime: ent.lifetimeCaps }),
       db.query(`SELECT count(*)::int AS total,
                        count(*) FILTER (WHERE created_at >= now() - interval '7 days')::int AS new_week
@@ -81,7 +81,9 @@ router.get('/', async (req, res, next) => {
           (SELECT count(*)::int FROM prospect_contacts WHERE tenant_id = $1) AS contacts,
           (SELECT count(*)::int FROM scheduled_meetings WHERE tenant_id = $1) AS meetings_ever,
           ((SELECT count(*) FROM companies   WHERE tenant_id = $1 AND watch_enabled)
-         + (SELECT count(*) FROM competitors WHERE tenant_id = $1 AND watch_enabled))::int AS watched`, [t]),
+         + (SELECT count(*) FROM competitors WHERE tenant_id = $1 AND watch_enabled))::int AS watched,
+          (SELECT count(*)::int FROM watch_findings WHERE tenant_id = $1 AND status = 'NEW') AS new_alerts`, [t]),
+      db.query(`SELECT company_id, count(*)::int AS n FROM prospect_contacts WHERE tenant_id = $1 GROUP BY company_id`, [t]),
       // New prospects per ISO week for the last 8 weeks (gaps filled with 0 so
       // the sparkline always has a fixed-width 8-bar series).
       db.query(`SELECT to_char(g.wk, 'YYYY-MM-DD') AS week, COALESCE(c.n, 0)::int AS count
@@ -188,9 +190,33 @@ router.get('/', async (req, res, next) => {
       { key: 'watch',      label: 'Turn on Market Watch for a key account',         done: (su.watched || 0) > 0,              goto: 'prospects' },
     ];
 
+    // Next best action — ONE computed move, picked by value. Only offered once
+    // the basic journey is underway (the checklist owns the cold start).
+    let nextAction = null;
+    {
+      const contactsByCo = new Map(contactsByCoR.rows.map((r) => [r.company_id, r.n]));
+      const watchedRows = (await db.query(`SELECT id FROM companies WHERE tenant_id = $1 AND watch_enabled`, [t])).rows;
+      const watchedSet = new Set(watchedRows.map((r) => r.id));
+      const hot = topProspects[0] || null;
+      const strongNoContacts = topProspects.find((h) => h.strong > 0 && !(contactsByCo.get(h.companyId) > 0));
+      const strongNoCall = topProspects.find((h) => h.strong > 0 && (contactsByCo.get(h.companyId) > 0) && h.upcoming === 0);
+      if (strongNoContacts) {
+        nextAction = { text: `${strongNoContacts.name} has ${strongNoContacts.strong} strong signal${strongNoContacts.strong === 1 ? '' : 's'} and no contacts on file.`, label: 'Find decision-makers →', goto: 'prospects', companyId: strongNoContacts.companyId };
+      } else if (strongNoCall) {
+        nextAction = { text: `${strongNoCall.name} is hot (${strongNoCall.strong} strong signal${strongNoCall.strong === 1 ? '' : 's'}) with contacts ready — no call scheduled yet.`, label: 'Schedule the call →', goto: 'missions', mtab: 'schedule' };
+      } else if ((su.new_alerts || 0) > 0) {
+        nextAction = { text: `${su.new_alerts} new market development${su.new_alerts === 1 ? '' : 's'} await review.`, label: 'Review alerts →', goto: 'market-signals' };
+      } else if (hot && !watchedSet.has(hot.companyId)) {
+        nextAction = { text: `${hot.name} is your hottest account but isn't being monitored.`, label: 'Turn on Market Watch →', goto: 'prospects', companyId: hot.companyId };
+      } else if (prospectsR.rows[0].total > 0 && prospectsR.rows[0].total < 10) {
+        nextAction = { text: 'Your pipeline is thin — discovery finds buyers matched to your ICP.', label: 'Discover prospects →', goto: 'prospects', pmode: 'discover' };
+      }
+    }
+
     res.json({
       tenant: { name: tenant.name || 'your company', plan: tenant.subscription_status || 'TRIAL', planName: entJson.planName, trialEndsAt: tenant.trial_ends_at || null, daysLeft },
       checklist,
+      nextAction,
       kpis: {
         prospects: prospectsR.rows[0].total,
         prospectsNewWeek: prospectsR.rows[0].new_week,

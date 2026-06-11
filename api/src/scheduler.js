@@ -237,6 +237,9 @@ function start() {
   cron.schedule(CRON_EXPR, tick);
   cron.schedule(WATCH_CRON, watchTick);
   cron.schedule(PURGE_CRON, purgeTick);
+  // Activation drip emails — hourly check; the journey_emails ledger makes
+  // each nudge exactly-once per tenant, so the cadence is safe.
+  cron.schedule('10 * * * *', () => require('./journeyEmails').tick());
   console.log(`[scheduler] mission cron started (expression: "${CRON_EXPR}", brief window: T-${LOOKAHEAD_END_HOURS}h to T-${LOOKAHEAD_START_HOURS}h, bot lead: ${BOT_LEAD_MINUTES > 0 ? `T-${BOT_LEAD_MINUTES}min` : 'disabled'})`);
   console.log(`[scheduler] market watch cron started (expression: "${WATCH_CRON}")`);
   console.log(`[scheduler] recording retention purge started (expression: "${PURGE_CRON}")`);

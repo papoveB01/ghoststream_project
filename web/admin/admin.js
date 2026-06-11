@@ -549,7 +549,18 @@
     const opps = d.opportunities || [];
     const engs = d.engagements || [];
 
+    const na = d.nextAction;
+    const heroHtml = na ? `
+      <div class="dash-hero-action">
+        <span class="dash-hero-spark">✦</span>
+        <span class="dash-hero-text">${escapeHtml(na.text)}</span>
+        <button class="primary-cta dash-hero-btn" data-goto="${escapeHtml(na.goto)}"
+          ${na.pmode ? `data-pmode="${escapeHtml(na.pmode)}"` : ''}
+          ${na.mtab ? `data-mtab="${escapeHtml(na.mtab)}"` : ''}
+          ${na.companyId ? `data-opp-company="${escapeHtml(na.companyId)}"` : ''}>${escapeHtml(na.label)}</button>
+      </div>` : '';
     host.innerHTML = `
+      ${heroHtml}
       <div class="dash-header">
         <div>
           <div class="dash-hello kb-subtle">Welcome back</div>
@@ -618,8 +629,8 @@
     });
     host.querySelectorAll('[data-opp-company]').forEach((el) => el.addEventListener('click', (e) => {
       e.stopPropagation();
-      _prospectsState.selectedCompanyId = el.dataset.oppCompany;
-      window.location.hash = '#prospects';
+      if (el.dataset.oppCompany) { _prospectsState.selectedCompanyId = el.dataset.oppCompany; loaded.prospects = false; }
+      if (!el.dataset.goto) window.location.hash = '#prospects';
     }));
     host.querySelectorAll('[data-opp-brief]').forEach((b) => b.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -638,6 +649,7 @@
       b.disabled = true; const orig = b.textContent; b.textContent = 'Starting research…';
       try {
         await fetchJson(`/api/knowledge/research/${encodeURIComponent(o.companyId)}`, { method: 'POST' });
+        registerResearchJob(o.companyId, o.companyName);
         _prospectsState.selectedCompanyId = o.companyId;
         loaded.prospects = false;
         window.location.hash = '#prospects';
@@ -1906,6 +1918,7 @@
       </div>
       <div class="kb-result hidden" id="prospect-quick-result"></div>`;
     wireQuickResearch(panel);
+    decorateSpend('#prospect-quick-run-btn', 'research credit');
   }
 
   async function renderProspectCrmMode(panel) {
@@ -1995,6 +2008,7 @@
       (industries || []).forEach((i) => { const o = document.createElement('option'); o.value = i; o.textContent = i; sel.appendChild(o); });
     } catch { /* dropdown stays at "Any industry" */ }
     $('pdisc-search').addEventListener('click', runProspectDiscover);
+    decorateSpend('#pdisc-search', 'research credit');
     wireRegionCountry('pdisc-region', 'pdisc-country');
     // Restore the last search (form inputs + results) so they persist across
     // navigation and reload until a new search replaces them.
@@ -2066,6 +2080,7 @@
       b.disabled = true; const o = b.textContent; b.textContent = 'Starting…';
       try {
         await fetchJson(`/api/knowledge/research/${encodeURIComponent(e.id)}`, { method: 'POST' });
+        registerResearchJob(e.id, e.name);
         _prospectsState.selectedCompanyId = e.id;
         loaded.prospects = false;
         if (currentSection === 'prospects') switchSection('prospects'); else window.location.hash = '#prospects';
@@ -2182,11 +2197,27 @@
           country: c.country || null, city: c.city || null, address: c.address || null, phone: c.phone || null, email: c.email || null,
         }),
       });
-      btn.textContent = r.signalSaved ? '✓ Added · signal saved' : '✓ Added';
       btn.classList.add('ev-added');
       markDiscoveryAdded('prospects', c.name);
       loaded.prospects = false; // list refreshes on next visit / refresh
-      if (r.company && r.company.id) _prospectsState.selectedCompanyId = r.company.id;
+      const newId = r.company && r.company.id;
+      if (newId) _prospectsState.selectedCompanyId = newId;
+      // Continuation: don't dead-end — offer the obvious next move in place.
+      if (newId) {
+        const cell = btn.parentElement;
+        cell.innerHTML = `<span class="kb-subtle" style="white-space:nowrap">✓ Added</span>
+          <button type="button" class="kb-link-btn" data-cont-research="${escapeHtml(newId)}" data-cont-name="${escapeHtml(c.name)}" title="Run AI research now (1 research credit)">Research now →</button>`;
+        cell.querySelector('[data-cont-research]').addEventListener('click', async (e) => {
+          const cb = e.currentTarget; cb.disabled = true; cb.textContent = 'Starting…';
+          try {
+            await fetchJson(`/api/knowledge/research/${encodeURIComponent(newId)}`, { method: 'POST' });
+            registerResearchJob(newId, c.name);
+            cb.textContent = '⏳ Researching — see the bell';
+          } catch (err2) { cb.disabled = false; cb.textContent = 'Research now →'; alert(err2.message); }
+        });
+      } else {
+        btn.textContent = r.signalSaved ? '✓ Added · signal saved' : '✓ Added';
+      }
     } catch (err) {
       if (/already exists/i.test(err.message)) { btn.textContent = '✓ Exists'; btn.classList.add('ev-added'); markDiscoveryAdded('prospects', c.name); return; }
       btn.disabled = false; btn.textContent = '＋ Add prospect';
@@ -2482,6 +2513,7 @@
         }
         btn.textContent = 'Starting research…';
         await fetchJson(`/api/knowledge/research/${encodeURIComponent(companyId)}`, { method: 'POST' });
+        registerResearchJob(companyId, name);
         // Land on the new prospect.
         _prospectsState.selectedCompanyId = companyId;
         loaded.prospects = false;
@@ -2765,6 +2797,7 @@
 
   function wireProspectDetail(host, company) {
     wireDetailEdit('prospect');
+    decorateSpend('#prospect-pull-contacts', 'research credit per reveal');
     const cat = $('prospect-contact-add-toggle'), car = $('prospect-contact-add-row');
     if (cat && car) {
       cat.addEventListener('click', () => { car.classList.remove('hidden'); cat.classList.add('hidden'); $('prospect-new-name').focus(); });
@@ -2875,6 +2908,7 @@
       const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Starting…';
       try {
         await fetchJson(`/api/knowledge/research/${encodeURIComponent(company.id)}`, { method: 'POST' });
+        registerResearchJob(company.id, company.name);
         setTimeout(() => refreshProspectIntelStatus(company.id), 1000);
       } catch (err) { alert(`Couldn't start: ${err.message}`); }
       finally { btn.disabled = false; btn.textContent = 'Research / refresh'; }
@@ -3629,6 +3663,7 @@
       document.addEventListener('keydown', _finderEsc);
     }
     $('comp-finder-search').onclick = runCompetitorFinderSearch;
+    decorateSpend('#comp-finder-search', 'research credit');
     $('comp-finder-done').onclick = finderDone;
     wireRegionCountry('comp-finder-region', 'comp-finder-country');
     // Scope selector: market-wide / at-a-prospect / per-product. The entity
@@ -3777,11 +3812,24 @@
           country: c.country || null, city: c.city || null, address: c.address || null, phone: c.phone || null, email: c.email || null,
         }),
       });
-      btn.textContent = r.intelFiled ? '✓ Added · unlocked' : '✓ Added';
       btn.classList.add('ev-added');
       markDiscoveryAdded('competitors', c.name);
       _finderAddedAny = true;
-      _competitorsState.selectedId = (r.competitor || {}).id || id;
+      const newCid = (r.competitor || {}).id || id;
+      _competitorsState.selectedId = newCid;
+      {
+        const cell = btn.parentElement;
+        cell.innerHTML = `<span class="kb-subtle" style="white-space:nowrap">✓ Added${r.intelFiled ? ' · intel filed' : ''}</span>
+          <button type="button" class="kb-link-btn" data-cont-comp="${escapeHtml(newCid)}">Open →</button>`;
+        cell.querySelector('[data-cont-comp]').addEventListener('click', () => {
+          _competitorsState.selectedId = newCid;
+          _competitorFormOpen = false;
+          loaded.competitors = false;
+          closeCompetitorFinder();
+          if (currentSection === 'competitors') switchSection('competitors');
+          else window.location.hash = '#competitors';
+        });
+      }
     } catch (err) {
       if (/already exists/i.test(err.message)) { btn.textContent = '✓ Exists'; btn.classList.add('ev-added'); markDiscoveryAdded('competitors', c.name); return; }
       btn.disabled = false; btn.textContent = '＋ Add';
@@ -9807,14 +9855,84 @@
   async function refreshWatchBadge() {
     try {
       const { count } = await fetchJson('/api/watch/findings/count');
-      for (const id of ['watch-badge', 'bell-badge']) {
-        const badge = $(id);
-        if (!badge) continue;
-        if (count > 0) { badge.textContent = count > 99 ? '99+' : String(count); badge.classList.remove('hidden'); }
-        else badge.classList.add('hidden');
+      const unseenJobs = _jobs().filter((j) => j.status !== 'RUNNING' && !j.seen).length;
+      const navBadge = $('watch-badge');
+      if (navBadge) {
+        if (count > 0) { navBadge.textContent = count > 99 ? '99+' : String(count); navBadge.classList.remove('hidden'); }
+        else navBadge.classList.add('hidden');
+      }
+      const bell = $('bell-badge');
+      if (bell) {
+        const total = count + unseenJobs;
+        if (total > 0) { bell.textContent = total > 99 ? '99+' : String(total); bell.classList.remove('hidden'); }
+        else bell.classList.add('hidden');
       }
     } catch { /* non-fatal — leave badges as-is */ }
   }
+
+  // ── Spend transparency: live "N research credits left" on costed buttons ──
+  let _usageCache = null, _usageCacheAt = 0;
+  async function usageInfo(force) {
+    if (!force && _usageCache && Date.now() - _usageCacheAt < 60000) return _usageCache;
+    try { _usageCache = (await fetchJson('/api/billing')).billing; _usageCacheAt = Date.now(); }
+    catch { /* billing gated — leave cache as-is */ }
+    return _usageCache;
+  }
+  function researchRemaining(b) {
+    if (!b || !b.caps) return null;
+    const key = b.caps.research !== undefined ? 'research' : 'discovery';
+    const cap = b.caps[key];
+    if (cap === null || cap === undefined) return Infinity; // unlimited
+    const used = (b.usage && b.usage[key]) || 0;
+    const packs = (b.credits && b.credits.research && b.credits.research.remaining) || 0;
+    return Math.max(0, cap - used) + packs;
+  }
+  // Appends "· 1 credit (N left)" to a spend button. Quietly does nothing for
+  // unlimited plans; warns in red when the pool is dry.
+  async function decorateSpend(sel, costLabel) {
+    const el = document.querySelector(sel);
+    if (!el) return;
+    const b = await usageInfo();
+    const left = researchRemaining(b);
+    if (left === null || left === Infinity) return;
+    const stale = el.querySelector('.credit-note'); if (stale) stale.remove();
+    const note = document.createElement('span');
+    note.className = 'credit-note' + (left === 0 ? ' credit-note-dry' : '');
+    note.textContent = left === 0 ? ` · no ${costLabel}s left` : ` · 1 ${costLabel} (${left} left)`;
+    el.appendChild(note);
+  }
+
+  // ── Background job tracker — research runs surface in the bell when done ──
+  // Session-scoped (per tab, like the discovery cache). One central poller.
+  function _jobs() { try { return JSON.parse(sessionStorage.getItem('ds.jobs') || '[]'); } catch { return []; } }
+  function _saveJobs(j) { try { sessionStorage.setItem('ds.jobs', JSON.stringify(j.slice(-20))); } catch { /* full */ } }
+  let _jobsTimer = null;
+  function registerResearchJob(companyId, name) {
+    if (!companyId) return;
+    const jobs = _jobs().filter((j) => j.id !== companyId);
+    jobs.push({ id: companyId, name: name || 'Prospect', startedAt: Date.now(), status: 'RUNNING', seen: false });
+    _saveJobs(jobs);
+    pollJobs();
+    refreshWatchBadge();
+  }
+  async function pollJobs() {
+    clearTimeout(_jobsTimer);
+    const jobs = _jobs();
+    const running = jobs.filter((j) => j.status === 'RUNNING');
+    if (!running.length) return;
+    for (const j of running) {
+      try {
+        const r = await fetchJson(`/api/knowledge/research/${encodeURIComponent(j.id)}`);
+        const st = (r && (r.status || (r.research && r.research.status))) || 'RUNNING';
+        if (st === 'DONE') { j.status = 'DONE'; j.doneAt = Date.now(); }
+        else if (st === 'ERROR' || st === 'FAILED') { j.status = 'ERROR'; j.doneAt = Date.now(); }
+      } catch { /* keep polling */ }
+    }
+    _saveJobs(jobs);
+    refreshWatchBadge();
+    if (jobs.some((j) => j.status === 'RUNNING')) _jobsTimer = setTimeout(pollJobs, 12000);
+  }
+  pollJobs(); // resume polling after reloads
 
   // ── Header notification bell — new market-signal developments at a glance ──
   function wireBell() {
@@ -9832,12 +9950,28 @@
         const data = await fetchJson('/api/watch/findings?limit=40');
         items = (data.findings || []).filter((f) => f.status === 'NEW').slice(0, 8);
       } catch { /* gated or unavailable */ }
-      if (!items.length) {
-        panel.innerHTML = `<div class="bell-h">Market signals</div>
+      // Activity: background research runs (running + recently finished).
+      const jobs = _jobs().slice().reverse().slice(0, 5);
+      const jobsHtml = jobs.length ? `<div class="bell-h">Activity</div>
+        ${jobs.map((j) => `
+          <button class="bell-item" data-bell-job="${escapeHtml(j.id)}">
+            <span class="bell-cat">${j.status === 'RUNNING' ? '⏳' : j.status === 'DONE' ? '✅' : '⚠️'}</span>
+            <span class="bell-body">
+              <span class="bell-who">${escapeHtml(j.name)}<i>research</i></span>
+              <span class="bell-title">${j.status === 'RUNNING' ? 'Researching… (~60s)' : j.status === 'DONE' ? 'Research finished — open the dossier' : 'Research failed — try again'}</span>
+            </span>
+          </button>`).join('')}` : '';
+      if (!items.length && !jobs.length) {
+        panel.innerHTML = `<div class="bell-h">Alerts</div>
           <div class="bell-empty kb-subtle">No new developments. Turn on Market Watch for a prospect or competitor and new findings will land here.</div>`;
         return;
       }
-      panel.innerHTML = `<div class="bell-h">New developments <span class="bell-h-n">${items.length}</span></div>
+      // Opening the tray acknowledges finished jobs.
+      const acked = _jobs(); let changed = false;
+      for (const j of acked) { if (j.status !== 'RUNNING' && !j.seen) { j.seen = true; changed = true; } }
+      if (changed) { _saveJobs(acked); refreshWatchBadge(); }
+      panel.innerHTML = `${jobsHtml}
+        ${items.length ? `<div class="bell-h">New developments <span class="bell-h-n">${items.length}</span></div>` : ''}
         ${items.map((f) => `
           <button class="bell-item" data-goto-signals="1">
             <span class="bell-cat">${WATCH_CAT_ICON[f.category] || '•'}</span>
@@ -9853,6 +9987,13 @@
         loaded['market-signals'] = false;
         window.location.hash = '#market-signals';
         if (currentSection === 'market-signals') switchSection('market-signals');
+      }));
+      panel.querySelectorAll('[data-bell-job]').forEach((el) => el.addEventListener('click', () => {
+        close();
+        _prospectsState.selectedCompanyId = el.dataset.bellJob;
+        loaded.prospects = false;
+        if (currentSection === 'prospects') switchSection('prospects');
+        else window.location.hash = '#prospects';
       }));
     });
     document.addEventListener('click', (e) => { if (!panel.classList.contains('hidden') && !panel.contains(e.target)) close(); });
