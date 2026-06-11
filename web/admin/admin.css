@@ -4763,3 +4763,5 @@ details.schedule-advanced > .schedule-advanced-body {
 .cmdk-hint { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .cmdk-empty { padding: 18px; font-size: 13px; color: var(--muted); text-align: center; }
 .cmdk-foot { display: flex; gap: 16px; padding: 8px 16px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 10px; color: var(--muted); background: var(--surface-2); }
+
+.contact-loc { font-size: 10.5px; margin-top: 2px; white-space: nowrap; }

@@ -2266,7 +2266,7 @@
             <span class="ec-avatar">${escapeHtml(initial)}</span>
             <div>
               <div class="ec-head-title">Compose email</div>
-              <div class="ec-head-sub">to ${escapeHtml(contact.name || 'contact')}${contact.role ? ` · ${escapeHtml(contact.role)}` : ''}</div>
+              <div class="ec-head-sub">to ${escapeHtml(contact.name || 'contact')}${contact.role ? ` · ${escapeHtml(contact.role)}` : ''}${contact.location ? ` · 📍 ${escapeHtml(contact.location)}` : ''}</div>
             </div>
           </div>
           <button type="button" class="ec-close cal-picker-close" aria-label="Close">✕</button>
@@ -2747,13 +2747,13 @@
               <tbody>
                 ${contacts.map((ct) => `
                   <tr data-contact-row="${escapeHtml(ct.id)}">
-                    <td><input type="text" data-contact-field="name"  value="${escapeHtml(ct.name)}"  maxlength="200"></td>
+                    <td><input type="text" data-contact-field="name"  value="${escapeHtml(ct.name)}"  maxlength="200">${ct.location ? `<div class="contact-loc kb-subtle">📍 ${escapeHtml(ct.location)}</div>` : ''}</td>
                     <td><input type="email" data-contact-field="email" value="${escapeHtml(ct.email)}"></td>
                     <td><input type="text" data-contact-field="role"  value="${escapeHtml(ct.role)}" maxlength="100"></td>
                     <td>${ct.persona_name ? `<span class="pill pill-info">${escapeHtml(ct.persona_name)}</span>` : '<span class="kb-subtle">—</span>'}</td>
                     <td>${ct.likely_product_name ? `<span class="contact-fit-pill" title="Most likely buyer for this product">${escapeHtml(ct.likely_product_name)}</span>` : '<span class="kb-subtle">—</span>'}</td>
                     <td>
-                      <button class="kb-link-btn" data-contact-email="${escapeHtml(ct.id)}" data-contact-fit="${escapeHtml(ct.likely_product_id || '')}" ${ct.email ? '' : 'disabled'} title="${ct.email ? 'Draft an email to this contact with AI' : 'Add an email address first'}">✉ Email</button>
+                      <button class="kb-link-btn" data-contact-email="${escapeHtml(ct.id)}" data-contact-fit="${escapeHtml(ct.likely_product_id || '')}" data-contact-loc="${escapeHtml(ct.location || '')}" ${ct.email ? '' : 'disabled'} title="${ct.email ? 'Draft an email to this contact with AI' : 'Add an email address first'}">✉ Email</button>
                       <button class="kb-link-btn hidden" data-contact-save="${escapeHtml(ct.id)}" title="Save your edits to this contact">Save</button>
                       <button class="kb-link-btn danger" data-contact-delete="${escapeHtml(ct.id)}">Delete</button>
                     </td>
@@ -2874,7 +2874,7 @@
         const id = b.dataset.contactEmail;
         const row = host.querySelector(`[data-contact-row="${id}"]`);
         const field = (f) => { const el = row && row.querySelector(`[data-contact-field="${f}"]`); return el ? el.value.trim() : ''; };
-        openEmailComposer({ id, name: field('name'), email: field('email'), role: field('role'), likely_product_id: b.dataset.contactFit || null }, _prospectsState.selectedCompanyId);
+        openEmailComposer({ id, name: field('name'), email: field('email'), role: field('role'), likely_product_id: b.dataset.contactFit || null, location: b.dataset.contactLoc || null }, _prospectsState.selectedCompanyId);
       }));
     // Save only appears once a row is actually edited — keeps the row uncluttered.
     host.querySelectorAll('[data-contact-row]').forEach((row) => {
@@ -3021,7 +3021,7 @@
         const rows = cands.map((c, i) => {
           const reachable = c.hasEmail !== false;
           const who = escapeHtml(c.name || c.firstName || 'Unknown');
-          const title = escapeHtml(c.title || '');
+          const title = escapeHtml([c.title, c.location ? `📍 ${c.location}` : ''].filter(Boolean).join(' · '));
           const fit = c.productFitName
             ? `<span class="contact-fit-pill" title="Most likely buyer for this product">→ ${escapeHtml(c.productFitName)}</span>`
             : '<span class="kb-subtle" title="No clear product mapping">—</span>';

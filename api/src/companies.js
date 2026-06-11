@@ -503,6 +503,7 @@ router.post('/:id/add-contacts', gating.requireFeature('discovery'), async (req,
           companyId: company.id, name: p.name, email: p.email,
           role: p.title || 'Unknown', title: p.title || null,
           likelyProductId: validProducts.has(fit) ? fit : null,
+          location: p.location || null,
         });
         created++; saved.push(c);
       } catch (e) {

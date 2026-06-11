@@ -73,7 +73,7 @@ async function inferPersonaIdForRole(tenantId, role) {
 // ── Selects ──────────────────────────────────────────────────────────────
 
 const SELECT_COLUMNS = `
-  pc.id, pc.company_id, pc.name, pc.email, pc.role, pc.persona_id, pc.likely_product_id,
+  pc.id, pc.company_id, pc.name, pc.email, pc.role, pc.persona_id, pc.likely_product_id, pc.location,
   pc.title, pc.notes, pc.created_by, pc.created_at, pc.updated_at,
   c.name AS company_name,
   c.domain AS company_domain,
@@ -117,7 +117,7 @@ async function get(tenantId, id) {
   return r.rows[0] || null;
 }
 
-async function create(tenantId, userId, { companyId, name, email, role, personaId, title, notes, likelyProductId }) {
+async function create(tenantId, userId, { companyId, name, email, role, personaId, title, notes, likelyProductId, location }) {
   if (!companyId) { const e = new Error('companyId required'); e.status = 400; throw e; }
   if (!email || !EMAIL_RE.test(String(email))) { const e = new Error('valid email required'); e.status = 400; throw e; }
 
@@ -144,10 +144,10 @@ async function create(tenantId, userId, { companyId, name, email, role, personaI
   try {
     const r = await db.query(
       `INSERT INTO prospect_contacts
-         (tenant_id, company_id, name, email, role, persona_id, title, notes, created_by, likely_product_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         (tenant_id, company_id, name, email, role, persona_id, title, notes, created_by, likely_product_id, location)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING id`,
-      [tenantId, companyId, finalName, String(email).trim(), finalRole, finalPersonaId, finalTitle, notes || null, userId || null, likelyProductId || null]
+      [tenantId, companyId, finalName, String(email).trim(), finalRole, finalPersonaId, finalTitle, notes || null, userId || null, likelyProductId || null, location || null]
     );
     return get(tenantId, r.rows[0].id);
   } catch (err) {
@@ -194,7 +194,7 @@ async function findOrCreateStub(tenantId, companyId, email) {
   )).rows[0] || null;
 }
 
-async function update(tenantId, id, { name, email, role, personaId, title, notes, likelyProductId }) {
+async function update(tenantId, id, { name, email, role, personaId, title, notes, likelyProductId, location }) {
   const existing = await get(tenantId, id);
   if (!existing) return null;
   const next = {
@@ -219,10 +219,11 @@ async function update(tenantId, id, { name, email, role, personaId, title, notes
     await db.query(
       `UPDATE prospect_contacts
           SET name=$3, email=$4, role=$5, persona_id=$6, title=$7, notes=$8,
-              likely_product_id=$9, updated_at=now()
+              likely_product_id=$9, location=$10, updated_at=now()
         WHERE tenant_id=$1 AND id=$2`,
       [tenantId, id, next.name, next.email, next.role, nextPersonaId, next.title, next.notes,
-       likelyProductId !== undefined ? (likelyProductId || null) : existing.likely_product_id]
+       likelyProductId !== undefined ? (likelyProductId || null) : existing.likely_product_id,
+       location !== undefined ? (location || null) : existing.location]
     );
     return get(tenantId, id);
   } catch (err) {

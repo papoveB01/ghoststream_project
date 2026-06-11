@@ -323,6 +323,7 @@ function normalizeCandidate(p) {
     title:     p.title || null,
     seniority: p.seniority || null,
     company:   (p.organization && p.organization.name) || null,
+    location:  [p.city, p.state, p.country].filter(Boolean).join(', ') || null,
     hasEmail:  Boolean(p.has_email),
     hasPhone:  Boolean(p.has_direct_phone),
     email:     null, // never present in the teaser — reveal via revealPerson(id)
