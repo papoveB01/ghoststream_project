@@ -4516,7 +4516,7 @@ details.schedule-advanced > .schedule-advanced-body {
 .mm-leg { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10.5px; color: var(--text-2); }
 .mm-leg i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .mm-leg.you i  { background: var(--accent); box-shadow: 0 0 8px rgba(140,224,70,.8); }
-.mm-leg.comp i { background: transparent; border: 1.5px solid var(--accent); }
+.mm-leg.comp i { background: linear-gradient(90deg, #f0a13d, #ef4444); box-shadow: 0 0 6px rgba(239,99,61,.5); }
 .mm-leg.pros i { background: transparent; border: 1.5px solid var(--blue); box-shadow: 0 0 6px rgba(77,163,232,.5); }
 .mm-leg.hot i  { background: var(--accent); animation: dash-pulse 1.6s infinite; }
 .mm-stage {

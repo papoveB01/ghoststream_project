@@ -827,8 +827,18 @@
     const center = { id: '_you', type: 'you', label: (dash && dash.tenant && dash.tenant.name) || 'You', x: 0, y: 0, r: 16, color: LIME, fx: true };
     nodes.push(center);
     const cap = (arr, n) => arr.slice(0, n);
+    // Competitor threat scale: orange → red. Criticality is how much of your
+    // attention they're consuming — intel volume, plus Market Watch being on.
+    const maxDoc = Math.max(1, ...competitors.map((k) => k.doc_count || 0));
+    const threatColor = (t) => {
+      const o = [240, 161, 61], r = [239, 68, 68];
+      const c = o.map((v, i) => Math.round(v + (r[i] - v) * t));
+      return `rgb(${c[0]},${c[1]},${c[2]})`;
+    };
     for (const k of cap(competitors, 40)) {
-      nodes.push({ id: 'k:' + k.id, type: 'comp', label: k.name, meta: `${fmtNum(k.doc_count || 0)} intel doc${(k.doc_count || 0) === 1 ? '' : 's'}`, r: 7 + Math.min(7, (k.doc_count || 0) * 1.2), color: LIME, side: -1 });
+      const threat = Math.min(1, ((k.doc_count || 0) / maxDoc) * 0.75 + (k.watch_enabled ? 0.25 : 0));
+      const lvl = threat >= 0.66 ? 'High' : threat >= 0.33 ? 'Medium' : 'Low';
+      nodes.push({ id: 'k:' + k.id, type: 'comp', label: k.name, meta: `${lvl} threat · ${fmtNum(k.doc_count || 0)} intel doc${(k.doc_count || 0) === 1 ? '' : 's'}${k.watch_enabled ? ' · watched' : ''}`, r: 7 + Math.min(7, (k.doc_count || 0) * 1.2), color: threatColor(threat), solid: true, hot: threat >= 0.66, side: -1 });
     }
     for (const c of cap(companies, 80)) {
       const sig = sigByCompany.get(c.id) || { n: 0, strong: 0 };
@@ -889,7 +899,7 @@
       for (const n of nodes) {
         if (n.fx) continue;
         const a = 0.13 + (n.hot ? 0.12 : 0) + (hover === n ? 0.25 : 0);
-        ctx.strokeStyle = (n.type === 'comp' ? `rgba(140,224,70,${a})` : `rgba(77,163,232,${a})`);
+        ctx.strokeStyle = (n.type === 'comp' ? `rgba(239,99,61,${a})` : `rgba(77,163,232,${a})`);
         ctx.beginPath();
         ctx.moveTo(center.x, center.y);
         ctx.lineTo(n.dx0 || n.x, n.dy0 || n.y);
@@ -911,9 +921,11 @@
         ctx.globalAlpha = n.fx ? 1 : 0.92;
         ctx.beginPath(); ctx.arc(x, y, n.r, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
-        // inner core + ring
-        ctx.fillStyle = 'rgba(10,14,19,.55)';
-        ctx.beginPath(); ctx.arc(x, y, Math.max(2, n.r - 3), 0, Math.PI * 2); ctx.fill();
+        // inner core + ring (solid nodes stay a filled dot)
+        if (!n.solid) {
+          ctx.fillStyle = 'rgba(10,14,19,.55)';
+          ctx.beginPath(); ctx.arc(x, y, Math.max(2, n.r - 3), 0, Math.PI * 2); ctx.fill();
+        }
         ctx.strokeStyle = n.color; ctx.lineWidth = 1.4;
         ctx.beginPath(); ctx.arc(x, y, n.r, 0, Math.PI * 2); ctx.stroke();
         // labels: center always; big or hovered nodes too
