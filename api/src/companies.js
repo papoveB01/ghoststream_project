@@ -382,9 +382,67 @@ router.post('/:id/find-contacts', gating.requireFeature('discovery'), async (req
 
     // Teaser candidates only — cheap (one search call, no per-person reveal).
     const candidates = await apollo.searchPeople(req.tenantId, domain, { limit: want, reveal: false });
+    // Best-product-fit per person (one cheap structured AI call for the whole
+    // batch, title/seniority vs our portfolio). Soft-fails to no annotation.
+    try {
+      const fits = await productFitForPeople(req.tenantId, candidates);
+      for (const c of candidates) {
+        const f = fits[c.id];
+        if (f) { c.productFitId = f.id; c.productFitName = f.name; }
+      }
+    } catch (e) { console.warn('[find-contacts] product fit skipped:', (e && e.message) || e); }
     res.json({ ok: true, domain, resolvedDomain, company: company2, candidates });
   } catch (err) { next(err); }
 });
+
+// Which of OUR products is each discovered person most likely the buyer for?
+// One structured call per batch; returns { [personId]: { id, name } }.
+async function productFitForPeople(tenantId, people) {
+  const list = (people || []).filter((p) => p && p.id);
+  if (!list.length) return {};
+  const products = (await db.query(
+    `SELECT id, name, description FROM products WHERE tenant_id = $1 ORDER BY lower(name) LIMIT 20`, [tenantId]
+  )).rows;
+  if (!products.length) return {};
+  const gemini = require('./gemini');
+  const models = require('./models');
+  const SCHEMA = {
+    type: 'object',
+    properties: {
+      fits: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            personId: { type: 'string' },
+            productId: { type: 'string', description: 'One of OUR product ids, or empty string when no product clearly maps to this role.' },
+          },
+          required: ['personId', 'productId'],
+        },
+      },
+    },
+    required: ['fits'],
+  };
+  const prompt =
+    'For each PERSON below (a role at a prospect company), pick which ONE of OUR PRODUCTS they are most ' +
+    'likely the buyer/decision-maker for, judging purely from their title/seniority vs what each product does. ' +
+    'Use an empty productId when no product clearly maps. Do not guess wildly — empty is better than wrong.\n\n' +
+    `===OUR PRODUCTS===\n${products.map((p) => `${p.id}: ${p.name}${p.description ? ` — ${String(p.description).slice(0, 120)}` : ''}`).join('\n')}\n\n` +
+    `===PEOPLE===\n${list.map((p) => `${p.id}: ${[p.title, p.seniority].filter(Boolean).join(' · ') || 'Unknown role'}`).join('\n')}`;
+  const ai = gemini.getClient();
+  const resp = await ai.models.generateContent({
+    model: models.modelFor('content'),
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    config: { temperature: 0.1, maxOutputTokens: 2000, responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
+  });
+  const byId = new Map(products.map((p) => [p.id, p]));
+  const out = {};
+  for (const f of (JSON.parse(resp.text).fits || [])) {
+    const pr = byId.get(String(f.productId || ''));
+    if (pr && f.personId) out[f.personId] = { id: pr.id, name: pr.name };
+  }
+  return out;
+}
 
 // POST /companies/:id/add-contacts { ids:[apolloPersonId,...] } — STAGE 2. Reveals
 // each selected Apollo person (people/match → real name + verified email; one
@@ -398,6 +456,10 @@ router.post('/:id/add-contacts', gating.requireFeature('discovery'), async (req,
     if (!company) return res.status(404).json({ error: 'prospect not found' });
     const ids = [...new Set((Array.isArray(req.body && req.body.ids) ? req.body.ids : []).map((s) => String(s || '').trim()).filter(Boolean))].slice(0, 25);
     if (!ids.length) return res.status(400).json({ error: 'select at least one contact to add' });
+    // Per-person product fit from the discovery step ({ apolloId: productId });
+    // validated against the tenant's real product ids before persisting.
+    const fitsIn = (req.body && typeof req.body.fits === 'object' && req.body.fits) || {};
+    const validProducts = new Set((await db.query(`SELECT id FROM products WHERE tenant_id = $1`, [req.tenantId])).rows.map((r) => r.id));
 
     // Each reveal that actually hits Apollo (cache miss) books one research
     // unit against the plan — the ADR-0004 guardrail on the only "cheap meter"
@@ -422,9 +484,11 @@ router.post('/:id/add-contacts', gating.requireFeature('discovery'), async (req,
       }
       if (!p || !p.email) { failed++; continue; }
       try {
+        const fit = String(fitsIn[id] || '').trim();
         const c = await contacts.create(req.tenantId, req.user && req.user.sub, {
           companyId: company.id, name: p.name, email: p.email,
           role: p.title || 'Unknown', title: p.title || null,
+          likelyProductId: validProducts.has(fit) ? fit : null,
         });
         created++; saved.push(c);
       } catch (e) {

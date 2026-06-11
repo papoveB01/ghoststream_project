@@ -73,16 +73,18 @@ async function inferPersonaIdForRole(tenantId, role) {
 // ── Selects ──────────────────────────────────────────────────────────────
 
 const SELECT_COLUMNS = `
-  pc.id, pc.company_id, pc.name, pc.email, pc.role, pc.persona_id,
+  pc.id, pc.company_id, pc.name, pc.email, pc.role, pc.persona_id, pc.likely_product_id,
   pc.title, pc.notes, pc.created_by, pc.created_at, pc.updated_at,
   c.name AS company_name,
   c.domain AS company_domain,
-  p.name AS persona_name
+  p.name AS persona_name,
+  pr.name AS likely_product_name
 `;
 const FROM_JOIN = `
   FROM prospect_contacts pc
   LEFT JOIN companies c ON c.id = pc.company_id
   LEFT JOIN personas  p ON p.id = pc.persona_id AND p.tenant_id = pc.tenant_id
+  LEFT JOIN products  pr ON pr.id = pc.likely_product_id AND pr.tenant_id = pc.tenant_id
 `;
 
 async function list(tenantId, { companyId, q } = {}) {
@@ -115,7 +117,7 @@ async function get(tenantId, id) {
   return r.rows[0] || null;
 }
 
-async function create(tenantId, userId, { companyId, name, email, role, personaId, title, notes }) {
+async function create(tenantId, userId, { companyId, name, email, role, personaId, title, notes, likelyProductId }) {
   if (!companyId) { const e = new Error('companyId required'); e.status = 400; throw e; }
   if (!email || !EMAIL_RE.test(String(email))) { const e = new Error('valid email required'); e.status = 400; throw e; }
 
@@ -142,10 +144,10 @@ async function create(tenantId, userId, { companyId, name, email, role, personaI
   try {
     const r = await db.query(
       `INSERT INTO prospect_contacts
-         (tenant_id, company_id, name, email, role, persona_id, title, notes, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         (tenant_id, company_id, name, email, role, persona_id, title, notes, created_by, likely_product_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id`,
-      [tenantId, companyId, finalName, String(email).trim(), finalRole, finalPersonaId, finalTitle, notes || null, userId || null]
+      [tenantId, companyId, finalName, String(email).trim(), finalRole, finalPersonaId, finalTitle, notes || null, userId || null, likelyProductId || null]
     );
     return get(tenantId, r.rows[0].id);
   } catch (err) {
@@ -192,7 +194,7 @@ async function findOrCreateStub(tenantId, companyId, email) {
   )).rows[0] || null;
 }
 
-async function update(tenantId, id, { name, email, role, personaId, title, notes }) {
+async function update(tenantId, id, { name, email, role, personaId, title, notes, likelyProductId }) {
   const existing = await get(tenantId, id);
   if (!existing) return null;
   const next = {
@@ -216,9 +218,11 @@ async function update(tenantId, id, { name, email, role, personaId, title, notes
   try {
     await db.query(
       `UPDATE prospect_contacts
-          SET name=$3, email=$4, role=$5, persona_id=$6, title=$7, notes=$8, updated_at=now()
+          SET name=$3, email=$4, role=$5, persona_id=$6, title=$7, notes=$8,
+              likely_product_id=$9, updated_at=now()
         WHERE tenant_id=$1 AND id=$2`,
-      [tenantId, id, next.name, next.email, next.role, nextPersonaId, next.title, next.notes]
+      [tenantId, id, next.name, next.email, next.role, nextPersonaId, next.title, next.notes,
+       likelyProductId !== undefined ? (likelyProductId || null) : existing.likely_product_id]
     );
     return get(tenantId, id);
   } catch (err) {
@@ -375,7 +379,11 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
     // Sender + our-company context.
     const tenant = (await db.query(`SELECT name FROM tenants WHERE id = $1`, [req.tenantId])).rows[0] || {};
     const prof = (await db.query(`SELECT positioning, ideal_customer_profile FROM tenant_profiles WHERE tenant_id = $1`, [req.tenantId])).rows[0] || {};
-    const products = (await db.query(`SELECT name, description FROM products WHERE tenant_id = $1 ORDER BY lower(name) LIMIT 12`, [req.tenantId])).rows;
+    const products = (await db.query(`SELECT id, name, description FROM products WHERE tenant_id = $1 ORDER BY lower(name) LIMIT 12`, [req.tenantId])).rows;
+    // Optional product focus — the modal's product dropdown. When set, the
+    // draft pitches ONLY this product instead of the whole portfolio.
+    const focusId = String((req.body && req.body.productId) || '').trim();
+    const focusProduct = focusId ? products.find((p) => p.id === focusId) || null : null;
     const u = (await db.query(`SELECT first_name, last_name FROM users WHERE id = $1`, [req.user && req.user.sub])).rows[0] || {};
     const senderName = [u.first_name, u.last_name].filter(Boolean).join(' ').trim() || tenant.name || 'the team';
 
@@ -393,7 +401,9 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
     const ctxBlock = [
       `OUR COMPANY: ${tenant.name || ''}`,
       prof.positioning ? `What we do: ${String(prof.positioning).slice(0, 600)}` : '',
-      products.length ? `Our products: ${products.map((p) => p.name + (p.description ? ` (${String(p.description).slice(0, 80)})` : '')).join('; ')}` : '',
+      focusProduct
+        ? `FOCUS PRODUCT (the ONLY product this email is about): ${focusProduct.name}${focusProduct.description ? ` — ${String(focusProduct.description).slice(0, 300)}` : ''}`
+        : (products.length ? `Our products: ${products.map((p) => p.name + (p.description ? ` (${String(p.description).slice(0, 80)})` : '')).join('; ')}` : ''),
       `PROSPECT COMPANY: ${contact.company_name || ''}${contact.company_domain ? ` (${contact.company_domain})` : ''}`,
       `RECIPIENT: ${contact.name}${contact.role && contact.role !== 'Unknown' ? `, ${contact.role}` : ''}`,
       research.summary ? `What we know about them: ${String(research.summary).slice(0, 1200)}` : '',
@@ -406,6 +416,7 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
       `EMAIL TYPE — ${cat.label}: ${cat.goal}\n` +
       (engagement ? 'Ground the email concretely in the PAST ENGAGEMENT shown in the context — reference what was actually discussed (specifics, not generic phrases), and build the next step from there.\n' : '') +
       (instruction ? `MUST REFLECT (the sender's explicit instruction — follow it closely): ${instruction}\n` : '') +
+      (focusProduct ? `PRODUCT FOCUS — this email pitches ONLY "${focusProduct.name}". Do not mention or allude to our other products; tie the hook, value and call-to-action specifically to it.\n` : '') +
       'Write a compelling subject line and a WELL-STRUCTURED, professional plain-text body. Format the body like a real business email:\n' +
       `- A greeting on its OWN line ("Hi ${(contact.name || '').split(/\\s+/)[0] || 'there'},"), then a blank line.\n` +
       '- 2 to 3 SHORT paragraphs (1-2 sentences each), each separated by a BLANK line. One idea per paragraph: (1) the reason for writing / hook, (2) the value or relevance to them, (3) a single clear call to action.\n' +

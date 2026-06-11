@@ -4660,3 +4660,11 @@ details.schedule-advanced > .schedule-advanced-body {
 
 /* Prospects: collapsed add-form toggle bar */
 .prospect-add-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+
+/* Contact → product fit pill */
+.contact-fit-pill {
+  display: inline-block; font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+  color: var(--accent); background: var(--accent-light); border: 1px solid var(--accent-soft);
+  border-radius: 3px; padding: 1px 7px; white-space: nowrap;
+}
+.ec-field-prod select { min-width: 180px; }

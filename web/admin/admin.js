@@ -2169,6 +2169,9 @@
             <label class="ec-field ec-field-cat">Category
               <select id="ec-category">${cats.map((c) => `<option value="${escapeHtml(c.key)}">${escapeHtml(c.label)}</option>`).join('')}</select>
             </label>
+            <label class="ec-field ec-field-prod">Focus product <span class="ec-opt">optional</span>
+              <select id="ec-product"><option value="">All products / general</option></select>
+            </label>
             <label class="ec-field ec-field-intent">What should this email reflect? <span class="ec-opt">optional</span>
               <input id="ec-instruction" type="text" placeholder="e.g. mention our new tokenization product; we already serve their competitor">
             </label>
@@ -2269,6 +2272,19 @@
     $('ec-category').addEventListener('change', updateEngagementPicker);
     updateEngagementPicker();
 
+    // Focus-product picker — drafts pitch ONLY the selected product. Defaults
+    // to the contact's AI-scored likely product when one is on file.
+    fetchJson('/api/portfolio/products').then((r) => {
+      const prods = r.products || [];
+      const sel = $('ec-product');
+      if (!sel || !prods.length) return;
+      sel.innerHTML = '<option value="">All products / general</option>' +
+        prods.map((pr) => `<option value="${escapeHtml(pr.id)}">${escapeHtml(pr.name)}</option>`).join('');
+      if (contact.likely_product_id && prods.some((pr) => pr.id === contact.likely_product_id)) {
+        sel.value = contact.likely_product_id;
+      }
+    }).catch(() => { /* picker stays generic */ });
+
     $('ec-generate').onclick = async () => {
       const gen = $('ec-generate'); gen.disabled = true; const o = gen.textContent; gen.textContent = 'Drafting…';
       const res = $('ec-result'); res.className = 'kb-result'; res.classList.remove('hidden'); res.textContent = 'Writing a draft from the prospect context…';
@@ -2277,7 +2293,7 @@
         const engagementId = (engWrap && !engWrap.classList.contains('hidden') && $('ec-engagement')) ? ($('ec-engagement').value || null) : null;
         const r = await fetchJson(`/api/contacts/${encodeURIComponent(contact.id)}/draft-email`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ category: $('ec-category').value, instruction: $('ec-instruction').value.trim(), engagementId }),
+          body: JSON.stringify({ category: $('ec-category').value, instruction: $('ec-instruction').value.trim(), engagementId, productId: ($('ec-product') && $('ec-product').value) || null }),
         });
         $('ec-subject').value = r.subject || '';
         $('ec-body').value = r.body || '';
@@ -2597,7 +2613,7 @@
         ${contacts.length === 0
           ? '<div class="empty" style="padding:10px 0">No contacts yet. Add the first one below.</div>'
           : `<table class="prospect-contacts-table">
-              <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Persona link</th><th></th></tr></thead>
+              <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Persona link</th><th>Best product fit</th><th></th></tr></thead>
               <tbody>
                 ${contacts.map((ct) => `
                   <tr data-contact-row="${escapeHtml(ct.id)}">
@@ -2605,8 +2621,9 @@
                     <td><input type="email" data-contact-field="email" value="${escapeHtml(ct.email)}"></td>
                     <td><input type="text" data-contact-field="role"  value="${escapeHtml(ct.role)}" maxlength="100"></td>
                     <td>${ct.persona_name ? `<span class="pill pill-info">${escapeHtml(ct.persona_name)}</span>` : '<span class="kb-subtle">—</span>'}</td>
+                    <td>${ct.likely_product_name ? `<span class="contact-fit-pill" title="Most likely buyer for this product">${escapeHtml(ct.likely_product_name)}</span>` : '<span class="kb-subtle">—</span>'}</td>
                     <td>
-                      <button class="kb-link-btn" data-contact-email="${escapeHtml(ct.id)}" ${ct.email ? '' : 'disabled'} title="${ct.email ? 'Draft an email to this contact with AI' : 'Add an email address first'}">✉ Email</button>
+                      <button class="kb-link-btn" data-contact-email="${escapeHtml(ct.id)}" data-contact-fit="${escapeHtml(ct.likely_product_id || '')}" ${ct.email ? '' : 'disabled'} title="${ct.email ? 'Draft an email to this contact with AI' : 'Add an email address first'}">✉ Email</button>
                       <button class="kb-link-btn hidden" data-contact-save="${escapeHtml(ct.id)}" title="Save your edits to this contact">Save</button>
                       <button class="kb-link-btn danger" data-contact-delete="${escapeHtml(ct.id)}">Delete</button>
                     </td>
@@ -2717,7 +2734,7 @@
         const id = b.dataset.contactEmail;
         const row = host.querySelector(`[data-contact-row="${id}"]`);
         const field = (f) => { const el = row && row.querySelector(`[data-contact-field="${f}"]`); return el ? el.value.trim() : ''; };
-        openEmailComposer({ id, name: field('name'), email: field('email'), role: field('role') }, _prospectsState.selectedCompanyId);
+        openEmailComposer({ id, name: field('name'), email: field('email'), role: field('role'), likely_product_id: b.dataset.contactFit || null }, _prospectsState.selectedCompanyId);
       }));
     // Save only appears once a row is actually edited — keeps the row uncluttered.
     host.querySelectorAll('[data-contact-row]').forEach((row) => {
@@ -2855,10 +2872,14 @@
           const reachable = c.hasEmail !== false;
           const who = escapeHtml(c.name || c.firstName || 'Unknown');
           const title = escapeHtml(c.title || '');
+          const fit = c.productFitName
+            ? `<span class="contact-fit-pill" title="Most likely buyer for this product">→ ${escapeHtml(c.productFitName)}</span>`
+            : '<span class="kb-subtle" title="No clear product mapping">—</span>';
           const badge = reachable ? '<span class="kb-stream-pill stream-file" title="Email available">✉ email</span>' : '<span class="kb-subtle" title="No email on file — can\'t be added">no email</span>';
           return `<label class="apollo-cand-row" style="display:flex;align-items:center;gap:8px;padding:5px 2px;border-bottom:1px solid var(--hairline,#eee)">
-            <input type="checkbox" data-apollo-id="${escapeHtml(c.id)}" ${reachable ? 'checked' : 'disabled'}>
+            <input type="checkbox" data-apollo-id="${escapeHtml(c.id)}" ${reachable ? 'checked' : 'disabled'} data-apollo-fit="${escapeHtml(c.productFitId || '')}">
             <span style="flex:1"><strong>${who}</strong>${title ? ` — ${title}` : ''}</span>
+            ${fit}
             ${badge}</label>`;
         }).join('');
         picker.innerHTML = `<div class="apollo-cand-list">${rows}</div>
@@ -2875,14 +2896,16 @@
         picker.querySelectorAll('input[data-apollo-id]').forEach((cb) => cb.addEventListener('change', updateCount));
         updateCount();
         $('apollo-add-selected').addEventListener('click', async () => {
-          const ids = [...picker.querySelectorAll('input[data-apollo-id]:checked')].map((cb) => cb.getAttribute('data-apollo-id'));
+          const checked = [...picker.querySelectorAll('input[data-apollo-id]:checked')];
+          const ids = checked.map((cb) => cb.getAttribute('data-apollo-id'));
+          const fits = Object.fromEntries(checked.filter((cb) => cb.dataset.apolloFit).map((cb) => [cb.getAttribute('data-apollo-id'), cb.dataset.apolloFit]));
           if (!ids.length) return;
           const addBtn = $('apollo-add-selected'); addBtn.disabled = true; addBtn.textContent = 'Adding…';
           out.className = 'kb-result'; out.textContent = `Revealing ${ids.length} contact${ids.length === 1 ? '' : 's'} + saving…`;
           try {
             const a = await fetchJson(`/api/companies/${encodeURIComponent(company.id)}/add-contacts`, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ ids }),
+              body: JSON.stringify({ ids, fits }),
             });
             const parts = [];
             if (a.created) parts.push(`${a.created} added`);
