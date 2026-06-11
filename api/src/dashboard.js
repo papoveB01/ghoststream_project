@@ -184,6 +184,7 @@ router.get('/', async (req, res, next) => {
     const checklist = [
       { key: 'foundation', label: 'Ground your workspace — positioning + products', done: profileSet && prodR.rows[0].n > 0, goto: 'company' },
       { key: 'discover',   label: 'Find your first prospects',                      done: prospectsR.rows[0].total > 0,       goto: 'prospects', pmode: 'discover' },
+      { key: 'competitors', label: 'Find your competitors',                          done: compR.rows[0].n > 0,                goto: 'competitors' },
       { key: 'research',   label: 'Research one prospect (signals & why-now)',      done: (su.research_done || 0) > 0,        goto: 'prospects' },
       { key: 'contacts',   label: 'Find the decision-makers',                       done: (su.contacts || 0) > 0,             goto: 'prospects' },
       { key: 'engage',     label: 'Schedule your first AI-joined call',             done: (su.meetings_ever || 0) > 0,        goto: 'missions', mtab: 'schedule' },
@@ -245,24 +246,26 @@ router.get('/', async (req, res, next) => {
 
 // GET /dashboard/setup — the "Get up to speed" gate state. Light version of
 // the Overview checklist (keep step definitions in sync with the route above):
-// the first FOUR steps gate the app for new workspaces; 5-6 stay advisory.
+// these five steps gate the app for new workspaces.
 router.get('/setup', async (req, res, next) => {
   try {
     const t = req.tenantId;
-    const [prof, prods, prospects, research, contacts] = await Promise.all([
+    const [prof, prods, prospects, competitors, research, contacts] = await Promise.all([
       db.query(`SELECT positioning, objectives FROM tenant_profiles WHERE tenant_id = $1`, [t]),
       db.query(`SELECT count(*)::int AS n FROM products WHERE tenant_id = $1`, [t]),
       db.query(`SELECT count(*)::int AS n FROM companies WHERE tenant_id = $1`, [t]),
+      db.query(`SELECT count(*)::int AS n FROM competitors WHERE tenant_id = $1`, [t]),
       db.query(`SELECT count(*)::int AS n FROM prospect_research WHERE tenant_id = $1 AND status = 'DONE'`, [t]),
       db.query(`SELECT count(*)::int AS n FROM prospect_contacts WHERE tenant_id = $1`, [t]),
     ]);
     const p = prof.rows[0] || {};
     const profileSet = !!((p.positioning && p.positioning.trim()) || (p.objectives && p.objectives.trim()));
     const steps = [
-      { key: 'foundation', label: 'Ground your workspace — positioning + products', done: profileSet && prods.rows[0].n > 0 },
-      { key: 'discover',   label: 'Find your first prospects',                      done: prospects.rows[0].n > 0 },
-      { key: 'research',   label: 'Research one prospect (signals & why-now)',      done: research.rows[0].n > 0 },
-      { key: 'contacts',   label: 'Find the decision-makers',                       done: contacts.rows[0].n > 0 },
+      { key: 'foundation',  label: 'Ground your workspace — positioning + products', done: profileSet && prods.rows[0].n > 0 },
+      { key: 'discover',    label: 'Find your first prospects',                      done: prospects.rows[0].n > 0 },
+      { key: 'competitors', label: 'Find your competitors',                          done: competitors.rows[0].n > 0 },
+      { key: 'research',    label: 'Research one prospect (signals & why-now)',      done: research.rows[0].n > 0 },
+      { key: 'contacts',    label: 'Find the decision-makers',                       done: contacts.rows[0].n > 0 },
     ];
     res.json({ steps, gateComplete: steps.every((x) => x.done) });
   } catch (err) { next(err); }

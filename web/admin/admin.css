@@ -4789,6 +4789,14 @@ details.schedule-advanced > .schedule-advanced-body {
 .setup-gate-step.active { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 3px var(--accent-light); }
 .setup-gate-step.active i { border-color: var(--accent); color: var(--accent); }
 .setup-gate-step.done { opacity: .65; }
+.setup-gate-next {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin-top: 10px; padding: 10px 14px;
+  border: 1px solid var(--accent); border-radius: 10px;
+  background: var(--accent-light);
+  font-size: 13px; font-weight: 600;
+}
+.setup-gate-next .primary-cta { margin-left: auto; }
 .setup-gate-step.done i { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .setup-gate-hint { font-size: 13px; line-height: 1.55; color: var(--text-2); }
 .setup-gate-hint strong { color: var(--accent); }
@@ -4798,6 +4806,7 @@ details.schedule-advanced > .schedule-advanced-body {
 .setup-mode .sidebar-nav a { opacity: .35; pointer-events: none; }
 .setup-mode .sidebar-nav a[data-section="company"],
 .setup-mode .sidebar-nav a[data-section="prospects"],
+.setup-mode .sidebar-nav a[data-section="competitors"],
 .setup-mode .sidebar-nav a[data-section="integrations"] { opacity: 1; pointer-events: auto; }
 .setup-mode #tour-btn, .setup-mode .bell-wrap { display: none; }
 

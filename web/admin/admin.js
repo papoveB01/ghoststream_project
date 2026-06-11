@@ -526,7 +526,7 @@
   }
 
   async function switchSection(sec, query) {
-    // "Get up to speed" gate: until the first four journey steps are done,
+    // "Get up to speed" gate: until the first journey steps are done,
     // only the step-relevant pages are reachable.
     if (setupGating() && !SETUP_ALLOWED.has(sec)) {
       const step = setupCurrentStep();
@@ -2306,6 +2306,9 @@
         <tbody id="pcand-tbody"></tbody>
       </table>
       <div class="kb-subtle" style="padding:2px 0 10px">Ranked by priority — best product fit and freshest buying signal first.</div>
+      <div style="display:flex;justify-content:flex-end;padding:2px 0 10px">
+        <button type="button" class="primary-cta" id="pcand-done">✓ Done — view my prospects</button>
+      </div>
       <div class="kb-result hidden" id="pcand-result"></div>`;
 
     const tbody = $('pcand-tbody');
@@ -2327,6 +2330,15 @@
     $('pcand-filter-cat').addEventListener('change', applyFilters);
     $('pcand-filter-prod').addEventListener('change', applyFilters);
     applyFilters();
+    // Done closes the discovery pane and lands on the saved-prospects page
+    // (the last added prospect is preselected via _prospectsState).
+    const doneBtn = $('pcand-done');
+    if (doneBtn) doneBtn.addEventListener('click', () => {
+      _prospectFormOpen = false;
+      loaded.prospects = false;
+      window.location.hash = '#prospects';
+      if (currentSection === 'prospects') switchSection('prospects');
+    });
     wireEnrichJump(body);
     wireExistingTrackedStrip(body, 'prospects', existing);
   }
@@ -3762,7 +3774,13 @@
   function _finderEsc(e) { if (e.key === 'Escape') finderDone(); }
   function finderDone() {
     closeCompetitorFinder();
-    if (_finderAddedAny) { _finderAddedAny = false; loaded.competitors = false; loadCompetitors(); }
+    // Land on the saved-competitors page (last added rival preselected).
+    _competitorFormOpen = false;
+    if (_finderAddedAny) _finderAddedAny = false;
+    loaded.competitors = false;
+    window.location.hash = '#competitors';
+    if (currentSection === 'competitors') switchSection('competitors');
+    else loadCompetitors();
   }
 
   function openCompetitorFinderModal() {
@@ -10015,21 +10033,35 @@
     } catch { /* non-fatal — leave badges as-is */ }
   }
 
-  // ── "Get up to speed" gate — new workspaces must complete the first four
+  // ── "Get up to speed" gate — new workspaces must complete the first
   // journey steps before the dashboard and the rest of the nav unlock. The
   // wizard hosts the REAL pages (Company / Prospects), so every manual and AI
   // path counts; state is server-derived, so completion is always truthful. ──
   let _setup = null;            // { steps:[{key,label,done}], gateComplete }
   let _setupTimer = null;
   const SETUP_TARGETS = {
-    foundation: { sec: 'company',   hint: 'Click “Enrich from web” (or fill the foundation by hand) and make sure at least one product is listed under Products.' },
-    discover:   { sec: 'prospects', hint: 'Use “Discover online”, pull from your CRM, or add a prospect manually — you need at least one.' },
-    research:   { sec: 'prospects', hint: 'Open your prospect and hit “Research / refresh” on the Why-now tab (or “Research now” right after adding one). Takes ~60s.' },
-    contacts:   { sec: 'prospects', hint: 'On your prospect\'s People tab, use “⤓ Find contacts” to pull decision-makers — or add one manually.' },
+    foundation:  { sec: 'company',     hint: 'Click “Enrich from web” (or fill the foundation by hand) and make sure at least one product is listed under Products.' },
+    discover:    { sec: 'prospects',   hint: 'Use “Discover online”, pull from your CRM, or add a prospect manually — you need at least one.' },
+    competitors: { sec: 'competitors', hint: 'Run “✦ Find competitors automatically” and add the rivals that matter — or add one manually. You need at least one.' },
+    research:    { sec: 'prospects',   hint: 'Open your prospect and hit “Research / refresh” on the Why-now tab (or “Research now” right after adding one). Takes ~60s.' },
+    contacts:    { sec: 'prospects',   hint: 'On your prospect\'s People tab, use “⤓ Find contacts” to pull decision-makers — or add one manually.' },
   };
-  const SETUP_ALLOWED = new Set(['company', 'prospects', 'integrations']);
-  function setupGating() { return !!(_setup && !_setup.gateComplete); }
-  function setupCurrentStep() { return (_setup && _setup.steps.find((x) => !x.done)) || null; }
+  const SETUP_ALLOWED = new Set(['company', 'prospects', 'competitors', 'integrations']);
+  let _setupStepKey = null; // the step the user is working on (advance is click-driven)
+  function setupGating() {
+    if (!_setup) return false;
+    if (!_setup.gateComplete) return true;
+    // All steps done server-side but the user hasn't clicked the final
+    // Continue yet — keep the gate chrome until they do.
+    return _setupStepKey !== null;
+  }
+  function setupCurrentStep() {
+    if (_setup && _setupStepKey) {
+      const cur = _setup.steps.find((x) => x.key === _setupStepKey);
+      if (cur) return cur;
+    }
+    return (_setup && _setup.steps.find((x) => !x.done)) || null;
+  }
   async function refreshSetupState() {
     try { _setup = await fetchJson('/api/dashboard/setup'); } catch { /* keep last */ }
     return _setup;
@@ -10043,7 +10075,10 @@
     }
     document.body.classList.add('setup-mode');
     const step = setupCurrentStep();
+    if (step && !_setupStepKey) _setupStepKey = step.key;
     const idx = _setup.steps.indexOf(step);
+    const stepDone = !!(step && step.done);
+    const next = _setup.steps.find((x) => !x.done) || null;
     if (!bar) {
       bar = document.createElement('div');
       bar.id = 'setup-gate';
@@ -10054,7 +10089,7 @@
     bar.innerHTML = `
       <div class="setup-gate-head">
         <span class="setup-gate-title">✦ Get up to speed</span>
-        <span class="setup-gate-sub">4 quick steps before your cockpit unlocks</span>
+        <span class="setup-gate-sub">${_setup.steps.length} quick steps before your cockpit unlocks</span>
       </div>
       <div class="setup-gate-steps">
         ${_setup.steps.map((st, i) => `
@@ -10062,16 +10097,22 @@
             <i>${st.done ? '✓' : i + 1}</i>${escapeHtml(st.label.split(' — ')[0])}
           </span>`).join('')}
       </div>
-      ${step ? `<div class="setup-gate-hint"><strong>Step ${idx + 1}:</strong> ${SETUP_TARGETS[step.key].hint}</div>` : ''}`;
+      ${step && !stepDone ? `<div class="setup-gate-hint"><strong>Step ${idx + 1}:</strong> ${SETUP_TARGETS[step.key].hint}</div>` : ''}
+      ${stepDone ? `<div class="setup-gate-next">
+        <span>✓ ${escapeHtml(step.label.split(' — ')[0])} — done${next ? '' : '. That was the last one!'}</span>
+        <button type="button" class="primary-cta" id="setup-gate-continue">${next ? `Continue: ${escapeHtml(next.label.split(' — ')[0])} →` : '🎉 Enter your cockpit →'}</button>
+      </div>` : ''}`;
+    const cont = $('setup-gate-continue');
+    if (cont) cont.onclick = () => setupAdvance();
   }
-  async function setupPoll() {
-    clearTimeout(_setupTimer);
-    if (!setupGating()) return;
-    const before = setupCurrentStep();
-    await refreshSetupState();
-    const after = setupCurrentStep();
-    if (!setupGating()) {
-      // Gate cleared — celebrate and hand over the full app.
+  // Click-driven advance — the user reviews their results and decides when to
+  // move on; the gate never yanks them mid-flow.
+  function setupAdvance() {
+    const next = _setup && _setup.steps.find((x) => !x.done);
+    if (!next) {
+      // Gate cleared — unlock the app.
+      _setup = { ..._setup, gateComplete: true };
+      _setupStepKey = null;
       renderSetupGate();
       toast('🎉 You\'re set up — welcome to your cockpit');
       loaded.overview = false;
@@ -10079,17 +10120,28 @@
       if (currentSection === 'overview') switchSection('overview');
       return;
     }
-    if (before && after && before.key !== after.key) {
-      // A step just completed — move the user to the next step's home.
-      toast(`✓ ${before.label.split(' — ')[0]} — next: ${after.label.split(' — ')[0]}`);
-      renderSetupGate();
-      const target = SETUP_TARGETS[after.key].sec;
-      if (after.key === 'discover') { _prospectMode = 'discover'; _prospectFormOpen = true; loaded.prospects = false; }
-      window.location.hash = '#' + target;
-      if (currentSection === target) { loaded[target] = false; switchSection(target); }
-    } else {
-      renderSetupGate();
-    }
+    _setupStepKey = next.key;
+    renderSetupGate();
+    const target = SETUP_TARGETS[next.key].sec;
+    if (next.key === 'discover') { _prospectMode = 'discover'; _prospectFormOpen = true; loaded.prospects = false; }
+    if (next.key === 'research' || next.key === 'contacts') { _prospectFormOpen = false; loaded.prospects = false; }
+    window.location.hash = '#' + target;
+    if (currentSection === target) { loaded[target] = false; switchSection(target); }
+    // Competitor step: open the finder so the first search is one click away.
+    if (next.key === 'competitors') setTimeout(() => { try { openCompetitorFinderModal(); } catch { /* page still loading */ } }, 500);
+  }
+  async function setupPoll() {
+    clearTimeout(_setupTimer);
+    if (!setupGating() && !(_setup && !_setup.gateComplete)) return;
+    const wasDone = (setupCurrentStep() || {}).done;
+    await refreshSetupState();
+    const step = setupCurrentStep();
+    // The poll only refreshes the banner: when the working step turns done a
+    // Continue button appears — the USER decides when to move on (their search
+    // results / added accounts stay on screen until then).
+    if (step && step.done && !wasDone) toast(`✓ ${step.label.split(' — ')[0]} — click Continue when you're ready`);
+    if (_setup && _setup.gateComplete && _setupStepKey === null) { renderSetupGate(); return; }
+    renderSetupGate();
     _setupTimer = setTimeout(setupPoll, 7000);
   }
 
