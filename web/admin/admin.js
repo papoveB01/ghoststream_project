@@ -829,9 +829,16 @@
 
     const LIME = '#8ce046', BLUE = '#4da3e8', INK = '#e8edf2';
     const nodes = [];
-    const center = { id: '_you', type: 'you', label: (dash && dash.tenant && dash.tenant.name) || 'You', x: 0, y: 0, z: 0, r: 16, color: LIME, fx: true };
+    const crossEdges = []; // competitor ↔ prospect "in play" links
+    const center = { id: '_you', type: 'you', label: (dash && dash.tenant && dash.tenant.name) || 'You', x: 0, y: 0, z: 0, r: 15, color: LIME, fx: true };
     nodes.push(center);
     const cap = (arr, n) => arr.slice(0, n);
+    // Small labeled satellite dot around a hub — the film's leaf clusters.
+    const addLeaf = (hub, label, color) => {
+      const leaf = { type: 'leaf', parent: hub, label: String(label).slice(0, 18), r: 3.2, color: color || hub.color, meta: hub.label };
+      nodes.push(leaf);
+      return leaf;
+    };
     // Competitor threat scale: orange → red. Criticality is how much of your
     // attention they're consuming — intel volume, plus Market Watch being on.
     const maxDoc = Math.max(1, ...competitors.map((k) => k.doc_count || 0));
@@ -847,7 +854,13 @@
       const lvl = t ? t.level : (threat >= 0.66 ? 'High' : threat >= 0.33 ? 'Medium' : 'Low');
       const entangled = t && t.overlapProspects && t.overlapProspects.length
         ? ` · in play at ${t.overlapProspects.slice(0, 3).join(', ')}${t.overlapProspects.length > 3 ? '…' : ''}` : '';
-      nodes.push({ id: 'k:' + k.id, type: 'comp', label: k.name, meta: `${lvl} threat · ${fmtNum(k.doc_count || 0)} intel doc${(k.doc_count || 0) === 1 ? '' : 's'}${k.watch_enabled ? ' · watched' : ''}${entangled}`, r: 7 + Math.min(7, (k.doc_count || 0) * 1.2), color: threatColor(threat), solid: true, hot: threat >= 0.66, side: -1 });
+      const hub = { id: 'k:' + k.id, kid: k.id, type: 'comp', label: k.name, meta: `${lvl} threat · ${fmtNum(k.doc_count || 0)} intel doc${(k.doc_count || 0) === 1 ? '' : 's'}${k.watch_enabled ? ' · watched' : ''}${entangled}`, r: 7 + Math.min(7, (k.doc_count || 0) * 1.2), color: threatColor(threat), solid: true, hot: threat >= 0.66, side: -1 };
+      nodes.push(hub);
+      // satellite facts, film-style: threat %, intel volume, watch, in-play accounts
+      addLeaf(hub, `Threat ${Math.round(threat * 100)}%`);
+      if (k.doc_count > 0) addLeaf(hub, `${fmtNum(k.doc_count)} docs`);
+      if (k.watch_enabled) addLeaf(hub, 'Watched');
+      hub.inPlay = (t && t.overlapProspects) || [];
     }
     // NEW (unreviewed) market-watch findings per prospect → notification badge.
     const newSigByCompany = new Map();
@@ -859,7 +872,23 @@
       const sig = sigByCompany.get(c.id) || { n: 0, strong: 0 };
       const fresh = newSigByCompany.get(c.id) || 0;
       const badge = fresh + (c.meeting_count || 0);
-      nodes.push({ id: 'p:' + c.id, cid: c.id, type: 'pros', label: c.name, badge, meta: `${fmtNum(sig.n)} signal${sig.n === 1 ? '' : 's'}${sig.strong ? ` · ${fmtNum(sig.strong)} strong` : ''}${c.meeting_count ? ` · ${fmtNum(c.meeting_count)} engagement${c.meeting_count === 1 ? '' : 's'}` : ''}${fresh ? ` · ${fmtNum(fresh)} new development${fresh === 1 ? '' : 's'}` : ''}`, r: 5.5 + Math.min(8, sig.n * 1.6 + (c.meeting_count || 0)), color: BLUE, hot: sig.strong > 0, side: 1 });
+      const hub = { id: 'p:' + c.id, cid: c.id, type: 'pros', label: c.name, badge, meta: `${fmtNum(sig.n)} signal${sig.n === 1 ? '' : 's'}${sig.strong ? ` · ${fmtNum(sig.strong)} strong` : ''}${c.meeting_count ? ` · ${fmtNum(c.meeting_count)} engagement${c.meeting_count === 1 ? '' : 's'}` : ''}${fresh ? ` · ${fmtNum(fresh)} new development${fresh === 1 ? '' : 's'}` : ''}`, r: 5.5 + Math.min(8, sig.n * 1.6 + (c.meeting_count || 0)), color: BLUE, hot: sig.strong > 0, side: 1 };
+      nodes.push(hub);
+      if (sig.strong) addLeaf(hub, `${fmtNum(sig.strong)} strong signal${sig.strong === 1 ? '' : 's'}`, LIME);
+      else if (sig.n) addLeaf(hub, `${fmtNum(sig.n)} signal${sig.n === 1 ? '' : 's'}`);
+      if (c.meeting_count) addLeaf(hub, `${fmtNum(c.meeting_count)} engagement${c.meeting_count === 1 ? '' : 's'}`);
+      if (fresh) addLeaf(hub, `${fmtNum(fresh)} new`, LIME);
+    }
+    // Cross-links: a competitor entangled at one of our prospects gets a real
+    // edge to that prospect — the web the film shows, grounded in intel.
+    {
+      const prosByName = new Map(nodes.filter((n) => n.type === 'pros').map((n) => [String(n.label).toLowerCase(), n]));
+      for (const hub of nodes.filter((n) => n.type === 'comp')) {
+        for (const nm of (hub.inPlay || [])) {
+          const pn = prosByName.get(String(nm).toLowerCase());
+          if (pn) crossEdges.push({ a: hub, b: pn });
+        }
+      }
     }
 
     // The stage can still be display:hidden on a cold load — wait for size.
@@ -872,16 +901,22 @@
 
     // ── 3D world — nodes live on a sphere around you; the camera orbits. ──
     // Seed on a golden-angle sphere, competitors toward -x, prospects +x.
-    nodes.forEach((n, i) => {
-      if (n.fx) return;
-      const N = nodes.length;
+    // Wide, flattish web (the film reads as a tilted plane, not a ball):
+    // hubs spread on a disc with mild depth, leaves orbit their parent.
+    const hubs = nodes.filter((n) => !n.fx && !n.parent);
+    hubs.forEach((n, i) => {
       const golden = i * 2.39996;
-      const zf = 1 - 2 * ((i + 0.5) / N);
-      const rxy = Math.sqrt(Math.max(0, 1 - zf * zf));
-      const shell = (n.type === 'comp' ? 0.55 : 0.85) * R * (0.85 + 0.3 * ((i % 7) / 7));
-      n.x = Math.cos(golden) * rxy * shell + (n.side || 0) * R * 0.35;
-      n.y = zf * shell * 0.75;
-      n.z = Math.sin(golden) * rxy * shell;
+      const shell = (n.type === 'comp' ? 0.6 : 0.95) * R * (0.7 + 0.5 * ((i % 9) / 9));
+      n.x = Math.cos(golden) * shell * 1.45 + (n.side || 0) * R * 0.3;
+      n.y = (((i * 7) % 11) / 11 - 0.5) * R * 0.5;
+      n.z = Math.sin(golden) * shell * 0.9;
+      n.vx = 0; n.vy = 0; n.vz = 0;
+    });
+    nodes.filter((n) => n.parent).forEach((n, i) => {
+      const a = i * 2.1 + (n.parent.x || 0);
+      n.x = n.parent.x + Math.cos(a) * 34;
+      n.y = n.parent.y + (((i % 3) - 1) * 14);
+      n.z = n.parent.z + Math.sin(a) * 34;
       n.vx = 0; n.vy = 0; n.vz = 0;
     });
 
@@ -891,20 +926,30 @@
         const a = nodes[i];
         if (a.fx || a === dragNode) continue;
         let fx = 0, fy = 0, fz = 0;
+        const myRep = a.parent ? 420 : 5200;
         for (let j = 0; j < nodes.length; j++) {
           if (i === j) continue;
           const b = nodes[j];
           const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
           const d2 = dx * dx + dy * dy + dz * dz || 1;
-          const rep = 5200 / d2;
+          const rep = (b.parent ? Math.min(myRep, 420) : myRep) / d2;
           fx += dx * rep; fy += dy * rep; fz += dz * rep;
         }
-        // spring toward the center at the type's shell distance
-        const dist = Math.hypot(a.x, a.y, a.z) || 1;
-        const rest = (a.type === 'comp' ? 0.55 : 0.85) * R;
-        const pull = (dist - rest) * 0.05 * 18;
-        fx -= (a.x / dist) * pull; fy -= (a.y / dist) * pull; fz -= (a.z / dist) * pull;
-        fx += (a.side || 0) * 1.1;
+        if (a.parent) {
+          // leaves ride their hub on a short tether
+          const dx = a.x - a.parent.x, dy = a.y - a.parent.y, dz = a.z - a.parent.z;
+          const dist = Math.hypot(dx, dy, dz) || 1;
+          const pull = (dist - 36) * 0.25 * 18;
+          fx -= (dx / dist) * pull; fy -= (dy / dist) * pull; fz -= (dz / dist) * pull;
+        } else {
+          // hubs spring toward the center at the type's shell distance
+          const dist = Math.hypot(a.x, a.y, a.z) || 1;
+          const rest = (a.type === 'comp' ? 0.6 : 0.95) * R;
+          const pull = (dist - rest) * 0.05 * 18;
+          fx -= (a.x / dist) * pull; fy -= (a.y / dist) * pull; fz -= (a.z / dist) * pull;
+          fx += (a.side || 0) * 1.1;
+          fy -= a.y * 0.06; // keep the web flat-ish like the film's plane
+        }
         // ambient life — tiny per-node breeze so the map never freezes
         fx += Math.sin(t * 0.6 + i * 1.7) * 1.4;
         fy += Math.cos(t * 0.5 + i * 2.3) * 1.2;
@@ -940,7 +985,7 @@
     _mmResize.observe(stage);
 
     // ── Camera + projection ──
-    const cam = { yaw: -0.5, pitch: 0.18, dist: 1.0 };
+    const cam = { yaw: -0.45, pitch: 0.42, dist: 0.95 };
     const FOCAL = 1100;
     let lastInteract = 0;
     let hover = null, panning = null, moved = 0, lastP = null;
@@ -983,13 +1028,32 @@
       // edges first (faint, depth-faded)
       for (const n of nodes) {
         if (n.fx) continue;
-        const a = (0.13 + (n.hot ? 0.12 : 0) + (hover === n ? 0.25 : 0)) * ((n.fade + center.fade) / 2);
+        if (n.parent) {
+          // leaf tether — short, in the hub's hue
+          const a = 0.30 * ((n.fade + n.parent.fade) / 2);
+          ctx.strokeStyle = n.color.startsWith('rgb(') ? n.color.replace('rgb(', 'rgba(').replace(')', `,${a})`) : `rgba(140,224,70,${a})`;
+          if (n.color === BLUE) ctx.strokeStyle = `rgba(77,163,232,${a})`;
+          else if (n.color === LIME) ctx.strokeStyle = `rgba(140,224,70,${a})`;
+          ctx.lineWidth = Math.max(0.5, 0.8 * n.sc);
+          ctx.beginPath(); ctx.moveTo(n.parent.sx, n.parent.sy); ctx.lineTo(n.sx, n.sy); ctx.stroke();
+          continue;
+        }
+        const a = (0.10 + (n.hot ? 0.10 : 0) + (hover === n ? 0.25 : 0)) * ((n.fade + center.fade) / 2);
         ctx.strokeStyle = (n.type === 'comp' ? `rgba(239,99,61,${a})` : `rgba(77,163,232,${a})`);
         ctx.lineWidth = Math.max(0.6, 1 * n.sc);
         ctx.beginPath();
         ctx.moveTo(center.sx, center.sy);
         ctx.lineTo(n.sx, n.sy);
         ctx.stroke();
+      }
+      // "in play" cross-links: competitor entangled at a prospect
+      for (const e of crossEdges) {
+        const a = 0.30 * ((e.a.fade + e.b.fade) / 2);
+        ctx.strokeStyle = `rgba(239,99,61,${a})`;
+        ctx.lineWidth = Math.max(0.6, 0.9 * ((e.a.sc + e.b.sc) / 2));
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath(); ctx.moveTo(e.a.sx, e.a.sy); ctx.lineTo(e.b.sx, e.b.sy); ctx.stroke();
+        ctx.setLineDash([]);
       }
       // nodes far → near so close ones draw on top
       const order = [...nodes].sort((a, b) => b.depth - a.depth);
@@ -1026,14 +1090,19 @@
           ctx.fillText(txt, bx, by + 0.5);
           ctx.textBaseline = 'alphabetic';
         }
-        // labels: center always; big, hovered or dragged nodes too
-        if (n.fx || hover === n || dragNode === n || n.r * n.sc >= 9) {
-          const fpx = Math.max(9, Math.min(15, (n.fx ? 13 : 11) * n.sc));
+        // labels — the film labels nearly everything; leaves get tiny metrics
+        const isLeaf = !!n.parent;
+        const show = n.fx || hover === n || dragNode === n
+          || (!isLeaf && n.sc > 0.45)
+          || (isLeaf && n.sc > 0.72);
+        if (show) {
+          const fpx = Math.max(8, Math.min(15, (n.fx ? 13 : isLeaf ? 8.5 : 11) * n.sc));
           ctx.font = `${n.fx ? '600' : '500'} ${fpx.toFixed(1)}px 'IBM Plex Mono', monospace`;
-          ctx.fillStyle = hover === n ? INK : `rgba(232,237,242,${0.75 * n.fade})`;
+          const la = hover === n ? 1 : (isLeaf ? 0.5 : 0.72) * n.fade;
+          ctx.fillStyle = hover === n ? INK : `rgba(232,237,242,${la.toFixed(2)})`;
           ctx.textAlign = 'center';
           const lbl = String(n.label || '').length > 22 ? String(n.label).slice(0, 21) + '…' : String(n.label || '');
-          ctx.fillText(lbl, x, y + rr + 13);
+          ctx.fillText(lbl, x, y + rr + (isLeaf ? 10 : 13));
         }
         ctx.globalAlpha = 1;
       }
@@ -1091,7 +1160,9 @@
         tip.classList.remove('hidden');
         tip.style.left = Math.min(W - 220, mx + 14) + 'px';
         tip.style.top = (my + 12) + 'px';
-        tip.innerHTML = `<b>${escapeHtml(hover.label || '')}</b><span>${hover.type === 'comp' ? 'Competitor' : 'Prospect'}${hover.meta ? ' · ' + escapeHtml(hover.meta) : ''}</span>`;
+        tip.innerHTML = hover.parent
+          ? `<b>${escapeHtml(hover.parent.label || '')}</b><span>${escapeHtml(hover.label || '')}</span>`
+          : `<b>${escapeHtml(hover.label || '')}</b><span>${hover.type === 'comp' ? 'Competitor' : 'Prospect'}${hover.meta ? ' · ' + escapeHtml(hover.meta) : ''}</span>`;
       } else tip.classList.add('hidden');
     };
     const endPointer = (e) => {
@@ -1101,8 +1172,9 @@
       try { canvas.releasePointerCapture(e.pointerId); } catch { /* already released */ }
       // a press that barely moved is a click — open the entity
       if (wasDrag && !wasDrag.fx && moved < 5) {
-        if (wasDrag.type === 'pros') { _prospectsState.selectedCompanyId = wasDrag.cid; window.location.hash = '#prospects'; }
-        else if (wasDrag.type === 'comp') window.location.hash = '#competitors';
+        const target = wasDrag.parent || wasDrag;
+        if (target.type === 'pros') { _prospectsState.selectedCompanyId = target.cid; window.location.hash = '#prospects'; }
+        else if (target.type === 'comp') window.location.hash = '#competitors';
       }
     };
     canvas.onpointerup = endPointer;
