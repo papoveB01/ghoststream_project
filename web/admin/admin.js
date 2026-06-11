@@ -7383,15 +7383,10 @@
         <div id="company-pull-card"></div>
       </div>`;
     $('company-pull-btn').addEventListener('click', () => runCompanyPull());
-    // Freshly-onboarded owner (?welcome=1): the server auto-enriches their
-    // foundation from website + Apollo + news in the background. Watch the
-    // health card populate rather than re-running the (now redundant) homepage
-    // pull, which would duplicate products.
-    if (_companyWelcome && !_companyBootstrapTried) {
-      _companyWelcome = false;
-      _companyBootstrapTried = true;
-      watchWelcomeEnrichment();
-    }
+    // Freshly-onboarded owner (?welcome=1): nothing auto-runs anymore — the
+    // "Get up to speed" gate hands them the Enrich button as step 1, so they
+    // experience the grounding themselves. The flag is simply consumed.
+    if (_companyWelcome) { _companyWelcome = false; _companyBootstrapTried = true; }
   }
 
   // Poll the foundation health while the post-onboarding background enrichment

@@ -495,15 +495,10 @@ router.post('/verify', async (req, res, next) => {
       name: owner.name, role: owner.role, isAdmin: owner.isAdmin,
     }), auth.cookieOptions());
 
-    // Auto-enrich the brand-new tenant's foundation from multiple sources
-    // (website + Apollo + news) in the background, so by the time the owner looks
-    // around their products have descriptions and their ICP/positioning are
-    // drafted. Fire-and-forget: never blocks (or fails) onboarding.
-    setImmediate(() => {
-      db.runWithTenant(tenantRow.id, () => enrichment.enrichCompany(tenantRow.id, { force: false }))
-        .then((r) => console.log(`[onboarding] auto-enriched ${tenantRow.id}: ${JSON.stringify(r.summary)}`))
-        .catch((e) => console.warn(`[onboarding] auto-enrich failed for ${tenantRow.id}: ${(e && e.message) || e}`));
-    });
+    // NOTE: foundation enrichment is deliberately NOT auto-run here anymore.
+    // The "Get up to speed" gate makes grounding the workspace the user's
+    // FIRST hands-on step ("Enrich from web" on the Company page) — running it
+    // automatically robbed them of feeling how the product works.
 
     res.status(201).json({ ok: true, redirectTo });
   } catch (err) { next(err); }
