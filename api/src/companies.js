@@ -380,6 +380,20 @@ router.post('/:id/find-contacts', gating.requireFeature('discovery'), async (req
       }
     } catch (e) { console.warn('[find-contacts] org enrich failed:', (e && e.message) || e); }
 
+    // No research allowance left → don't run the search at all. The teaser is
+    // cheap for the tenant but reveals are credit-gated; surfacing the limit
+    // BEFORE showing people they can't add (and before spending an Apollo
+    // search) is the honest UX. Probe by charging one unit and refunding it.
+    try {
+      const usage = require('./usage');
+      const probe = await gating.chargeUnit(req, 'discovery');
+      await usage.refund(req.tenantId, probe.meter, probe.consumed, { lifetime: probe.lifetime });
+    } catch (e) {
+      if (e.code === 'USAGE_LIMIT' || e.code === 'SUBSCRIPTION_REQUIRED') {
+        return res.status(402).json({ error: `${e.message} Contact reveals use research credits — add credits or upgrade on the Billing page to keep finding people.`, code: e.code });
+      }
+      throw e;
+    }
     // Teaser candidates only — cheap (one search call, no per-person reveal).
     const candidates = await apollo.searchPeople(req.tenantId, domain, { limit: want, reveal: false });
     // Best-product-fit per person (one cheap structured AI call for the whole
