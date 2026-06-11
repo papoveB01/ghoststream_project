@@ -3537,13 +3537,26 @@
         <div class="comp-discover-modal">
           <div class="cal-picker-h"><span class="cal-picker-title">Find competitors</span><button type="button" class="kb-link-btn cal-picker-close">✕</button></div>
           <div class="comp-finder-form">
-            <label class="comp-finder-field">Region
+            <label class="comp-finder-field">Intelligence
+              <select id="comp-finder-focus">
+                <option value="market">Market-wide (by region)</option>
+                <option value="prospect">Impacting us at a prospect</option>
+                <option value="product">Threatening one of our products</option>
+              </select>
+            </label>
+            <label class="comp-finder-field hidden" id="comp-finder-prospect-wrap">Prospect
+              <select id="comp-finder-prospect"><option value="">Loading…</option></select>
+            </label>
+            <label class="comp-finder-field hidden" id="comp-finder-product-wrap">Product
+              <select id="comp-finder-product"><option value="">Loading…</option></select>
+            </label>
+            <label class="comp-finder-field" id="comp-finder-region-wrap">Region
               <select id="comp-finder-region">${COMPETITOR_REGIONS.map((r) => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('')}</select>
             </label>
-            <label class="comp-finder-field">Country <span class="kb-subtle">(optional)</span>
+            <label class="comp-finder-field" id="comp-finder-country-wrap">Country <span class="kb-subtle">(optional)</span>
               <select id="comp-finder-country">${countryOptions()}</select>
             </label>
-            <label class="comp-finder-field">City <span class="kb-subtle">(optional)</span>
+            <label class="comp-finder-field" id="comp-finder-city-wrap">City <span class="kb-subtle">(optional)</span>
               <input id="comp-finder-city" type="text" placeholder="e.g. Houston">
             </label>
             <button type="button" class="primary-cta" id="comp-finder-search">Search</button>
@@ -3559,6 +3572,36 @@
     $('comp-finder-search').onclick = runCompetitorFinderSearch;
     $('comp-finder-done').onclick = finderDone;
     wireRegionCountry('comp-finder-region', 'comp-finder-country');
+    // Scope selector: market-wide / at-a-prospect / per-product. The entity
+    // dropdowns lazy-load once; region fields hide for the account focus
+    // (the account IS the scope).
+    const focusSel = $('comp-finder-focus');
+    const applyFocusUi = () => {
+      const f = focusSel.value;
+      $('comp-finder-prospect-wrap').classList.toggle('hidden', f !== 'prospect');
+      $('comp-finder-product-wrap').classList.toggle('hidden', f !== 'product');
+      ['comp-finder-region-wrap', 'comp-finder-country-wrap', 'comp-finder-city-wrap'].forEach((id) => $(id).classList.toggle('hidden', f === 'prospect'));
+    };
+    focusSel.onchange = () => {
+      applyFocusUi();
+      if (focusSel.value === 'prospect' && focusSel.dataset.prospectsLoaded !== '1') {
+        focusSel.dataset.prospectsLoaded = '1';
+        fetchJson('/api/companies').then((r) => {
+          const sel = $('comp-finder-prospect');
+          const list = r.companies || [];
+          sel.innerHTML = list.length ? list.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('') : '<option value="">No prospects yet</option>';
+        }).catch(() => { $('comp-finder-prospect').innerHTML = '<option value="">Couldn’t load prospects</option>'; });
+      }
+      if (focusSel.value === 'product' && focusSel.dataset.productsLoaded !== '1') {
+        focusSel.dataset.productsLoaded = '1';
+        fetchJson('/api/portfolio/products').then((r) => {
+          const sel = $('comp-finder-product');
+          const list = r.products || [];
+          sel.innerHTML = list.length ? list.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('') : '<option value="">No products yet</option>';
+        }).catch(() => { $('comp-finder-product').innerHTML = '<option value="">Couldn’t load products</option>'; });
+      }
+    };
+    applyFocusUi();
     // Restore the last competitor search (inputs + results) if there is one, so
     // reopening the finder doesn't wipe what was found. Else show the prompt.
     const cached = loadDiscovery('competitors');
@@ -3577,13 +3620,23 @@
     const region = $('comp-finder-region').value;
     const country = ($('comp-finder-country').value || '').trim();
     const city = ($('comp-finder-city').value || '').trim();
+    const focus = $('comp-finder-focus') ? $('comp-finder-focus').value : 'market';
+    const prospectId = focus === 'prospect' ? ($('comp-finder-prospect').value || '') : '';
+    const productId = focus === 'product' ? ($('comp-finder-product').value || '') : '';
+    if (focus === 'prospect' && !prospectId) { body.innerHTML = '<div class="kb-result error" style="margin:12px">Pick a prospect first.</div>'; return; }
+    if (focus === 'product' && !productId) { body.innerHTML = '<div class="kb-result error" style="margin:12px">Pick a product first.</div>'; return; }
     const where = [city, country].filter(Boolean).join(', ') || (region && !/global|any/i.test(region) ? region : '');
+    const what = focus === 'prospect'
+      ? `competitors active at ${escapeHtml($('comp-finder-prospect').selectedOptions[0].textContent)}`
+      : focus === 'product'
+        ? `competitors threatening ${escapeHtml($('comp-finder-product').selectedOptions[0].textContent)}`
+        : 'competitors';
     btn.disabled = true; const o = btn.textContent; btn.textContent = 'Searching…';
-    body.innerHTML = `<div class="kb-subtle" style="padding:14px">Searching the web for competitors${where ? ` in ${escapeHtml(where)}` : ''}…</div>`;
+    body.innerHTML = `<div class="kb-subtle" style="padding:14px">Searching the web for ${what}${where && focus !== 'prospect' ? ` in ${escapeHtml(where)}` : ''}…</div>`;
     try {
       const data = await fetchJson('/api/portfolio/competitors/discover', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region, country, city }),
+        body: JSON.stringify({ region, country, city, prospectId: prospectId || undefined, productId: productId || undefined }),
       });
       const competitors = (data && data.competitors) || [];
       renderCompetitorCandidates(body, competitors, data && data.dataHints, (data && data.existing) || []);

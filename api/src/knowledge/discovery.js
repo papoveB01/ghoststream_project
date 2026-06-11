@@ -355,7 +355,7 @@ async function generateSearchQueries({ mode, ctx, products = [], region = '', se
 // Find companies that compete with OUR company, optionally focused on a region.
 // Returns { competitors: [...] } (possibly empty) or null on hard failure.
 // Read-only research: no ingest, no storage (the rep adds the relevant ones).
-async function discoverCompetitors({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', buyerMarket = '', prospects = [], excludeNames = [] } = {}) {
+async function discoverCompetitors({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', buyerMarket = '', prospects = [], excludeNames = [], focusProspect = null, focusProduct = null } = {}) {
   const name = String(companyName || '').trim();
   if (!name) return null;
   // Our existing prospects → let the model flag competitors already entrenched at
@@ -363,10 +363,14 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
   const prospectNames = [...new Set((prospects || []).map((p) => String((p && p.name) || p || '').trim()).filter(Boolean))].slice(0, 60);
   const prospectSet = new Map(prospectNames.map((n) => [n.toLowerCase(), n]));
 
+  // Scoped intelligence: product focus narrows the portfolio the model may
+  // match against to ONE product; prospect focus turns the sweep into an
+  // account investigation (who serves / is courting that prospect).
+  const searchProducts = focusProduct ? [focusProduct] : ourProducts;
   const regionLabel = String(region || '').trim();
   const regionIsGlobal = !regionLabel || /global|any|worldwide/i.test(regionLabel);
   const regionTerm = regionIsGlobal ? '' : regionLabel.replace(/\s*\/\s*/g, ' ');
-  const topProducts = (ourProducts || []).map((p) => p && p.name).filter(Boolean).slice(0, 3);
+  const topProducts = (searchProducts || []).map((p) => p && p.name).filter(Boolean).slice(0, 3);
   // Rivals (other vendors of our kind of product) are usually national/global,
   // NOT in the buyer's city — so `buyerMarket` (e.g. "Houston, US") is context
   // about WHO we serve, kept separate from the competitor search scope (region).
@@ -382,22 +386,43 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
   // headquartered there) AND region-scoped (regional players). Without the
   // global pass every result is a local PSP and the model can't surface the
   // global category leaders. Global pages go first so they're in the findings.
-  const [genGlobal, genRegion] = await Promise.all([
-    generateSearchQueries({ mode: 'competitor', ctx, products: ourProducts, region: '' }),
-    regionIsGlobal ? Promise.resolve([]) : generateSearchQueries({ mode: 'competitor', ctx, products: ourProducts, region: regionLabel }),
-  ]);
-  const baseQueries = [
-    `${name} competitors${regionTerm ? ' ' + regionTerm : ''}`,
-  ];
-  if (topProducts.length) baseQueries.push(`${topProducts[0]} competitors`);
-  // Interleave regional + global so BOTH segments get scraped into the findings
-  // (a flat concat let whichever came first dominate → all-regional or all-global).
-  const zipped = [];
-  for (let i = 0; i < Math.max(genRegion.length, genGlobal.length); i++) {
-    if (genRegion[i]) zipped.push(genRegion[i]);
-    if (genGlobal[i]) zipped.push(genGlobal[i]);
+  let queries;
+  if (focusProspect) {
+    // Account investigation: what vendors of OUR categories already serve /
+    // partner with / are being evaluated by this prospect?
+    const pname = String(focusProspect.name || '').trim();
+    const caps = (searchProducts || [])
+      .map((p) => String((p && p.description) || (p && p.name) || '').replace(/[()]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 6).join(' '))
+      .filter((c) => c.length > 3).slice(0, 3);
+    queries = [...new Set([
+      ...caps.flatMap((c) => [
+        `"${pname}" ${c} provider`,
+        `"${pname}" ${c} partnership`,
+        `"${pname}" selects ${c}`,
+      ]),
+      `"${pname}" payment technology vendor`,
+      `"${pname}" technology partners`,
+      focusProspect.domain ? `${pname} ${focusProspect.domain} vendor announcement` : '',
+      `who provides ${caps[0] || (topProducts[0] || '')} to "${pname}"`,
+    ].filter(Boolean))].slice(0, 10);
+  } else {
+    const [genGlobal, genRegion] = await Promise.all([
+      generateSearchQueries({ mode: 'competitor', ctx, products: searchProducts, region: '' }),
+      regionIsGlobal ? Promise.resolve([]) : generateSearchQueries({ mode: 'competitor', ctx, products: searchProducts, region: regionLabel }),
+    ]);
+    const baseQueries = [
+      `${name} competitors${regionTerm ? ' ' + regionTerm : ''}`,
+    ];
+    if (topProducts.length) baseQueries.push(`${topProducts[0]} competitors`);
+    // Interleave regional + global so BOTH segments get scraped into the findings
+    // (a flat concat let whichever came first dominate → all-regional or all-global).
+    const zipped = [];
+    for (let i = 0; i < Math.max(genRegion.length, genGlobal.length); i++) {
+      if (genRegion[i]) zipped.push(genRegion[i]);
+      if (genGlobal[i]) zipped.push(genGlobal[i]);
+    }
+    queries = [...new Set([...zipped, ...baseQueries])];
   }
-  const queries = [...new Set([...zipped, ...baseQueries])];
 
   // Wide net (like prospect discovery) so the category-specific results — not the
   // few brand listicles — make up the findings the model reasons over.
@@ -406,8 +431,8 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
 
   const ourIds = new Set((ourProducts || []).map((p) => p && p.id).filter(Boolean));
   const byId = new Map((ourProducts || []).filter((p) => p && p.id).map((p) => [p.id, p.name]));
-  const portfolio = (ourProducts || []).length
-    ? (ourProducts || []).map((p) => `- id="${p.id}" · ${p.name}${p.description ? ` — ${p.description}` : ''}`).join('\n')
+  const portfolio = (searchProducts || []).length
+    ? (searchProducts || []).map((p) => `- id="${p.id}" · ${p.name}${p.description ? ` — ${p.description}` : ''}`).join('\n')
     : '(no products on file — leave threatToProductIds empty for all)';
 
   const prompt =
@@ -443,6 +468,8 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
         'incumbent at that account). Use ONLY names from that list; empty array if none — do not guess.\n'
       : '') +
     CONTACT_INSTRUCTION + '\n' +
+    (focusProspect ? `ACCOUNT FOCUS — we are pursuing the PROSPECT "${String(focusProspect.name || '').trim()}". List ONLY competitors that impact us AT THIS ACCOUNT: vendors the findings or your knowledge indicate currently serve it, partner with it, or are credible contenders for our product categories there. Set incumbentAtProspects to ["${String(focusProspect.name || '').trim()}"] for any vendor already serving it (evidence-based; do not guess incumbency). In whyRelevant say HOW they impact us at this account (incumbent / announced partnership / likely shortlist rival). Do NOT pad with generic market players that have no plausible presence at this account.\n` : '') +
+    (focusProduct ? `PRODUCT FOCUS — only competitors whose offering competes with OUR product "${focusProduct.name}". threatToProductIds must be ["${focusProduct.id}"] for every row; skip vendors that only compete with our other products.\n` : '') +
     'Rules: only REAL companies that genuinely offer a competing product; EXCLUDE our own ' +
     'company; one company per row; keep strings short; threatToProductIds MUST be chosen from the ' +
     'provided ids (or empty); give the primary website domain only if you are confident; ignore website ' +

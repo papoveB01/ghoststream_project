@@ -963,6 +963,21 @@ router.post('/competitors/discover', gating.requireFeature('competitor_research'
     // Our existing prospects → competitor analysis flags any competitor already
     // entrenched at one of them ("incumbent at account").
     const prospectRows = await db.query(`SELECT name FROM companies WHERE tenant_id = $1`, [req.tenantId]);
+    // Optional scoped intelligence: a specific prospect (who competes with us
+    // AT that account) or a specific product (who threatens it).
+    let focusProspect = null, focusProduct = null;
+    const prospectId = String((req.body && req.body.prospectId) || '').trim();
+    const productId = String((req.body && req.body.productId) || '').trim();
+    if (prospectId) {
+      const r = (await db.query(`SELECT name, domain FROM companies WHERE id = $1 AND tenant_id = $2`, [prospectId, req.tenantId])).rows[0];
+      if (!r) return res.status(404).json({ error: 'prospect not found' });
+      focusProspect = { name: r.name, domain: r.domain || null };
+    }
+    if (productId) {
+      const r = (await db.query(`SELECT id, name, description FROM products WHERE id = $1 AND tenant_id = $2`, [productId, req.tenantId])).rows[0];
+      if (!r) return res.status(404).json({ error: 'product not found' });
+      focusProduct = r;
+    }
     const trackedNames = (await db.query(`SELECT name FROM competitors WHERE tenant_id = $1`, [req.tenantId])).rows.map((r) => r.name);
     const result = await discovery.discoverCompetitors({
       companyName: tenant.name,
@@ -974,6 +989,8 @@ router.post('/competitors/discover', gating.requireFeature('competitor_research'
       buyerMarket,
       prospects: prospectRows.rows,
       excludeNames: trackedNames,
+      focusProspect,
+      focusProduct,
     });
     if (!result) {
       await gating.refundCapacity(req); // don't charge for a failed discovery
