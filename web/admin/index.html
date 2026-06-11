@@ -33,7 +33,6 @@
         <a href="#market-map" data-section="market-map">Market Map</a>
         <div class="nav-group"><i>3</i>Engage</div>
         <a href="#engagements" data-section="missions">Engagements</a>
-        <a href="#calendar" data-section="calendar">Calendar</a>
         <div class="nav-group"><i>4</i>Learn</div>
         <a href="#market-signals" data-section="market-signals">Alerts<span class="nav-badge hidden" id="watch-badge">0</span></a>
         <a href="#sessions" data-section="sessions">Call practice</a>
@@ -354,7 +353,21 @@
           <div class="kb-tabs" id="missions-tabs">
             <button class="kb-tab active" data-missions-tab="upcoming">Upcoming</button>
             <button class="kb-tab" data-missions-tab="past">Past</button>
+            <button class="kb-tab" data-missions-tab="calendar">Calendar</button>
             <button class="kb-tab" data-missions-tab="schedule">＋ Schedule</button>
+          </div>
+
+          <!-- CALENDAR (imported meetings — folded in from the old standalone page) -->
+          <div id="missions-pane-calendar" class="kb-pane hidden">
+            <div class="card">
+              <div class="card-h">Upcoming meetings
+                <span class="pf-hint">Your next 14 days of meetings, pulled from Microsoft 365 and Calendly. Click "Schedule engagement" on any meeting to send an AI notetaker.</span>
+                <span class="card-h-actions"><button type="button" class="kb-link-btn" id="calendar-refresh-btn" title="Reload">↻ Refresh</button></span>
+              </div>
+              <div class="card-b">
+                <div id="calendar-body"><div class="kb-subtle">Loading…</div></div>
+              </div>
+            </div>
           </div>
 
           <!-- UPCOMING + PAST share the same list rendering -->
@@ -641,18 +654,6 @@
         </section>
 
         <!-- CALENDAR -->
-        <section id="section-calendar" class="section hidden">
-          <div class="card">
-            <div class="card-h">Upcoming meetings
-              <span class="pf-hint">Your next 14 days of meetings, pulled from Microsoft 365 and Calendly. Click "Schedule engagement" on any meeting to send an AI notetaker.</span>
-              <span class="card-h-actions"><button type="button" class="kb-link-btn" id="calendar-refresh-btn" title="Reload">↻ Refresh</button></span>
-            </div>
-            <div class="card-b">
-              <div id="calendar-body"><div class="kb-subtle">Loading…</div></div>
-            </div>
-          </div>
-        </section>
-
         <!-- INTEGRATIONS -->
         <section id="section-integrations" class="section hidden">
           <div class="card">

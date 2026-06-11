@@ -3,7 +3,7 @@
   const show = (id) => $(id).classList.remove('hidden');
   const hide = (id) => $(id).classList.add('hidden');
 
-  const sections = ['overview', 'company', 'missions', 'prospects', 'competitors', 'market-map', 'market-signals', 'calendar', 'calls', 'calls-ops', 'platform', 'instances', 'platform-audit', 'platform-keys', 'sessions', 'integrations', 'billing', 'subaccounts', 'settings', 'profile'];
+  const sections = ['overview', 'company', 'missions', 'prospects', 'competitors', 'market-map', 'market-signals', 'calls', 'calls-ops', 'platform', 'instances', 'platform-audit', 'platform-keys', 'sessions', 'integrations', 'billing', 'subaccounts', 'settings', 'profile'];
   const loaders = {
     overview: loadOverview,
     company: loadCompany,
@@ -12,7 +12,6 @@
     competitors: loadCompetitors,
     'market-map': loadMarketMap,
     'market-signals': loadMarketSignals,
-    calendar: loadCalendar,
     calls: loadCalls,
     'calls-ops': loadCallsOps,
     platform: loadPlatform,
@@ -32,7 +31,7 @@
   // Active Engagements tab survives re-renders and reloads (session-scoped);
   // the transient 'detail' pane is never persisted.
   let missionsCurrentTab = (() => {
-    try { const t = sessionStorage.getItem('ds.missionsTab'); return ['upcoming', 'past', 'schedule'].includes(t) ? t : 'upcoming'; }
+    try { const t = sessionStorage.getItem('ds.missionsTab'); return ['upcoming', 'past', 'schedule', 'calendar'].includes(t) ? t : 'upcoming'; }
     catch { return 'upcoming'; }
   })();
   let isSuperadmin = false; // platform admin (Founders tenant) — set in init()
@@ -53,6 +52,7 @@
       if (me && payload.entitlements) me.entitlements = payload.entitlements;
       if (me) me.credits = payload.credits || null;
       window._me = me; // exposed for the support panel (prefilled email context)
+      loadPrefs(); // fire-and-forget — tabs seed from server prefs when ready
     } catch {
       window.location.href = '/admin/login.html';
       return;
@@ -318,6 +318,13 @@
     if (!raw) return { section: 'overview', query: {} };
     // Friendly alias — the Engagements page lives at the legacy 'missions' route.
     if (raw === 'engagements' || raw.startsWith('engagements?')) raw = raw.replace('engagements', 'missions');
+    // Calendar is now a tab of Engagements; old links land on that tab.
+    if (raw === 'calendar' || raw.startsWith('calendar?')) {
+      try { sessionStorage.setItem('ds.missionsTab', 'calendar'); } catch { /* ignore */ }
+      missionsCurrentTab = 'calendar';
+      loaded.missions = false;
+      raw = raw.replace('calendar', 'missions');
+    }
     const [section, qs] = raw.split('?');
     const query = {};
     if (qs) {
@@ -442,7 +449,7 @@
     if (sec === 'overview') return 'Cockpit';
     if (sec === 'company') return 'Foundation';
     if (['prospects', 'competitors', 'market-map'].includes(sec)) return 'Find';
-    if (['missions', 'calendar', 'calls'].includes(sec)) return 'Engage';
+    if (['missions', 'calls'].includes(sec)) return 'Engage';
     if (['market-signals', 'sessions'].includes(sec)) return 'Learn';
     if (['platform', 'instances', 'platform-audit', 'platform-keys', 'calls-ops'].includes(sec)) return 'Platform';
     return 'Workspace';
@@ -456,7 +463,6 @@
       competitors: 'Competitors',
       'market-map': 'Market Map',
       'market-signals': 'Alerts',
-      calendar: 'Calendar',
       calls: 'Calls',
       'calls-ops': 'Calls — Operations',
       platform: 'Platform overview',
@@ -6173,11 +6179,14 @@
 
   async function switchMissionsTab(tab) {
     missionsCurrentTab = tab;
-    if (tab !== 'detail') { try { sessionStorage.setItem('ds.missionsTab', tab); } catch { /* non-fatal */ } }
+    if (tab !== 'detail') {
+      try { sessionStorage.setItem('ds.missionsTab', tab); } catch { /* non-fatal */ }
+      setPref('missionsTab', tab);
+    }
     document.querySelectorAll('#missions-tabs .kb-tab').forEach((b) => {
       b.classList.toggle('active', b.dataset.missionsTab === tab);
     });
-    ['upcoming', 'past', 'schedule', 'detail'].forEach((t) => {
+    ['upcoming', 'past', 'schedule', 'calendar', 'detail'].forEach((t) => {
       const el = $(`missions-pane-${t}`);
       if (!el) return;
       if (t === tab) el.classList.remove('hidden');
@@ -6186,6 +6195,7 @@
     if (tab === 'upcoming') await loadMissionsList('upcoming');
     if (tab === 'past')     await loadMissionsList('past');
     if (tab === 'schedule') await populateScheduleForm();
+    if (tab === 'calendar') await loadCalendar();
   }
 
   async function loadMissionsList(when) {
@@ -6361,7 +6371,7 @@
 
   async function openMissionDetail(id) {
     document.querySelectorAll('#missions-tabs .kb-tab').forEach((b) => b.classList.remove('active'));
-    ['upcoming', 'past', 'schedule', 'detail'].forEach((t) => {
+    ['upcoming', 'past', 'schedule', 'calendar', 'detail'].forEach((t) => {
       const el = $(`missions-pane-${t}`);
       if (!el) return;
       el.classList.toggle('hidden', t !== 'detail');
@@ -7208,6 +7218,7 @@
   function setCompanyTab(t) {
     _companyTab = t;
     try { sessionStorage.setItem('ds.companyTab', t); } catch { /* quota — non-fatal */ }
+    setPref('companyTab', t);
   }
   let _companyProductOpen = null;
   let _companyIntelAutoOpen = null; // {productId} → open the Add-intel flow on the Intel tab
@@ -9869,6 +9880,121 @@
       }
     } catch { /* non-fatal — leave badges as-is */ }
   }
+
+  // ── Per-user UI prefs — server-persisted; sessionStorage stays the fast
+  // in-tab layer (this tab's choices win during the session). ──
+  let _prefs = {};
+  let _prefsTimers = {};
+  async function loadPrefs() {
+    try {
+      _prefs = (await fetchJson('/api/auth/prefs')).prefs || {};
+      // Server prefs seed tabs only when this tab hasn't chosen its own yet.
+      try {
+        if (!sessionStorage.getItem('ds.companyTab') && _prefs.companyTab) setCompanyTab(_prefs.companyTab);
+        if (!sessionStorage.getItem('ds.missionsTab') && ['upcoming', 'past', 'schedule', 'calendar'].includes(_prefs.missionsTab)) missionsCurrentTab = _prefs.missionsTab;
+      } catch { /* storage blocked */ }
+    } catch { /* endpoint unavailable — session layer still works */ }
+  }
+  function setPref(key, value) {
+    _prefs[key] = value;
+    clearTimeout(_prefsTimers[key]);
+    _prefsTimers[key] = setTimeout(() => {
+      fetchJson('/api/auth/prefs', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefs: { [key]: value } }),
+      }).catch(() => { /* best-effort */ });
+    }, 800);
+  }
+
+  // ── Command palette (Ctrl/Cmd+K) — actions + entity search ───────────────
+  let _palEntities = null, _palEntitiesAt = 0;
+  const PALETTE_ACTIONS = [
+    { label: 'Discover prospects (AI)', hint: 'Find buyers matched to your ICP', kw: 'discover find buyers search ai', run: () => { _prospectMode = 'discover'; _prospectFormOpen = true; loaded.prospects = false; go('prospects'); } },
+    { label: 'Find competitors automatically (AI)', hint: 'Market, account or product scoped', kw: 'discover rivals search ai', run: async () => { await go('competitors'); openCompetitorFinderModal(); } },
+    { label: 'Add a prospect', hint: 'Manual / CRM / discovery', kw: 'new company create', run: () => { _prospectMode = 'manual'; _prospectFormOpen = true; loaded.prospects = false; go('prospects'); } },
+    { label: 'Add a competitor', hint: 'Name + website', kw: 'new rival create', run: () => { _competitorFormOpen = true; loaded.competitors = false; go('competitors'); } },
+    { label: 'Schedule an engagement', hint: 'AI joins the call', kw: 'call meeting new book', run: () => { try { sessionStorage.setItem('ds.missionsTab', 'schedule'); } catch { /* ignore */ } missionsCurrentTab = 'schedule'; loaded.missions = false; go('missions'); } },
+    { label: 'Review alerts', hint: 'New market developments', kw: 'signals watch notifications', run: () => go('market-signals') },
+    { label: 'Go to Overview', kw: 'home dashboard cockpit', run: () => go('overview') },
+    { label: 'Go to Company foundation', kw: 'profile products personas intel', run: () => go('company') },
+    { label: 'Go to Prospects', kw: 'pipeline buyers companies', run: () => go('prospects') },
+    { label: 'Go to Competitors', kw: 'rivals battlecards matchups', run: () => go('competitors') },
+    { label: 'Go to Market Map', kw: 'graph network visualization', run: () => go('market-map') },
+    { label: 'Go to Engagements', kw: 'calls meetings missions calendar', run: () => go('missions') },
+    { label: 'Go to Call practice', kw: 'arena training spar', run: () => go('sessions') },
+    { label: 'Go to Integrations', kw: 'crm calendar hubspot connect', run: () => go('integrations') },
+    { label: 'Go to Billing', kw: 'plan credits subscription usage', run: () => go('billing') },
+    { label: 'Go to Settings', kw: 'kb tokens api', run: () => go('settings') },
+  ];
+  function go(sec) { window.location.hash = '#' + sec; if (currentSection === sec) return switchSection(sec); }
+  async function paletteEntities() {
+    if (_palEntities && Date.now() - _palEntitiesAt < 60000) return _palEntities;
+    try {
+      const [cR, kR] = await Promise.all([fetchJson('/api/companies'), fetchJson('/api/portfolio/competitors')]);
+      _palEntities = [
+        ...(cR.companies || []).map((c) => ({ label: c.name, hint: c.domain || 'Prospect', kw: 'prospect', kind: 'Prospect', run: () => { _prospectsState.selectedCompanyId = c.id; _prospectFormOpen = false; loaded.prospects = false; go('prospects'); } })),
+        ...(kR.competitors || []).map((c) => ({ label: c.name, hint: c.website || 'Competitor', kw: 'competitor', kind: 'Competitor', run: () => { _competitorsState.selectedId = c.id; _competitorFormOpen = false; loaded.competitors = false; go('competitors'); } })),
+      ];
+      _palEntitiesAt = Date.now();
+    } catch { _palEntities = _palEntities || []; }
+    return _palEntities;
+  }
+  function openPalette() {
+    let overlay = $('cmdk-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'cmdk-overlay';
+      overlay.className = 'cmdk-overlay hidden';
+      overlay.innerHTML = `
+        <div class="cmdk">
+          <input id="cmdk-input" type="text" placeholder="Search prospects, competitors, actions…" autocomplete="off" spellcheck="false">
+          <div class="cmdk-list" id="cmdk-list"></div>
+          <div class="cmdk-foot"><span>↑↓ navigate</span><span>↵ open</span><span>esc close</span></div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) closePalette(); });
+    }
+    overlay.classList.remove('hidden');
+    const input = $('cmdk-input');
+    input.value = '';
+    let items = [], active = 0;
+    const render = () => {
+      const list = $('cmdk-list');
+      list.innerHTML = items.length
+        ? items.map((it, i) => `
+            <button class="cmdk-item${i === active ? ' active' : ''}" data-i="${i}">
+              <span class="cmdk-kind">${escapeHtml(it.kind || 'Action')}</span>
+              <span class="cmdk-label">${escapeHtml(it.label)}</span>
+              ${it.hint ? `<span class="cmdk-hint">${escapeHtml(it.hint)}</span>` : ''}
+            </button>`).join('')
+        : '<div class="cmdk-empty">No matches.</div>';
+      list.querySelectorAll('.cmdk-item').forEach((el) => el.addEventListener('click', () => pick(Number(el.dataset.i))));
+    };
+    const pick = (i) => { const it = items[i]; if (!it) return; closePalette(); it.run(); };
+    const refilter = async () => {
+      const q = input.value.trim().toLowerCase();
+      const ents = await paletteEntities();
+      const all = [...PALETTE_ACTIONS, ...ents];
+      items = (q
+        ? all.filter((it) => (it.label + ' ' + (it.kw || '') + ' ' + (it.hint || '')).toLowerCase().includes(q))
+        : PALETTE_ACTIONS).slice(0, 12);
+      active = 0;
+      render();
+    };
+    input.oninput = refilter;
+    input.onkeydown = (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(items.length - 1, active + 1); render(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(0, active - 1); render(); }
+      else if (e.key === 'Enter') { e.preventDefault(); pick(active); }
+      else if (e.key === 'Escape') closePalette();
+    };
+    refilter();
+    setTimeout(() => input.focus(), 30);
+  }
+  function closePalette() { const o = $('cmdk-overlay'); if (o) o.classList.add('hidden'); }
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); }
+  });
 
   // ── Spend transparency: live "N research credits left" on costed buttons ──
   let _usageCache = null, _usageCacheAt = 0;

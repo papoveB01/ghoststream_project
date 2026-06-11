@@ -851,6 +851,29 @@ app.get('/auth/me', auth.authMiddleware, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET/PUT /auth/prefs — per-user UI preferences (active tabs etc.). Shallow
+// JSON merge on write so callers can persist one key without racing others.
+app.get('/auth/prefs', auth.authMiddleware, async (req, res, next) => {
+  try {
+    const r = await db.query(`SELECT prefs FROM user_prefs WHERE user_id = $1`, [req.user.sub]);
+    res.json({ prefs: (r.rows[0] && r.rows[0].prefs) || {} });
+  } catch (err) { next(err); }
+});
+app.put('/auth/prefs', auth.authMiddleware, async (req, res, next) => {
+  try {
+    const patch = (req.body && req.body.prefs && typeof req.body.prefs === 'object') ? req.body.prefs : null;
+    if (!patch) return res.status(400).json({ error: 'prefs object required' });
+    if (JSON.stringify(patch).length > 8192) return res.status(413).json({ error: 'prefs too large' });
+    const r = await db.query(
+      `INSERT INTO user_prefs (user_id, prefs) VALUES ($1, $2::jsonb)
+       ON CONFLICT (user_id) DO UPDATE SET prefs = user_prefs.prefs || EXCLUDED.prefs, updated_at = now()
+       RETURNING prefs`,
+      [req.user.sub, JSON.stringify(patch)]
+    );
+    res.json({ prefs: r.rows[0].prefs });
+  } catch (err) { next(err); }
+});
+
 // GET /auth/profile — the full profile record (from the DB, so it includes the
 // structured first/last name the JWT doesn't carry). Backs the Profile page.
 app.get('/auth/profile', auth.authMiddleware, async (req, res, next) => {
