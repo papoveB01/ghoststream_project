@@ -611,7 +611,7 @@
     const meters = (d.usage && d.usage.meters) || [];
     const usageCard = meters.length ? `
       <div class="dash-col dash-chart-card">
-        <div class="dash-card-h"><span class="dash-dot"></span>Usage this ${d.usage.lifetime ? 'account' : 'month'}</div>
+        <div class="dash-card-h"><span class="dash-dot"></span>${d.usage.lifetime ? 'Plan allowance (one-time)' : 'Usage this month'}</div>
         <div class="dash-gauges">${meters.map(dashGauge).join('')}</div>
       </div>` : '';
     const mixCard = `

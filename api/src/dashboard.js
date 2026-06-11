@@ -13,16 +13,21 @@ const router = express.Router();
 const STRENGTH_RANK = { strong: 3, tie: 2, weak: 1 };
 const CRM_LABELS = { hubspot: 'HubSpot', salesforce: 'Salesforce', zoho: 'Zoho CRM', pipedrive: 'Pipedrive', dynamics: 'Dynamics 365' };
 
-// Metered features → human label, in display order. Only the meters whose
-// feature the plan unlocks are surfaced as usage gauges (see below).
+// Metered features → human label, in display order. The meter set follows the
+// tenant's plan-catalog version: v2 (ADR-0004) merges discovery + competitor
+// research into one `research` pool — the gauges must read the SAME keys the
+// caps and usage counters use, or the dashboard shows 0/∞ while the tenant is
+// actually capped out (the original bug).
 const METER_LABELS = {
+  research: 'Research',
   discovery: 'Discovery',
   competitor_research: 'Competitor research',
   engagements: 'Engagements',
   arena: 'Arena practice',
   market_monitoring: 'Market Watch',
 };
-const METER_ORDER = ['discovery', 'competitor_research', 'engagements', 'arena', 'market_monitoring'];
+const METER_ORDER_V1 = ['discovery', 'competitor_research', 'engagements', 'arena', 'market_monitoring'];
+const METER_ORDER_V2 = ['research', 'engagements', 'arena', 'market_monitoring'];
 
 router.get('/', async (req, res, next) => {
   try {
@@ -123,8 +128,12 @@ router.get('/', async (req, res, next) => {
     // Usage gauges — one per metered feature the plan unlocks. cap === null
     // means unlimited (Enterprise/Internal) → the client shows a count, not a gauge.
     const entJson = entitlements.toJson(ent);
-    const meters = METER_ORDER
-      .filter((m) => ent.features.includes(m))
+    // A meter is shown when the plan actually defines capacity for it
+    // (cap > 0, or null = unlimited). Filtering by feature flags broke on v2,
+    // where `research` is a meter but not a feature.
+    const order = (ent.planVersion || 1) >= 2 ? METER_ORDER_V2 : METER_ORDER_V1;
+    const meters = order
+      .filter((m) => entJson.caps[m] === null || entJson.caps[m] > 0)
       .map((m) => ({ key: m, label: METER_LABELS[m], used: usedSummary[m] || 0, cap: entJson.caps[m] }));
 
     res.json({
