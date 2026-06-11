@@ -234,6 +234,80 @@ router.get('/products/:id/competitors', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /portfolio/competitors/threats → per-competitor threat score (0..1) for
+// the Market Map, computed from persisted intelligence rather than proxies:
+//   battlecard  — the "Competing-threat level: X (N/5)" line that discovery
+//                 files into each competitor's BATTLECARDS intel (max across docs)
+//   prospects   — share of OUR prospects whose name appears in this
+//                 competitor's filed intel (entangled accounts)
+//   products    — share of OUR products pinned against them (competitor_products)
+//   watch       — materiality-weighted Market Watch findings, last 90 days
+// Missing factors drop out and the weights renormalize, so a competitor with
+// only a battlecard still scores honestly instead of being dragged to zero.
+router.get('/competitors/threats', async (req, res, next) => {
+  try {
+    const t = req.tenantId;
+    const [comps, prodTotal, pins, bc, overlap, watch] = await Promise.all([
+      db.query(`SELECT id, name FROM competitors WHERE tenant_id = $1`, [t]),
+      db.query(`SELECT count(*)::int AS n FROM products WHERE tenant_id = $1`, [t]),
+      db.query(`SELECT competitor_id, count(DISTINCT product_id)::int AS n
+                  FROM competitor_products WHERE tenant_id = $1 GROUP BY competitor_id`, [t]),
+      // Highest filed threat level per competitor, parsed from the intel text.
+      db.query(`SELECT j.competitor_id,
+                       max((regexp_match(ch.text, 'Competing-threat level:[^(]*\\((\\d)/5\\)'))[1]::int) AS lvl
+                  FROM kb_chunks ch
+                  JOIN kb_documents d ON d.id = ch.document_id
+                  JOIN kb_document_competitors j ON j.document_id = d.id
+                 WHERE d.tenant_id = $1 AND d.status = 'READY'
+                   AND ch.text ~ 'Competing-threat level:'
+                 GROUP BY j.competitor_id`, [t]),
+      // Prospects named inside this competitor's intel docs (name >= 4 chars to
+      // keep short names from false-matching prose).
+      db.query(`SELECT j.competitor_id, count(DISTINCT co.id)::int AS n, array_agg(DISTINCT co.name) AS names
+                  FROM kb_chunks ch
+                  JOIN kb_documents d ON d.id = ch.document_id
+                  JOIN kb_document_competitors j ON j.document_id = d.id
+                  JOIN companies co ON co.tenant_id = d.tenant_id
+                 WHERE d.tenant_id = $1 AND d.status = 'READY'
+                   AND length(co.name) >= 4
+                   AND position(lower(co.name) IN lower(ch.text)) > 0
+                 GROUP BY j.competitor_id`, [t]),
+      db.query(`SELECT subject_id AS competitor_id, sum(COALESCE(materiality, 3))::int AS w
+                  FROM watch_findings
+                 WHERE tenant_id = $1 AND scope = 'COMPETITOR'
+                   AND created_at >= now() - interval '90 days'
+                 GROUP BY subject_id`, [t]),
+    ]);
+    const prodN = prodTotal.rows[0].n || 0;
+    const prospectN = (await db.query(`SELECT count(*)::int AS n FROM companies WHERE tenant_id = $1`, [t])).rows[0].n || 0;
+    const byId = (rows, k) => new Map(rows.map((r) => [r.competitor_id, r[k]]));
+    const pinM = byId(pins.rows, 'n'), bcM = byId(bc.rows, 'lvl'), watchM = byId(watch.rows, 'w');
+    const ovM = new Map(overlap.rows.map((r) => [r.competitor_id, r]));
+
+    const threats = {};
+    for (const c of comps.rows) {
+      const factors = [];
+      const lvl = bcM.get(c.id);
+      if (lvl) factors.push({ k: 'battlecard', v: (lvl - 1) / 4, w: 0.4 });
+      const ov = ovM.get(c.id);
+      if (prospectN > 0 && ov) factors.push({ k: 'prospects', v: Math.min(1, ov.n / Math.max(3, prospectN * 0.25)), w: 0.3 });
+      const pin = pinM.get(c.id);
+      if (prodN > 0 && pin) factors.push({ k: 'products', v: Math.min(1, pin / prodN), w: 0.2 });
+      const wsum = watchM.get(c.id);
+      if (wsum) factors.push({ k: 'watch', v: Math.min(1, wsum / 15), w: 0.1 });
+      const totW = factors.reduce((s, f) => s + f.w, 0);
+      const score = totW ? factors.reduce((s, f) => s + f.v * f.w, 0) / totW : 0.15;
+      threats[c.id] = {
+        score: Math.round(score * 100) / 100,
+        level: score >= 0.66 ? 'High' : score >= 0.33 ? 'Medium' : 'Low',
+        factors: Object.fromEntries(factors.map((f) => [f.k, Math.round(f.v * 100) / 100])),
+        overlapProspects: ov ? (ov.names || []).slice(0, 8) : [],
+      };
+    }
+    res.json({ threats });
+  } catch (err) { next(err); }
+});
+
 // ── Competitor battlecards ────────────────────────────────────────────────
 // Per-competitor synthesised view of all the docs filed under them. See
 // api/src/knowledge/assessment.js#extractBattlecard for the synthesis;

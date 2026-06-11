@@ -787,16 +787,20 @@
     if (!canvas) return;
     cancelAnimationFrame(_mmFrame);
 
-    let companies = [], competitors = [], dash = null;
+    let companies = [], competitors = [], dash = null, threats = {}, findings = [];
     try {
-      const [cR, kR, dR] = await Promise.all([
+      const [cR, kR, dR, tR, fR] = await Promise.all([
         fetchJson('/api/companies'),
         fetchJson('/api/portfolio/competitors'),
         fetchJson('/api/dashboard'),
+        fetchJson('/api/portfolio/competitors/threats').catch(() => ({ threats: {} })),
+        fetchJson('/api/watch/findings?limit=200').catch(() => ({ findings: [] })),
       ]);
       companies = cR.companies || [];
       competitors = kR.competitors || [];
       dash = dR;
+      threats = tR.threats || {};
+      findings = fR.findings || [];
     } catch (err) {
       emptyEl.classList.remove('hidden');
       emptyEl.innerHTML = `Couldn't load the map: ${escapeHtml(err.message)}`;
@@ -836,13 +840,25 @@
       return `rgb(${c[0]},${c[1]},${c[2]})`;
     };
     for (const k of cap(competitors, 40)) {
-      const threat = Math.min(1, ((k.doc_count || 0) / maxDoc) * 0.75 + (k.watch_enabled ? 0.25 : 0));
-      const lvl = threat >= 0.66 ? 'High' : threat >= 0.33 ? 'Medium' : 'Low';
-      nodes.push({ id: 'k:' + k.id, type: 'comp', label: k.name, meta: `${lvl} threat · ${fmtNum(k.doc_count || 0)} intel doc${(k.doc_count || 0) === 1 ? '' : 's'}${k.watch_enabled ? ' · watched' : ''}`, r: 7 + Math.min(7, (k.doc_count || 0) * 1.2), color: threatColor(threat), solid: true, hot: threat >= 0.66, side: -1 });
+      const t = threats[k.id];
+      const threat = t ? t.score
+        : Math.min(1, ((k.doc_count || 0) / maxDoc) * 0.75 + (k.watch_enabled ? 0.25 : 0));
+      const lvl = t ? t.level : (threat >= 0.66 ? 'High' : threat >= 0.33 ? 'Medium' : 'Low');
+      const entangled = t && t.overlapProspects && t.overlapProspects.length
+        ? ` · in play at ${t.overlapProspects.slice(0, 3).join(', ')}${t.overlapProspects.length > 3 ? '…' : ''}` : '';
+      nodes.push({ id: 'k:' + k.id, type: 'comp', label: k.name, meta: `${lvl} threat · ${fmtNum(k.doc_count || 0)} intel doc${(k.doc_count || 0) === 1 ? '' : 's'}${k.watch_enabled ? ' · watched' : ''}${entangled}`, r: 7 + Math.min(7, (k.doc_count || 0) * 1.2), color: threatColor(threat), solid: true, hot: threat >= 0.66, side: -1 });
+    }
+    // NEW (unreviewed) market-watch findings per prospect → notification badge.
+    const newSigByCompany = new Map();
+    for (const f of findings) {
+      if (f.scope !== 'PROSPECT' || f.status !== 'NEW') continue;
+      newSigByCompany.set(f.subject_id, (newSigByCompany.get(f.subject_id) || 0) + 1);
     }
     for (const c of cap(companies, 80)) {
       const sig = sigByCompany.get(c.id) || { n: 0, strong: 0 };
-      nodes.push({ id: 'p:' + c.id, cid: c.id, type: 'pros', label: c.name, meta: `${fmtNum(sig.n)} signal${sig.n === 1 ? '' : 's'}${sig.strong ? ` · ${fmtNum(sig.strong)} strong` : ''}${c.meeting_count ? ` · ${fmtNum(c.meeting_count)} engagement${c.meeting_count === 1 ? '' : 's'}` : ''}`, r: 5.5 + Math.min(8, sig.n * 1.6 + (c.meeting_count || 0)), color: BLUE, hot: sig.strong > 0, side: 1 });
+      const fresh = newSigByCompany.get(c.id) || 0;
+      const badge = fresh + (c.meeting_count || 0);
+      nodes.push({ id: 'p:' + c.id, cid: c.id, type: 'pros', label: c.name, badge, meta: `${fmtNum(sig.n)} signal${sig.n === 1 ? '' : 's'}${sig.strong ? ` · ${fmtNum(sig.strong)} strong` : ''}${c.meeting_count ? ` · ${fmtNum(c.meeting_count)} engagement${c.meeting_count === 1 ? '' : 's'}` : ''}${fresh ? ` · ${fmtNum(fresh)} new development${fresh === 1 ? '' : 's'}` : ''}`, r: 5.5 + Math.min(8, sig.n * 1.6 + (c.meeting_count || 0)), color: BLUE, hot: sig.strong > 0, side: 1 });
     }
 
     // Seed positions: competitors fan out left, prospects right.
@@ -928,6 +944,21 @@
         }
         ctx.strokeStyle = n.color; ctx.lineWidth = 1.4;
         ctx.beginPath(); ctx.arc(x, y, n.r, 0, Math.PI * 2); ctx.stroke();
+        // notification badge — engagements + new developments, top-right of node
+        if (n.badge > 0) {
+          const bx = x + n.r * 0.85, by = y - n.r * 0.85;
+          const txt = n.badge > 9 ? '9+' : String(n.badge);
+          ctx.save();
+          ctx.shadowColor = '#8ce046'; ctx.shadowBlur = 8;
+          ctx.fillStyle = '#8ce046';
+          ctx.beginPath(); ctx.arc(bx, by, 7.5, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+          ctx.fillStyle = '#0c1407';
+          ctx.font = "700 9px 'IBM Plex Mono', monospace";
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(txt, bx, by + 0.5);
+          ctx.textBaseline = 'alphabetic';
+        }
         // labels: center always; big or hovered nodes too
         if (n.fx || hover === n || n.r >= 10) {
           ctx.font = `${n.fx ? '600 13px' : '500 11px'} 'IBM Plex Mono', monospace`;
@@ -9106,14 +9137,62 @@
 
   // Unread-signals badge on the sidebar nav. Polled on load + after actions.
   async function refreshWatchBadge() {
-    const badge = $('watch-badge');
-    if (!badge) return;
     try {
       const { count } = await fetchJson('/api/watch/findings/count');
-      if (count > 0) { badge.textContent = count > 99 ? '99+' : String(count); badge.classList.remove('hidden'); }
-      else badge.classList.add('hidden');
-    } catch { /* non-fatal — leave badge as-is */ }
+      for (const id of ['watch-badge', 'bell-badge']) {
+        const badge = $(id);
+        if (!badge) continue;
+        if (count > 0) { badge.textContent = count > 99 ? '99+' : String(count); badge.classList.remove('hidden'); }
+        else badge.classList.add('hidden');
+      }
+    } catch { /* non-fatal — leave badges as-is */ }
   }
+
+  // ── Header notification bell — new market-signal developments at a glance ──
+  function wireBell() {
+    const btn = $('bell-btn'), panel = $('bell-panel');
+    if (!btn || !panel) return;
+    const close = () => { panel.classList.add('hidden'); btn.setAttribute('aria-expanded', 'false'); };
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!panel.classList.contains('hidden')) { close(); return; }
+      panel.classList.remove('hidden');
+      btn.setAttribute('aria-expanded', 'true');
+      panel.innerHTML = '<div class="bell-empty kb-subtle">Loading…</div>';
+      let items = [];
+      try {
+        const data = await fetchJson('/api/watch/findings?limit=40');
+        items = (data.findings || []).filter((f) => f.status === 'NEW').slice(0, 8);
+      } catch { /* gated or unavailable */ }
+      if (!items.length) {
+        panel.innerHTML = `<div class="bell-h">Market signals</div>
+          <div class="bell-empty kb-subtle">No new developments. Turn on Market Watch for a prospect or competitor and new findings will land here.</div>`;
+        return;
+      }
+      panel.innerHTML = `<div class="bell-h">New developments <span class="bell-h-n">${items.length}</span></div>
+        ${items.map((f) => `
+          <button class="bell-item" data-goto-signals="1">
+            <span class="bell-cat">${WATCH_CAT_ICON[f.category] || '•'}</span>
+            <span class="bell-body">
+              <span class="bell-who">${escapeHtml(f.subject_name || '')}<i>${f.scope === 'COMPETITOR' ? 'competitor' : 'prospect'}</i></span>
+              <span class="bell-title">${escapeHtml(f.title || '')}</span>
+            </span>
+            <span class="bell-mat" title="Materiality">${'●'.repeat(Math.max(1, Math.min(5, f.materiality || 3)))}</span>
+          </button>`).join('')}
+        <button class="bell-foot" data-goto-signals="1">Review all in Market signals →</button>`;
+      panel.querySelectorAll('[data-goto-signals]').forEach((el) => el.addEventListener('click', () => {
+        close();
+        loaded['market-signals'] = false;
+        window.location.hash = '#market-signals';
+        if (currentSection === 'market-signals') switchSection('market-signals');
+      }));
+    });
+    document.addEventListener('click', (e) => { if (!panel.classList.contains('hidden') && !panel.contains(e.target)) close(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+    // Keep the bell current while the app is open.
+    setInterval(refreshWatchBadge, 120000);
+  }
+  wireBell();
 
   const WATCH_CAT_ICON = { funding: '💰', product: '🚀', leadership: '👤', partnership: '🤝', 'm&a': '🏛️', regulatory: '⚖️', expansion: '🌐', hiring: '📈', incident: '⚠️', other: '•' };
 
