@@ -115,6 +115,14 @@
     wireLogout();
     wireRefresh();
 
+    // "Get up to speed" gate check happens BEFORE the first render so a new
+    // workspace never flashes the dashboard.
+    await refreshSetupState();
+    if (setupGating()) {
+      renderSetupGate();
+      setTimeout(setupPoll, 7000);
+    }
+
     const initialRaw = window.location.hash.replace('#', '') || 'overview';
     const { section: initialSection, query: initialQuery } = parseHash(initialRaw);
     const redirected = legacyHashRedirect(initialSection, initialQuery);
@@ -140,7 +148,7 @@
     const tourBtn = $('tour-btn');
     if (tourBtn) tourBtn.addEventListener('click', startTour);
     try {
-      if (!localStorage.getItem('gs_tour_seen')) setTimeout(startTour, 900);
+      if (!localStorage.getItem('gs_tour_seen') && !setupGating()) setTimeout(startTour, 900);
     } catch { /* localStorage blocked — skip auto-tour */ }
   }
 
@@ -396,6 +404,14 @@
   }
 
   async function switchSection(sec, query) {
+    // "Get up to speed" gate: until the first four journey steps are done,
+    // only the step-relevant pages are reachable.
+    if (setupGating() && !SETUP_ALLOWED.has(sec)) {
+      const step = setupCurrentStep();
+      sec = (step && SETUP_TARGETS[step.key].sec) || 'company';
+      query = {};
+      history.replaceState(null, '', '#' + sec);
+    }
     currentSection = sec;
     document.querySelectorAll('#nav a').forEach((a) => {
       a.classList.toggle('active', a.dataset.section === sec);
@@ -9879,6 +9895,84 @@
         else bell.classList.add('hidden');
       }
     } catch { /* non-fatal — leave badges as-is */ }
+  }
+
+  // ── "Get up to speed" gate — new workspaces must complete the first four
+  // journey steps before the dashboard and the rest of the nav unlock. The
+  // wizard hosts the REAL pages (Company / Prospects), so every manual and AI
+  // path counts; state is server-derived, so completion is always truthful. ──
+  let _setup = null;            // { steps:[{key,label,done}], gateComplete }
+  let _setupTimer = null;
+  const SETUP_TARGETS = {
+    foundation: { sec: 'company',   hint: 'Click “Enrich from web” (or fill the foundation by hand) and make sure at least one product is listed under Products.' },
+    discover:   { sec: 'prospects', hint: 'Use “Discover online”, pull from your CRM, or add a prospect manually — you need at least one.' },
+    research:   { sec: 'prospects', hint: 'Open your prospect and hit “Research / refresh” on the Why-now tab (or “Research now” right after adding one). Takes ~60s.' },
+    contacts:   { sec: 'prospects', hint: 'On your prospect\'s People tab, use “⤓ Find contacts” to pull decision-makers — or add one manually.' },
+  };
+  const SETUP_ALLOWED = new Set(['company', 'prospects', 'integrations']);
+  function setupGating() { return !!(_setup && !_setup.gateComplete); }
+  function setupCurrentStep() { return (_setup && _setup.steps.find((x) => !x.done)) || null; }
+  async function refreshSetupState() {
+    try { _setup = await fetchJson('/api/dashboard/setup'); } catch { /* keep last */ }
+    return _setup;
+  }
+  function renderSetupGate() {
+    let bar = $('setup-gate');
+    if (!setupGating()) {
+      document.body.classList.remove('setup-mode');
+      if (bar) bar.remove();
+      return;
+    }
+    document.body.classList.add('setup-mode');
+    const step = setupCurrentStep();
+    const idx = _setup.steps.indexOf(step);
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'setup-gate';
+      bar.className = 'setup-gate';
+      const content = document.querySelector('.content');
+      if (content) content.prepend(bar); else document.body.prepend(bar);
+    }
+    bar.innerHTML = `
+      <div class="setup-gate-head">
+        <span class="setup-gate-title">✦ Get up to speed</span>
+        <span class="setup-gate-sub">4 quick steps before your cockpit unlocks</span>
+      </div>
+      <div class="setup-gate-steps">
+        ${_setup.steps.map((st, i) => `
+          <span class="setup-gate-step${st.done ? ' done' : ''}${i === idx ? ' active' : ''}">
+            <i>${st.done ? '✓' : i + 1}</i>${escapeHtml(st.label.split(' — ')[0])}
+          </span>`).join('')}
+      </div>
+      ${step ? `<div class="setup-gate-hint"><strong>Step ${idx + 1}:</strong> ${SETUP_TARGETS[step.key].hint}</div>` : ''}`;
+  }
+  async function setupPoll() {
+    clearTimeout(_setupTimer);
+    if (!setupGating()) return;
+    const before = setupCurrentStep();
+    await refreshSetupState();
+    const after = setupCurrentStep();
+    if (!setupGating()) {
+      // Gate cleared — celebrate and hand over the full app.
+      renderSetupGate();
+      toast('🎉 You\'re set up — welcome to your cockpit');
+      loaded.overview = false;
+      window.location.hash = '#overview';
+      if (currentSection === 'overview') switchSection('overview');
+      return;
+    }
+    if (before && after && before.key !== after.key) {
+      // A step just completed — move the user to the next step's home.
+      toast(`✓ ${before.label.split(' — ')[0]} — next: ${after.label.split(' — ')[0]}`);
+      renderSetupGate();
+      const target = SETUP_TARGETS[after.key].sec;
+      if (after.key === 'discover') { _prospectMode = 'discover'; _prospectFormOpen = true; loaded.prospects = false; }
+      window.location.hash = '#' + target;
+      if (currentSection === target) { loaded[target] = false; switchSection(target); }
+    } else {
+      renderSetupGate();
+    }
+    _setupTimer = setTimeout(setupPoll, 7000);
   }
 
   // ── Per-user UI prefs — server-persisted; sessionStorage stays the fast

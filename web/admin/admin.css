@@ -4765,3 +4765,38 @@ details.schedule-advanced > .schedule-advanced-body {
 .cmdk-foot { display: flex; gap: 16px; padding: 8px 16px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 10px; color: var(--muted); background: var(--surface-2); }
 
 .contact-loc { font-size: 10.5px; margin-top: 2px; white-space: nowrap; }
+
+/* ── "Get up to speed" gate ─────────────────────────────────────────────── */
+.setup-gate {
+  border: 1px solid var(--accent-soft); border-left: 4px solid var(--accent);
+  border-radius: var(--radius); background: var(--accent-light);
+  padding: 14px 18px; margin: 0 0 18px;
+}
+.setup-gate-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.setup-gate-title { font-weight: 800; font-size: 15px; color: var(--accent); }
+.setup-gate-sub { font-size: 12.5px; color: var(--text-2); }
+.setup-gate-steps { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+.setup-gate-step {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid var(--border-2); background: var(--bg); border-radius: 999px;
+  padding: 5px 13px 5px 6px; font-size: 12px; font-weight: 600; color: var(--text-2);
+}
+.setup-gate-step i {
+  font-style: normal; width: 19px; height: 19px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1.5px solid var(--border-2); font-family: var(--mono); font-size: 10px; font-weight: 700;
+}
+.setup-gate-step.active { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 3px var(--accent-light); }
+.setup-gate-step.active i { border-color: var(--accent); color: var(--accent); }
+.setup-gate-step.done { opacity: .65; }
+.setup-gate-step.done i { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.setup-gate-hint { font-size: 13px; line-height: 1.55; color: var(--text-2); }
+.setup-gate-hint strong { color: var(--accent); }
+
+/* Locked chrome while the gate is up: nav stays visible (it teaches the
+   journey) but only the step-relevant pages are clickable. */
+.setup-mode .sidebar-nav a { opacity: .35; pointer-events: none; }
+.setup-mode .sidebar-nav a[data-section="company"],
+.setup-mode .sidebar-nav a[data-section="prospects"],
+.setup-mode .sidebar-nav a[data-section="integrations"] { opacity: 1; pointer-events: auto; }
+.setup-mode #tour-btn, .setup-mode .bell-wrap { display: none; }

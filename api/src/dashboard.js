@@ -243,4 +243,29 @@ router.get('/', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /dashboard/setup — the "Get up to speed" gate state. Light version of
+// the Overview checklist (keep step definitions in sync with the route above):
+// the first FOUR steps gate the app for new workspaces; 5-6 stay advisory.
+router.get('/setup', async (req, res, next) => {
+  try {
+    const t = req.tenantId;
+    const [prof, prods, prospects, research, contacts] = await Promise.all([
+      db.query(`SELECT positioning, objectives FROM tenant_profiles WHERE tenant_id = $1`, [t]),
+      db.query(`SELECT count(*)::int AS n FROM products WHERE tenant_id = $1`, [t]),
+      db.query(`SELECT count(*)::int AS n FROM companies WHERE tenant_id = $1`, [t]),
+      db.query(`SELECT count(*)::int AS n FROM prospect_research WHERE tenant_id = $1 AND status = 'DONE'`, [t]),
+      db.query(`SELECT count(*)::int AS n FROM prospect_contacts WHERE tenant_id = $1`, [t]),
+    ]);
+    const p = prof.rows[0] || {};
+    const profileSet = !!((p.positioning && p.positioning.trim()) || (p.objectives && p.objectives.trim()));
+    const steps = [
+      { key: 'foundation', label: 'Ground your workspace — positioning + products', done: profileSet && prods.rows[0].n > 0 },
+      { key: 'discover',   label: 'Find your first prospects',                      done: prospects.rows[0].n > 0 },
+      { key: 'research',   label: 'Research one prospect (signals & why-now)',      done: research.rows[0].n > 0 },
+      { key: 'contacts',   label: 'Find the decision-makers',                       done: contacts.rows[0].n > 0 },
+    ];
+    res.json({ steps, gateComplete: steps.every((x) => x.done) });
+  } catch (err) { next(err); }
+});
+
 module.exports = { router };
