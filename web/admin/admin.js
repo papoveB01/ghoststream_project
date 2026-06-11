@@ -2962,6 +2962,15 @@
             if (a.created) parts.push(`${a.created} added`);
             if (a.existing) parts.push(`${a.existing} already on file`);
             if (a.failed) parts.push(`${a.failed} had no reachable email`);
+            if (a.limited) {
+              // Out of plan allowance mid-batch — say so loudly instead of a
+              // silent "Nothing to add"; keep the picker so the selection survives.
+              out.className = 'kb-result error';
+              out.innerHTML = `${parts.length ? parts.join(' · ') + '. ' : ''}${escapeHtml(a.limited)} — <a href="#billing">add credits or upgrade</a> to reveal these contacts.`;
+              addBtn.disabled = false; addBtn.textContent = 'Add selected';
+              if (a.created) { loaded.prospects = false; await loadProspects(); }
+              return;
+            }
             out.className = 'kb-result success'; out.textContent = `${parts.join(' · ') || 'Nothing to add'}.`;
             picker.classList.add('hidden'); picker.innerHTML = '';
             loaded.prospects = false; await loadProspects();
