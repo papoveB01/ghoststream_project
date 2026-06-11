@@ -824,7 +824,7 @@
     } else {
       emptyEl.classList.add('hidden');
       const hot = [...sigByCompany.values()].filter((e) => e.strong > 0).length;
-      foot.textContent = `${fmtNum(companies.length)} prospects · ${fmtNum(competitors.length)} competitors · ${fmtNum(hot)} with strong signals`;
+      foot.textContent = `${fmtNum(companies.length)} prospects · ${fmtNum(competitors.length)} competitors · ${fmtNum(hot)} with strong signals  —  drag nodes · drag background to pan · scroll to zoom`;
     }
 
     const LIME = '#8ce046', BLUE = '#4da3e8', INK = '#e8edf2';
@@ -927,39 +927,80 @@
     });
     _mmResize.observe(stage);
 
-    let hover = null;
+    // ── Live interaction: continuous gentle physics + drag / pan / zoom ──
+    const view = { x: 0, y: 0, k: 1 };
+    const toWorld = (mx, my) => ({ x: (mx - view.x) / view.k, y: (my - view.y) / view.k });
+    for (const n of nodes) { n.vx = 0; n.vy = 0; }
+    let hover = null, dragNode = null, panning = null, moved = 0;
+    canvas.style.touchAction = 'none';
+
+    function physicsStep(t) {
+      for (let i = 0; i < nodes.length; i++) {
+        const a = nodes[i];
+        if (a.fx || a === dragNode) continue;
+        let fx = 0, fy = 0;
+        for (let j = 0; j < nodes.length; j++) {
+          if (i === j) continue;
+          const b = nodes[j];
+          const dx = a.x - b.x, dy = a.y - b.y;
+          const d2 = dx * dx + dy * dy || 1;
+          const rep = 2600 / d2;
+          fx += dx * rep; fy += dy * rep;
+        }
+        // spring toward the center node at the type's rest distance
+        const dx = a.x - center.x, dy = a.y - center.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const rest = a.type === 'comp' ? Math.min(W, H) * 0.26 : Math.min(W, H) * 0.36;
+        const pull = (dist - rest) * 0.05;
+        fx -= (dx / dist) * pull * 18; fy -= (dy / dist) * pull * 18;
+        fx += (a.side || 0) * 0.9;
+        // ambient life — tiny per-node breeze so the map never freezes
+        fx += Math.sin(t * 0.6 + i * 1.7) * 1.4;
+        fy += Math.cos(t * 0.5 + i * 2.3) * 1.4;
+        // soft bounds — ease back instead of hard-clamping
+        if (a.x < 30) fx += (30 - a.x) * 2; else if (a.x > W - 30) fx -= (a.x - (W - 30)) * 2;
+        if (a.y < 30) fy += (30 - a.y) * 2; else if (a.y > H - 36) fy -= (a.y - (H - 36)) * 2;
+        a.vx = (a.vx + fx * 0.012) * 0.86;
+        a.vy = (a.vy + fy * 0.012) * 0.86;
+        const sp = Math.hypot(a.vx, a.vy);
+        if (sp > 3) { a.vx *= 3 / sp; a.vy *= 3 / sp; }
+      }
+      for (const n of nodes) {
+        if (n.fx || n === dragNode) continue;
+        n.x += n.vx; n.y += n.vy;
+      }
+    }
+
     const t0 = performance.now();
     function draw(now) {
       const t = (now - t0) / 1000;
-      ctx.clearRect(0, 0, W, H);
+      physicsStep(t);
+      const dpr = window.devicePixelRatio || 1;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.setTransform(dpr * view.k, 0, 0, dpr * view.k, dpr * view.x, dpr * view.y);
       // edges
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1 / view.k;
       for (const n of nodes) {
         if (n.fx) continue;
         const a = 0.13 + (n.hot ? 0.12 : 0) + (hover === n ? 0.25 : 0);
         ctx.strokeStyle = (n.type === 'comp' ? `rgba(239,99,61,${a})` : `rgba(77,163,232,${a})`);
         ctx.beginPath();
         ctx.moveTo(center.x, center.y);
-        ctx.lineTo(n.dx0 || n.x, n.dy0 || n.y);
+        ctx.lineTo(n.x, n.y);
         ctx.stroke();
       }
       // nodes
       for (const n of nodes) {
-        const wob = n.fx ? 0 : 1;
-        const ox = wob * Math.sin(t * 0.5 + n.x * 0.05) * 2.2;
-        const oy = wob * Math.cos(t * 0.43 + n.y * 0.06) * 2.2;
-        const x = n.x + ox, y = n.y + oy;
-        n.dx0 = x; n.dy0 = y;
+        const x = n.x, y = n.y;
         const pulse = n.hot ? (0.65 + 0.35 * Math.sin(t * 2.2 + n.x)) : 1;
-        // glow
         ctx.save();
         ctx.shadowColor = n.color;
-        ctx.shadowBlur = (n.fx ? 26 : n.hot ? 22 : 12) * pulse;
+        ctx.shadowBlur = (n.fx ? 26 : n.hot ? 22 : 12) * pulse * view.k;
         ctx.fillStyle = n.color;
         ctx.globalAlpha = n.fx ? 1 : 0.92;
         ctx.beginPath(); ctx.arc(x, y, n.r, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
-        // inner core + ring (solid nodes stay a filled dot)
         if (!n.solid) {
           ctx.fillStyle = 'rgba(10,14,19,.55)';
           ctx.beginPath(); ctx.arc(x, y, Math.max(2, n.r - 3), 0, Math.PI * 2); ctx.fill();
@@ -981,8 +1022,8 @@
           ctx.fillText(txt, bx, by + 0.5);
           ctx.textBaseline = 'alphabetic';
         }
-        // labels: center always; big or hovered nodes too
-        if (n.fx || hover === n || n.r >= 10) {
+        // labels: center always; big, hovered or dragged nodes too
+        if (n.fx || hover === n || dragNode === n || n.r >= 10) {
           ctx.font = `${n.fx ? '600 13px' : '500 11px'} 'IBM Plex Mono', monospace`;
           ctx.fillStyle = hover === n ? INK : 'rgba(232,237,242,.75)';
           ctx.textAlign = 'center';
@@ -994,15 +1035,45 @@
     }
     _mmFrame = requestAnimationFrame(draw);
 
-    canvas.onmousemove = (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-      hover = null;
+    const hitNode = (mx, my) => {
+      const w = toWorld(mx, my);
       for (const n of nodes) {
-        const dx = mx - (n.dx0 || n.x), dy = my - (n.dy0 || n.y);
-        if (dx * dx + dy * dy <= (n.r + 7) * (n.r + 7)) { hover = n; break; }
+        const dx = w.x - n.x, dy = w.y - n.y;
+        if (dx * dx + dy * dy <= (n.r + 7) * (n.r + 7)) return n;
       }
-      canvas.style.cursor = hover && !hover.fx ? 'pointer' : 'default';
+      return null;
+    };
+    const pos = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      return { mx: e.clientX - rect.left, my: e.clientY - rect.top };
+    };
+
+    canvas.onpointerdown = (e) => {
+      const { mx, my } = pos(e);
+      moved = 0;
+      const n = hitNode(mx, my);
+      if (n) { dragNode = n; n.vx = 0; n.vy = 0; }
+      else panning = { mx, my, vx: view.x, vy: view.y };
+      canvas.setPointerCapture(e.pointerId);
+      canvas.style.cursor = 'grabbing';
+      tip.classList.add('hidden');
+    };
+    canvas.onpointermove = (e) => {
+      const { mx, my } = pos(e);
+      if (dragNode) {
+        const w = toWorld(mx, my);
+        moved += Math.hypot(w.x - dragNode.x, w.y - dragNode.y) * view.k;
+        dragNode.x = w.x; dragNode.y = w.y;
+        return;
+      }
+      if (panning) {
+        view.x = panning.vx + (mx - panning.mx);
+        view.y = panning.vy + (my - panning.my);
+        moved = Math.hypot(mx - panning.mx, my - panning.my);
+        return;
+      }
+      hover = hitNode(mx, my);
+      canvas.style.cursor = hover ? 'grab' : 'default';
       if (hover && !hover.fx) {
         tip.classList.remove('hidden');
         tip.style.left = Math.min(W - 220, mx + 14) + 'px';
@@ -1010,12 +1081,30 @@
         tip.innerHTML = `<b>${escapeHtml(hover.label || '')}</b><span>${hover.type === 'comp' ? 'Competitor' : 'Prospect'}${hover.meta ? ' · ' + escapeHtml(hover.meta) : ''}</span>`;
       } else tip.classList.add('hidden');
     };
-    canvas.onmouseleave = () => { hover = null; tip.classList.add('hidden'); };
-    canvas.onclick = () => {
-      if (!hover || hover.fx) return;
-      if (hover.type === 'pros') { _prospectsState.selectedCompanyId = hover.cid; window.location.hash = '#prospects'; }
-      else window.location.hash = '#competitors';
+    const endPointer = (e) => {
+      const wasDrag = dragNode, wasPan = panning;
+      dragNode = null; panning = null;
+      canvas.style.cursor = 'default';
+      try { canvas.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      // a press that barely moved is a click — open the entity
+      if (wasDrag && !wasDrag.fx && moved < 5) {
+        if (wasDrag.type === 'pros') { _prospectsState.selectedCompanyId = wasDrag.cid; window.location.hash = '#prospects'; }
+        else if (wasDrag.type === 'comp') window.location.hash = '#competitors';
+      }
+      if (wasPan && moved < 5) { /* background click — nothing */ }
     };
+    canvas.onpointerup = endPointer;
+    canvas.onpointercancel = endPointer;
+    canvas.onmouseleave = () => { if (!dragNode && !panning) { hover = null; tip.classList.add('hidden'); } };
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const { mx, my } = pos(e);
+      const w = toWorld(mx, my);
+      const k = Math.max(0.4, Math.min(3, view.k * (e.deltaY > 0 ? 0.9 : 1.1)));
+      view.x = mx - w.x * k;
+      view.y = my - w.y * k;
+      view.k = k;
+    }, { passive: false });
   }
 
   function kpiCell(label, value, sub, sec, hot) {
