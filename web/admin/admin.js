@@ -2782,10 +2782,19 @@
     });
 
     // ── Tabs (Signals / People / Intel / Proposal) ──
+    // The active tab survives re-renders (e.g. adding a contact reloads the
+    // page — you should still be on People, seeing the row you just saved).
+    const applyTab = (key) => {
+      host.querySelectorAll('[data-prospect-tab]').forEach((x) => x.classList.toggle('active', x.dataset.prospectTab === key));
+      host.querySelectorAll('[data-prospect-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.prospectPane !== key));
+    };
     host.querySelectorAll('[data-prospect-tab]').forEach((t) => t.addEventListener('click', () => {
-      host.querySelectorAll('[data-prospect-tab]').forEach((x) => x.classList.toggle('active', x === t));
-      host.querySelectorAll('[data-prospect-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.prospectPane !== t.dataset.prospectTab));
+      _prospectsState.detailTab = t.dataset.prospectTab;
+      applyTab(t.dataset.prospectTab);
     }));
+    if (_prospectsState.detailTabFor === company.id && _prospectsState.detailTab) applyTab(_prospectsState.detailTab);
+    else { _prospectsState.detailTab = 'signals'; }
+    _prospectsState.detailTabFor = company.id;
 
     // ── Proposal: intelligence-driven recommendation ──
     wireProspectProposal(company.id);
