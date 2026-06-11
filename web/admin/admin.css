@@ -4699,3 +4699,5 @@ details.schedule-advanced > .schedule-advanced-body {
 .cf-display { display: flex; flex-direction: column; gap: 14px; }
 .cf-block h5 { margin: 0 0 4px; font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
 .cf-block p { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; }
+
+.dash-h-hint { font-family: var(--mono); font-size: 9.5px; font-weight: 500; letter-spacing: .06em; text-transform: none; color: var(--muted); margin-left: 6px; }

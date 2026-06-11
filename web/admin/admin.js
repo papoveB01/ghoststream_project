@@ -626,8 +626,8 @@
       </div>`;
     const topCard = `
       <div class="dash-col dash-chart-card">
-        <div class="dash-card-h"><span class="dash-dot"></span>Top prospects</div>
-        ${dashTopProspects(d.opportunities || [])}
+        <div class="dash-card-h"><span class="dash-dot"></span>Top prospects <span class="dash-h-hint">by account heat</span></div>
+        ${dashTopProspects(d)}
       </div>`;
     const watchCard = `
       <div class="dash-col dash-chart-card" id="dash-watch-card">
@@ -638,23 +638,24 @@
             <div class="dash-charts dash-charts-2">${topCard}${watchCard}</div>`;
   }
 
-  // Film-style "Top prospects": horizontal signal bars, one per company with
-  // open opportunities — width = share of signals, lime when any are strong.
-  function dashTopProspects(opps) {
-    const by = new Map();
-    for (const o of opps) {
-      const k = o.companyName || 'Unknown';
-      if (!by.has(k)) by.set(k, { id: o.companyId, n: 0, strong: 0 });
-      const e = by.get(k); e.n++; if (o.strength === 'strong') e.strong++;
-    }
-    const rows = [...by.entries()].sort((a, b) => (b[1].strong - a[1].strong) || (b[1].n - a[1].n)).slice(0, 6);
-    if (!rows.length) return dashEmpty('No scored prospects yet — run discovery or research to rank your pipeline.');
-    const max = Math.max(1, ...rows.map(([, v]) => v.n));
-    return `<div class="dash-hbars">${rows.map(([name, v]) => `
-      <button class="dash-hbar" data-opp-company="${escapeHtml(v.id || '')}" title="${escapeHtml(name)}: ${fmtNum(v.n)} signal${v.n === 1 ? '' : 's'}${v.strong ? `, ${fmtNum(v.strong)} strong` : ''}">
-        <span class="dash-hbar-name">${escapeHtml(name)}</span>
-        <span class="dash-hbar-track"><i class="${v.strong ? 'is-strong' : ''}" style="width:${Math.max(8, Math.round((v.n / max) * 100))}%"></i></span>
-        <span class="dash-hbar-n">${fmtNum(v.n)}</span>
+  // "Top prospects" — composite account heat from the dashboard payload:
+  // strong signals ×3, other signals ×1, upcoming engagements ×2, fresh
+  // market developments ×2. Lime = has a strong signal.
+  function dashTopProspects(d) {
+    const rows = (d && d.topProspects) || [];
+    if (!rows.length) return dashEmpty('No account heat yet — run discovery or research, schedule engagements, or turn on Market Watch.');
+    const max = Math.max(1, ...rows.map((v) => v.heat));
+    const why = (v) => [
+      v.strong ? `${fmtNum(v.strong)} strong signal${v.strong === 1 ? '' : 's'}` : '',
+      (v.signals - v.strong) > 0 ? `${fmtNum(v.signals - v.strong)} other signal${(v.signals - v.strong) === 1 ? '' : 's'}` : '',
+      v.upcoming ? `${fmtNum(v.upcoming)} upcoming engagement${v.upcoming === 1 ? '' : 's'}` : '',
+      v.fresh ? `${fmtNum(v.fresh)} new development${v.fresh === 1 ? '' : 's'}` : '',
+    ].filter(Boolean).join(' · ');
+    return `<div class="dash-hbars">${rows.map((v) => `
+      <button class="dash-hbar" data-opp-company="${escapeHtml(v.companyId || '')}" title="${escapeHtml(v.name)} — heat ${fmtNum(v.heat)}: ${escapeHtml(why(v) || 'no detail')}">
+        <span class="dash-hbar-name">${escapeHtml(v.name)}</span>
+        <span class="dash-hbar-track"><i class="${v.strong ? 'is-strong' : ''}" style="width:${Math.max(8, Math.round((v.heat / max) * 100))}%"></i></span>
+        <span class="dash-hbar-n">${fmtNum(v.heat)}</span>
       </button>`).join('')}</div>`;
   }
 

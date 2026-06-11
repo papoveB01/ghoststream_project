@@ -36,7 +36,7 @@ router.get('/', async (req, res, next) => {
     // gauges); cached, so this is effectively free on the hot path.
     const tenantRow = await tenants.get(t);
     const ent = await entitlements.resolveEntitlementsFor(tenantRow);
-    const [usedSummary, prospectsR, prodR, persR, compR, compIntelR, intelR, engCountR, profR, oppR, engR, crmR, trendR] = await Promise.all([
+    const [usedSummary, prospectsR, prodR, persR, compR, compIntelR, intelR, engCountR, profR, oppR, engR, crmR, upcR, freshR, namesR, trendR] = await Promise.all([
       usage.summary(t, { lifetime: ent.lifetimeCaps }),
       db.query(`SELECT count(*)::int AS total,
                        count(*) FILTER (WHERE created_at >= now() - interval '7 days')::int AS new_week
@@ -64,6 +64,16 @@ router.get('/', async (req, res, next) => {
                  WHERE sm.tenant_id = $1 AND sm.status IN ('PENDING','BRIEFED') AND sm.scheduled_at >= now()
                  ORDER BY sm.scheduled_at ASC LIMIT 8`, [t]),
       db.query(`SELECT provider, status FROM crm_connections WHERE tenant_id = $1 ORDER BY updated_at DESC`, [t]),
+      // Per-company upcoming engagements + unreviewed market developments —
+      // inputs to the Top prospects "account heat" composite.
+      db.query(`SELECT company_id, count(*)::int AS n FROM scheduled_meetings
+                 WHERE tenant_id = $1 AND status IN ('PENDING','BRIEFED') AND scheduled_at >= now()
+                   AND company_id IS NOT NULL
+                 GROUP BY company_id`, [t]),
+      db.query(`SELECT subject_id, count(*)::int AS n FROM watch_findings
+                 WHERE tenant_id = $1 AND scope = 'PROSPECT' AND status = 'NEW'
+                 GROUP BY subject_id`, [t]),
+      db.query(`SELECT id, name FROM companies WHERE tenant_id = $1`, [t]),
       // New prospects per ISO week for the last 8 weeks (gaps filled with 0 so
       // the sparkline always has a fixed-width 8-bar series).
       db.query(`SELECT to_char(g.wk, 'YYYY-MM-DD') AS week, COALESCE(c.n, 0)::int AS count
@@ -114,6 +124,27 @@ router.get('/', async (req, res, next) => {
     });
     const opportunities = allOpps.slice(0, 12);
 
+    // Top prospects — composite "account heat": strong signals weigh 3, other
+    // signals 1, upcoming engagements 2, fresh (unreviewed) developments 2.
+    const heatBy = new Map();
+    const heatRow = (id) => {
+      if (!heatBy.has(id)) heatBy.set(id, { companyId: id, signals: 0, strong: 0, upcoming: 0, fresh: 0 });
+      return heatBy.get(id);
+    };
+    for (const o of allOpps) {
+      if (!o.companyId) continue;
+      const h = heatRow(o.companyId);
+      h.signals++; if (o.strength === 'strong') h.strong++;
+    }
+    for (const r of upcR.rows) heatRow(r.company_id).upcoming = r.n;
+    for (const r of freshR.rows) heatRow(r.subject_id).fresh = r.n;
+    const nameById = new Map(namesR.rows.map((r) => [r.id, r.name]));
+    const topProspects = [...heatBy.values()]
+      .map((h) => ({ ...h, name: nameById.get(h.companyId) || 'Unknown', heat: h.strong * 3 + (h.signals - h.strong) + h.upcoming * 2 + h.fresh * 2 }))
+      .filter((h) => h.heat > 0 && nameById.has(h.companyId))
+      .sort((a, b) => b.heat - a.heat || b.strong - a.strong)
+      .slice(0, 6);
+
     const engagements = engR.rows.map((r) => ({
       id: r.id,
       companyId: r.company_id,
@@ -146,6 +177,7 @@ router.get('/', async (req, res, next) => {
         engagementsNext7d: engCountR.rows[0].n,
       },
       opportunities,
+      topProspects,
       engagements,
       usage: { lifetime: ent.lifetimeCaps, meters },
       strengthBreakdown,
