@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Dashboard · DealScope Admin</title>
-  <meta name="theme-color" content="#ffffff">
+  <meta name="theme-color" content="#0a0e13">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -29,6 +29,7 @@
         <a href="#company" data-section="company">Company</a>
         <a href="#prospects" data-section="prospects">Prospects</a>
         <a href="#competitors" data-section="competitors">Competitors</a>
+        <a href="#market-map" data-section="market-map">Market Map</a>
         <a href="#market-signals" data-section="market-signals">Market signals<span class="nav-badge hidden" id="watch-badge">0</span></a>
         <div class="nav-group">Pipeline</div>
         <a href="#missions" data-section="missions">Engagements</a>
@@ -590,6 +591,27 @@
         </section>
 
         <!-- MARKET SIGNALS — agentic Market Watch review queue -->
+        <!-- MARKET MAP -->
+        <section id="section-market-map" class="section hidden">
+          <div class="mm-wrap">
+            <div class="mm-head">
+              <div class="mm-title"><span class="dash-dot"></span>AI-powered market intelligence</div>
+              <div class="mm-legend">
+                <span class="mm-leg you"><i></i>You</span>
+                <span class="mm-leg comp"><i></i>Competitors</span>
+                <span class="mm-leg pros"><i></i>Prospects</span>
+                <span class="mm-leg hot"><i></i>Strong signal</span>
+              </div>
+            </div>
+            <div class="mm-stage">
+              <canvas id="mm-canvas"></canvas>
+              <div class="mm-tip hidden" id="mm-tip"></div>
+              <div class="mm-empty hidden" id="mm-empty"></div>
+            </div>
+            <div class="mm-foot kb-subtle" id="mm-foot"></div>
+          </div>
+        </section>
+
         <section id="section-market-signals" class="section hidden">
           <div class="card">
             <div class="card-h">Market signals

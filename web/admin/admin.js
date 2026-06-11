@@ -3,13 +3,14 @@
   const show = (id) => $(id).classList.remove('hidden');
   const hide = (id) => $(id).classList.add('hidden');
 
-  const sections = ['overview', 'company', 'missions', 'prospects', 'competitors', 'market-signals', 'calendar', 'calls', 'calls-ops', 'platform', 'instances', 'platform-audit', 'platform-keys', 'sessions', 'integrations', 'billing', 'subaccounts', 'settings', 'profile'];
+  const sections = ['overview', 'company', 'missions', 'prospects', 'competitors', 'market-map', 'market-signals', 'calendar', 'calls', 'calls-ops', 'platform', 'instances', 'platform-audit', 'platform-keys', 'sessions', 'integrations', 'billing', 'subaccounts', 'settings', 'profile'];
   const loaders = {
     overview: loadOverview,
     company: loadCompany,
     missions: loadMissions,
     prospects: loadProspects,
     competitors: loadCompetitors,
+    'market-map': loadMarketMap,
     'market-signals': loadMarketSignals,
     calendar: loadCalendar,
     calls: loadCalls,
@@ -358,6 +359,9 @@
       if (query.tab) _companyTab = query.tab;
       if (query.welcome) _companyWelcome = true;
     }
+    // Market Map re-renders on every visit: data is cheap and its draw loop
+    // stops when you navigate away, so a cached page would be a frozen frame.
+    if (sec === 'market-map') loaded[sec] = false;
     if (!loaded[sec]) {
       try { await loaders[sec](query || {}); loaded[sec] = true; }
       catch (err) { console.error(err); }
@@ -386,7 +390,7 @@
 
   // Mono eyebrow group above the page title — mirrors the sidebar nav groups.
   function groupFor(sec) {
-    if (['overview', 'company', 'prospects', 'competitors', 'market-signals'].includes(sec)) return 'Intelligence';
+    if (['overview', 'company', 'prospects', 'competitors', 'market-map', 'market-signals'].includes(sec)) return 'Intelligence';
     if (['missions', 'calendar', 'sessions', 'calls', 'calls-ops'].includes(sec)) return 'Pipeline';
     if (['platform', 'instances', 'platform-audit', 'platform-keys'].includes(sec)) return 'Platform';
     return 'Workspace';
@@ -398,6 +402,7 @@
       missions: 'Engagements',
       prospects: 'Prospects',
       competitors: 'Competitors',
+      'market-map': 'Market Map',
       'market-signals': 'Market signals',
       calendar: 'Calendar',
       calls: 'Calls',
@@ -496,8 +501,8 @@
       </div>
       ${activation}
       <div class="dash-kpis">
+        ${kpiCell('Open signals', fmtNum(k.openSignals || 0), 'priority opportunities', 'prospects', true)}
         ${kpiCell('Prospects', fmtNum(k.prospects || 0), k.prospectsNewWeek ? `+${k.prospectsNewWeek} this week` : 'in your pipeline', 'prospects')}
-        ${kpiCell('Open signals', fmtNum(k.openSignals || 0), 'priority opportunities', 'prospects')}
         ${kpiCell('Competitors', fmtNum(k.competitors || 0), `${fmtNum(f.competitorsWithIntel || 0)} with intel`, 'competitors')}
         ${kpiCell('Next 7 days', fmtNum(k.engagementsNext7d || 0), 'engagements', 'missions')}
       </div>
@@ -582,36 +587,89 @@
       else window.location.hash = '#missions';
     }));
 
-    // Parent-account roll-up loads async (separate endpoint); never blocks the
-    // main dashboard render and silently no-ops for non-parent profiles.
+    // Parent-account roll-up + market-signals card load async (separate
+    // endpoints); neither blocks the main dashboard render.
     renderDashRollup();
+    renderDashWatch();
   }
 
   // ── Overview charts (inline SVG / CSS — no charting dependency) ───────────
   const DASH_STRENGTH_SEGS = [
-    { key: 'strong', label: 'Strong', color: '#3c7d13' },
-    { key: 'tie',    label: 'Even',   color: '#ea580c' },
-    { key: 'weak',   label: 'Weak',   color: '#c2c6cc' },
+    { key: 'strong', label: 'Strong', color: '#8ce046' },
+    { key: 'tie',    label: 'Even',   color: '#4da3e8' },
+    { key: 'weak',   label: 'Weak',   color: '#39424e' },
   ];
 
   function buildDashCharts(d) {
     const meters = (d.usage && d.usage.meters) || [];
     const usageCard = meters.length ? `
       <div class="dash-col dash-chart-card">
-        <div class="dash-card-h">Usage this ${d.usage.lifetime ? 'account' : 'month'}</div>
+        <div class="dash-card-h"><span class="dash-dot"></span>Usage this ${d.usage.lifetime ? 'account' : 'month'}</div>
         <div class="dash-gauges">${meters.map(dashGauge).join('')}</div>
       </div>` : '';
     const mixCard = `
       <div class="dash-col dash-chart-card">
-        <div class="dash-card-h">Opportunity mix</div>
+        <div class="dash-card-h"><span class="dash-dot"></span>Opportunity mix</div>
         ${dashStrengthDonut(d.strengthBreakdown || {})}
       </div>`;
     const trendCard = `
       <div class="dash-col dash-chart-card">
-        <div class="dash-card-h">New prospects</div>
+        <div class="dash-card-h"><span class="dash-dot"></span>Pipeline activity</div>
         ${dashTrend(d.prospectTrend)}
       </div>`;
-    return `<div class="dash-charts">${usageCard}${mixCard}${trendCard}</div>`;
+    const topCard = `
+      <div class="dash-col dash-chart-card">
+        <div class="dash-card-h"><span class="dash-dot"></span>Top prospects</div>
+        ${dashTopProspects(d.opportunities || [])}
+      </div>`;
+    const watchCard = `
+      <div class="dash-col dash-chart-card" id="dash-watch-card">
+        <div class="dash-card-h"><span class="dash-dot"></span>Market signals</div>
+        <div id="dash-watch">${dashEmpty('Loading signals…')}</div>
+      </div>`;
+    return `<div class="dash-charts">${trendCard}${mixCard}${usageCard}</div>
+            <div class="dash-charts dash-charts-2">${topCard}${watchCard}</div>`;
+  }
+
+  // Film-style "Top prospects": horizontal signal bars, one per company with
+  // open opportunities — width = share of signals, lime when any are strong.
+  function dashTopProspects(opps) {
+    const by = new Map();
+    for (const o of opps) {
+      const k = o.companyName || 'Unknown';
+      if (!by.has(k)) by.set(k, { id: o.companyId, n: 0, strong: 0 });
+      const e = by.get(k); e.n++; if (o.strength === 'strong') e.strong++;
+    }
+    const rows = [...by.entries()].sort((a, b) => (b[1].strong - a[1].strong) || (b[1].n - a[1].n)).slice(0, 6);
+    if (!rows.length) return dashEmpty('No scored prospects yet — run discovery or research to rank your pipeline.');
+    const max = Math.max(1, ...rows.map(([, v]) => v.n));
+    return `<div class="dash-hbars">${rows.map(([name, v]) => `
+      <button class="dash-hbar" data-opp-company="${escapeHtml(v.id || '')}" title="${escapeHtml(name)}: ${fmtNum(v.n)} signal${v.n === 1 ? '' : 's'}${v.strong ? `, ${fmtNum(v.strong)} strong` : ''}">
+        <span class="dash-hbar-name">${escapeHtml(name)}</span>
+        <span class="dash-hbar-track"><i class="${v.strong ? 'is-strong' : ''}" style="width:${Math.max(8, Math.round((v.n / max) * 100))}%"></i></span>
+        <span class="dash-hbar-n">${fmtNum(v.n)}</span>
+      </button>`).join('')}</div>`;
+  }
+
+  // Async "Market signals" card body — latest Market Watch findings. Never
+  // blocks the dashboard; quietly collapses when the feature has no data.
+  async function renderDashWatch() {
+    const host = $('dash-watch');
+    if (!host) return;
+    let data = null;
+    try { data = await fetchJson('/api/watch/findings?limit=24'); } catch (_) { /* gated or empty */ }
+    const items = ((data && data.findings) || []).filter((f) => f.status === 'NEW').slice(0, 6);
+    if (!items.length) {
+      host.innerHTML = dashEmpty('No new market signals. Turn on Market Watch for a prospect or competitor to monitor it here.');
+      return;
+    }
+    host.innerHTML = `<div class="dash-signals">${items.map((f) => `
+      <button class="dash-signal" data-goto="market-signals" title="${escapeHtml(f.title || '')}">
+        <span class="dash-signal-who">${escapeHtml(f.subject_name || '')}</span>
+        <span class="dash-signal-title">${escapeHtml(f.title || '')}</span>
+        <span class="dash-signal-mat">${'●'.repeat(Math.max(1, Math.min(5, f.materiality || 3)))}</span>
+      </button>`).join('')}</div>`;
+    host.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => { window.location.hash = '#market-signals'; }));
   }
 
   // Single usage gauge: a ring filled to used/cap, colored by headroom.
@@ -657,26 +715,41 @@
     </div>`;
   }
 
-  // 8-week new-prospect bar sparkline.
+  // 8-week new-prospect chart, film style: lime bars over a soft gradient
+  // area of the same series (one honest dataset, two renderings).
   function dashTrend(rows) {
     const data = Array.isArray(rows) ? rows : [];
     if (!data.length) return dashEmpty('No prospect history yet.');
     const max = Math.max(1, ...data.map((r) => r.count || 0));
-    const bars = data.map((r) => {
-      const h = Math.round(((r.count || 0) / max) * 100);
+    const W = 320, H = 110, PAD = 6, bw = (W - PAD * 2) / data.length;
+    const y = (v) => H - 18 - (v / max) * (H - 34);
+    const pts = data.map((r, i) => `${(PAD + bw * i + bw / 2).toFixed(1)},${y(r.count || 0).toFixed(1)}`);
+    const area = `M${PAD},${H - 18} L${pts.join(' L')} L${W - PAD},${H - 18} Z`;
+    const bars = data.map((r, i) => {
+      const v = r.count || 0, x = PAD + bw * i + bw * 0.28, w = bw * 0.44;
+      const h = Math.max(2, (v / max) * (H - 34));
       const wk = String(r.week || '').slice(5);
-      return `<div class="dash-bar" title="Week of ${escapeHtml(r.week || '')}: ${fmtNum(r.count || 0)} new"><i style="height:${Math.max(h, 2)}%"></i><span>${escapeHtml(wk)}</span></div>`;
+      return `<rect x="${x.toFixed(1)}" y="${(H - 18 - h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="2" class="dash-tbar${i % 2 ? ' alt' : ''}"><title>Week of ${escapeHtml(r.week || '')}: ${fmtNum(v)} new</title></rect>
+              <text x="${(PAD + bw * i + bw / 2).toFixed(1)}" y="${H - 5}" class="dash-tlbl">${escapeHtml(wk)}</text>`;
     }).join('');
     const totalNew = data.reduce((s, r) => s + (r.count || 0), 0);
-    return `<div class="dash-trend">${bars}</div><div class="dash-trend-foot kb-subtle">${fmtNum(totalNew)} new in 8 weeks</div>`;
+    return `<div class="dash-trend-svgwrap"><svg viewBox="0 0 ${W} ${H}" class="dash-trend-svg" role="img" aria-label="New prospects per week">
+      <defs><linearGradient id="dash-area-g" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#8ce046" stop-opacity=".28"/><stop offset="1" stop-color="#8ce046" stop-opacity="0"/>
+      </linearGradient></defs>
+      <path d="${area}" fill="url(#dash-area-g)"/>
+      <polyline points="${pts.join(' ')}" fill="none" stroke="#8ce046" stroke-width="1.5" stroke-opacity=".8"/>
+      ${bars}
+    </svg></div><div class="dash-trend-foot kb-subtle">${fmtNum(totalNew)} new prospect${totalNew === 1 ? '' : 's'} in 8 weeks</div>`;
   }
 
   // Parent-account only: per-child activity bars (intel + calls + upcoming).
   async function renderDashRollup() {
     const host = $('dash-subaccounts');
     if (!host) return;
-    const feats = (me && me.entitlements && me.entitlements.features) || [];
-    const isParent = feats.includes('sub_accounts') && !(me.entitlements && me.entitlements.isSubtenant);
+    const u = window._me;
+    const feats = (u && u.entitlements && u.entitlements.features) || [];
+    const isParent = feats.includes('sub_accounts') && !(u && u.entitlements && u.entitlements.isSubtenant);
     if (!isParent) return;
     let d;
     try { d = await fetchJson('/api/account/subaccounts/monitor'); }
@@ -700,8 +773,188 @@
     host.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => { window.location.hash = '#' + b.dataset.goto; }));
   }
 
-  function kpiCell(label, value, sub, sec) {
-    return `<button class="dash-kpi" data-goto="${sec}"><div class="dash-kpi-v">${value}</div><div class="dash-kpi-l">${escapeHtml(label)}</div>${sub ? `<div class="dash-kpi-s kb-subtle">${escapeHtml(sub)}</div>` : ''}</button>`;
+  // ── Market Map — canvas force graph of you vs competitors vs prospects ────
+  // Film-style glowing node network. Pure canvas, no dependencies; the layout
+  // is a tiny spring/repulsion sim pre-run synchronously, then drawn with a
+  // gentle ambient drift so the map feels alive without ever rearranging.
+  let _mmFrame = 0; // rAF id — cancelled on every (re)load so only one loop runs
+
+  async function loadMarketMap() {
+    const canvas = $('mm-canvas');
+    const tip = $('mm-tip');
+    const emptyEl = $('mm-empty');
+    const foot = $('mm-foot');
+    if (!canvas) return;
+    cancelAnimationFrame(_mmFrame);
+
+    let companies = [], competitors = [], dash = null;
+    try {
+      const [cR, kR, dR] = await Promise.all([
+        fetchJson('/api/companies'),
+        fetchJson('/api/portfolio/competitors'),
+        fetchJson('/api/dashboard'),
+      ]);
+      companies = cR.companies || [];
+      competitors = kR.competitors || [];
+      dash = dR;
+    } catch (err) {
+      emptyEl.classList.remove('hidden');
+      emptyEl.innerHTML = `Couldn't load the map: ${escapeHtml(err.message)}`;
+      return;
+    }
+
+    // Signal strength per company from the dashboard's opportunity feed.
+    const sigByCompany = new Map();
+    for (const o of (dash && dash.opportunities) || []) {
+      if (!o.companyId) continue;
+      const e = sigByCompany.get(o.companyId) || { n: 0, strong: 0 };
+      e.n++; if (o.strength === 'strong') e.strong++;
+      sigByCompany.set(o.companyId, e);
+    }
+
+    if (!companies.length && !competitors.length) {
+      emptyEl.classList.remove('hidden');
+      emptyEl.innerHTML = `Your map is empty. <a href="#prospects">Discover prospects</a> and <a href="#competitors">add competitors</a> and they'll light up here.`;
+      foot.textContent = '';
+    } else {
+      emptyEl.classList.add('hidden');
+      const hot = [...sigByCompany.values()].filter((e) => e.strong > 0).length;
+      foot.textContent = `${fmtNum(companies.length)} prospects · ${fmtNum(competitors.length)} competitors · ${fmtNum(hot)} with strong signals`;
+    }
+
+    const LIME = '#8ce046', BLUE = '#4da3e8', INK = '#e8edf2';
+    const nodes = [];
+    const center = { id: '_you', type: 'you', label: (dash && dash.tenant && dash.tenant.name) || 'You', x: 0, y: 0, r: 16, color: LIME, fx: true };
+    nodes.push(center);
+    const cap = (arr, n) => arr.slice(0, n);
+    for (const k of cap(competitors, 40)) {
+      nodes.push({ id: 'k:' + k.id, type: 'comp', label: k.name, meta: `${fmtNum(k.doc_count || 0)} intel doc${(k.doc_count || 0) === 1 ? '' : 's'}`, r: 7 + Math.min(7, (k.doc_count || 0) * 1.2), color: LIME, side: -1 });
+    }
+    for (const c of cap(companies, 80)) {
+      const sig = sigByCompany.get(c.id) || { n: 0, strong: 0 };
+      nodes.push({ id: 'p:' + c.id, cid: c.id, type: 'pros', label: c.name, meta: `${fmtNum(sig.n)} signal${sig.n === 1 ? '' : 's'}${sig.strong ? ` · ${fmtNum(sig.strong)} strong` : ''}${c.meeting_count ? ` · ${fmtNum(c.meeting_count)} engagement${c.meeting_count === 1 ? '' : 's'}` : ''}`, r: 5.5 + Math.min(8, sig.n * 1.6 + (c.meeting_count || 0)), color: BLUE, hot: sig.strong > 0, side: 1 });
+    }
+
+    // Seed positions: competitors fan out left, prospects right.
+    const stage = canvas.parentElement;
+    const W = Math.max(640, stage.clientWidth), H = Math.max(480, stage.clientHeight);
+    nodes.forEach((n, i) => {
+      if (n.fx) { n.x = W / 2; n.y = H / 2; return; }
+      const golden = i * 2.39996;
+      const spread = Math.min(W, H) * (0.18 + 0.3 * ((i % 17) / 17));
+      n.x = W / 2 + Math.cos(golden) * spread * 0.8 + (n.side || 0) * W * 0.16;
+      n.y = H / 2 + Math.sin(golden) * spread * 0.7;
+    });
+    // Spring/repulsion pre-layout (synchronous; n is small).
+    for (let t = 0; t < 260; t++) {
+      const k = 0.012;
+      for (const a of nodes) {
+        if (a.fx) continue;
+        let fx = 0, fy = 0;
+        for (const b of nodes) {
+          if (a === b) continue;
+          let dx = a.x - b.x, dy = a.y - b.y;
+          let d2 = dx * dx + dy * dy || 1;
+          const rep = 2600 / d2;
+          fx += dx * rep; fy += dy * rep;
+        }
+        // spring to center, slightly longer for prospects
+        const dx = a.x - center.x, dy = a.y - center.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const rest = a.type === 'comp' ? Math.min(W, H) * 0.26 : Math.min(W, H) * 0.36;
+        const pull = (dist - rest) * 0.05;
+        fx -= (dx / dist) * pull * 18; fy -= (dy / dist) * pull * 18;
+        // cluster bias: keep types on their side
+        fx += (a.side || 0) * 0.9;
+        a.x += fx * k; a.y += fy * k;
+        a.x = Math.max(30, Math.min(W - 30, a.x));
+        a.y = Math.max(30, Math.min(H - 36, a.y));
+      }
+    }
+
+    // Hi-DPI canvas
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    let hover = null;
+    const t0 = performance.now();
+    function draw(now) {
+      const t = (now - t0) / 1000;
+      ctx.clearRect(0, 0, W, H);
+      // edges
+      ctx.lineWidth = 1;
+      for (const n of nodes) {
+        if (n.fx) continue;
+        const a = 0.13 + (n.hot ? 0.12 : 0) + (hover === n ? 0.25 : 0);
+        ctx.strokeStyle = (n.type === 'comp' ? `rgba(140,224,70,${a})` : `rgba(77,163,232,${a})`);
+        ctx.beginPath();
+        ctx.moveTo(center.x, center.y);
+        ctx.lineTo(n.dx0 || n.x, n.dy0 || n.y);
+        ctx.stroke();
+      }
+      // nodes
+      for (const n of nodes) {
+        const wob = n.fx ? 0 : 1;
+        const ox = wob * Math.sin(t * 0.5 + n.x * 0.05) * 2.2;
+        const oy = wob * Math.cos(t * 0.43 + n.y * 0.06) * 2.2;
+        const x = n.x + ox, y = n.y + oy;
+        n.dx0 = x; n.dy0 = y;
+        const pulse = n.hot ? (0.65 + 0.35 * Math.sin(t * 2.2 + n.x)) : 1;
+        // glow
+        ctx.save();
+        ctx.shadowColor = n.color;
+        ctx.shadowBlur = (n.fx ? 26 : n.hot ? 22 : 12) * pulse;
+        ctx.fillStyle = n.color;
+        ctx.globalAlpha = n.fx ? 1 : 0.92;
+        ctx.beginPath(); ctx.arc(x, y, n.r, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+        // inner core + ring
+        ctx.fillStyle = 'rgba(10,14,19,.55)';
+        ctx.beginPath(); ctx.arc(x, y, Math.max(2, n.r - 3), 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = n.color; ctx.lineWidth = 1.4;
+        ctx.beginPath(); ctx.arc(x, y, n.r, 0, Math.PI * 2); ctx.stroke();
+        // labels: center always; big or hovered nodes too
+        if (n.fx || hover === n || n.r >= 10) {
+          ctx.font = `${n.fx ? '600 13px' : '500 11px'} 'IBM Plex Mono', monospace`;
+          ctx.fillStyle = hover === n ? INK : 'rgba(232,237,242,.75)';
+          ctx.textAlign = 'center';
+          const lbl = String(n.label || '').length > 22 ? String(n.label).slice(0, 21) + '…' : String(n.label || '');
+          ctx.fillText(lbl, x, y + n.r + 14);
+        }
+      }
+      if (currentSection === 'market-map' && canvas.isConnected) _mmFrame = requestAnimationFrame(draw);
+    }
+    _mmFrame = requestAnimationFrame(draw);
+
+    canvas.onmousemove = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      hover = null;
+      for (const n of nodes) {
+        const dx = mx - (n.dx0 || n.x), dy = my - (n.dy0 || n.y);
+        if (dx * dx + dy * dy <= (n.r + 7) * (n.r + 7)) { hover = n; break; }
+      }
+      canvas.style.cursor = hover && !hover.fx ? 'pointer' : 'default';
+      if (hover && !hover.fx) {
+        tip.classList.remove('hidden');
+        tip.style.left = Math.min(W - 220, mx + 14) + 'px';
+        tip.style.top = (my + 12) + 'px';
+        tip.innerHTML = `<b>${escapeHtml(hover.label || '')}</b><span>${hover.type === 'comp' ? 'Competitor' : 'Prospect'}${hover.meta ? ' · ' + escapeHtml(hover.meta) : ''}</span>`;
+      } else tip.classList.add('hidden');
+    };
+    canvas.onmouseleave = () => { hover = null; tip.classList.add('hidden'); };
+    canvas.onclick = () => {
+      if (!hover || hover.fx) return;
+      if (hover.type === 'pros') { _prospectsState.selectedCompanyId = hover.cid; window.location.hash = '#prospects'; }
+      else window.location.hash = '#competitors';
+    };
+  }
+
+  function kpiCell(label, value, sub, sec, hot) {
+    return `<button class="dash-kpi${hot ? ' hot' : ''}" data-goto="${sec}"><div class="dash-kpi-v">${value}</div><div class="dash-kpi-l">${escapeHtml(label)}</div>${sub ? `<div class="dash-kpi-s kb-subtle">${escapeHtml(sub)}</div>` : ''}</button>`;
   }
   function dashEmpty(msg) { return `<div class="dash-empty kb-subtle">${escapeHtml(msg)}</div>`; }
   function dashFound(ok, label) { return `<span class="dash-found-item ${ok ? 'ok' : 'todo'}">${ok ? '✓' : '○'} ${escapeHtml(label)}</span>`; }
