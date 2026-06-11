@@ -4,41 +4,76 @@
    readouts. Tokens drive the whole admin; restyling them re-skins every screen.
    =========================================================================== */
 :root {
-  /* night console — dark navy/graphite, after the brand film */
-  --bg: #11171f;                 /* raised cards/panels */
-  --surface: #0a0e13;            /* page canvas */
-  --surface-2: #161e28;          /* subtle raised/zebra/hover */
-  --border: #202a36;             /* hairline */
+  /* paper + ink — reading/working surfaces stay light */
+  --bg: #ffffff;                 /* white cards/panels */
+  --surface: #f3f4f1;            /* cool-neutral canvas */
+  --surface-2: #fafbf9;          /* subtle raised/zebra */
+  --border: #e3e5e0;             /* hairline */
+  --border-2: #d3d6cf;
+  --text: #15181b;               /* near-black ink */
+  --text-2: #54595f;
+  --muted: #8c9197;
+  /* signal accent — deep DealScope green; white ink on accent fills */
+  --accent: #1e7d45;
+  --accent-hover: #176336;
+  --on-accent: #ffffff;
+  --accent-light: #e9f3ec;
+  --accent-soft: #bfe0cb;
+  --success: #1e7d45;
+  /* secondary data hue */
+  --blue: #1d6fd8;
+  --blue-wash: #eaf2fd;
+  --warn: #bd6a0c;
+  --amber-wash: #fbf0df;
+  --danger: #bf3b2f;
+  --red-wash: #fbe9e7;
+  /* graphite rail */
+  --rail: #15181b;
+  --rail-2: #1d2125;
+  --rail-line: #2a2f34;
+  --rail-text: #a7adb4;
+  --rail-dim: #6f757c;
+  --radius: 6px;
+  --radius-sm: 5px;
+  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --shadow: 0 1px 2px rgba(20, 22, 28, 0.05), 0 4px 14px rgba(20, 22, 28, 0.05);
+  --glow-accent: 0 0 0 1px rgba(30, 125, 69, 0.18), 0 0 18px -6px rgba(30, 125, 69, 0.30);
+}
+
+/* ── Night islands — the film look, scoped to instrument surfaces only.
+   Stats readouts, charts and the Market Map run dark with the lime/blue
+   film palette; prose, intel and forms stay on paper. Add `.night` to any
+   card to opt it in — every component inside re-skins via the tokens. ── */
+.night,
+.dash-kpi,
+.dash-charts .dash-col,
+.stat-cards,
+.stat-card,
+.mm-wrap {
+  --bg: #11171f;
+  --surface: #0a0e13;
+  --surface-2: #161e28;
+  --border: #202a36;
   --border-2: #2c3845;
-  --text: #e8edf2;               /* near-white ink */
+  --text: #e8edf2;
   --text-2: #aab4bf;
   --muted: #6e7a86;
-  /* signal accent — film lime-green; dark ink on accent fills */
   --accent: #8ce046;
   --accent-hover: #a0f25a;
   --on-accent: #0c1407;
   --accent-light: rgba(140, 224, 70, 0.10);
   --accent-soft: rgba(140, 224, 70, 0.32);
   --success: #8ce046;
-  /* secondary data hue — film blue */
   --blue: #4da3e8;
   --blue-wash: rgba(77, 163, 232, 0.12);
   --warn: #e8a33d;
   --amber-wash: rgba(232, 163, 61, 0.12);
   --danger: #ef5d52;
   --red-wash: rgba(239, 93, 82, 0.12);
-  /* rail — one shade below the canvas */
-  --rail: #070b10;
-  --rail-2: #0e141c;
-  --rail-line: #1c2530;
-  --rail-text: #a7b1bc;
-  --rail-dim: #5f6b77;
   color-scheme: dark;
-  --radius: 6px;
-  --radius-sm: 5px;
-  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 6px 20px rgba(0, 0, 0, 0.30);
   --glow-accent: 0 0 0 1px rgba(140, 224, 70, 0.25), 0 0 22px -4px rgba(140, 224, 70, 0.35);
+  color: var(--text);
 }
 /* Display + UI = Archivo; data/labels = IBM Plex Mono (see component rules). */
 h1, h2, h3, h4, .brand-name, #page-title, .card-h {
@@ -66,7 +101,7 @@ body {
   align-items: center;
   justify-content: center;
   background:
-    radial-gradient(ellipse 800px 400px at 30% 20%, rgba(140,224,70,0.06), transparent 60%),
+    radial-gradient(ellipse 800px 400px at 30% 20%, rgba(30,125,69,0.07), transparent 60%),
     var(--surface);
   padding: 40px 20px;
 }
@@ -221,7 +256,7 @@ body {
   text-decoration: none;
   transition: background .12s, color .12s;
 }
-.sidebar-nav a:hover { background: rgba(255,255,255,.05); color: var(--text); }
+.sidebar-nav a:hover { background: rgba(255,255,255,.05); color: #fff; }
 .sidebar-nav a.active {
   background: rgba(140,224,70,.14);
   color: #fff;
@@ -251,7 +286,7 @@ body {
 .sidebar .user-block { border-radius: 8px; }
 .sidebar .user-block:hover { background: rgba(255,255,255,.05); }
 .sidebar .user-avatar { background: var(--rail-2); color: var(--surface-2); border: 1px solid var(--rail-line); border-radius: 8px; }
-.sidebar .user-name { color: var(--text); }
+.sidebar .user-name { color: #e8edf2; }
 .sidebar .user-email { color: var(--rail-text); }
 .sidebar .user-block:has(.user-name:not(.hidden)) .user-email { color: var(--rail-dim); }
 .sidebar .user-role { color: var(--rail-dim); font-family: var(--mono); letter-spacing: 0.06em; }
@@ -319,7 +354,7 @@ body {
 /* Toast */
 .gs-toast-host { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 9999; }
 .gs-toast {
-  background: var(--text); color: var(--rail); padding: 10px 16px; border-radius: var(--radius);
+  background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: var(--radius);
   font-size: 13px; font-weight: 500; box-shadow: 0 8px 24px rgba(15,23,42,0.18);
   opacity: 0; transform: translateY(8px); transition: opacity .25s ease, transform .25s ease;
 }
@@ -2348,8 +2383,8 @@ details.schedule-advanced > .schedule-advanced-body {
   font-size: 12px;
   padding: 3px 9px;
   border-radius: var(--radius-sm);
-  background: rgba(77,210,232,.12);
-  color: #4dd2e8;
+  background: #ecfeff;
+  color: #155e75;
   border: 1px solid #a5f3fc;
   font-weight: 500;
 }
@@ -3878,7 +3913,7 @@ details.schedule-advanced > .schedule-advanced-body {
 .ec-avatar {
   width: 38px; height: 38px; border-radius: 50%; flex: none; display: grid; place-items: center;
   font-weight: 700; font-size: 16px; color: var(--on-accent); background: var(--accent);
-  box-shadow: 0 2px 7px rgba(140, 224, 70, .25);
+  box-shadow: 0 2px 7px rgba(30, 125, 69, .32);
 }
 .ec-head-title { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: -.01em; }
 .ec-head-sub { font-size: 12px; color: var(--muted); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3943,7 +3978,7 @@ details.schedule-advanced > .schedule-advanced-body {
 }
 .ec-generate {
   height: 38px; padding: 0 14px; border: none; border-radius: var(--radius-sm); cursor: pointer;
-  font: inherit; font-size: 13px; font-weight: 600; color: var(--rail); background: var(--text);
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--bg); background: var(--text);
   display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; transition: background .15s, transform .08s;
 }
 .ec-generate:hover { background: #000; }
@@ -4023,8 +4058,8 @@ details.schedule-advanced > .schedule-advanced-body {
 .crm-pull-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .prio { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700; white-space: nowrap; border: 1px solid transparent; }
 .prio-5 { background: rgba(239,93,82,.20); color: var(--danger); border-color: #f08c84; }
-.prio-4 { background: rgba(232,163,61,.16); color: #f0b35c; border-color: rgba(232,163,61,.40); }
-.prio-3 { background: rgba(232,200,61,.13); color: #e3c54f; border-color: rgba(232,200,61,.38); }
+.prio-4 { background: #ffedd5; color: #9a3412; border-color: #fdba74; }
+.prio-3 { background: #fef9c3; color: #854d0e; border-color: #fde047; }
 .prio-2 { background: var(--accent-light); color: var(--accent-hover); border-color: var(--accent-soft); }
 .prio-1 { background: var(--border); color: var(--text-2); border-color: var(--border-2); }
 
@@ -4154,7 +4189,7 @@ details.schedule-advanced > .schedule-advanced-body {
 .dash-kpi-v { font-family: var(--mono); font-feature-settings: "tnum"; font-size: 29px; font-weight: 600; line-height: 1; letter-spacing: -.02em; }
 .dash-kpi-s { font-family: var(--mono); font-size: 11px; margin-top: 5px; color: var(--muted); }
 /* Film "Deals won" treatment — the lead readout glows lime. */
-.dash-kpi.hot { border-color: var(--accent-soft); box-shadow: var(--glow-accent); background: linear-gradient(180deg, var(--accent-light), var(--bg) 70%); }
+.dash-kpi.hot { border-color: var(--accent-soft); box-shadow: var(--glow-accent); background: linear-gradient(180deg, var(--accent-light), rgba(0,0,0,0) 70%), var(--bg); }
 .dash-kpi.hot::after { background: var(--accent); }
 .dash-kpi.hot .dash-kpi-v { color: var(--accent); text-shadow: 0 0 18px rgba(140,224,70,.35); }
 .dash-kpi.hot .dash-kpi-l { color: var(--accent); opacity: .85; }
