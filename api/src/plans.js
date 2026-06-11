@@ -113,7 +113,7 @@ const PLANS_V2 = {
     key: 'trial', version: 2, name: 'Free', selfServe: false, monthly: 0,
     blurb: 'Free forever, no card. Try discovery, competitor battlecards and one AI-joined call — upgrade or buy credits when you need more.',
     features: [FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS],
-    caps: { research: 5, engagements: 1, market_monitoring: 0, arena: 0 },
+    caps: { research: 10, engagements: 1, market_monitoring: 0, arena: 0 },
     lifetimeCaps: true,
     seats: { included: 1 },
   },
