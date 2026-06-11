@@ -963,6 +963,7 @@ router.post('/competitors/discover', gating.requireFeature('competitor_research'
     // Our existing prospects → competitor analysis flags any competitor already
     // entrenched at one of them ("incumbent at account").
     const prospectRows = await db.query(`SELECT name FROM companies WHERE tenant_id = $1`, [req.tenantId]);
+    const trackedNames = (await db.query(`SELECT name FROM competitors WHERE tenant_id = $1`, [req.tenantId])).rows.map((r) => r.name);
     const result = await discovery.discoverCompetitors({
       companyName: tenant.name,
       ourProducts,
@@ -972,19 +973,31 @@ router.post('/competitors/discover', gating.requireFeature('competitor_research'
       region,
       buyerMarket,
       prospects: prospectRows.rows,
+      excludeNames: trackedNames,
     });
     if (!result) {
       await gating.refundCapacity(req); // don't charge for a failed discovery
       return res.status(502).json({ error: 'discovery could not find competitors right now — try again' });
     }
 
-    // Flag candidates we already track (by case-insensitive name) so the UI can
-    // show "already added" instead of a dead Add button.
-    const existing = await db.query(`SELECT lower(name) AS n FROM competitors WHERE tenant_id = $1`, [req.tenantId]);
-    const have = new Set(existing.rows.map((r) => r.n));
-    const competitors = result.competitors.map((c) => ({ ...c, exists: have.has(c.name.toLowerCase()) }));
+    // Competitors we already track never come back as candidates — they're
+    // split into `existing` (with watch state) so the UI offers update-intel
+    // instead of a dead Add button.
+    const tracked = (await db.query(
+      `SELECT id, name, website, watch_enabled FROM competitors WHERE tenant_id = $1`, [req.tenantId]
+    )).rows;
+    const byName = new Map(tracked.map((r) => [r.name.toLowerCase(), r]));
+    const byDomain = new Map(tracked.filter((r) => r.website).map((r) => [String(r.website).toLowerCase().replace(/^www\./, ''), r]));
+    const competitors = [];
+    const existingHit = new Map();
+    for (const c of result.competitors) {
+      const dom = String(c.website || '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
+      const match = byName.get(c.name.toLowerCase()) || (dom && byDomain.get(dom));
+      if (match) existingHit.set(match.id, { id: match.id, name: match.name, website: match.website, watchEnabled: !!match.watch_enabled });
+      else competitors.push(c);
+    }
     const dataHints = await foundation.dataHints(req.tenantId);
-    res.json({ competitors, region, dataHints });
+    res.json({ competitors, existing: [...existingHit.values()], region, dataHints });
   } catch (err) { next(err); }
 });
 

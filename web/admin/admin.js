@@ -1915,7 +1915,7 @@
       restoreRegionCountryCity(f, 'pdisc-region', 'pdisc-country', 'pdisc-city');
       if (f.limit != null && $('pdisc-limit')) $('pdisc-limit').value = f.limit;
       if (f.industry != null && $('pdisc-industry')) $('pdisc-industry').value = f.industry;
-      if (cached.prospects && cached.prospects.length) renderProspectCandidates($('pdisc-body'), cached.prospects, cached.dataHints);
+      if (cached.prospects && (cached.prospects.length || (cached.existing || []).length)) renderProspectCandidates($('pdisc-body'), cached.prospects, cached.dataHints, cached.existing || []);
     }
   }
 
@@ -1935,8 +1935,8 @@
         body: JSON.stringify({ region, industry, country, city, limit }),
       });
       const prospects = (data && data.prospects) || [];
-      renderProspectCandidates(body, prospects, data && data.dataHints);
-      saveDiscovery('prospects', { inputs: { region, industry, country, city, limit }, prospects, dataHints: (data && data.dataHints) || null });
+      renderProspectCandidates(body, prospects, data && data.dataHints, (data && data.existing) || []);
+      saveDiscovery('prospects', { inputs: { region, industry, country, city, limit }, prospects, existing: (data && data.existing) || [], dataHints: (data && data.dataHints) || null });
     } catch (err) {
       body.innerHTML = `<div class="kb-result error" style="margin:12px">${escapeHtml(err.message)}</div>`;
     } finally { btn.disabled = false; btn.textContent = o; }
@@ -1954,10 +1954,65 @@
     return bits.length ? `<div class="kb-subtle" style="margin-top:3px;line-height:1.5">${bits.join(' · ')}</div>` : '';
   }
 
-  function renderProspectCandidates(body, list, dataHints) {
+  // "Already tracked" strip for discovery results — existing entities never
+  // come back as candidates; they get re-analyze / update-intel affordances.
+  function existingTrackedStrip(kind, existing) {
+    if (!existing || !existing.length) return '';
+    const rows = existing.map((e, i) => `
+      <span class="disc-exist-row">
+        <strong>${escapeHtml(e.name)}</strong>
+        ${kind === 'prospects' ? `<button type="button" class="kb-link-btn dx-research" data-i="${i}">↻ Re-analyze</button>` : ''}
+        ${e.watchEnabled ? `<button type="button" class="kb-link-btn dx-watch" data-i="${i}">⟳ Update intel</button>` : ''}
+        <button type="button" class="kb-link-btn dx-view" data-i="${i}">View →</button>
+      </span>`).join('');
+    return `<div class="disc-existing">
+      <span class="disc-exist-h">Already in your workspace (${existing.length})</span>${rows}
+      <span class="disc-exist-note kb-subtle">— not shown again as candidates</span>
+    </div>`;
+  }
+  function wireExistingTrackedStrip(body, kind, existing) {
+    if (!existing || !existing.length) return;
+    body.querySelectorAll('.dx-research').forEach((b) => b.addEventListener('click', async () => {
+      const e = existing[Number(b.dataset.i)];
+      b.disabled = true; const o = b.textContent; b.textContent = 'Starting…';
+      try {
+        await fetchJson(`/api/knowledge/research/${encodeURIComponent(e.id)}`, { method: 'POST' });
+        _prospectsState.selectedCompanyId = e.id;
+        loaded.prospects = false;
+        if (currentSection === 'prospects') switchSection('prospects'); else window.location.hash = '#prospects';
+      } catch (err) { b.disabled = false; b.textContent = o; alert(`Couldn't start research: ${err.message}`); }
+    }));
+    body.querySelectorAll('.dx-watch').forEach((b) => b.addEventListener('click', async () => {
+      const e = existing[Number(b.dataset.i)];
+      b.disabled = true; const o = b.textContent; b.textContent = 'Checking…';
+      try {
+        await fetchJson('/api/watch/run', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scope: kind === 'prospects' ? 'PROSPECT' : 'COMPETITOR', id: e.id }),
+        });
+        b.textContent = '✓ Checked — see Market signals';
+        refreshWatchBadge();
+      } catch (err) { b.disabled = false; b.textContent = o; alert(`Couldn't run Market Watch: ${err.message}`); }
+    }));
+    body.querySelectorAll('.dx-view').forEach((b) => b.addEventListener('click', () => {
+      const e = existing[Number(b.dataset.i)];
+      if (kind === 'prospects') {
+        _prospectsState.selectedCompanyId = e.id;
+        loaded.prospects = false;
+        if (currentSection === 'prospects') switchSection('prospects'); else window.location.hash = '#prospects';
+      } else {
+        _competitorsState.selectedId = e.id;
+        loaded.competitors = false;
+        if (currentSection === 'competitors') switchSection('competitors'); else window.location.hash = '#competitors';
+      }
+    }));
+  }
+
+  function renderProspectCandidates(body, list, dataHints, existing) {
     if (!list.length) {
-      body.innerHTML = `${dataHintBanner(dataHints)}<div class="empty" style="padding:16px">No prospects surfaced. Try a different region or industry.</div>`;
+      body.innerHTML = `${dataHintBanner(dataHints)}${existingTrackedStrip('prospects', existing)}<div class="empty" style="padding:16px">No NEW prospects surfaced${existing && existing.length ? ' — everything found is already in your workspace' : ''}. Try a different region or industry.</div>`;
       wireEnrichJump(body);
+      wireExistingTrackedStrip(body, 'prospects', existing);
       return;
     }
     // One row of the results table. `i` is the index into the ORIGINAL list so
@@ -1987,6 +2042,7 @@
 
     body.innerHTML = `
       ${dataHintBanner(dataHints)}
+      ${existingTrackedStrip('prospects', existing)}
       <div class="prospect-result-filters" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin:4px 0 8px">
         <label class="comp-finder-field" style="margin:0">Category
           <select id="pcand-filter-cat">${catOptions}</select>
@@ -2023,6 +2079,7 @@
     $('pcand-filter-prod').addEventListener('change', applyFilters);
     applyFilters();
     wireEnrichJump(body);
+    wireExistingTrackedStrip(body, 'prospects', existing);
   }
 
   async function addProspectCandidate(c, btn) {
@@ -3393,7 +3450,7 @@
     const cached = loadDiscovery('competitors');
     if (cached && cached.competitors && cached.competitors.length) {
       restoreRegionCountryCity(cached.inputs || {}, 'comp-finder-region', 'comp-finder-country', 'comp-finder-city');
-      renderCompetitorCandidates($('comp-finder-body'), cached.competitors, cached.dataHints);
+      renderCompetitorCandidates($('comp-finder-body'), cached.competitors, cached.dataHints, cached.existing || []);
     } else {
       $('comp-finder-body').innerHTML = `<div class="kb-subtle" style="padding:14px">Pick a region and hit Search. We'll find companies that compete with you, based on your own profile and products.</div>`;
     }
@@ -3415,8 +3472,8 @@
         body: JSON.stringify({ region, country, city }),
       });
       const competitors = (data && data.competitors) || [];
-      renderCompetitorCandidates(body, competitors, data && data.dataHints);
-      saveDiscovery('competitors', { inputs: { region, country, city }, competitors, dataHints: (data && data.dataHints) || null });
+      renderCompetitorCandidates(body, competitors, data && data.dataHints, (data && data.existing) || []);
+      saveDiscovery('competitors', { inputs: { region, country, city }, competitors, existing: (data && data.existing) || [], dataHints: (data && data.dataHints) || null });
     } catch (err) {
       body.innerHTML = `<div class="kb-result error" style="margin:14px">${escapeHtml(err.message)}</div>`;
     } finally { btn.disabled = false; btn.textContent = o; }
@@ -3437,10 +3494,11 @@
       b.addEventListener('click', () => { location.hash = '#company?tab=intel'; setTimeout(() => { const e = $('foundation-enrich-btn'); if (e) e.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 300); }));
   }
 
-  function renderCompetitorCandidates(body, comps, dataHints) {
+  function renderCompetitorCandidates(body, comps, dataHints, existing) {
     if (!comps.length) {
-      body.innerHTML = `${dataHintBanner(dataHints)}<div class="empty" style="padding:16px">No competitors surfaced. Try a different region, or add one manually.</div>`;
+      body.innerHTML = `${dataHintBanner(dataHints)}${existingTrackedStrip('competitors', existing)}<div class="empty" style="padding:16px">No NEW competitors surfaced${existing && existing.length ? ' — everything found is already in your workspace' : ''}. Try a different region, or add one manually.</div>`;
       wireEnrichJump(body);
+      wireExistingTrackedStrip(body, 'competitors', existing);
       return;
     }
     // Backend already orders by competing threat (highest first).
@@ -3465,6 +3523,7 @@
     }).join('');
     body.innerHTML = `
       ${dataHintBanner(dataHints)}
+      ${existingTrackedStrip('competitors', existing)}
       <table class="comp-discover-table">
         <thead><tr><th>Company</th><th>What they do</th><th>Their strength</th><th>Threatens (our products)</th><th>Threat</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
@@ -3473,6 +3532,7 @@
       <div class="kb-result hidden" id="cand-result"></div>`;
     wireEnrichJump(body);
     body.querySelectorAll('.cand-add').forEach((b) => b.addEventListener('click', () => addCompetitorCandidate(comps[Number(b.dataset.i)], b)));
+    wireExistingTrackedStrip(body, 'competitors', existing);
   }
 
   async function addCompetitorCandidate(c, btn) {

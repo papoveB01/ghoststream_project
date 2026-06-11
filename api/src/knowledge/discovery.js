@@ -355,7 +355,7 @@ async function generateSearchQueries({ mode, ctx, products = [], region = '', se
 // Find companies that compete with OUR company, optionally focused on a region.
 // Returns { competitors: [...] } (possibly empty) or null on hard failure.
 // Read-only research: no ingest, no storage (the rep adds the relevant ones).
-async function discoverCompetitors({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', buyerMarket = '', prospects = [] } = {}) {
+async function discoverCompetitors({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', buyerMarket = '', prospects = [], excludeNames = [] } = {}) {
   const name = String(companyName || '').trim();
   if (!name) return null;
   // Our existing prospects → let the model flag competitors already entrenched at
@@ -446,8 +446,10 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
     'Rules: only REAL companies that genuinely offer a competing product; EXCLUDE our own ' +
     'company; one company per row; keep strings short; threatToProductIds MUST be chosen from the ' +
     'provided ids (or empty); give the primary website domain only if you are confident; ignore website ' +
-    'boilerplate (cookie/nav/legal).\n\n' +
+    'boilerplate (cookie/nav/legal).\n' +
+    (excludeNames.length ? 'Do NOT return any company from ===ALREADY TRACKED=== — we already track them; spend every slot on NEW competitors.\n' : '') + '\n' +
     `===OUR COMPANY===\n${ctx}\n\n` +
+    (excludeNames.length ? `===ALREADY TRACKED (never return these)===\n${excludeNames.slice(0, 200).join('\n')}\n\n` : '') +
     `===OUR PRODUCTS (choose threatToProductIds from these ids)===\n${portfolio}\n\n` +
     (prospectNames.length ? `===OUR PROSPECTS (choose incumbentAtProspects ONLY from these names)===\n${prospectNames.join('\n')}\n\n` : '') +
     (regionIsGlobal ? '' : `===TARGET REGION===\n${regionLabel}\n\n`) +
@@ -539,7 +541,7 @@ const PROSPECTS_SCHEMA = {
 
 // Find potential customers for OUR company, scoped by region + industry, ranked
 // by priority. Returns { prospects: [...] } (possibly empty) or null on failure.
-async function discoverProspects({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', industry = '', limit } = {}) {
+async function discoverProspects({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', industry = '', limit, excludeNames = [] } = {}) {
   const name = String(companyName || '').trim();
   if (!name) return null;
   // How many prospects this turn returns — clamped to [1, PROSPECT_HARD_MAX].
@@ -628,8 +630,10 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
     CONTACT_INSTRUCTION + '\n' +
     `TARGET COUNT — IMPORTANT: aim to actually REACH ${want} distinct REAL companies. The web findings name only a few; do NOT stop there. Draw PRIMARILY on your own up-to-date knowledge of companies that match "WHO WE SELL TO" in the target segment/region to enumerate up to ${want}, and use the findings to attach signals + set priority on the ones they cover. Companies you add from knowledge (no fresh signal) get a short fit-based rationale and a lower priority — that is expected and wanted. Only return fewer than ${want} if there genuinely are not that many real ICP-fit companies (never invent to pad). Order best-fit first.\n` +
     'Rules: REAL companies only (never invent); EXCLUDE our own company and our competitors; matchedProductIds ' +
-    'MUST be from the provided ids (or empty); keep strings short; ignore boilerplate.\n\n' +
+    'MUST be from the provided ids (or empty); keep strings short; ignore boilerplate.\n' +
+    (excludeNames.length ? 'HARD RULE 3: do NOT return any company from ===ALREADY TRACKED=== — those are already in our pipeline; spend every slot on NEW companies.\n' : '') + '\n' +
     `===OUR COMPANY===\n${ctx}\n\n` +
+    (excludeNames.length ? `===ALREADY TRACKED (never return these)===\n${excludeNames.slice(0, 200).join('\n')}\n\n` : '') +
     `===OUR PRODUCTS (choose matchedProductIds from these ids)===\n${portfolio}\n\n` +
     (indIsAny ? '' : `===TARGET CUSTOMER SEGMENT===\n${ind}\n\n`) +
     (regionIsGlobal ? '' : `===TARGET REGION===\n${regionLabel}\n\n`) +

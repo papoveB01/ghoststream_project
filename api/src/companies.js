@@ -248,23 +248,38 @@ router.post('/discover', gating.requireFeature('discovery'), gating.requireCapac
       [req.tenantId]
     )).rows;
 
+    // Companies we already track never come back as candidates: they're fed to
+    // the model as a hard exclusion AND post-filtered (by name or domain) into
+    // a separate `existing` list the UI offers re-analyze / update-intel on.
+    const tracked = (await db.query(
+      `SELECT id, name, domain, watch_enabled FROM companies WHERE tenant_id = $1`, [req.tenantId]
+    )).rows;
+    const byName = new Map(tracked.map((r) => [r.name.toLowerCase(), r]));
+    const byDomain = new Map(tracked.filter((r) => r.domain).map((r) => [String(r.domain).toLowerCase().replace(/^www\./, ''), r]));
+
     const result = await discovery.discoverProspects({
       companyName: tenant.name, ourProducts,
       positioning: prof.positioning || '',
       objectives: prof.objectives || '',
       idealCustomerProfile: prof.ideal_customer_profile || '',
       region, industry, limit,
+      excludeNames: tracked.map((r) => r.name),
     });
     if (!result) {
       await gating.refundCapacity(req); // don't charge for a failed discovery
       return res.status(502).json({ error: 'discovery could not find prospects right now — try again' });
     }
 
-    const existing = await db.query(`SELECT lower(name) AS n FROM companies WHERE tenant_id = $1`, [req.tenantId]);
-    const have = new Set(existing.rows.map((r) => r.n));
-    const prospects = result.prospects.map((p) => ({ ...p, exists: have.has(p.name.toLowerCase()) }));
+    const prospects = [];
+    const existingHit = new Map();
+    for (const p of result.prospects) {
+      const dom = String(p.website || p.domain || '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
+      const match = byName.get(p.name.toLowerCase()) || (dom && byDomain.get(dom));
+      if (match) existingHit.set(match.id, { id: match.id, name: match.name, domain: match.domain, watchEnabled: !!match.watch_enabled });
+      else prospects.push(p);
+    }
     const dataHints = await foundation.dataHints(req.tenantId);
-    res.json({ prospects, region, industry, dataHints });
+    res.json({ prospects, existing: [...existingHit.values()], region, industry, dataHints });
   } catch (err) { next(err); }
 });
 

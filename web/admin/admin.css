@@ -4645,3 +4645,15 @@ details.schedule-advanced > .schedule-advanced-body {
 .prospect-modes .discover-tab svg { width: 14px; height: 14px; }
 .prospect-modes .discover-tab:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
 .prospect-modes .discover-tab.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+
+/* Discovery: "already in your workspace" strip */
+.disc-existing {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 6px 0 10px; padding: 9px 12px;
+  background: var(--accent-light); border: 1px solid var(--accent-soft); border-radius: var(--radius-sm);
+  font-size: 12.5px;
+}
+.disc-exist-h { font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
+.disc-exist-row { display: inline-flex; align-items: center; gap: 8px; padding: 2px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+.disc-exist-row strong { font-size: 12.5px; }
+.disc-exist-note { font-size: 11.5px; }
