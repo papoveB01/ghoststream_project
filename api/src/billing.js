@@ -547,6 +547,7 @@ function mapStatus(s) {
 async function applySubscription(sub) {
   const tenantId = (sub.metadata && sub.metadata.tenantId) || await tenants.findIdByStripeCustomer(sub.customer);
   if (!tenantId) { console.warn('[billing] no tenant for subscription', sub.id); return; }
+  const before = await tenants.get(tenantId, { fresh: true }); // pre-update plan/status → activation detection
   const status = mapStatus(sub.status);
   const fromPrices = planFromPrices(sub);
   const planKey = (sub.metadata && sub.metadata.plan) || (fromPrices && fromPrices.key);
@@ -573,6 +574,81 @@ async function applySubscription(sub) {
   patch.trial_ends_at = sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null;
   await tenants.update(tenantId, patch);
   console.log(`[billing] tenant ${tenantId} → ${status || '(unchanged)'} / ${planKey || '(unchanged)'} v${planVersion || '?'} (sub ${sub.id})`);
+  // Welcome / plan-change email — exactly once per activation: when the
+  // subscription turns ACTIVE, or an already-active tenant lands on a new
+  // plan key. Best-effort; a mail failure never breaks the webhook.
+  try {
+    const newlyActive = status === 'ACTIVE' && planKey
+      && (!before || before.subscription_status !== 'ACTIVE' || before.plan !== planKey);
+    if (newlyActive) {
+      await sendPlanActivatedEmail(tenantId, planKey, planVersion || (before && before.plan_version) || 1, patch.extra_seats || 0, patch.current_period_end);
+    }
+  } catch (e) { console.warn(`[billing] plan-activation email failed for ${tenantId}: ${(e && e.message) || e}`); }
+}
+
+// Congratulations + what's-included email to the workspace owners when a plan
+// activates. Plan facts come straight from the catalog so the email can never
+// drift from what entitlements enforce.
+async function sendPlanActivatedEmail(tenantId, planKey, planVersion, extraSeats, periodEnd) {
+  const email = require('./email');
+  if (!email.isConfigured()) return;
+  const plan = plans.planFor(planKey, planVersion);
+  if (!plan) return;
+  const owners = (await db.query(
+    `SELECT email FROM users WHERE tenant_id = $1 AND role = 'owner' AND email IS NOT NULL`, [tenantId]
+  )).rows.map((r) => r.email);
+  if (!owners.length) return;
+  const tenant = await tenants.get(tenantId);
+
+  const CAP_LABELS = {
+    research: 'AI research runs (prospect + competitor discovery, contact reveals)',
+    discovery: 'Prospect discovery runs',
+    competitor_research: 'Competitor research runs',
+    engagements: 'AI-joined engagements (calls with briefs, recording & analysis)',
+    arena: 'Arena practice sessions',
+    market_monitoring: 'Market Watch checks',
+  };
+  const per = plan.lifetimeCaps ? 'included one-time' : 'per month';
+  const included = Object.entries(plan.caps || {})
+    .filter(([, cap]) => cap === null || cap > 0)
+    .map(([k, cap]) => `<li style="margin:4px 0">${cap === null ? 'Unlimited' : cap} ${CAP_LABELS[k] || k} <span style="color:#8c9197">(${cap === null ? 'no limit' : per})</span></li>`)
+    .join('');
+  const seats = plan.seats ? (plan.seats.included || 1) + (extraSeats || 0) : null;
+  const renews = periodEnd ? new Date(periodEnd).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : null;
+  const base = (process.env.APP_BASE_URL || 'https://dealscope.io').replace(/\/$/, '');
+  const price = plan.monthly ? `$${plan.monthly}/month${extraSeats ? ` + ${extraSeats} extra seat${extraSeats === 1 ? '' : 's'}` : ''}` : 'Free';
+
+  const subject = `Your DealScope ${plan.name} plan is active 🎉`;
+  const html = `
+  <div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;color:#15181b">
+    <div style="padding:22px 0 14px"><span style="display:inline-block;background:#1e7d45;color:#fff;font-weight:800;border-radius:7px;padding:6px 11px">D</span>
+      <span style="font-size:18px;font-weight:700;margin-left:8px">DealScope</span></div>
+    <h1 style="font-size:21px;margin:6px 0 4px">Congratulations — you're on ${plan.name}!</h1>
+    <p style="font-size:14.5px;line-height:1.6;color:#54595f;margin:0 0 16px">
+      The <strong>${plan.name}</strong> plan is now active for <strong>${(tenant && tenant.name) || 'your workspace'}</strong>${renews ? `, renewing on <strong>${renews}</strong>` : ''} at <strong>${price}</strong>.
+    </p>
+    <div style="border:1px solid #e3e5e0;border-radius:8px;padding:14px 18px;margin:0 0 16px">
+      <div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#1e7d45;margin-bottom:6px">What's included</div>
+      <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.5">
+        ${included}
+        ${seats ? `<li style="margin:4px 0">${seats} seat${seats === 1 ? '' : 's'}</li>` : ''}
+      </ul>
+    </div>
+    <p style="font-size:14px;line-height:1.6;color:#54595f;margin:0 0 18px">
+      Your allowances are live now — usage and renewal details are always on your
+      <a href="${base}/admin/#billing" style="color:#1e7d45;font-weight:600">Billing page</a>,
+      and you can add one-time credit packs there whenever you need extra room.
+    </p>
+    <a href="${base}/admin/" style="display:inline-block;background:#1e7d45;color:#fff;text-decoration:none;font-weight:600;font-size:14px;border-radius:6px;padding:10px 18px">Open your workspace</a>
+    <p style="font-size:12px;color:#8c9197;margin:22px 0 8px">Questions? Just reply to this email.</p>
+  </div>`;
+  const text = `Congratulations — your DealScope ${plan.name} plan is active for ${(tenant && tenant.name) || 'your workspace'}${renews ? `, renewing ${renews}` : ''} (${price}).\n\nWhat's included:\n` +
+    Object.entries(plan.caps || {}).filter(([, c]) => c === null || c > 0).map(([k, c]) => `- ${c === null ? 'Unlimited' : c} ${CAP_LABELS[k] || k} (${c === null ? 'no limit' : per})`).join('\n') +
+    (seats ? `\n- ${seats} seat${seats === 1 ? '' : 's'}` : '') +
+    `\n\nManage billing: ${base}/admin/#billing`;
+
+  await email.send({ to: owners, subject, html, text, categories: ['plan-activated'] });
+  console.log(`[billing] plan-activation email sent to ${owners.join(', ')} (${planKey} v${planVersion})`);
 }
 
 async function webhook(req, res) {
@@ -640,4 +716,4 @@ async function webhook(req, res) {
   }
 }
 
-module.exports = { router, webhook, isConfigured, createCheckout, applySubscription, recordEngagementOverage, syncSubtenantQuantity };
+module.exports = { router, webhook, isConfigured, createCheckout, applySubscription, recordEngagementOverage, syncSubtenantQuantity, sendPlanActivatedEmail };
