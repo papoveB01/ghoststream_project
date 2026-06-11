@@ -562,6 +562,7 @@
       e.stopPropagation();
       const o = opps[Number(b.dataset.oppBrief)] || {};
       window._prefillMission = { companyName: o.companyName || '', companyDomain: '', productIds: [], note: o.title ? `Angle: ${o.title}` : '' };
+      loaded.missions = false; // re-run the loader so the form opens + consumes the prefill
       window.location.hash = '#missions';
     }));
     // Kick off prospect research for the opportunity's company. Research runs
@@ -1768,6 +1769,7 @@
       productIds,
       note: opp.title ? `Angle: ${opp.title}` : '',
     };
+    loaded.missions = false; // re-run the loader so the form opens + consumes the prefill
     window.location.hash = '#missions';
   }
 
@@ -5972,9 +5974,10 @@
     wireMissionsTabs();
     wireMissionsForm();
     document.getElementById('missions-detail-back').addEventListener('click', () => switchMissionsTab(missionsCurrentTab));
-    // Schedule is the primary action, so it's the first/default tab. (A
-    // "Brief an engagement" prefill also lands here and is consumed by the form.)
-    await switchMissionsTab('schedule');
+    // Default to the Upcoming list — the schedule form stays one click away
+    // under "＋ Schedule". A "Brief an engagement" prefill (dashboard / prospect
+    // / proposal flows) still lands directly on the form, which consumes it.
+    await switchMissionsTab(window._prefillMission ? 'schedule' : 'upcoming');
   }
 
   function wireMissionsTabs() {

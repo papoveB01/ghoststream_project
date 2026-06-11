@@ -350,13 +350,13 @@
         <!-- MISSIONS -->
         <section id="section-missions" class="section hidden">
           <div class="kb-tabs" id="missions-tabs">
-            <button class="kb-tab active" data-missions-tab="schedule">Schedule</button>
-            <button class="kb-tab" data-missions-tab="upcoming">Upcoming</button>
+            <button class="kb-tab active" data-missions-tab="upcoming">Upcoming</button>
             <button class="kb-tab" data-missions-tab="past">Past</button>
+            <button class="kb-tab" data-missions-tab="schedule">＋ Schedule</button>
           </div>
 
           <!-- UPCOMING + PAST share the same list rendering -->
-          <div id="missions-pane-upcoming" class="kb-pane hidden">
+          <div id="missions-pane-upcoming" class="kb-pane">
             <div class="card">
               <div class="card-h">Upcoming engagements
                 <span class="pf-hint">Your scheduled calls. A prep brief is written automatically 24 hours before each one — click any row to read it.</span>
@@ -375,7 +375,7 @@
           </div>
 
           <!-- SCHEDULE form -->
-          <div id="missions-pane-schedule" class="kb-pane">
+          <div id="missions-pane-schedule" class="kb-pane hidden">
             <div class="card">
               <div class="card-h">Schedule an engagement
                 <span class="pf-hint">Set up a call in three fields. (Coming soon: pull one straight from your Google or Outlook calendar.)</span>
