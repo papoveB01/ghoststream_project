@@ -938,7 +938,7 @@
         dust.push({
           a0: golden, r0: R * (0.25 + ((i * 13) % 23) / 23 * 1.05),
           y0: (((i * 7) % 17) / 17 - 0.5) * R * 0.6,
-          sp: 0.02 + ((i % 5) / 5) * 0.05,
+          sp: 0.008 + ((i % 5) / 5) * 0.02,
           size: 0.9 + ((i % 4) / 4) * 1.1,
           hue: i % 3, // 0 slate, 1 lime, 2 blue
         });
@@ -976,9 +976,9 @@
           fy -= a.y * 0.06; // keep the web flat-ish like the film's plane
         }
         // ambient life — tiny per-node breeze so the map never freezes
-        fx += Math.sin(t * 0.6 + i * 1.7) * 1.4;
-        fy += Math.cos(t * 0.5 + i * 2.3) * 1.2;
-        fz += Math.sin(t * 0.45 + i * 2.9) * 1.4;
+        fx += Math.sin(t * 0.3 + i * 1.7) * 0.8;
+        fy += Math.cos(t * 0.25 + i * 2.3) * 0.7;
+        fz += Math.sin(t * 0.22 + i * 2.9) * 0.8;
         a.vx = (a.vx + fx * 0.012) * 0.86;
         a.vy = (a.vy + fy * 0.012) * 0.86;
         a.vz = (a.vz + fz * 0.012) * 0.86;
@@ -1045,7 +1045,7 @@
       const t = (now - t0) / 1000;
       physicsStep(t);
       // slow auto-orbit when the cursor has been idle a moment
-      if (now - lastInteract > 2500 && !dragNode && !panning) cam.yaw += 0.0016;
+      if (now - lastInteract > 2500 && !dragNode && !panning) cam.yaw += 0.0006;
       project();
       const dpr = window.devicePixelRatio || 1;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1086,7 +1086,7 @@
         ctx.lineTo(n.sx, n.sy);
         ctx.stroke();
         // tiny traveller dot along the spoke — film-style edge detail
-        const f = 0.35 + 0.3 * (0.5 + 0.5 * Math.sin(t * 0.7 + n.sx * 0.01));
+        const f = 0.35 + 0.3 * (0.5 + 0.5 * Math.sin(t * 0.3 + n.sx * 0.01));
         ctx.fillStyle = ctx.strokeStyle;
         ctx.beginPath();
         ctx.arc(center.sx + (n.sx - center.sx) * f, center.sy + (n.sy - center.sy) * f, Math.max(0.8, 1.3 * n.sc), 0, Math.PI * 2);
@@ -1105,7 +1105,7 @@
       const order = [...nodes].sort((a, b) => b.depth - a.depth);
       for (const n of order) {
         const x = n.sx, y = n.sy, rr = Math.max(2.5, n.r * n.sc);
-        const pulse = n.hot ? (0.65 + 0.35 * Math.sin(t * 2.2 + n.x)) : 1;
+        const pulse = n.hot ? (0.7 + 0.3 * Math.sin(t * 1.2 + n.x)) : 1;
         ctx.globalAlpha = n.fade;
         ctx.save();
         ctx.shadowColor = n.color;
@@ -1155,6 +1155,7 @@
       if (currentSection === 'market-map' && canvas.isConnected) _mmFrame = requestAnimationFrame(draw);
     }
     _mmFrame = requestAnimationFrame(draw);
+    canvas._mm = { nodes }; // debug/test handle: projected positions live on each node
 
     const hitNode = (mx, my) => {
       // nearest-first so close nodes win over far ones behind them
@@ -1211,14 +1212,84 @@
           : `<b>${escapeHtml(hover.label || '')}</b><span>${hover.type === 'comp' ? 'Competitor' : 'Prospect'}${hover.meta ? ' · ' + escapeHtml(hover.meta) : ''}</span>`;
       } else tip.classList.add('hidden');
     };
+    // ── Side panel — in fullscreen a click opens details here instead of
+    // navigating away (you can't see the SPA route under fullscreen anyway).
+    const side = $('mm-side');
+    const closeSide = () => { if (side) side.classList.add('hidden'); };
+    const matPills = (m) => '●'.repeat(Math.max(1, Math.min(5, m || 3)));
+    function openSide(target) {
+      if (!side) return;
+      let kindLbl = '', body = '', openLbl = '', openAct = null;
+      if (target.type === 'pros') {
+        const c = companies.find((x) => x.id === target.cid) || {};
+        const opps = ((dash && dash.opportunities) || []).filter((o) => o.companyId === target.cid);
+        const finds = findings.filter((f) => f.scope === 'PROSPECT' && f.subject_id === target.cid).slice(0, 6);
+        kindLbl = 'Prospect';
+        body = `
+          <div class="mm-side-sec"><div class="mm-side-facts">
+            ${c.domain ? `<span>${escapeHtml(c.domain)}</span>` : ''}
+            <span>${fmtNum(c.meeting_count || 0)} engagement${(c.meeting_count || 0) === 1 ? '' : 's'}</span>
+            <span>${fmtNum(opps.length)} signal${opps.length === 1 ? '' : 's'}</span>
+          </div></div>
+          <div class="mm-side-sec"><h5>Priority signals</h5>
+            ${opps.length ? opps.slice(0, 6).map((o) => `<div class="mm-side-row"><span><b>${escapeHtml(o.title || 'Opportunity')}</b></span><span class="mono-sm">${escapeHtml(o.strength || '—')}</span></div>`).join('') : '<div class="mm-side-empty">No scored signals yet — run prospect research.</div>'}
+          </div>
+          <div class="mm-side-sec"><h5>New developments</h5>
+            ${finds.length ? finds.map((f) => `<div class="mm-side-row"><span><b>${escapeHtml(f.title || '')}</b><br><span class="mono-sm">${escapeHtml(f.category || '')}</span></span><span class="mono-sm">${matPills(f.materiality)}</span></div>`).join('') : '<div class="mm-side-empty">Nothing new from Market Watch.</div>'}
+          </div>`;
+        openLbl = 'Open full profile →';
+        openAct = () => { _prospectsState.selectedCompanyId = target.cid; window.location.hash = '#prospects'; };
+      } else {
+        const k = competitors.find((x) => x.id === target.kid) || {};
+        const t = threats[target.kid] || null;
+        const finds = findings.filter((f) => f.scope === 'COMPETITOR' && f.subject_id === target.kid).slice(0, 6);
+        const score = t ? t.score : 0;
+        const FNAMES = { battlecard: 'Battlecard threat', prospects: 'Prospect entanglement', products: 'Product overlap', watch: 'Market Watch activity' };
+        kindLbl = 'Competitor';
+        body = `
+          <div class="mm-side-sec"><h5>Threat — ${t ? t.level : 'Low'} (${Math.round(score * 100)}%)</h5>
+            <div class="mm-threat-bar"><i style="width:${Math.max(4, Math.round(score * 100))}%"></i></div>
+            ${t && Object.keys(t.factors).length ? Object.entries(t.factors).map(([fk, fv]) => `<div class="mm-side-row"><span>${escapeHtml(FNAMES[fk] || fk)}</span><span class="mono-sm">${Math.round(fv * 100)}%</span></div>`).join('') : '<div class="mm-side-empty">No threat intelligence filed yet.</div>'}
+          </div>
+          ${t && t.overlapProspects && t.overlapProspects.length ? `<div class="mm-side-sec"><h5>In play at</h5><div class="mm-side-facts">${t.overlapProspects.map((nm) => `<span>${escapeHtml(nm)}</span>`).join('')}</div></div>` : ''}
+          <div class="mm-side-sec"><div class="mm-side-facts">
+            ${k.website ? `<span>${escapeHtml(k.website)}</span>` : ''}
+            <span>${fmtNum(k.doc_count || 0)} intel doc${(k.doc_count || 0) === 1 ? '' : 's'}</span>
+            ${k.watch_enabled ? '<span>Watched</span>' : ''}
+          </div></div>
+          <div class="mm-side-sec"><h5>New developments</h5>
+            ${finds.length ? finds.map((f) => `<div class="mm-side-row"><span><b>${escapeHtml(f.title || '')}</b><br><span class="mono-sm">${escapeHtml(f.category || '')}</span></span><span class="mono-sm">${matPills(f.materiality)}</span></div>`).join('') : '<div class="mm-side-empty">Nothing new from Market Watch.</div>'}
+          </div>`;
+        openLbl = 'Open competitors page →';
+        openAct = () => { window.location.hash = '#competitors'; };
+      }
+      side.innerHTML = `
+        <div class="mm-side-h">
+          <div><div class="mm-side-name">${escapeHtml(target.label || '')}</div><span class="mm-side-kind">${kindLbl}</span></div>
+          <button class="mm-side-close" title="Close" aria-label="Close">×</button>
+        </div>
+        <div class="mm-side-b">${body}</div>
+        <div class="mm-side-foot"><button class="mm-side-open">${openLbl}</button></div>`;
+      side.querySelector('.mm-side-close').onclick = closeSide;
+      side.querySelector('.mm-side-open').onclick = () => {
+        closeSide();
+        const go = () => openAct && openAct();
+        if (document.fullscreenElement) document.exitFullscreen().then(go).catch(go);
+        else go();
+      };
+      side.classList.remove('hidden');
+    }
+
     const endPointer = (e) => {
       const wasDrag = dragNode;
       dragNode = null; panning = null;
       canvas.style.cursor = 'default';
       try { canvas.releasePointerCapture(e.pointerId); } catch { /* already released */ }
-      // a press that barely moved is a click — open the entity
+      // a press that barely moved is a click — open the entity. In fullscreen
+      // we show the side panel instead of navigating underneath the overlay.
       if (wasDrag && !wasDrag.fx && moved < 5) {
         const target = wasDrag.parent || wasDrag;
+        if (document.fullscreenElement) { openSide(target); return; }
         if (target.type === 'pros') { _prospectsState.selectedCompanyId = target.cid; window.location.hash = '#prospects'; }
         else if (target.type === 'comp') window.location.hash = '#competitors';
       }
@@ -1231,6 +1302,22 @@
       lastInteract = performance.now();
       cam.dist = Math.max(0.45, Math.min(2.6, cam.dist * (e.deltaY > 0 ? 1.1 : 0.9)));
     }, { passive: false });
+
+    // Fullscreen toggle — the ResizeObserver re-fits the canvas on the way in
+    // and out, so the projection recenters by itself.
+    const fsBtn = $('mm-fs-btn');
+    if (fsBtn) {
+      const wrap = stage.closest('.mm-wrap') || stage;
+      fsBtn.onclick = () => {
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        else wrap.requestFullscreen().catch(() => {});
+      };
+      document.onfullscreenchange = () => {
+        const span = fsBtn.querySelector('span');
+        if (span) span.textContent = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen';
+        if (!document.fullscreenElement) closeSide();
+      };
+    }
   }
 
   function kpiCell(label, value, sub, sec, hot) {
