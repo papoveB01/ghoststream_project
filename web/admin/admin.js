@@ -144,12 +144,134 @@
     const supportBtn = $('support-btn');
     if (supportBtn) supportBtn.addEventListener('click', openSupportModal);
 
-    // Product tour: wire the "？ Guide" replay button + auto-run once for new users.
+    // "Guide" is context-aware: it opens the CURRENT page's guide modal
+    // (the Overview guide offers the interactive walkthrough replay inside).
     const tourBtn = $('tour-btn');
-    if (tourBtn) tourBtn.addEventListener('click', startTour);
+    if (tourBtn) tourBtn.addEventListener('click', () => openGuideModal(currentSection));
     try {
       if (!localStorage.getItem('gs_tour_seen') && !setupGating()) setTimeout(startTour, 900);
     } catch { /* localStorage blocked — skip auto-tour */ }
+  }
+
+  // ── Per-screen guide modals — each page's real content, explained as a
+  // walkthrough. Opens from the header Guide button (context-aware) and once
+  // automatically on a user's first visit to a section (tracked in prefs). ──
+  const GUIDES = {
+    overview: { title: 'Overview — your cockpit', intro: 'Everything on this page is computed live from your workspace. It tells you where you stand and what to do next.', blocks: [
+      { h: 'Next best action (top strip)', b: 'When something clearly deserves attention — a hot prospect with no contacts, an account ready for a call, unreviewed alerts — one suggested move appears here. Click the button; it lands you on the exact spot.' },
+      { h: 'Get set up checklist', b: 'Your six-step path: ground the workspace → find prospects → research one → find decision-makers → first AI-joined call → Market Watch. Each card deep-links to where the step happens, and ticks itself when genuinely done.' },
+      { h: 'KPI cards', b: '<b>Open signals</b> = priority opportunities across your researched prospects (the glowing card). <b>Prospects / Competitors</b> = what you track. <b>Next 7 days</b> = upcoming engagements. Click any card to jump to its page.' },
+      { h: 'Charts row', b: '<b>Pipeline activity</b>: new prospects per week. <b>Opportunity mix</b>: how strong your researched signals are. <b>Plan allowance / usage</b>: your research, engagement and practice meters — red means the pool is dry (top up on Billing).' },
+      { h: 'Top prospects & Alerts', b: '<b>Top prospects</b> ranks accounts by heat (strong signals ×3, other signals, upcoming calls ×2, fresh developments ×2 — same math as the Market Map badges). <b>Alerts</b> previews unreviewed Market Watch findings; the 🔔 bell in the header mirrors it everywhere.' },
+      { h: 'Priority opportunities & engagements', b: 'The actual signals from research (expand a row for the full why-now, then “Brief me” to prefill a call), and your scheduled calls.' },
+    ] },
+    company: { title: 'Company — your foundation', intro: 'Everything DealScope generates — discovery, briefs, battlecards, proposals — is grounded in what this page knows about YOUR business. Sharper foundation = sharper everything.', blocks: [
+      { h: 'Data foundation score', b: 'The 0–100 health card at the top scores how well we know you. <b>“Enrich from web”</b> is the one-click builder: it reads your website (plus Apollo and news) and drafts your positioning, ICP, products and personas. Run it first; re-run any time to refresh.' },
+      { h: 'Intel tab', b: 'Your foundation as prose — what you do, who you sell to (ICP), goals. Click <b>✎ Edit</b> to refine by hand or <b>Draft with AI</b> to regenerate. Below it, the intel library holds files, notes and pages you file about your own company.' },
+      { h: 'Products tab', b: 'Your product lines. Each needs a one-line description — discovery searches for the NEED your product solves, not your brand name. “AI” badges mean we drafted it; review and edit. Open a product to see the competitors it faces and its filed intel.' },
+      { h: 'Personas tab', b: 'The buyer types you sell to (CFO, Head of Payments…). They shape pre-call briefs and auto-link to contacts with matching roles.' },
+      { h: 'How to proceed', b: '1) Hit <b>Enrich from web</b>. 2) Read the ICP it drafted — fix anything wrong (this is the single biggest driver of discovery quality). 3) Give every product a description. Then move on to Prospects.' },
+    ] },
+    prospects: { title: 'Prospects — who you\'ll sell to', intro: 'The companies you pursue, with AI research, contacts and outreach in one place.', blocks: [
+      { h: 'Adding prospects', b: 'Three ways via <b>＋ Add prospects</b>: type one manually (we research it immediately), pull from a connected CRM, or <b>✦ Discover online</b> — AI finds real companies matching WHO YOU SELL TO, ranked by buying signals. Companies you already track are never re-suggested; they show in a strip with re-analyze / update-intel shortcuts.' },
+      { h: 'Why now tab', b: 'The research dossier: buying signals matched to your products, each with strength (strong/even/weak) and reasoning. <b>Research / refresh</b> runs it (~60s, watch the 🔔 bell for completion); <b>⚙︎ Re-analyze</b> re-reads existing findings.' },
+      { h: 'People tab', b: '<b>⤓ Find contacts</b> pulls decision-makers (with email) and tags each with the product they most likely buy. The 📍 location tells same-role people apart at global companies. <b>✉ Email</b> opens the AI composer — pick a focus product and the draft pitches only that.' },
+      { h: 'Intel & Proposal tabs', b: '<b>Intel</b>: file notes, docs and captured email threads against this prospect — everything feeds briefs. <b>Proposal</b>: a consolidated, outcome-based recommendation synthesized from all of it.' },
+      { h: 'Market Watch card', b: 'Toggle “Watch this prospect” and we monitor the web on a schedule — new funding, hires, launches land in Alerts and the bell.' },
+      { h: 'How to proceed', b: 'Discover or add → open the prospect → Research → Find contacts → email or schedule the call.' },
+    ] },
+    competitors: { title: 'Competitors — know how to win', intro: 'Every rival gets living intel and battlecards you can lean on mid-deal.', blocks: [
+      { h: 'Finding competitors', b: '<b>✦ Find competitors automatically</b> runs scoped intelligence: market-wide by region, <b>at a specific prospect</b> (who already serves or courts that account — incumbents flagged), or <b>against one product</b>. Already-tracked rivals are never re-suggested.' },
+      { h: 'Matchups & battlecards', b: 'Open a competitor → pick a matchup (company-wide or one of their products) → the battlecard shows where you win, where you\'re at risk, and the evidence. Add their products to deepen the comparison.' },
+      { h: 'Threat & watch', b: 'Threat level (orange→red, from filed battlecard intel + prospect overlap + watch activity) drives the Market Map coloring. Toggle Market Watch to monitor them continuously.' },
+      { h: 'How to proceed', b: 'Find rivals → open the biggest threat → read its battlecard → practice the matchup in Call practice before your next deal against them.' },
+    ] },
+    'market-map': { title: 'Market Map — your market, live', intro: 'A 3D constellation of your market: you at the center, prospects in blue, competitors on an orange→red threat scale.', blocks: [
+      { h: 'Reading the map', b: 'Node size = activity. Competitor color = threat (red = critical). A pulsing node = strong signal. The lime badge on a prospect counts engagements + new developments. Small satellite dots are facts: threat %, signal counts, “in play at …”.' },
+      { h: 'Cross-links', b: 'A dashed line from a competitor to a prospect means our intel shows they\'re entangled at that account — your contested deals at a glance.' },
+      { h: 'Interacting', b: 'Drag the background to orbit, scroll to zoom, drag nodes to rearrange, click to open the entity. <b>Fullscreen</b> turns clicks into an in-map detail panel so you never leave the view.' },
+    ] },
+    'market-signals': { title: 'Alerts — what changed out there', intro: 'Market Watch findings land here for review — fundings, launches, leadership moves at the prospects and competitors you watch.', blocks: [
+      { h: 'Reviewing', b: 'Each card shows the development, its source and materiality (●●●●●). <b>Accept</b> files it into that company\'s intel (it then feeds briefs and proposals); <b>Dismiss</b> drops it. NEW items count on the 🔔 bell and the nav badge.' },
+      { h: 'Where findings come from', b: 'Turn on Market Watch on any prospect or competitor (their detail page) and pick a schedule — or hit “Run now” there for an immediate check.' },
+      { h: 'How to proceed', b: 'Review NEW items regularly; accept what matters. Accepted intel makes every downstream brief sharper.' },
+    ] },
+    missions: { title: 'Engagements — your AI-covered calls', intro: 'Schedule a call and DealScope joins it: a prep brief beforehand, recording and analysis after.', blocks: [
+      { h: 'Upcoming', b: 'Scheduled calls. A prep brief writes itself ~24h before each (company intel, signals, battlecards, personas). Click a row to read it before you dial in.' },
+      { h: 'Past', b: 'Completed calls with ▶ recordings, the Note Taker Report and the AI\'s read on how it went.' },
+      { h: 'Calendar', b: 'Your next 14 days pulled from Microsoft 365 / Calendly (connect on Integrations). “Schedule engagement” on any meeting sends the AI notetaker — no typing.' },
+      { h: '＋ Schedule', b: 'Three fields: company, time, attendees — everything else (briefs, bot, analysis) is automatic. Each AI-joined call uses one engagement from your plan.' },
+    ] },
+    sessions: { title: 'Call practice — spar before it counts', intro: 'Practice runs against an AI buyer, scored with coaching feedback.', blocks: [
+      { h: 'Starting a session', b: 'Open any call portal and hit <b>Practice</b> — the AI plays the buyer using that deal\'s real context (their company, your battlecards).' },
+      { h: 'The history here', b: 'Every past run with its transcript, score and coaching breakdown. Filter by rep or status; click a row for the full review.' },
+    ] },
+    integrations: { title: 'Integrations — connect your stack', intro: 'Optional, but each connection removes manual work.', blocks: [
+      { h: 'Calendar (Google / Microsoft 365)', b: 'Upcoming meetings prefill the schedule form and appear on the Engagements → Calendar tab; one click sends the notetaker.' },
+      { h: 'Calendly', b: 'Point Calendly\'s webhook at us and bookings become engagements automatically.' },
+      { h: 'CRM', b: 'HubSpot is live (one paste); Salesforce connects with your own Connected App. Pull companies + contacts straight into Prospects.' },
+      { h: 'Recording & privacy', b: 'Per-workspace controls: video on/off (transcripts continue either way), participant recording notice, retention window for recordings.' },
+    ] },
+    billing: { title: 'Billing — plan, usage, credits', intro: 'What you\'re on, what you\'ve used, and how to get more room.', blocks: [
+      { h: 'Your subscription', b: 'Current plan, renewal date, seats. Upgrades/downgrades are self-serve; changes confirm by email.' },
+      { h: 'Usage meters', b: 'Live counts against your allowances — research runs (discovery, competitor sweeps, contact reveals all draw here), engagements, practice. Free plan allowances are one-time; paid plans reset monthly.' },
+      { h: 'Credit packs', b: 'One-time top-ups (90-day expiry) drawn automatically only after your monthly allowance is spent. Spend buttons across the app show your live balance.' },
+    ] },
+    settings: { title: 'Settings — under the hood', intro: 'Power-user controls; most workspaces rarely need this page.', blocks: [
+      { h: 'KB system', b: 'Stats for your AI\'s knowledge base (documents, indexed chunks) and a retrieval probe to test what surfaces for a query — useful when debugging “why isn\'t this doc used in briefs?”.' },
+      { h: 'API tokens', b: 'Keys that let external tools (AI agents, MCP clients, scripts) act on your workspace. Treat each like a password.' },
+    ] },
+  };
+
+  function openGuideModal(sec, opts = {}) {
+    const g = GUIDES[sec];
+    if (!g) { startTour(); return; }
+    let overlay = $('guide-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'guide-overlay';
+      overlay.className = 'cal-picker-overlay';
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.classList.add('hidden'); });
+    }
+    overlay.innerHTML = `
+      <div class="guide-modal">
+        <div class="guide-h">
+          <div>
+            <div class="guide-kicker">Page guide${opts.auto ? ' · first visit' : ''}</div>
+            <div class="guide-title">${g.title}</div>
+          </div>
+          <button type="button" class="kb-link-btn guide-close">✕</button>
+        </div>
+        <p class="guide-intro">${g.intro}</p>
+        <div class="guide-blocks">
+          ${g.blocks.map((bl, i) => `
+            <div class="guide-block">
+              <div class="guide-block-h"><i>${i + 1}</i>${bl.h}</div>
+              <div class="guide-block-b">${bl.b}</div>
+            </div>`).join('')}
+        </div>
+        <div class="guide-foot">
+          ${sec === 'overview' ? '<button type="button" class="kb-secondary-btn" id="guide-replay">▶ Replay the interactive walkthrough</button>' : ''}
+          <span class="kb-subtle">Reopen any time from <b>Guide</b> in the top bar.</span>
+          <button type="button" class="primary-cta guide-got-it">Got it</button>
+        </div>
+      </div>`;
+    overlay.classList.remove('hidden');
+    overlay.querySelector('.guide-close').onclick = () => overlay.classList.add('hidden');
+    overlay.querySelector('.guide-got-it').onclick = () => overlay.classList.add('hidden');
+    const rp = $('guide-replay');
+    if (rp) rp.onclick = () => { overlay.classList.add('hidden'); startTour(); };
+  }
+
+  // Auto-show each guide once per user (server-persisted; skipped while the
+  // setup gate is up — the gate is its own guide).
+  function maybeAutoGuide(sec) {
+    if (setupGating() || !GUIDES[sec]) return;
+    const seen = Array.isArray(_prefs.guidesSeen) ? _prefs.guidesSeen : [];
+    if (seen.includes(sec)) return;
+    setPref('guidesSeen', [...seen, sec]);
+    setTimeout(() => openGuideModal(sec, { auto: true }), 600);
   }
 
   // Guided product tour (Driver.js, vendored). Anchored on the persistent sidebar
@@ -437,6 +559,7 @@
     if (!loaded[sec]) {
       try { await loaders[sec](query || {}); loaded[sec] = true; }
       catch (err) { console.error(err); }
+      maybeAutoGuide(sec);
     } else if (sec === 'calls' && query) {
       // Already-loaded Calls page — re-apply the query so deep-linked filter
       // changes (e.g. clicking a chip or external link) take effect.
