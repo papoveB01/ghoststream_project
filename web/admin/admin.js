@@ -356,7 +356,7 @@
     // (the post-onboarding landing) arms the one-time pull-from-website bootstrap.
     // Set these BEFORE the loader so the first render lands on the right tab.
     if (sec === 'company' && query) {
-      if (query.tab) _companyTab = query.tab;
+      if (query.tab) setCompanyTab(query.tab);
       if (query.welcome) _companyWelcome = true;
     }
     // Market Map re-renders on every visit: data is cheap and its draw loop
@@ -7028,7 +7028,12 @@
   // battlecard, prospect research run, and brief via tenantContextText), our
   // products (with drill-down), buyer personas, and the Basis intel library.
   let _companyData = { tenant: {}, products: [], personas: [], profile: {} };
-  let _companyTab = 'intel';
+  // Active Company tab survives re-renders AND full page reloads (session-scoped).
+  let _companyTab = (() => { try { return sessionStorage.getItem('ds.companyTab') || 'intel'; } catch { return 'intel'; } })();
+  function setCompanyTab(t) {
+    _companyTab = t;
+    try { sessionStorage.setItem('ds.companyTab', t); } catch { /* quota — non-fatal */ }
+  }
   let _companyProductOpen = null;
   let _companyIntelAutoOpen = null; // {productId} → open the Add-intel flow on the Intel tab
   let _companyWelcome = false;        // armed by ?welcome=1 → auto-run the website pull once
@@ -7039,7 +7044,7 @@
   // Jump to the Intel tab and open the Add-intel flow, optionally pre-scoped to a
   // product line (productId null = company-wide).
   function openCompanyAddIntel(productId) {
-    _companyTab = 'intel';
+    setCompanyTab('intel');
     _companyIntelAutoOpen = { productId: productId || null };
     renderCompanyWorkspace();
   }
@@ -7088,7 +7093,7 @@
       </div>
       <div class="prospect-tab-pane" id="company-tab-body"></div>`;
     host.querySelectorAll('[data-company-tab]').forEach((t) => t.addEventListener('click', () => {
-      _companyTab = t.dataset.companyTab; _companyProductOpen = null; renderCompanyWorkspace();
+      setCompanyTab(t.dataset.companyTab); _companyProductOpen = null; renderCompanyWorkspace();
     }));
     const body = $('company-tab-body');
     if (_companyTab === 'products') renderCompanyProductsTab(body);
@@ -7615,7 +7620,7 @@
       // For a new product, drop straight into its detail — where "Create intel
       // for this product" lives — so the rep can enrich it right away.
       if (resource === 'products') {
-        _companyTab = 'products';
+        setCompanyTab('products');
         _companyProductOpen = (resp && resp.product && resp.product.id) || slugify(name);
       }
       await refreshCompany();
