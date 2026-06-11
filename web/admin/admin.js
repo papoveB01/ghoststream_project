@@ -1602,7 +1602,7 @@
         <div class="prospect-modes">
           <button type="button" class="kb-tab${_prospectMode === 'manual' ? ' active' : ''}" data-pmode="manual">Manual</button>
           <button type="button" class="kb-tab${_prospectMode === 'crm' ? ' active' : ''}" data-pmode="crm">From CRM</button>
-          <button type="button" class="kb-tab${_prospectMode === 'discover' ? ' active' : ''}" data-pmode="discover">Discover online</button>
+          <button type="button" class="kb-tab discover-tab${_prospectMode === 'discover' ? ' active' : ''}" data-pmode="discover"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>Discover online</button>
         </div>
         <div id="prospect-mode-panel"></div>
       </div>`;

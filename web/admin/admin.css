@@ -4635,3 +4635,13 @@ details.schedule-advanced > .schedule-advanced-body {
 .discover-cta:hover { background: var(--accent-hover); }
 .discover-cta svg { width: 15px; height: 15px; }
 .prospect-quick-find { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* "Discover online" mode tab promoted to a standout CTA */
+.prospect-modes .discover-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: var(--accent); color: var(--on-accent); border-color: var(--accent);
+  font-weight: 700;
+}
+.prospect-modes .discover-tab svg { width: 14px; height: 14px; }
+.prospect-modes .discover-tab:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
+.prospect-modes .discover-tab.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
