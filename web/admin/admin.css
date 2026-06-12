@@ -4768,38 +4768,40 @@ details.schedule-advanced > .schedule-advanced-body {
 
 /* ── "Get up to speed" gate ─────────────────────────────────────────────── */
 .setup-gate {
-  border: 1px solid var(--accent-soft); border-left: 4px solid var(--accent);
-  border-radius: var(--radius); background: var(--accent-light);
-  padding: 14px 18px; margin: 0 0 18px;
+  border: none; border-radius: 12px;
+  background: linear-gradient(135deg, var(--rail) 0%, var(--rail-2) 100%);
+  color: #e8edf2;
+  padding: 16px 20px; margin: 0 0 18px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .35);
 }
 .setup-gate-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.setup-gate-title { font-weight: 800; font-size: 15px; color: var(--accent); }
-.setup-gate-sub { font-size: 12.5px; color: var(--text-2); }
+.setup-gate-title { font-weight: 800; font-size: 15px; color: #ffd154; }
+.setup-gate-sub { font-size: 12.5px; color: rgba(232, 237, 242, .85); }
 .setup-gate-steps { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
 .setup-gate-step {
   display: inline-flex; align-items: center; gap: 7px;
-  border: 1px solid var(--border-2); background: var(--bg); border-radius: 999px;
-  padding: 5px 13px 5px 6px; font-size: 12px; font-weight: 600; color: var(--text-2);
+  border: 1px solid rgba(255, 255, 255, .28); background: rgba(255, 255, 255, .10); border-radius: 999px;
+  padding: 5px 13px 5px 6px; font-size: 12px; font-weight: 600; color: rgba(232, 237, 242, .92);
 }
 .setup-gate-step i {
   font-style: normal; width: 19px; height: 19px; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 1.5px solid var(--border-2); font-family: var(--mono); font-size: 10px; font-weight: 700;
+  border: 1.5px solid rgba(255, 255, 255, .45); font-family: var(--mono); font-size: 10px; font-weight: 700;
 }
-.setup-gate-step.active { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 3px var(--accent-light); }
-.setup-gate-step.active i { border-color: var(--accent); color: var(--accent); }
+.setup-gate-step.active { border-color: #ffd154; color: #fff; background: rgba(255, 209, 84, .14); box-shadow: 0 0 0 3px rgba(255, 209, 84, .22); }
+.setup-gate-step.active i { border-color: #ffd154; color: #ffd154; }
 .setup-gate-step.done { opacity: .65; }
 .setup-gate-next {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   margin-top: 10px; padding: 10px 14px;
-  border: 1px solid var(--accent); border-radius: 10px;
-  background: var(--accent-light);
-  font-size: 13px; font-weight: 600;
+  border: 1px solid rgba(255, 255, 255, .4); border-radius: 10px;
+  background: rgba(255, 255, 255, .14);
+  font-size: 13px; font-weight: 600; color: #fff;
 }
 .setup-gate-next .primary-cta { margin-left: auto; }
-.setup-gate-step.done i { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.setup-gate-hint { font-size: 13px; line-height: 1.55; color: var(--text-2); }
-.setup-gate-hint strong { color: var(--accent); }
+.setup-gate-step.done i { background: #ffd154; border-color: #ffd154; color: #15181b; }
+.setup-gate-hint { font-size: 13px; line-height: 1.55; color: rgba(232, 237, 242, .9); }
+.setup-gate-hint strong { color: #ffd154; }
 
 /* Locked chrome while the gate is up: nav stays visible (it teaches the
    journey) but only the step-relevant pages are clickable. */
