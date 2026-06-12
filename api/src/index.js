@@ -1248,6 +1248,10 @@ app.use('/portfolio', auth.authMiddleware, portfolio.router);
 
 // Data foundation — health score + multi-source company enrichment.
 app.use('/foundation', auth.authMiddleware, require('./foundation').router);
+// CRM OAuth callbacks (Salesforce, Zoho, …) — hit by the CRM redirecting the
+// browser; they authenticate via the short-lived `state` token (Redis), not the
+// session cookie, so they must sit BEFORE the authMiddleware'd /crm router below.
+app.get('/crm/:provider/callback', require('./crm').handleOAuthCallback);
 app.use('/crm', auth.authMiddleware, gating.requireFeatureWrite(plans.FEATURES.CRM), auth.requireRoleWrite('manager'), require('./crm').router);
 app.use('/dashboard', auth.authMiddleware, require('./dashboard').router);
 
