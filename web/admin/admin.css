@@ -1328,6 +1328,25 @@ details.schedule-advanced > .schedule-advanced-body {
 }
 .crm-connect-row input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
 
+/* OAuth CRM cards (Salesforce, Zoho): BYO-app credential form + callback URL */
+.crm-callback { margin-top: 10px; line-height: 1.6; }
+.crm-callback code {
+  font-family: var(--mono); font-size: 11.5px; padding: 2px 6px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px;
+  word-break: break-all;
+}
+.crm-oauth-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; max-width: 460px; }
+.crm-oauth-form input, .crm-oauth-form select {
+  padding: 8px 10px; font: inherit; font-size: 13px;
+  border: 1px solid var(--border-2); border-radius: var(--radius-sm); background: var(--bg);
+}
+.crm-oauth-form input:focus, .crm-oauth-form select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+.crm-field { display: flex; flex-direction: column; gap: 3px; }
+.crm-field > span { font-size: 11.5px; }
+.crm-env { display: flex; gap: 16px; font-size: 12.5px; }
+.crm-env label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.crm-oauth-form .primary-cta { align-self: flex-start; }
+
 /* ── Settings → API tokens (MCP clients, AI agents, and similar non-browser peers) ── */
 .api-token-plaintext-row {
   display: flex;

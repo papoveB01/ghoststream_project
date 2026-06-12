@@ -4888,13 +4888,15 @@
         <div class="integration-group-h">Recommendations <span class="kb-subtle">— how the proposal engine handles thin intel</span></div>
         <div id="proposal-mode-card" class="rec-privacy-card"><div class="kb-subtle">Loading…</div></div>
       </div>`;
+    // Order: account connections first (mail/calendar, booking, CRM), then the
+    // settings-style groups (recording, recommendations).
     host.innerHTML =
       (flash || '') +
-      recPrivacyGroup +
-      recommendationGroup +
+      group('Connect your mail & calendar', '— link Google or Microsoft 365 so events flow into the schedule form', readCal) +
+      group('Inbound booking', '— auto-create engagements when prospects book', inbound) +
       crmGroup +
-      group('Read your calendar', '— pull events into the schedule form', readCal) +
-      group('Inbound booking', '— auto-create engagements when prospects book', inbound);
+      recPrivacyGroup +
+      recommendationGroup;
     loadRecordingPrivacy();
     loadProposalMode();
     wireCrmCards(host);
@@ -5151,10 +5153,14 @@
     const ggOk = q.get('google'), ggErr = q.get('google_error');
     const calNotice = q.get('cal_notice');
     const msOk = q.get('ms'),  msErr = q.get('ms_error');
-    if (!ggOk && !ggErr && !calNotice && !msOk && !msErr) return null;
-    ['google', 'google_error', 'cal_notice', 'ms', 'ms_error'].forEach((k) => q.delete(k));
+    const crmProv = q.get('crm'), crmOk = q.get('crm_ok'), crmErr = q.get('crm_error');
+    if (!ggOk && !ggErr && !calNotice && !msOk && !msErr && !crmProv) return null;
+    ['google', 'google_error', 'cal_notice', 'ms', 'ms_error', 'crm', 'crm_ok', 'crm_error'].forEach((k) => q.delete(k));
     const clean = location.pathname + (q.toString() ? `?${q}` : '') + location.hash;
     history.replaceState(null, '', clean);
+    const crmLabel = { hubspot: 'HubSpot', salesforce: 'Salesforce', zoho: 'Zoho CRM', pipedrive: 'Pipedrive', dynamics: 'Microsoft Dynamics 365' }[crmProv] || crmProv;
+    if (crmErr) return `<div class="kb-result error"   style="margin-bottom:14px">${escapeHtml(crmLabel)} connect failed: ${escapeHtml(crmErr)}</div>`;
+    if (crmOk)  return `<div class="kb-result success" style="margin-bottom:14px">${escapeHtml(crmLabel)} ${escapeHtml(crmOk)} — use “Pull prospects” to import your accounts, contacts &amp; leads.</div>`;
     if (msErr)  return `<div class="kb-result error"   style="margin-bottom:14px">Microsoft 365: ${escapeHtml(msErr)}</div>`;
     if (msOk)   return `<div class="kb-result success" style="margin-bottom:14px">Microsoft 365 calendar ${escapeHtml(msOk)}.</div>`;
     if (ggErr)  return `<div class="kb-result error"   style="margin-bottom:14px">Google connect failed: ${escapeHtml(ggErr)}</div>`;
@@ -5302,12 +5308,45 @@
       const sline = s ? `<div class="kb-subtle">${fmtNum(s.contactsCreated || 0)} new contacts · ${fmtNum(s.companiesCreated || 0)} new companies${s.contactsExisting ? ` · ${fmtNum(s.contactsExisting)} already on file` : ''}${s.skipped ? ` · ${fmtNum(s.skipped)} skipped` : ''}</div>` : '';
       badge = '<span class="pill pill-ok">Connected</span>';
       body = `
-        <div class="integration-connected">Connected${conn.tokenHint ? ` <span class="kb-subtle">· token ${escapeHtml(conn.tokenHint)}</span>` : ''}</div>
+        <div class="integration-connected">Connected${conn.tokenHint ? ` <span class="kb-subtle">· token ${escapeHtml(conn.tokenHint)}</span>` : ''}${conn.instanceUrl ? ` <span class="kb-subtle">· ${escapeHtml(String(conn.instanceUrl).replace(/^https?:\/\//, ''))}</span>` : ''}</div>
         <div class="kb-subtle">${last}</div>
         ${sline}
         <div class="integration-actions">
           <button class="primary-cta" data-crm-import="${escapeHtml(p.id)}">Pull prospects</button>
           <button class="kb-secondary-btn" data-crm-disconnect="${escapeHtml(p.id)}">Disconnect</button>
+        </div>
+        <div class="kb-result hidden" id="crm-result-${escapeHtml(p.id)}"></div>`;
+    } else if (p.oauth) {
+      // OAuth provider (Salesforce, Zoho, …): the company supplies their OWN
+      // app's credentials (registry-driven fields), registers our callback URL
+      // in that app, then we run the redirect handshake. `appConfigured` =
+      // creds saved but not yet authorized (or the grant lapsed).
+      const cfgd = !!(conn && conn.appConfigured);
+      const env = (conn && conn.environment) || 'production';
+      const region = (conn && conn.region) || '';
+      const cb = p.callbackUri || '';
+      badge = cfgd ? '<span class="pill pill-warn">Authorize</span>' : '<span class="pill pill-warn">Not connected</span>';
+      const inputs = (p.fields || []).map((f) => {
+        const id = `crm-f-${escapeHtml(p.id)}-${escapeHtml(f.key)}`;
+        if (f.type === 'select') {
+          const opts = (f.options || []).map((o) =>
+            `<option value="${escapeHtml(o.value)}"${o.value === region ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('');
+          return `<label class="crm-field"><span class="kb-subtle">${escapeHtml(f.label)}</span><select id="${id}">${opts}</select></label>`;
+        }
+        return `<input type="${f.type === 'password' ? 'password' : 'text'}" id="${id}" placeholder="${escapeHtml(f.label)}${cfgd ? ' (saved — leave blank to keep)' : ''}" autocomplete="off">`;
+      }).join('');
+      const envRow = p.environments ? `
+        <div class="crm-env">
+          <label><input type="radio" name="crm-env-${escapeHtml(p.id)}" value="production" ${env !== 'sandbox' ? 'checked' : ''}> Production</label>
+          <label><input type="radio" name="crm-env-${escapeHtml(p.id)}" value="sandbox" ${env === 'sandbox' ? 'checked' : ''}> Sandbox</label>
+        </div>` : '';
+      body = `
+        <div class="integration-setup">${escapeHtml(p.tokenHelp || '')} ${p.docsUrl ? `<a href="${escapeHtml(p.docsUrl)}" target="_blank" rel="noopener">Docs ↗</a>` : ''}</div>
+        ${cb ? `<div class="crm-callback kb-subtle">Callback URL — add this to your app's authorized redirect URLs: <code>${escapeHtml(cb)}</code> ${copyBtn(cb)}</div>` : ''}
+        <div class="crm-oauth-form">
+          ${inputs}
+          ${envRow}
+          <button class="primary-cta" data-crm-oauth="${escapeHtml(p.id)}">${cfgd ? 'Reconnect →' : 'Save & Connect →'}</button>
         </div>
         <div class="kb-result hidden" id="crm-result-${escapeHtml(p.id)}"></div>`;
     } else if (p.live) {
@@ -5467,8 +5506,34 @@
 
   function wireCrmCards(host) {
     host.querySelectorAll('[data-crm-connect]').forEach((b) => b.addEventListener('click', () => crmConnect(b.dataset.crmConnect)));
+    host.querySelectorAll('[data-crm-oauth]').forEach((b) => b.addEventListener('click', () => crmOauth(b.dataset.crmOauth, b)));
     host.querySelectorAll('[data-crm-import]').forEach((b) => b.addEventListener('click', () => crmImport(b.dataset.crmImport, b)));
     host.querySelectorAll('[data-crm-disconnect]').forEach((b) => b.addEventListener('click', () => crmDisconnect(b.dataset.crmDisconnect)));
+  }
+
+  // OAuth CRM (Salesforce, Zoho, …): save the company's app credentials, then
+  // send the browser to /connect to start the redirect handshake. Blank id/
+  // secret on a re-save keeps the stored ones (server-side).
+  async function crmOauth(provider, btn) {
+    const val = (key) => { const el = $(`crm-f-${provider}-${key}`); return el ? el.value.trim() : ''; };
+    const body = { clientId: val('clientId'), clientSecret: val('clientSecret') };
+    const regionEl = $(`crm-f-${provider}-region`);
+    if (regionEl) body.region = regionEl.value;
+    const envEl = document.querySelector(`input[name="crm-env-${provider}"]:checked`);
+    if (envEl) body.environment = envEl.value;
+    if (btn) btn.disabled = true;
+    crmResult(provider, 'Saving credentials…', '');
+    try {
+      await fetchJson(`/api/crm/${encodeURIComponent(provider)}/app`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      crmResult(provider, 'Redirecting to your CRM to authorize…', '');
+      window.location.href = `/api/crm/${encodeURIComponent(provider)}/connect`;
+    } catch (err) {
+      crmResult(provider, err.message, 'error');
+      if (btn) btn.disabled = false;
+    }
   }
 
   function crmResult(provider, msg, kind) {
