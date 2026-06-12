@@ -4768,38 +4768,99 @@ details.schedule-advanced > .schedule-advanced-body {
 
 /* ── "Get up to speed" gate ─────────────────────────────────────────────── */
 .setup-gate {
-  border: 1px solid var(--accent-soft); border-left: 4px solid var(--accent);
-  border-radius: var(--radius); background: var(--accent-light);
-  padding: 14px 18px; margin: 0 0 18px;
+  position: relative; overflow: hidden;
+  border: none; border-radius: 12px;
+  background: linear-gradient(135deg, var(--rail) 0%, var(--rail-2) 100%);
+  color: #e8edf2;
+  padding: 16px 20px; margin: 0 0 18px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .35);
+}
+.setup-gate::after {
+  content: ''; position: absolute; top: -45%; right: -8%; width: 55%; height: 190%;
+  background: radial-gradient(closest-side, rgba(255, 209, 84, .28), transparent);
+  pointer-events: none;
 }
 .setup-gate-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.setup-gate-title { font-weight: 800; font-size: 15px; color: var(--accent); }
-.setup-gate-sub { font-size: 12.5px; color: var(--text-2); }
-.setup-gate-steps { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+.setup-gate-title { font-weight: 800; font-size: 16px; color: #ffd154; }
+.setup-gate-sub { font-size: 12.5px; color: rgba(232, 237, 242, .85); }
+.setup-gate-steps { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; position: relative; }
 .setup-gate-step {
   display: inline-flex; align-items: center; gap: 7px;
-  border: 1px solid var(--border-2); background: var(--bg); border-radius: 999px;
-  padding: 5px 13px 5px 6px; font-size: 12px; font-weight: 600; color: var(--text-2);
+  border: 1px solid rgba(255, 255, 255, .28); background: rgba(255, 255, 255, .10); border-radius: 999px;
+  padding: 5px 13px 5px 6px; font-size: 12px; font-weight: 600; color: rgba(232, 237, 242, .92);
+  cursor: pointer; user-select: none; transition: background .15s ease, border-color .15s ease, transform .15s ease;
 }
+.setup-gate-step:hover { background: rgba(255, 255, 255, .22); border-color: rgba(255, 255, 255, .55); transform: translateY(-1px); }
+.setup-gate-step:focus-visible { outline: 2px solid #ffd154; outline-offset: 2px; }
 .setup-gate-step i {
   font-style: normal; width: 19px; height: 19px; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 1.5px solid var(--border-2); font-family: var(--mono); font-size: 10px; font-weight: 700;
+  border: 1.5px solid rgba(255, 255, 255, .45); font-family: var(--mono); font-size: 10px; font-weight: 700;
 }
-.setup-gate-step.active { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 3px var(--accent-light); }
-.setup-gate-step.active i { border-color: var(--accent); color: var(--accent); }
-.setup-gate-step.done { opacity: .65; }
+.setup-gate-step.active { border-color: #ffd154; color: #fff; background: rgba(255, 209, 84, .14); box-shadow: 0 0 0 3px rgba(255, 209, 84, .22); }
+.setup-gate-step.active i { border-color: #ffd154; color: #ffd154; }
+.setup-gate-step.done { opacity: .6; }
 .setup-gate-next {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   margin-top: 10px; padding: 10px 14px;
-  border: 1px solid var(--accent); border-radius: 10px;
-  background: var(--accent-light);
-  font-size: 13px; font-weight: 600;
+  border: 1px solid rgba(255, 255, 255, .4); border-radius: 10px;
+  background: rgba(255, 255, 255, .14);
+  font-size: 13px; font-weight: 600; color: #fff; position: relative;
 }
 .setup-gate-next .primary-cta { margin-left: auto; }
-.setup-gate-step.done i { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.setup-gate-hint { font-size: 13px; line-height: 1.55; color: var(--text-2); }
-.setup-gate-hint strong { color: var(--accent); }
+.setup-gate-step.done i { background: #ffd154; border-color: #ffd154; color: #15181b; }
+.setup-gate-hint {
+  position: relative; font-size: 13.5px; line-height: 1.6; color: #fff;
+  background: rgba(0, 0, 0, .2); border-left: 3px solid #ffd154;
+  border-radius: 8px; padding: 10px 14px;
+}
+.setup-gate-hint strong { color: #ffd154; }
+.setup-gate-cost { margin-top: 7px; font-size: 12px; font-weight: 600; color: rgba(232, 237, 242, .8); }
+.setup-gate-credits {
+  margin-left: auto; align-self: center;
+  border: 1px solid rgba(255, 209, 84, .55); border-radius: 999px;
+  background: rgba(255, 209, 84, .14); color: #ffd154;
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  padding: 4px 12px; white-space: nowrap;
+}
+
+/* Spotlight state — the gate zooms in over a dimmed backdrop until the user
+   clicks "Got it", then docks back to the top of the page. */
+.setup-gate-backdrop {
+  position: fixed; inset: 0; z-index: 950;
+  background: rgba(10, 12, 14, .58); backdrop-filter: blur(3px);
+  opacity: 1; transition: opacity .4s ease;
+}
+.setup-gate-backdrop.out { opacity: 0; }
+.setup-gate.zoom {
+  position: fixed; z-index: 951; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(760px, 92vw); margin: 0; padding: 30px 34px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .5);
+  animation: setup-gate-pop .45s cubic-bezier(.2, .9, .3, 1.18);
+}
+@keyframes setup-gate-pop {
+  from { transform: translate(-50%, -50%) scale(.62); opacity: 0; }
+  to   { transform: translate(-50%, -50%) scale(1);   opacity: 1; }
+}
+.setup-gate.zoom .setup-gate-title { font-size: 24px; }
+.setup-gate.zoom .setup-gate-sub { font-size: 14px; }
+.setup-gate.zoom .setup-gate-steps { margin: 16px 0; }
+.setup-gate.zoom .setup-gate-step { font-size: 13px; padding: 6px 15px 6px 7px; }
+.setup-gate.zoom .setup-gate-hint { font-size: 15.5px; padding: 14px 18px; }
+.setup-gate.zoom.dock {
+  transition: transform .45s cubic-bezier(.55, 0, .8, .45), opacity .45s ease;
+  transform: translate(-50%, calc(-50vh + 60px)) scale(.45); opacity: 0;
+}
+.setup-gate-actions { display: flex; justify-content: flex-end; margin-top: 18px; position: relative; }
+.setup-gate-gotit {
+  border: none; cursor: pointer; border-radius: 999px;
+  background: #ffd154; color: #15181b;
+  font-family: inherit; font-size: 15px; font-weight: 800;
+  padding: 12px 30px; box-shadow: 0 4px 16px rgba(0, 0, 0, .3);
+  transition: transform .15s ease, background .15s ease;
+}
+.setup-gate-gotit:hover { background: #ffdd7a; transform: translateY(-1px); }
 
 /* Locked chrome while the gate is up: nav stays visible (it teaches the
    journey) but only the step-relevant pages are clickable. */
