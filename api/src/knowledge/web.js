@@ -85,12 +85,19 @@ async function scrape(url) {
 // which provider served them. `page_age` is Brave's ISO timestamp for when
 // the page was last seen with new content; we map it to publishedTime so the
 // dossier date field still populates.
-async function searchBrave(query, { limit = 5 } = {}) {
+//
+// Returns null (NOT []) on a hard failure (HTTP error such as 402 over-quota /
+// 429 rate-limit / 5xx, or a network/timeout error) so search() can tell a
+// genuine "no results" from "Brave is down" and fall back to Firecrawl. An
+// empty array means Brave answered but found nothing.
+async function searchBrave(query, { limit = 5, freshness = undefined } = {}) {
   if (!isBraveConfigured() || !query) return [];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), BRAVE_TIMEOUT_MS);
   try {
     const params = new URLSearchParams({ q: query, count: String(Math.max(1, Math.min(20, limit))) });
+    // Brave freshness: pd | pw | pm | py | YYYY-MM-DDtoYYYY-MM-DD
+    if (freshness) params.set('freshness', freshness);
     const res = await fetch(`${BRAVE_BASE}/web/search?${params}`, {
       method: 'GET',
       headers: {
@@ -100,7 +107,10 @@ async function searchBrave(query, { limit = 5 } = {}) {
       },
       signal: controller.signal,
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      console.warn(`[web.search] Brave HTTP ${res.status} for "${query.slice(0, 60)}" — falling back to Firecrawl`);
+      return null;
+    }
     const json = await res.json().catch(() => ({}));
     const rows = (json && json.web && Array.isArray(json.web.results)) ? json.web.results : [];
     return rows.map((r) => ({
@@ -111,7 +121,7 @@ async function searchBrave(query, { limit = 5 } = {}) {
       publishedTime: r.page_age || (r.age && /^\d{4}-\d{2}-\d{2}/.test(r.age) ? r.age : null) || null,
     })).filter((r) => r.url);
   } catch {
-    return [];
+    return null; // network/timeout — signal failure so search() can fall back
   } finally {
     clearTimeout(timer);
   }
@@ -120,12 +130,14 @@ async function searchBrave(query, { limit = 5 } = {}) {
 // Firecrawl /v1/search — web search with optional inline scraping of results.
 // Kept as a fallback when Brave isn't configured. `scrape` (bool) toggles
 // Firecrawl's inline content scraping (one scrape per result — costs credits).
-async function searchFirecrawl(query, { limit = 5, scrape: doScrape = false } = {}) {
+async function searchFirecrawl(query, { limit = 5, scrape: doScrape = false, freshness = undefined } = {}) {
   if (!isConfigured() || !query) return [];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SCRAPE_TIMEOUT_MS);
   try {
     const body = { query, limit };
+    // Approximate Brave's freshness via Google tbs; custom ranges fall back to a year.
+    if (freshness) body.tbs = { pd: 'qdr:d', pw: 'qdr:w', pm: 'qdr:m', py: 'qdr:y' }[freshness] || 'qdr:y';
     if (doScrape) body.scrapeOptions = { formats: ['markdown'], onlyMainContent: true };
     const res = await fetch(`${API_BASE}/search`, {
       method: 'POST',
@@ -154,8 +166,19 @@ async function searchFirecrawl(query, { limit = 5, scrape: doScrape = false } = 
 // only), else Firecrawl /search (more expensive, can inline-scrape). Callers
 // always get the same row shape; scrape() / scrapeMarkdown() handles full text
 // downstream regardless of which provider served discovery.
+//
+// Resilience: if Brave HARD-FAILS (returns null: HTTP error like 402 over-quota
+// / 429 / 5xx, or a network/timeout error) we transparently fall back to
+// Firecrawl when it's configured, so an exhausted Brave plan degrades instead
+// of silently killing all discovery. A Brave answer of [] (genuinely nothing
+// found) is returned as-is — no wasteful second provider call.
 async function search(query, opts = {}) {
-  if (isBraveConfigured()) return searchBrave(query, opts);
+  if (isBraveConfigured()) {
+    const r = await searchBrave(query, opts);
+    if (r !== null) return r;
+    if (isConfigured()) return searchFirecrawl(query, opts);
+    return [];
+  }
   return searchFirecrawl(query, opts);
 }
 
