@@ -11,10 +11,25 @@
   const otpLede = document.getElementById('otp-lede');
   const loginFoot = document.getElementById('login-foot');
 
+  // Forgot / reset password views (live alongside #login-form on the same page).
+  const forgotForm = document.getElementById('forgot-form');
+  const forgotEmail = document.getElementById('forgot-email');
+  const forgotErr = document.getElementById('forgot-error');
+  const forgotNote = document.getElementById('forgot-note');
+  const forgotSubmit = document.getElementById('forgot-submit-btn');
+  const resetForm = document.getElementById('reset-form');
+  const resetErr = document.getElementById('reset-error');
+  const resetNote = document.getElementById('reset-note');
+  const resetSubmit = document.getElementById('reset-submit-btn');
+
+  // A reset link lands here as ?token=… — that puts us straight into reset mode.
+  const resetToken = new URLSearchParams(window.location.search).get('token');
+
   let challengeId = null;
 
   function showError(box, msg) { box.textContent = msg; box.classList.remove('hidden'); }
   function clearError(box) { box.textContent = ''; box.classList.add('hidden'); }
+  function showNote(box, msg) { box.textContent = msg; box.classList.remove('hidden'); }
 
   // Client-side device fingerprint: a persisted random id + stable browser
   // signals (canvas/screen/timezone/UA), hashed in-browser. Sent as X-Device-FP
@@ -53,10 +68,13 @@
     return fp ? Object.assign({}, base, { 'X-Device-FP': fp }) : base;
   }
 
-  // If already authenticated, jump straight to the dashboard.
-  fetch('/api/auth/me', { credentials: 'include' })
-    .then((r) => { if (r.ok) window.location.href = '/admin/'; })
-    .catch(() => {});
+  // If already authenticated, jump straight to the dashboard — UNLESS the user
+  // arrived via a reset link, in which case let them set a new password first.
+  if (!resetToken) {
+    fetch('/api/auth/me', { credentials: 'include' })
+      .then((r) => { if (r.ok) window.location.href = '/admin/'; })
+      .catch(() => {});
+  }
 
   // Swap the password form for the code-entry form (and back).
   function showOtp(payload) {
@@ -74,6 +92,8 @@
   function showLogin() {
     challengeId = null;
     otpForm.classList.add('hidden');
+    forgotForm.classList.add('hidden');
+    resetForm.classList.add('hidden');
     form.classList.remove('hidden');
     loginFoot.classList.remove('hidden');
     submit.disabled = false;
@@ -170,4 +190,89 @@
     showLogin();
     clearError(errBox);
   });
+
+  // ── Forgot password ──────────────────────────────────────────────────────
+  // Swap the sign-in form for the "email me a link" form (and back).
+  document.getElementById('forgot-link').addEventListener('click', (e) => {
+    e.preventDefault();
+    clearError(errBox);
+    form.classList.add('hidden');
+    loginFoot.classList.add('hidden');
+    forgotForm.classList.remove('hidden');
+    clearError(forgotErr); forgotNote.classList.add('hidden');
+    // Carry over whatever they typed in the sign-in email field.
+    forgotEmail.value = document.getElementById('email').value.trim();
+    forgotEmail.focus();
+  });
+
+  document.getElementById('forgot-back').addEventListener('click', (e) => {
+    e.preventDefault();
+    showLogin();
+  });
+
+  forgotForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearError(forgotErr); forgotNote.classList.add('hidden');
+    forgotSubmit.disabled = true; forgotSubmit.textContent = 'Sending…';
+    try {
+      const res = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email: forgotEmail.value.trim() }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (res.ok) {
+        // Enumeration-safe: same confirmation whether or not the email exists.
+        showNote(forgotNote, "If an account exists for that email, a reset link is on its way. Check your inbox (and spam).");
+        forgotSubmit.textContent = 'Sent';
+        return;
+      }
+      showError(forgotErr, payload.error || `Couldn't send the link (${res.status}).`);
+      forgotSubmit.disabled = false; forgotSubmit.textContent = 'Send reset link';
+    } catch (err) {
+      showError(forgotErr, err.message || 'Network error');
+      forgotSubmit.disabled = false; forgotSubmit.textContent = 'Send reset link';
+    }
+  });
+
+  // ── Reset password (arrived via emailed link) ────────────────────────────
+  function showReset() {
+    form.classList.add('hidden');
+    loginFoot.classList.add('hidden');
+    resetForm.classList.remove('hidden');
+    document.getElementById('reset-password').focus();
+  }
+
+  resetForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearError(resetErr); resetNote.classList.add('hidden');
+    const pw = document.getElementById('reset-password').value;
+    const pw2 = document.getElementById('reset-password2').value;
+    if (pw.length < 12) { showError(resetErr, 'New password must be at least 12 characters.'); return; }
+    if (pw !== pw2) { showError(resetErr, 'The two passwords don\'t match.'); return; }
+    resetSubmit.disabled = true; resetSubmit.textContent = 'Saving…';
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ token: resetToken, newPassword: pw }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showNote(resetNote, 'Password updated. Redirecting you to sign in…');
+        setTimeout(() => { window.location.href = '/admin/login.html'; }, 1500);
+        return;
+      }
+      showError(resetErr, payload.error || `Couldn't reset your password (${res.status}).`);
+      resetSubmit.disabled = false; resetSubmit.textContent = 'Set new password';
+    } catch (err) {
+      showError(resetErr, err.message || 'Network error');
+      resetSubmit.disabled = false; resetSubmit.textContent = 'Set new password';
+    }
+  });
+
+  // On load: a reset link (?token=…) opens straight into the reset form.
+  if (resetToken) showReset();
 })();

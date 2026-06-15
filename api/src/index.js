@@ -31,6 +31,7 @@ const devices = require('./devices');
 const loginGuard = require('./loginGuard');
 const sessions = require('./sessions');
 const audit = require('./audit');
+const passwordReset = require('./passwordReset');
 const erasure = require('./erasure');
 const recordingSettings = require('./recordingSettings');
 const platformAdmin = require('./platformAdmin');
@@ -933,6 +934,61 @@ app.post('/auth/change-password', auth.authMiddleware, async (req, res, next) =>
       id: me.id, tenantId: me.tenantId, email: me.email, name: me.name, role: me.role, isAdmin: me.isAdmin,
     }), auth.cookieOptions());
     audit.log({ req, action: 'auth.password.changed', result: 'success', actorUserId: me.id, actorEmail: me.email, tenantId: me.tenantId });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// POST /auth/forgot-password — start a reset. Unauthenticated. Enumeration-safe:
+// always returns 200 with the same body whether or not the email is on file.
+// When it is, we mint a single-use token (Redis, 30-min TTL) and email a link.
+app.post('/auth/forgot-password', async (req, res, next) => {
+  try {
+    const addr = ((req.body && req.body.email) || '').toString().trim();
+    if (!addr || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) {
+      return res.status(400).json({ error: 'A valid email is required.', code: 'BAD_EMAIL' });
+    }
+    const gate = await passwordReset.checkRateLimit(req, addr);
+    if (!gate.ok) {
+      res.set('Retry-After', String(gate.retryAfter));
+      return res.status(429).json({ error: 'Too many reset requests. Please try again later.', code: 'RATE_LIMITED' });
+    }
+    const user = await userModel.findByEmail(addr);
+    if (user) {
+      try {
+        const token = await passwordReset.createToken({ userId: user.id, email: user.email });
+        const link = `${APP_BASE_URL}/admin/login.html?token=${encodeURIComponent(token)}`;
+        await passwordReset.sendResetEmail(user.email, link);
+        audit.log({ req, action: 'auth.password.reset_requested', result: 'success', actorUserId: user.id, actorEmail: user.email, tenantId: user.tenantId });
+      } catch (err) {
+        // Don't leak send/store failures to the caller (enumeration). Log it.
+        console.error('[forgot-password] send failed:', err.message);
+        audit.log({ req, action: 'auth.password.reset_requested', result: 'error', actorUserId: user.id, actorEmail: user.email, tenantId: user.tenantId });
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// POST /auth/reset-password — finish a reset with the emailed token + new
+// password. Unauthenticated. Consumes the token (single use), sets the password,
+// and revokes all existing sessions (CC6.7). The user then signs in fresh.
+app.post('/auth/reset-password', async (req, res, next) => {
+  try {
+    const token = (req.body && req.body.token) || '';
+    const newPassword = (req.body && req.body.newPassword) || '';
+    if (typeof newPassword !== 'string' || newPassword.length < 12) {
+      return res.status(400).json({ error: 'New password must be at least 12 characters.', code: 'WEAK_PASSWORD' });
+    }
+    const claim = await passwordReset.consumeToken(token);
+    if (!claim) {
+      return res.status(400).json({ error: 'This reset link is invalid or has expired. Request a new one.', code: 'INVALID_TOKEN' });
+    }
+    const me = await userModel.findById(claim.userId);
+    if (!me) return res.status(400).json({ error: 'This reset link is invalid or has expired. Request a new one.', code: 'INVALID_TOKEN' });
+    const hash = await userModel.hashPassword(newPassword);
+    await userModel.setPassword(me.id, hash);
+    await sessions.revokeAllForUser(me.id);
+    audit.log({ req, action: 'auth.password.reset_confirmed', result: 'success', actorUserId: me.id, actorEmail: me.email, tenantId: me.tenantId });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
