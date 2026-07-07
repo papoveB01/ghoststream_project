@@ -30,12 +30,66 @@ function isBraveConfigured() {
   return Boolean(process.env.BRAVE_API_KEY);
 }
 
+// ── SSRF guard ─────────────────────────────────────────────────────────────
+// Firecrawl fetches whatever URL we hand it, server-side. If FIRECRAWL_BASE_URL
+// is ever pointed at a self-hosted instance inside the VPC, a user-supplied URL
+// becomes a direct internal-network fetch. Reject non-http(s) schemes and hosts
+// that are IP literals in private / loopback / link-local / reserved space
+// (incl. the 169.254.169.254 cloud metadata endpoint), plus obvious internal
+// names. DNS rebinding via a public hostname that resolves to an internal IP is
+// out of scope here (Firecrawl is the egress); this blocks the direct-literal
+// and localhost cases, which are the ones a caller controls outright.
+function ipv4Blocked(host) {
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return null; // not an IPv4 literal
+  const o = m.slice(1).map(Number);
+  if (o.some((n) => n > 255)) return true; // malformed → treat as unsafe
+  const [a, b] = o;
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;            // link-local + cloud metadata
+  if (a === 172 && b >= 16 && b <= 31) return true;   // 172.16.0.0/12
+  if (a === 192 && b === 168) return true;            // 192.168.0.0/16
+  if (a === 100 && b >= 64 && b <= 127) return true;  // CGNAT 100.64.0.0/10
+  if (a >= 224) return true;                          // multicast / reserved / broadcast
+  return false;
+}
+function isBlockedHost(host) {
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.lan')) return true;
+  const v4 = ipv4Blocked(host);
+  if (v4 !== null) return v4;
+  if (host.includes(':')) {                           // IPv6 literal
+    if (host === '::1' || host === '::') return true;
+    if (/^(fc|fd)/.test(host)) return true;           // unique local fc00::/7
+    if (/^fe[89ab]/.test(host)) return true;          // link-local fe80::/10
+    const mapped = host.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/); // ::ffff:a.b.c.d
+    if (mapped) return ipv4Blocked(mapped[1]) === true;
+  }
+  return false;
+}
+// Validate a caller-supplied URL before we hand it to Firecrawl. Throws a 400
+// on a non-http(s) or private/internal target; returns the parsed URL.
+function assertPublicHttpUrl(raw) {
+  let u;
+  try { u = new URL(String(raw || '')); }
+  catch { const e = new Error('Invalid URL.'); e.status = 400; throw e; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    const e = new Error('Only http(s) URLs can be fetched.'); e.status = 400; throw e;
+  }
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 [brackets]
+  if (isBlockedHost(host)) {
+    const e = new Error('That URL points to a private or internal address.'); e.status = 400; throw e;
+  }
+  return u;
+}
+
 async function scrape(url) {
   if (!isConfigured()) {
     const err = new Error('FIRECRAWL_API_KEY not set — add it to .env and restart');
     err.status = 503;
     throw err;
   }
+  assertPublicHttpUrl(url); // SSRF guard — every scrape path funnels through here
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SCRAPE_TIMEOUT_MS);
@@ -186,6 +240,7 @@ async function search(query, opts = {}) {
 // Best-effort: [] on failure.
 async function mapSite(url, { limit = 30, search: q = undefined } = {}) {
   if (!isConfigured() || !url) return [];
+  try { assertPublicHttpUrl(url); } catch { return []; } // SSRF guard (keep the []-on-bad contract)
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SCRAPE_TIMEOUT_MS);
   try {
@@ -310,4 +365,4 @@ async function syncUrl({ tenantId = null, url, category, title, dryRun = false, 
   });
 }
 
-module.exports = { isConfigured, isBraveConfigured, scrape, scrapeMarkdown, search, mapSite, syncUrl };
+module.exports = { isConfigured, isBraveConfigured, scrape, scrapeMarkdown, search, mapSite, syncUrl, assertPublicHttpUrl };
