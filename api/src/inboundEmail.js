@@ -119,10 +119,13 @@ async function handleInbound(fields) {
   if (!row) return { ok: false, reason: 'unknown token' };
 
   const { tenant_id: tenantId, company_id: companyId } = row;
-  // Strip email addresses (PII) from everything we persist.
-  const from = stripEmails(String(fields.from || '')).slice(0, 300);
-  const subject = stripEmails(String(fields.subject || '')).slice(0, 300) || '(no subject)';
-  const body = stripEmails(cleanBody(fields.text || htmlToText(fields.html)));
+  // Persist the email as-is (no address redaction): this content is sourced
+  // from the rep's own outreach / Apollo-sourced contacts and is legitimate
+  // prospect intel, and the full addresses/names are needed so the next-email
+  // draft can pick up the thread (see gatherEmailTrail in contacts.js).
+  const from = String(fields.from || '').slice(0, 300);
+  const subject = String(fields.subject || '').slice(0, 300) || '(no subject)';
+  const body = cleanBody(fields.text || htmlToText(fields.html));
   if (!body) return { ok: false, reason: 'empty body' };
 
   const receivedAt = new Date().toISOString();
