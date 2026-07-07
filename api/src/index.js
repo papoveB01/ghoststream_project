@@ -606,9 +606,17 @@ app.get('/portals/:id', async (req, res, next) => {
 
     // Anonymous viewers see a stripped meeting ref (no botId / tenantId /
     // missionId) — those are operator metadata, not customer-facing.
-    const meeting = meetingRefFromRecord(await store.getMeeting(p.meetingId));
+    const meetingRecord = await store.getMeeting(p.meetingId);
+    const meeting = meetingRefFromRecord(meetingRecord);
     const claims = auth.verifyToken(auth.tokenFromRequest(req));
-    const meetingForViewer = meeting && (claims
+    // Manager view requires belonging to the portal's tenant (or superadmin).
+    // Portal ids are the public share-link identifiers handed to prospects, so
+    // a valid session for a DIFFERENT tenant must be treated as a public viewer
+    // — otherwise any authenticated user could read another tenant's internal
+    // knowledgeGaps just by holding a share link.
+    const portalTenantId = (meetingRecord && meetingRecord.meta && meetingRecord.meta.tenantId) || null;
+    const isManager = !!(claims && (claims.adm || (portalTenantId && claims.tid === portalTenantId)));
+    const meetingForViewer = meeting && (isManager
       ? meeting
       : {
           id: meeting.id,
@@ -618,7 +626,7 @@ app.get('/portals/:id', async (req, res, next) => {
           createdAt: meeting.createdAt,
         });
 
-    const safe = claims
+    const safe = isManager
       ? p
       : { ...p, moments: { ...(p.moments || {}), knowledgeGaps: [] } };
 
@@ -631,7 +639,7 @@ app.get('/portals/:id', async (req, res, next) => {
         ...pubPortal,
         meeting: meetingForViewer,
         audit,
-        viewerRole: claims ? 'admin' : 'public',
+        viewerRole: isManager ? 'admin' : 'public',
       },
     });
   } catch (err) { next(err); }
@@ -1183,6 +1191,14 @@ app.put('/portals/:id/engagement', auth.authMiddleware, async (req, res, next) =
   try {
     const p = await store.getPortal(req.params.id);
     if (!p) return res.status(404).json({ error: 'portal not found' });
+    // Tenant ownership: portal ids are public share links, so a valid session
+    // is not enough — the caller must belong to the portal's tenant (or be a
+    // superadmin). Mirrors the check on POST /portals/:id/save-intel.
+    const m = p.meetingId ? await store.getMeeting(p.meetingId) : null;
+    const ownerTenantId = (m && m.meta && m.meta.tenantId) || null;
+    if (!req.user.adm && (!ownerTenantId || ownerTenantId !== req.tenantId)) {
+      return res.status(404).json({ error: 'portal not found' });
+    }
     const profile = sanitizeEngagementPayload(req.body || {});
     p.engagement = profile;
     // Re-save the whole portal record via setJson-style overwrite.
@@ -1202,6 +1218,14 @@ app.post('/portals/:id/reanalyze', auth.authMiddleware, async (req, res, next) =
     const p = await store.getPortal(req.params.id);
     if (!p) return res.status(404).json({ error: 'portal not found' });
     const meeting = p.meetingId ? await store.getMeeting(p.meetingId) : null;
+    // Tenant ownership (portal ids are public share links — see the same check
+    // on GET /portals/:id and POST /portals/:id/save-intel). Without this any
+    // authenticated user could re-run analysis against another tenant's KB,
+    // overwrite their stored report, and burn their Gemini quota.
+    const ownerTenantId = (meeting && meeting.meta && meeting.meta.tenantId) || null;
+    if (!req.user.adm && (!ownerTenantId || ownerTenantId !== req.tenantId)) {
+      return res.status(404).json({ error: 'portal not found' });
+    }
     const transcript = meeting && meeting.transcript;
     if (!transcript) {
       return res.status(422).json({
