@@ -30,9 +30,14 @@ function isConfigured() {
   return Boolean(JWT_SECRET);
 }
 
-// Surface weak/missing signing secrets at boot rather than failing silently.
+// Surface weak/missing signing secrets at boot. In production a missing secret
+// is fatal: verifyToken() would otherwise call jwt.verify(token, '') and accept
+// any token an attacker signs with an empty HS256 key (including adm:true), so
+// we must fail CLOSED (refuse to start) rather than run with forgeable auth.
 if (!JWT_SECRET) {
-  console.warn('[auth] JWT_SECRET is not set — authentication is disabled (logins will 500).');
+  const msg = '[auth] JWT_SECRET is not set — refusing to start (tokens would be forgeable).';
+  if (process.env.NODE_ENV === 'production') throw new Error(msg);
+  console.warn(`${msg} (dev: logins will 500 until it is set)`);
 } else if (JWT_SECRET.length < 32) {
   console.warn(`[auth] JWT_SECRET is weak (${JWT_SECRET.length} chars) — use >= 32 bytes of entropy.`);
 }
