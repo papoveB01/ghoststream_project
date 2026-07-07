@@ -2452,6 +2452,7 @@
             <span class="ec-engagement-hint kb-subtle">Grounds the email in this past call or email thread.</span>
           </div>
           <div id="ec-draft" class="ec-draft hidden">
+            <div id="ec-trail-note" class="ec-trail-note hidden" style="font-size:12.5px;color:var(--muted);margin-bottom:10px;padding:7px 11px;background:var(--green-wash,rgba(30,125,69,.08));border:1px solid rgba(30,125,69,.2);border-radius:6px"></div>
             <label class="ec-field">Subject
               <input id="ec-subject" type="text" class="ec-subject">
             </label>
@@ -2566,6 +2567,20 @@
         $('ec-subject').value = r.subject || '';
         $('ec-body').value = r.body || '';
         lastCc = r.cc || null;
+        // "Replying to…" indicator — shows the prior email this draft threads off.
+        const trailNote = $('ec-trail-note');
+        if (trailNote) {
+          if (r.trail && r.trail.latestSubject) {
+            const t = r.trail;
+            trailNote.innerHTML = `↩ Continuing your thread with this ${t.byContact ? 'contact' : 'prospect'}: <strong>${escapeHtml(t.latestSubject)}</strong>`
+              + (t.latestDate ? ` <span class="kb-subtle">· ${escapeHtml(t.latestDate)}</span>` : '')
+              + (t.count > 1 ? ` <span class="kb-subtle">(+${t.count - 1} earlier)</span>` : '');
+            trailNote.classList.remove('hidden');
+          } else {
+            trailNote.classList.add('hidden');
+            trailNote.textContent = '';
+          }
+        }
         $('ec-cc-note').innerHTML = r.ccCapture
           ? `<span class="ec-cc-ok">✓ captured</span> A copy goes to DealScope (CC ${escapeHtml(r.cc)}) so this email — and any reply — feeds the prospect's intel.`
           : `<span class="ec-cc-warn">!</span> Inbound capture isn’t configured, so replies won’t be auto-filed.`;
