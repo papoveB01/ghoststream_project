@@ -134,7 +134,7 @@ app.delete('/gemini/caches/:name', auth.authMiddleware, auth.requireSuperadmin, 
   } catch (err) { next(err); }
 });
 
-app.post('/gemini/roleplay/:slug', async (req, res, next) => {
+app.post('/gemini/roleplay/:slug', auth.authMiddleware, async (req, res, next) => {
   try {
     const seed = personas[req.params.slug];
     if (!seed) return res.status(404).json({ error: 'unknown persona', slug: req.params.slug });
@@ -167,7 +167,7 @@ app.post('/gemini/roleplay/:slug', async (req, res, next) => {
 
 // POST /meetings  { meetingUrl, botName? }
 // Creates a Recall.ai bot that joins the call with real-time transcription.
-app.post('/meetings', async (req, res, next) => {
+app.post('/meetings', auth.authMiddleware, async (req, res, next) => {
   try {
     const { meetingUrl, botName } = req.body || {};
     if (!meetingUrl) return res.status(400).json({ error: 'meetingUrl required' });
@@ -408,13 +408,14 @@ app.post('/_internal/meetings/:id/process', requireInternalAuth, async (req, res
 // First Loop — full pipeline on the sample 5-minute call
 // =========================================================================
 
-app.post('/first-loop', async (req, res, next) => {
+app.post('/first-loop', auth.authMiddleware, async (req, res, next) => {
   try {
     const transcript = (req.body && req.body.transcript) || sampleTranscript;
 
-    // First-loop is an unauth demo endpoint scoped to the Founders tenant
-    // (it exercises the recall.ai → portal flow against the seeded demo KB).
-    // Runs unfiltered (no engagement profile, no mission tags).
+    // First-loop is a demo endpoint scoped to the Founders tenant (it exercises
+    // the recall.ai → portal flow against the seeded demo KB). Requires a
+    // session (see fix/gate-cost-endpoints): it drives paid Gemini analysis, so
+    // it must not be anonymous. Runs unfiltered (no engagement profile / tags).
     const meeting = await store.createMeeting({
       source: 'first-loop',
       meetingUrl: '(mock 5-minute call)',
