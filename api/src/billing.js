@@ -700,11 +700,17 @@ async function webhook(req, res) {
   const s = stripe();
   if (!s) return res.status(503).end();
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  // Fail CLOSED: with no signing secret we cannot distinguish a genuine Stripe
+  // event from a forged one. Accepting req.body unverified would let anyone POST
+  // a fake subscription.updated / checkout.completed to grant themselves a paid
+  // plan or mint credits. Refuse rather than trust unsigned input.
+  if (!secret) {
+    console.error('[billing] STRIPE_WEBHOOK_SECRET not set — rejecting webhook (cannot verify signature).');
+    return res.status(503).end();
+  }
   let event;
   try {
-    event = secret
-      ? s.webhooks.constructEvent(req.rawBody, req.get('stripe-signature'), secret)
-      : req.body; // dev fallback when no signing secret is set
+    event = s.webhooks.constructEvent(req.rawBody, req.get('stripe-signature'), secret);
   } catch (err) {
     console.warn('[billing] webhook signature failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
