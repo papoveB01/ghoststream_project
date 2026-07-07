@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const personas = require('./personas');
 const gemini = require('./gemini');
 const analysis = require('./analysis');
@@ -212,6 +213,25 @@ app.get('/meetings/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Guards the /_internal/* endpoints, which are called server-to-server by the
+// capture service (never by a browser). Requires a shared secret in the
+// X-Internal-Secret header, compared in constant time. Fails CLOSED: with no
+// INTERNAL_API_SECRET set we refuse rather than run unauthenticated. nginx also
+// 404s /api/_internal at the public edge, so this is defence in depth.
+const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || '';
+function requireInternalAuth(req, res, next) {
+  if (!INTERNAL_API_SECRET) {
+    console.error('[internal] INTERNAL_API_SECRET is not set — refusing internal request');
+    return res.status(503).json({ error: 'internal endpoint not configured' });
+  }
+  const provided = Buffer.from(String(req.get('X-Internal-Secret') || ''));
+  const expected = Buffer.from(INTERNAL_API_SECRET);
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  return next();
+}
+
 // Internal hook: capture calls this after a Recall webhook event so the brain
 // (Gemini analysis) runs in the api service that owns the GEMINI_API_KEY.
 //
@@ -223,7 +243,7 @@ app.get('/meetings/:id', async (req, res, next) => {
 //   2. Already-completed meetings (portalId set) short-circuit so Recall's
 //      webhook retries don't duplicate the Cloudflare Stream ingest or the
 //      portal record.
-app.post('/_internal/meetings/:id/process', async (req, res, next) => {
+app.post('/_internal/meetings/:id/process', requireInternalAuth, async (req, res, next) => {
   try {
     const m = await store.getMeeting(req.params.id);
     if (!m) return res.status(404).json({ error: 'meeting not found' });

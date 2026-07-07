@@ -23,6 +23,9 @@ from . import r2
 app = FastAPI(title="ghost-capture")
 
 API_SERVICE_URL = os.environ.get("API_SERVICE_URL", "http://api:3000")
+# Shared secret for the api's /_internal endpoints. Sent as X-Internal-Secret;
+# the api refuses these calls when it (or we) lack the secret.
+INTERNAL_API_SECRET = os.environ.get("INTERNAL_API_SECRET", "")
 RECALL_REGION = os.environ.get("RECALL_AI_REGION", "us-west-2")
 RECALL_API_KEY = os.environ.get("RECALL_AI_API_KEY", "")
 RECALL_BASE = f"https://{RECALL_REGION}.recall.ai/api/v1"
@@ -228,6 +231,7 @@ async def _on_bot_done(bot_id: str | None, _data: dict[str, Any]):
                 "transcript": transcript,
                 "videoUrl": (archived or {}).get("publicUrl") or video_url,
             },
+            headers={"X-Internal-Secret": INTERNAL_API_SECRET},
         )
 
 
