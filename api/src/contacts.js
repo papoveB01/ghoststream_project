@@ -310,11 +310,6 @@ async function gatherEngagementContext(tenantId, companyId, engagementId) {
     `SELECT id, scheduled_at, notes, portal_id FROM scheduled_meetings WHERE tenant_id = $1 AND company_id = $2 AND status = 'COMPLETED' ORDER BY scheduled_at DESC LIMIT 1`,
     [tenantId, companyId]
   ).then((r) => r.rows[0]);
-  const latestEmailId = () => db.query(
-    `SELECT id FROM kb_documents WHERE tenant_id = $1 AND company_id = $2 AND scope = 'PROSPECT' AND metadata->>'source' = 'inbound-email' AND status = 'READY' ORDER BY created_at DESC LIMIT 1`,
-    [tenantId, companyId]
-  ).then((r) => r.rows[0] && r.rows[0].id);
-
   if (eid.startsWith('email:')) {
     const b = await emailBlock(eid.slice(6)); if (b) blocks.push(b);
   } else if (eid) {
@@ -322,12 +317,71 @@ async function gatherEngagementContext(tenantId, companyId, engagementId) {
     const m = (await db.query(`SELECT id, scheduled_at, notes, portal_id FROM scheduled_meetings WHERE id = $1 AND tenant_id = $2 AND company_id = $3`, [callId, tenantId, companyId])).rows[0];
     const b = await callBlock(m); if (b) blocks.push(b);
   } else {
-    // Auto: latest call + latest captured email thread (whichever exist).
-    const [m, emailId] = await Promise.all([latestCall(), latestEmailId()]);
+    // Auto: latest completed call. Email history is supplied separately by
+    // gatherEmailTrail() so every draft sees the full trail, not just one email.
+    const m = await latestCall();
     const cb = await callBlock(m); if (cb) blocks.push(cb);
-    if (emailId) { const eb = await emailBlock(emailId); if (eb) blocks.push(eb); }
   }
   return blocks.join('\n\n');
+}
+
+// The recent captured email trail with a prospect — the ingested outbound/inbound
+// emails (source='inbound-email'), oldest→newest, so a new draft can continue the
+// conversation instead of starting cold. Included in EVERY draft regardless of
+// category (that's the whole point: brief on the prior trail and carry context).
+// `excludeDocId` skips an email already shown as the explicit engagement
+// touchpoint, so it isn't printed twice.
+//
+// When `contactEmail` is given we thread by that specific person: keep only the
+// emails whose stored From/To/CC mention their address. If none match — older
+// rows filed before recipients were captured, or a different correspondent — we
+// fall back to the whole prospect-company trail so the draft still gets context.
+// Returns { block, summary }: `block` is the prompt-context text ('' if none),
+// `summary` is a small object the UI shows as a "replying to…" indicator (null
+// if none): { count, latestSubject, latestDate, byContact }.
+async function gatherEmailTrail(tenantId, companyId, { contactEmail = null, limit = 5, excludeDocId = null } = {}) {
+  const empty = { block: '', summary: null };
+  if (!companyId) return empty;
+  // Over-fetch so contact-filtering below can still yield up to `limit` emails.
+  const rows = (await db.query(
+    `SELECT id, title, metadata, created_at
+       FROM kb_documents
+      WHERE tenant_id = $1 AND company_id = $2 AND scope = 'PROSPECT'
+        AND metadata->>'source' = 'inbound-email' AND status = 'READY'
+      ORDER BY created_at DESC LIMIT $3`,
+    [tenantId, companyId, Math.max(limit * 3, limit)]
+  )).rows.filter((r) => r.id !== excludeDocId);
+  if (!rows.length) return empty;
+
+  // Prefer the thread with this specific contact; fall back to company-wide.
+  let chosen = rows;
+  let byContact = false;
+  const needle = String(contactEmail || '').trim().toLowerCase();
+  if (needle) {
+    const hay = (r) => `${(r.metadata && r.metadata.from) || ''} ${(r.metadata && r.metadata.to) || ''} ${(r.metadata && r.metadata.cc) || ''}`.toLowerCase();
+    const matches = rows.filter((r) => hay(r).includes(needle));
+    if (matches.length) { chosen = matches; byContact = true; }
+  }
+  chosen = chosen.slice(0, limit).reverse(); // newest `limit`, then oldest → newest
+
+  const svc = require('./knowledge/service');
+  const parts = [];
+  let latest = null; // the most recent email that made it into the trail
+  for (const r of chosen) {
+    let text = '';
+    try { const d = await svc.getDocumentText(tenantId, r.id); text = (d && d.text) || ''; } catch { /* skip unreadable */ }
+    if (!text) continue;
+    const when = (r.metadata && r.metadata.receivedAt) || (r.created_at && new Date(r.created_at).toISOString());
+    const subj = (r.metadata && r.metadata.subject) || r.title || '(no subject)';
+    parts.push(`--- ${when ? String(when).slice(0, 10) : ''} · ${subj} ---\n${String(text).slice(0, 1200)}`);
+    latest = { subject: subj, date: when ? String(when).slice(0, 10) : null }; // chosen is oldest→newest, so last wins
+  }
+  if (!parts.length) return empty;
+  const block = 'PRIOR EMAIL TRAIL with this contact (oldest first, most recent last). '
+    + 'CONTINUE this conversation naturally — reference what was already said and '
+    + 'move it forward; do NOT repeat points already made or reintroduce yourself '
+    + `if the thread is already underway:\n${parts.join('\n\n')}`;
+  return { block, summary: { count: parts.length, latestSubject: latest.subject, latestDate: latest.date, byContact } };
 }
 
 const router = express.Router();
@@ -399,6 +453,14 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
     let engagement = '';
     if (cat.engagement) engagement = await gatherEngagementContext(req.tenantId, contact.company_id, req.body && req.body.engagementId);
 
+    // Always brief the draft on the prior email trail with this prospect so the
+    // next email picks up the thread and carries context — regardless of the
+    // chosen category. If a specific email was pinned as the engagement
+    // touchpoint, exclude it here so it isn't shown twice.
+    const eidRaw = String((req.body && req.body.engagementId) || '').trim();
+    const pinnedEmailId = eidRaw.startsWith('email:') ? eidRaw.slice(6) : null;
+    const emailTrail = await gatherEmailTrail(req.tenantId, contact.company_id, { contactEmail: contact.email, excludeDocId: pinnedEmailId });
+
     const ctxBlock = [
       `OUR COMPANY: ${tenant.name || ''}`,
       prof.positioning ? `What we do: ${String(prof.positioning).slice(0, 600)}` : '',
@@ -409,6 +471,7 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
       `RECIPIENT: ${contact.name}${contact.role && contact.role !== 'Unknown' ? `, ${contact.role}` : ''}`,
       research.summary ? `What we know about them: ${String(research.summary).slice(0, 1200)}` : '',
       signals ? `Recent signals / opportunities:\n${signals}` : '',
+      emailTrail.block,
       engagement,
     ].filter(Boolean).join('\n');
 
@@ -416,6 +479,7 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
       `You are an expert B2B sales writer composing a SHORT outreach email that ${senderName} will send to ${contact.name}.\n` +
       `EMAIL TYPE — ${cat.label}: ${cat.goal}\n` +
       (engagement ? 'Ground the email concretely in the PAST ENGAGEMENT shown in the context — reference what was actually discussed (specifics, not generic phrases), and build the next step from there.\n' : '') +
+      (emailTrail.block ? 'A PRIOR EMAIL TRAIL with this prospect is in the context — write this as the NEXT message in that thread: briefly acknowledge where things left off, do NOT reintroduce yourself or repeat points already made, and move the conversation toward the next step.\n' : '') +
       (instruction ? `MUST REFLECT (the sender's explicit instruction — follow it closely): ${instruction}\n` : '') +
       (focusProduct ? `PRODUCT FOCUS — this email pitches ONLY "${focusProduct.name}". Do not mention or allude to our other products; tie the hook, value and call-to-action specifically to it.\n` : '') +
       'Write a compelling subject line and a WELL-STRUCTURED, professional plain-text body. Format the body like a real business email:\n' +
@@ -466,6 +530,7 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
       body: String(draft.body || '').trim(),
       category: cat.label,
       contactName: contact.name,
+      trail: emailTrail.summary, // {count, latestSubject, latestDate, byContact} | null
     });
   } catch (err) { next(err); }
 });
