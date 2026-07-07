@@ -331,21 +331,37 @@ async function gatherEngagementContext(tenantId, companyId, engagementId) {
 // category (that's the whole point: brief on the prior trail and carry context).
 // `excludeDocId` skips an email already shown as the explicit engagement
 // touchpoint, so it isn't printed twice.
-async function gatherEmailTrail(tenantId, companyId, { limit = 5, excludeDocId = null } = {}) {
+//
+// When `contactEmail` is given we thread by that specific person: keep only the
+// emails whose stored From/To/CC mention their address. If none match — older
+// rows filed before recipients were captured, or a different correspondent — we
+// fall back to the whole prospect-company trail so the draft still gets context.
+async function gatherEmailTrail(tenantId, companyId, { contactEmail = null, limit = 5, excludeDocId = null } = {}) {
   if (!companyId) return '';
+  // Over-fetch so contact-filtering below can still yield up to `limit` emails.
   const rows = (await db.query(
     `SELECT id, title, metadata, created_at
        FROM kb_documents
       WHERE tenant_id = $1 AND company_id = $2 AND scope = 'PROSPECT'
         AND metadata->>'source' = 'inbound-email' AND status = 'READY'
       ORDER BY created_at DESC LIMIT $3`,
-    [tenantId, companyId, limit]
+    [tenantId, companyId, Math.max(limit * 3, limit)]
   )).rows.filter((r) => r.id !== excludeDocId);
   if (!rows.length) return '';
-  rows.reverse(); // oldest → newest reads as a natural thread
+
+  // Prefer the thread with this specific contact; fall back to company-wide.
+  let chosen = rows;
+  const needle = String(contactEmail || '').trim().toLowerCase();
+  if (needle) {
+    const hay = (r) => `${(r.metadata && r.metadata.from) || ''} ${(r.metadata && r.metadata.to) || ''} ${(r.metadata && r.metadata.cc) || ''}`.toLowerCase();
+    const matches = rows.filter((r) => hay(r).includes(needle));
+    if (matches.length) chosen = matches;
+  }
+  chosen = chosen.slice(0, limit).reverse(); // newest `limit`, then oldest → newest
+
   const svc = require('./knowledge/service');
   const parts = [];
-  for (const r of rows) {
+  for (const r of chosen) {
     let text = '';
     try { const d = await svc.getDocumentText(tenantId, r.id); text = (d && d.text) || ''; } catch { /* skip unreadable */ }
     if (!text) continue;
@@ -354,7 +370,7 @@ async function gatherEmailTrail(tenantId, companyId, { limit = 5, excludeDocId =
     parts.push(`--- ${when ? String(when).slice(0, 10) : ''} · ${subj} ---\n${String(text).slice(0, 1200)}`);
   }
   if (!parts.length) return '';
-  return 'PRIOR EMAIL TRAIL with this prospect (oldest first, most recent last). '
+  return 'PRIOR EMAIL TRAIL with this contact (oldest first, most recent last). '
     + 'CONTINUE this conversation naturally — reference what was already said and '
     + 'move it forward; do NOT repeat points already made or reintroduce yourself '
     + `if the thread is already underway:\n${parts.join('\n\n')}`;
@@ -435,7 +451,7 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
     // touchpoint, exclude it here so it isn't shown twice.
     const eidRaw = String((req.body && req.body.engagementId) || '').trim();
     const pinnedEmailId = eidRaw.startsWith('email:') ? eidRaw.slice(6) : null;
-    const emailTrail = await gatherEmailTrail(req.tenantId, contact.company_id, { excludeDocId: pinnedEmailId });
+    const emailTrail = await gatherEmailTrail(req.tenantId, contact.company_id, { contactEmail: contact.email, excludeDocId: pinnedEmailId });
 
     const ctxBlock = [
       `OUR COMPANY: ${tenant.name || ''}`,

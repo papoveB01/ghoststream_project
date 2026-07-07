@@ -124,6 +124,10 @@ async function handleInbound(fields) {
   // prospect intel, and the full addresses/names are needed so the next-email
   // draft can pick up the thread (see gatherEmailTrail in contacts.js).
   const from = String(fields.from || '').slice(0, 300);
+  // Recipients (To/CC) — kept so the next-email draft can thread the trail by a
+  // specific contact's address (see gatherEmailTrail). Not redacted, per above.
+  const to = String(fields.to || '').slice(0, 500);
+  const cc = String(fields.cc || '').slice(0, 500);
   const subject = String(fields.subject || '').slice(0, 300) || '(no subject)';
   const body = cleanBody(fields.text || htmlToText(fields.html));
   if (!body) return { ok: false, reason: 'empty body' };
@@ -137,7 +141,7 @@ async function handleInbound(fields) {
     file: { buffer: Buffer.from(md, 'utf8'), mimetype: 'text/markdown', originalname: `email-${Date.now()}.md` },
     category: 'ORG_INTELLIGENCE',
     title: `Email: ${subject}`,
-    metadata: { source: 'inbound-email', from, subject, receivedAt },
+    metadata: { source: 'inbound-email', from, to, cc, subject, receivedAt },
     streamType: 'FILE',
     scope: 'PROSPECT',
     companyId,
