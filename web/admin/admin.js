@@ -1611,7 +1611,7 @@
       ? `<span class="pill pill-${escapeHtml(meeting.source)}">${escapeHtml(meeting.source)}</span>`
       : '';
     const urlLink = meeting.meetingUrl
-      ? `<a href="${escapeHtml(meeting.meetingUrl)}" target="_blank" rel="noopener" title="${escapeHtml(meeting.meetingUrl)}">${escapeHtml(shortMeetingUrl(meeting.meetingUrl))} ↗</a>`
+      ? `<a href="${safeHref(meeting.meetingUrl)}" target="_blank" rel="noopener" title="${escapeHtml(meeting.meetingUrl)}">${escapeHtml(shortMeetingUrl(meeting.meetingUrl))} ↗</a>`
       : '';
     const missionLink = meeting.missionId
       ? `<div class="mono muted" title="engagement ${escapeHtml(meeting.missionId)}">engagement · ${escapeHtml(meeting.missionId.slice(0, 8))}…</div>`
@@ -4463,7 +4463,7 @@
         <li class="off-web-item ev-web-row">
           <span class="off-web-meta">
             <span class="off-web-title">${escapeHtml(r.title)}</span>
-            <a class="off-web-url" href="${escapeHtml(r.url)}" target="_blank" rel="noopener">${escapeHtml(r.url)}</a>
+            <a class="off-web-url" href="${safeHref(r.url)}" target="_blank" rel="noopener">${escapeHtml(r.url)}</a>
             ${r.description ? `<span class="kb-subtle">${escapeHtml(r.description)}</span>` : ''}
           </span>
           <button type="button" class="kb-secondary-btn ev-add-one" data-url="${escapeHtml(r.url)}">＋ Add to evidence</button>
@@ -5097,7 +5097,7 @@
     const provider = sourcePill(ev);
     const joinHost = ev.url ? safeJoinHost(ev.url) : null;
     const joinBtn  = ev.url
-      ? `<a class="kb-link-btn" data-cal-open href="${escapeHtml(ev.url)}" target="_blank" rel="noopener" title="Join ${escapeHtml(joinHost || 'meeting')}">Join ${escapeHtml(joinLabel(joinHost))}</a>`
+      ? `<a class="kb-link-btn" data-cal-open href="${safeHref(ev.url)}" target="_blank" rel="noopener" title="Join ${escapeHtml(joinHost || 'meeting')}">Join ${escapeHtml(joinLabel(joinHost))}</a>`
       : '';
     const company = sug.companyName ? ` · <span class="kb-subtle">→ ${escapeHtml(sug.companyName)}</span>` : '';
     return `
@@ -6262,7 +6262,7 @@
         result.classList.add('success');
         result.innerHTML = `
           ✅ ${escapeHtml(meta.label)} created · invite delivered to ${ok.length} attendee${ok.length === 1 ? '' : 's'} ${fromLine}.
-          <a href="${escapeHtml(j.joinUrl)}" target="_blank" rel="noopener">Open meeting ↗</a>`;
+          <a href="${safeHref(j.joinUrl)}" target="_blank" rel="noopener">Open meeting ↗</a>`;
       } else if (failed.length > 0 && ok.length > 0) {
         result.classList.add('error');
         result.innerHTML = `
@@ -6283,7 +6283,7 @@
         result.classList.add('success');
         result.innerHTML = `
           ✅ ${escapeHtml(meta.label)} created on your calendar.
-          <a href="${escapeHtml(j.joinUrl)}" target="_blank" rel="noopener">Open meeting ↗</a>`;
+          <a href="${safeHref(j.joinUrl)}" target="_blank" rel="noopener">Open meeting ↗</a>`;
       }
       // Only auto-close if everything succeeded; otherwise keep the modal
       // open so the rep can read the failure list. In edit mode, refresh
@@ -6366,6 +6366,25 @@
     return String(s || '').replace(/[&<>"']/g, (c) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[c]));
+  }
+
+  // True only for link URLs safe to put in an href. Blocks javascript:, data:,
+  // vbscript:, etc. — ingested docs, scraped pages and AI briefs can carry
+  // hostile links that would otherwise execute in the authenticated admin
+  // origin on click. Allows http(s)/mailto and scheme-less URLs (relative,
+  // anchor, path, protocol-relative); rejects anything else by detecting a
+  // scheme colon before the first path separator. Because it keys off that
+  // colon rather than a scheme allowlist, whitespace/control-char obfuscation
+  // (e.g. "java\nscript:…") is caught too — the colon still precedes any slash.
+  function isSafeUrl(url) {
+    const u = String(url || '');
+    if (/^\s*(https?:|mailto:)/i.test(u)) return true;
+    // No scheme colon before the first '/', '?' or '#' → treat as relative/safe.
+    return !u.split(/[/?#]/)[0].includes(':');
+  }
+  // href value for an untrusted URL: the escaped URL when safe, else '#'.
+  function safeHref(url) {
+    return isSafeUrl(url) ? escapeHtml(url) : '#';
   }
 
   function fmtNum(n) {
@@ -6626,7 +6645,7 @@
     host.innerHTML = `
       <dl class="kv-list missions-detail-kv">
         <div class="k">Company</div><div class="v">${escapeHtml(m.company_name || '—')}${m.company_domain ? ` <span class="kb-subtle">(${escapeHtml(m.company_domain)})</span>` : ''}</div>
-        <div class="k">Meeting URL</div><div class="v">${m.meeting_url ? `<a href="${escapeHtml(m.meeting_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(m.meeting_url)} ↗</a>` : '—'}</div>
+        <div class="k">Meeting URL</div><div class="v">${m.meeting_url ? `<a href="${safeHref(m.meeting_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(m.meeting_url)} ↗</a>` : '—'}</div>
         <div class="k">Prospect emails</div><div class="v">${(m.prospect_emails || []).map(escapeHtml).join(', ') || '—'}</div>
         <div class="k">Focus</div><div class="v mono">${[
           (m.product_ids    || []).map((x) => `product=${x}`).join(','),
@@ -6965,7 +6984,10 @@
     const inline = (s) => escapeHtml(s)
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/_(.+?)_/g, '<em>$1</em>')
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+      // `s` is already escapeHtml'd, so the captured url/text are escaped; drop
+      // the link (keep the text) when the scheme isn't safe (e.g. javascript:).
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, text, url) =>
+        isSafeUrl(url) ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>` : text)
       .replace(/`([^`]+)`/g, '<code>$1</code>');
     for (const raw of lines) {
       if (raw.startsWith('```')) {
@@ -7639,7 +7661,7 @@
     const prods = Array.isArray(r.suggestedProducts) ? r.suggestedProducts : [];
     card.innerHTML = `
       <div class="company-pull-result">
-        <div class="company-pull-head">✅ Here's what we found${r.sourceUrl ? ` on <a href="${escapeHtml(r.sourceUrl)}" target="_blank" rel="noopener">your site</a>` : ''} — confirm it looks right.</div>
+        <div class="company-pull-head">✅ Here's what we found${r.sourceUrl ? ` on <a href="${safeHref(r.sourceUrl)}" target="_blank" rel="noopener">your site</a>` : ''} — confirm it looks right.</div>
         ${sum.mission ? `<div class="company-pull-row"><span class="company-field-label">What you do</span><div>${escapeHtml(sum.mission)}</div></div>` : ''}
         ${sum.audience ? `<div class="company-pull-row"><span class="company-field-label">Who you sell to</span><div>${escapeHtml(sum.audience)}</div></div>` : ''}
         <div class="company-pull-row">
