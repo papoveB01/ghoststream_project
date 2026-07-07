@@ -99,6 +99,8 @@ services:
       GOOGLE_REGION: ${GOOGLE_REGION:-us-central1}
       JWT_SECRET: ${JWT_SECRET}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      # Shared secret guarding the api's /_internal/* endpoints (capture → api).
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       CAPTURE_SERVICE_URL: http://capture:8000
@@ -238,6 +240,8 @@ services:
       SKRIBBY_API_KEY: ${SKRIBBY_API_KEY:-}
       SKRIBBY_WEBHOOK_SECRET: ${SKRIBBY_WEBHOOK_SECRET:-}
       API_SERVICE_URL: http://api:3000
+      # Shared secret sent to the api's /_internal/* endpoints (must match api).
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
       # Cloudflare R2 — capture writes raw meeting recordings here
       R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
