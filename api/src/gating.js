@@ -17,6 +17,7 @@ const tenants = require('./tenants');
 const entitlements = require('./entitlements');
 const usage = require('./usage');
 const plans = require('./plans');
+const db = require('./db');
 
 // Writes that must stay reachable while inactive so the user can recover
 // (sign in/out, manage billing, edit their own profile/password, finish signup).
@@ -92,12 +93,49 @@ function requireFeature(feature) {
   };
 }
 
+// ── "Get up to speed" setup freebies ────────────────────────────────────────
+// While a tenant's onboarding gate is still open, the FIRST unit of each
+// required setup action is free, so completing the gate never eats the Free
+// tier's lifetime research allowance. Claims are recorded as one-row lifetime
+// markers in usage_counters (meter `setup_free_<action>`) — no migration
+// needed, and the INSERT ... DO NOTHING claim is atomic under concurrency.
+const SETUP_FREE_ACTIONS = ['discover', 'competitors', 'research', 'contacts'];
+const setupFreebieMeter = (a) => `setup_free_${a}`;
+
+// Is this action's freebie still available? (unused AND the gate is open)
+async function setupFreebieOpen(tenantId, action) {
+  if (!SETUP_FREE_ACTIONS.includes(action)) return false;
+  const used = await db.query(
+    `SELECT 1 FROM usage_counters WHERE tenant_id = $1 AND meter = $2 AND period = 'lifetime'`,
+    [tenantId, setupFreebieMeter(action)]
+  );
+  if (used.rows[0]) return false;
+  // Lazy require — dashboard.js must not be loaded at module init (require cycle).
+  const setup = await require('./dashboard').computeSetup(tenantId);
+  return !setup.gateComplete;
+}
+
+async function claimSetupFreebie(tenantId, action) {
+  if (!(await setupFreebieOpen(tenantId, action))) return false;
+  const r = await db.query(
+    `INSERT INTO usage_counters (tenant_id, meter, period, count) VALUES ($1, $2, 'lifetime', 1)
+     ON CONFLICT (tenant_id, meter, period) DO NOTHING RETURNING count`,
+    [tenantId, setupFreebieMeter(action)]
+  );
+  return !!r.rows[0];
+}
+
 // Charge one unit of `meter` against the caller's plan, mapped through the
 // tenant's catalog version (v2 folds discovery/competitor_research into the
 // shared `research` pool — ADR-0004), spilling to purchased credits and — for
 // engagements on an overage-eligible v2 subscription — to the $2.50 Stripe
 // meter as the last resort. Returns the consume() handle for refunds.
-async function chargeUnit(req, meter) {
+//
+// chargeOpts.setupAction — this charge is one of the onboarding gate's required
+// actions; the first unit of each is free while the gate is open (see above).
+// chargeOpts.peekFreebie — with setupAction: only CHECK freebie availability,
+// don't claim it (for probe-and-refund capacity checks).
+async function chargeUnit(req, meter, chargeOpts = {}) {
   const ent = await ensureEntitlements(req);
   if (!ent.active) {
     const e = new Error('Your subscription is inactive.');
@@ -105,22 +143,33 @@ async function chargeUnit(req, meter) {
     throw e;
   }
   const counterKey = plans.meterKey(ent.planVersion, meter);
+  // Per-meter lifetime bucket (v2 Free: engagements lifetime, research/arena
+  // monthly). Threaded into consume AND back out on the handle so refund targets
+  // the same bucket.
+  const lifetime = Array.isArray(ent.lifetimeMeters) ? ent.lifetimeMeters.includes(counterKey) : !!ent.lifetimeCaps;
+  if (chargeOpts.setupAction) {
+    const free = chargeOpts.peekFreebie
+      ? await setupFreebieOpen(req.tenantId, chargeOpts.setupAction)
+      : await claimSetupFreebie(req.tenantId, chargeOpts.setupAction);
+    // consumed:null makes usage.refund() a no-op if the action later fails.
+    if (free) return { meter: counterKey, consumed: null, free: true, lifetime };
+  }
   const cap = ent.caps ? ent.caps[counterKey] : 0;
-  const opts = { useCredits: true, lifetime: ent.lifetimeCaps };
+  const opts = { useCredits: true, lifetime };
   if (counterKey === 'engagements' && ent.overage && ent.overage.customerId) {
     const billing = require('./billing');
     opts.useOverage = () => billing.recordEngagementOverage(ent.overage.customerId, req.tenantId);
   }
   const consumed = await usage.consume(req.tenantId, counterKey, cap, opts);
-  return { meter: counterKey, consumed, lifetime: ent.lifetimeCaps };
+  return { meter: counterKey, consumed, lifetime };
 }
 
-function requireCapacity(meter) {
+function requireCapacity(meter, chargeOpts = {}) {
   return async (req, res, next) => {
     try {
       // Remember what we charged so a handler can refund it if the action fails
       // (e.g. discovery returns no usable result → 502). See refundCapacity().
-      req._capacity = await chargeUnit(req, meter);
+      req._capacity = await chargeUnit(req, meter, chargeOpts);
       next();
     } catch (err) {
       if (err.code === 'SUBSCRIPTION_REQUIRED') {
@@ -156,4 +205,4 @@ function requireFeatureWrite(feature) {
   return (req, res, next) => (req.method === 'GET' ? next() : guard(req, res, next));
 }
 
-module.exports = { billingGate, requireFeature, requireFeatureWrite, requireCapacity, refundCapacity, ensureEntitlements, chargeUnit };
+module.exports = { billingGate, requireFeature, requireFeatureWrite, requireCapacity, refundCapacity, ensureEntitlements, chargeUnit, SETUP_FREE_ACTIONS, setupFreebieMeter };

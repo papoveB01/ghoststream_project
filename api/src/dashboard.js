@@ -7,6 +7,8 @@ const db = require('./db');
 const tenants = require('./tenants');
 const entitlements = require('./entitlements');
 const usage = require('./usage');
+const plans = require('./plans');
+const credits = require('./credits');
 
 const router = express.Router();
 
@@ -37,7 +39,7 @@ router.get('/', async (req, res, next) => {
     const tenantRow = await tenants.get(t);
     const ent = await entitlements.resolveEntitlementsFor(tenantRow);
     const [usedSummary, prospectsR, prodR, persR, compR, compIntelR, intelR, engCountR, profR, oppR, engR, crmR, upcR, freshR, namesR, setupR, contactsByCoR, trendR] = await Promise.all([
-      usage.summary(t, { lifetime: ent.lifetimeCaps }),
+      usage.summary(t, { lifetimeMeters: ent.lifetimeMeters }),
       db.query(`SELECT count(*)::int AS total,
                        count(*) FILTER (WHERE created_at >= now() - interval '7 days')::int AS new_week
                   FROM companies WHERE tenant_id = $1`, [t]),
@@ -228,7 +230,7 @@ router.get('/', async (req, res, next) => {
       opportunities,
       topProspects,
       engagements,
-      usage: { lifetime: ent.lifetimeCaps, meters },
+      usage: { lifetime: ent.lifetimeCaps, lifetimeMeters: ent.lifetimeMeters, meters },
       strengthBreakdown,
       prospectTrend: trendR.rows,
       foundation: {
@@ -244,31 +246,66 @@ router.get('/', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /dashboard/setup — the "Get up to speed" gate state. Light version of
-// the Overview checklist (keep step definitions in sync with the route above):
-// these five steps gate the app for new workspaces.
+// The "Get up to speed" gate state — five steps that gate the app for new
+// workspaces. Light version of the Overview checklist (keep step definitions
+// in sync with the route above). Also used by gating.js to decide whether the
+// onboarding setup freebies still apply.
+async function computeSetup(tenantId) {
+  const t = tenantId;
+  const [prof, prods, prospects, competitors, research, contacts] = await Promise.all([
+    db.query(`SELECT positioning, objectives FROM tenant_profiles WHERE tenant_id = $1`, [t]),
+    db.query(`SELECT count(*)::int AS n FROM products WHERE tenant_id = $1`, [t]),
+    db.query(`SELECT count(*)::int AS n FROM companies WHERE tenant_id = $1`, [t]),
+    db.query(`SELECT count(*)::int AS n FROM competitors WHERE tenant_id = $1`, [t]),
+    db.query(`SELECT count(*)::int AS n FROM prospect_research WHERE tenant_id = $1 AND status = 'DONE'`, [t]),
+    db.query(`SELECT count(*)::int AS n FROM prospect_contacts WHERE tenant_id = $1`, [t]),
+  ]);
+  const p = prof.rows[0] || {};
+  const profileSet = !!((p.positioning && p.positioning.trim()) || (p.objectives && p.objectives.trim()));
+  const steps = [
+    { key: 'foundation',  label: 'Ground your workspace — positioning + products', done: profileSet && prods.rows[0].n > 0 },
+    { key: 'discover',    label: 'Find your first prospects',                      done: prospects.rows[0].n > 0 },
+    { key: 'competitors', label: 'Find your competitors',                          done: competitors.rows[0].n > 0 },
+    { key: 'research',    label: 'Research one prospect (signals & why-now)',      done: research.rows[0].n > 0 },
+    { key: 'contacts',    label: 'Find the decision-makers',                       done: contacts.rows[0].n > 0 },
+  ];
+  return { steps, gateComplete: steps.every((x) => x.done) };
+}
+
+// GET /dashboard/setup — gate state, plus the credit context the banner's
+// microcopy needs: research allowance remaining and which setup freebies
+// (first unit of each gated step is free while the gate is open) are unclaimed.
 router.get('/setup', async (req, res, next) => {
   try {
     const t = req.tenantId;
-    const [prof, prods, prospects, competitors, research, contacts] = await Promise.all([
-      db.query(`SELECT positioning, objectives FROM tenant_profiles WHERE tenant_id = $1`, [t]),
-      db.query(`SELECT count(*)::int AS n FROM products WHERE tenant_id = $1`, [t]),
-      db.query(`SELECT count(*)::int AS n FROM companies WHERE tenant_id = $1`, [t]),
-      db.query(`SELECT count(*)::int AS n FROM competitors WHERE tenant_id = $1`, [t]),
-      db.query(`SELECT count(*)::int AS n FROM prospect_research WHERE tenant_id = $1 AND status = 'DONE'`, [t]),
-      db.query(`SELECT count(*)::int AS n FROM prospect_contacts WHERE tenant_id = $1`, [t]),
-    ]);
-    const p = prof.rows[0] || {};
-    const profileSet = !!((p.positioning && p.positioning.trim()) || (p.objectives && p.objectives.trim()));
-    const steps = [
-      { key: 'foundation',  label: 'Ground your workspace — positioning + products', done: profileSet && prods.rows[0].n > 0 },
-      { key: 'discover',    label: 'Find your first prospects',                      done: prospects.rows[0].n > 0 },
-      { key: 'competitors', label: 'Find your competitors',                          done: competitors.rows[0].n > 0 },
-      { key: 'research',    label: 'Research one prospect (signals & why-now)',      done: research.rows[0].n > 0 },
-      { key: 'contacts',    label: 'Find the decision-makers',                       done: contacts.rows[0].n > 0 },
-    ];
-    res.json({ steps, gateComplete: steps.every((x) => x.done) });
+    const setup = await computeSetup(t);
+    let research = null;
+    let freebies = null;
+    try {
+      const gating = require('./gating');
+      const ent = await entitlements.resolveEntitlementsFor(await tenants.get(t));
+      const key = plans.meterKey(ent.planVersion, 'discovery'); // 'research' on v2 catalogs
+      const cap = ent.caps ? ent.caps[key] : 0;
+      const used = await usage.summary(t, { lifetimeMeters: ent.lifetimeMeters });
+      const creditBal = (await credits.summary(t)).research.remaining;
+      const researchLifetime = Array.isArray(ent.lifetimeMeters) ? ent.lifetimeMeters.includes(key) : !!ent.lifetimeCaps;
+      research = {
+        cap: Number.isFinite(cap) ? cap : null,
+        remaining: Number.isFinite(cap) ? Math.max(0, cap - (used[key] || 0)) : null,
+        credits: creditBal,
+        lifetime: researchLifetime,
+      };
+      const fr = await db.query(
+        `SELECT meter FROM usage_counters WHERE tenant_id = $1 AND period = 'lifetime' AND meter LIKE 'setup_free_%'`, [t]
+      );
+      const claimed = new Set(fr.rows.map((r) => r.meter));
+      freebies = {};
+      for (const a of gating.SETUP_FREE_ACTIONS) {
+        freebies[a] = !setup.gateComplete && !claimed.has(gating.setupFreebieMeter(a));
+      }
+    } catch { /* microcopy context is best-effort — the gate itself still works */ }
+    res.json({ ...setup, research, freebies });
   } catch (err) { next(err); }
 });
 
-module.exports = { router };
+module.exports = { router, computeSetup };

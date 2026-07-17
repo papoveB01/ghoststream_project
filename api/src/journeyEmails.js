@@ -70,11 +70,11 @@ async function tick() {
                 `<p style="font-size:14.5px;line-height:1.6;color:#54595f;margin:0 0 14px">
                    Every discovery run, brief and battlecard is grounded in your company foundation —
                    and ${t.name ? `<strong>${t.name}</strong>'s` : 'yours'} is still sparse. On the
-                   <strong>Company</strong> page, hit <strong>“Enrich from web”</strong> and we'll build your
+                   <strong>Company</strong> page, hit <strong>“Enrich with AI”</strong> and we'll build your
                    positioning, products and buyer personas from your own website in about a minute.</p>`,
                 'Enrich my foundation', `${BASE}/admin/#company`
               ),
-              text: `Your DealScope workspace is still running on an empty foundation.\n\nOn the Company page, hit "Enrich from web" — we build your positioning, products and buyer personas from your own website in about a minute. Every discovery run, brief and battlecard gets sharper.\n\n${BASE}/admin/#company`,
+              text: `Your DealScope workspace is still running on an empty foundation.\n\nOn the Company page, hit "Enrich with AI" — we build your positioning, products and buyer personas from your own website in about a minute. Every discovery run, brief and battlecard gets sharper.\n\n${BASE}/admin/#company`,
               categories: ['journey-day2'],
             });
             await markSent(t.id, 'day2_foundation');

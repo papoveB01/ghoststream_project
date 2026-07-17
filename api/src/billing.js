@@ -43,8 +43,9 @@ router.get('/', async (req, res, next) => {
   try {
     const tenant = await tenants.get(req.tenantId, { fresh: true });
     const ent = await entitlements.resolveEntitlementsFor(tenant);
-    // Free tier meters are lifetime; paid tiers are monthly. Read the matching bucket.
-    const used = await usage.summary(req.tenantId, { lifetime: ent.lifetimeCaps });
+    // Each meter reads its own bucket — v2 Free is mixed (engagements lifetime,
+    // research/arena monthly); paid tiers are all monthly.
+    const used = await usage.summary(req.tenantId, { lifetimeMeters: ent.lifetimeMeters });
     const creditBalance = await credits.summary(req.tenantId);
     // Usage keys follow the tenant's catalog version (v1: discovery/competitor;
     // v2: the merged research pool) — same keys as the caps in toJson.
@@ -653,10 +654,14 @@ async function sendPlanActivatedEmail(tenantId, planKey, planVersion, extraSeats
     arena: 'Arena practice sessions',
     market_monitoring: 'Market Watch checks',
   };
-  const per = plan.lifetimeCaps ? 'included one-time' : 'per month';
+  // Per-meter cadence: a mixed plan (v2 Free) has some lifetime, some monthly caps.
+  const ltm = plans.lifetimeMetersFor(plan, planVersion);
   const included = Object.entries(plan.caps || {})
     .filter(([, cap]) => cap === null || cap > 0)
-    .map(([k, cap]) => `<li style="margin:4px 0">${cap === null ? 'Unlimited' : cap} ${CAP_LABELS[k] || k} <span style="color:#8c9197">(${cap === null ? 'no limit' : per})</span></li>`)
+    .map(([k, cap]) => {
+      const per = ltm.includes(k) ? 'included one-time' : 'per month';
+      return `<li style="margin:4px 0">${cap === null ? 'Unlimited' : cap} ${CAP_LABELS[k] || k} <span style="color:#8c9197">(${cap === null ? 'no limit' : per})</span></li>`;
+    })
     .join('');
   const seats = plan.seats ? (plan.seats.included || 1) + (extraSeats || 0) : null;
   const renews = periodEnd ? new Date(periodEnd).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : null;

@@ -389,7 +389,7 @@ async function sendWelcomeEmail({ to, firstName, companyName }) {
     <div style="border:1px solid #e3e5e0;border-radius:8px;padding:14px 18px;margin:0 0 16px">
       <div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#1e7d45;margin-bottom:6px">Get the most from your first session</div>
       <ol style="margin:0;padding-left:18px;font-size:14px;line-height:1.7">
-        <li><strong>Ground your workspace</strong> — on the Company page, hit “Enrich from web” and we'll build your positioning, products and buyer personas from your own website.</li>
+        <li><strong>Ground your workspace</strong> — on the Company page, hit “Enrich with AI” and we'll build your positioning, products and buyer personas from your own website.</li>
         <li><strong>Discover prospects &amp; competitors</strong> — the green “Discover” buttons run AI web research matched to who <em>you</em> sell to.</li>
         <li><strong>Put the AI in a call</strong> — schedule an engagement and DealScope joins, briefs you beforehand, and analyses how it went.</li>
       </ol>
@@ -404,7 +404,7 @@ async function sendWelcomeEmail({ to, firstName, companyName }) {
   const text = `${firstName ? `Welcome to DealScope, ${firstName}!` : 'Welcome to DealScope!'}\n\n` +
     `Thanks for setting up ${companyName ? `the ${companyName} workspace` : 'your workspace'}.\n\n` +
     `Get the most from your first session:\n` +
-    `1. Ground your workspace — on the Company page, hit "Enrich from web".\n` +
+    `1. Ground your workspace — on the Company page, hit "Enrich with AI".\n` +
     `2. Discover prospects & competitors — the green "Discover" buttons run AI web research matched to who YOU sell to.\n` +
     `3. Put the AI in a call — schedule an engagement and DealScope joins, briefs you, and analyses how it went.\n\n` +
     `Your Free plan includes a one-time sample of ${researchCap} AI research runs and ${engCap} AI-joined call${engCap === 1 ? '' : 's'}.\n\n` +
@@ -497,7 +497,7 @@ router.post('/verify', async (req, res, next) => {
 
     // NOTE: foundation enrichment is deliberately NOT auto-run here anymore.
     // The "Get up to speed" gate makes grounding the workspace the user's
-    // FIRST hands-on step ("Enrich from web" on the Company page) — running it
+    // FIRST hands-on step ("Enrich with AI" on the Company page) — running it
     // automatically robbed them of feeling how the product works.
 
     res.status(201).json({ ok: true, redirectTo });

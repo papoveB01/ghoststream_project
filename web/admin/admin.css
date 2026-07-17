@@ -1901,16 +1901,32 @@ details.schedule-advanced > .schedule-advanced-body {
 .lib-badge-failed  { background: rgba(239,93,82,.20); color: var(--danger); }
 .lib-badge-done    { background: var(--accent-soft); color: var(--accent); }
 
-/* Embedded Intel Library widget (Company / Prospect / Competitor pages) */
+/* Embedded Intel Library widget (Company / Prospect / Competitor pages).
+   A tinted, accent-edged card so the section reads as a feature, not a
+   footnote; the Add-intel CTA leads from the LEFT. */
+.intel-lib-card {
+  border: 1px solid var(--accent-soft);
+  border-left: 4px solid var(--accent);
+  background: var(--accent-light);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
 .intel-lib-h {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 8px;
+  gap: 14px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--accent-soft);
+  margin-bottom: 10px;
 }
-.intel-lib-add-btn { margin-left: auto; }
+.intel-lib-head-text { display: flex; flex-direction: column; gap: 2px; }
+.intel-lib-head-text strong { font-size: 14.5px; }
+.intel-lib-desc {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
 .intel-lib-add-pane {
   background: var(--surface-2);
   padding: 10px;
@@ -3867,6 +3883,19 @@ details.schedule-advanced > .schedule-advanced-body {
   background: var(--bg); color: var(--text);
 }
 .comp-our-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+/* Market scope for the battlecard run — region / country / city. */
+.comp-market-input {
+  font: inherit; font-size: 13px; font-weight: 600; width: 250px;
+  padding: 6px 10px; border: 1px solid var(--border-2); border-radius: var(--radius-sm);
+  background: var(--bg); color: var(--text);
+}
+.comp-market-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+.comp-market-input::placeholder { font-weight: 500; color: var(--muted); }
+.bc-market-chip {
+  display: inline-flex; align-items: center; margin-left: 6px; padding: 1px 9px;
+  border: 1px solid var(--accent-soft); border-radius: 999px; background: var(--accent-light);
+  color: var(--accent); font-size: 11px; font-weight: 700; vertical-align: middle;
+}
 .comp-remove-product { margin-left: auto; color: var(--danger); font-size: 12.5px; }
 .comp-remove-product:hover { text-decoration: underline; }
 /* The battlecard renders its own white card — sits on the tinted workspace. */
@@ -3894,6 +3923,10 @@ details.schedule-advanced > .schedule-advanced-body {
 }
 .comp-add-ev .off-intel-pane input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
 .comp-add-ev .ev-result { margin-top: 8px; }
+/* Optional market scope (region / country / city) for the AI evidence search. */
+.ev-web-loc { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.ev-web-loc > .kb-subtle { flex-basis: 100%; }
+.ev-web-loc input { flex: 1; min-width: 130px; }
 /* Web-search result rows with a per-result "Add to evidence" button. */
 .ev-web-row {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
@@ -4158,7 +4191,7 @@ details.schedule-advanced > .schedule-advanced-body {
 .company-prod-section { margin: 16px 0; }
 .company-prod-section a.kb-stream-pill { text-decoration: none; }
 .company-intel-cta { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
-.company-prod-add-intel-btn { float: right; }
+.company-prod-add-intel-btn { float: none; }
 
 /* Pull-from-website bootstrap (Intel tab) */
 .company-bootstrap-block { margin: 16px 0; }
@@ -4406,6 +4439,96 @@ details.schedule-advanced > .schedule-advanced-body {
 .watch-actions { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
 
 /* Review queue — grouped findings. */
+/* ── Market trend & Alerts — watch alerts (left) · trend tools (right) ────── */
+.signals-layout { display: grid; grid-template-columns: minmax(320px, 2fr) 3fr; gap: 22px; align-items: start; }
+@media (max-width: 1100px) { .signals-layout { grid-template-columns: 1fr; } }
+.signals-pane-h {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  font-size: 13px; font-weight: 700; margin-bottom: 10px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border);
+}
+.trend-tabs { margin: 2px 0 4px; }
+.trend-pane { display: flex; flex-direction: column; gap: 8px; }
+.trend-pane.hidden { display: none; }
+.trend-retrieve-form { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.trend-retrieve-form .comp-finder-field { flex: 1; min-width: 150px; }
+.trend-retrieved { margin-top: 10px; }
+.trend-retrieved-foot {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 15px; border: 1px solid var(--border); border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius); background: var(--surface-2);
+  font-size: 12.5px;
+}
+.trend-retrieved-foot a { color: var(--accent-hover); }
+.trend-retrieved-foot .trend-save-btn { margin-left: auto; }
+.trend-retrieved .trend-analysis { border-radius: var(--radius) var(--radius) 0 0; margin-top: 0; }
+.trend-req { color: var(--danger); font-weight: 700; }
+.trend-brief-impact { margin: 4px 0 2px; font-size: 13px; line-height: 1.55; }
+.trend-more { margin-top: 8px; }
+.trend-more > summary {
+  cursor: pointer; font-size: 12px; font-weight: 700; color: var(--accent);
+  list-style: none;
+}
+.trend-more > summary::before { content: '▸ '; font-size: 10px; }
+.trend-more[open] > summary::before { content: '▾ '; }
+.trend-more .trend-analysis { border: none; border-radius: 0; padding: 6px 0 0; margin-top: 0; }
+.trend-more-row { display: flex; justify-content: center; margin-top: 12px; }
+.trend-exhausted {
+  margin-top: 12px; padding: 10px 14px; text-align: center;
+  border: 1px dashed var(--border-2); border-radius: var(--radius);
+  color: var(--text-2); font-size: 12.5px;
+}
+
+/* ── Market trend feed (Alerts) — paste a development, get an impact brief ── */
+.trend-feed {
+  border: 1px solid var(--accent-soft); border-left: 4px solid var(--accent);
+  background: var(--accent-light); border-radius: var(--radius);
+  padding: 14px 16px; margin-bottom: 18px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.trend-feed-h { display: flex; flex-direction: column; gap: 3px; }
+.trend-feed-h strong { font-size: 14.5px; }
+.trend-feed input[type="text"], .trend-feed textarea {
+  font: inherit; font-size: 13px; padding: 8px 10px;
+  border: 1px solid var(--border-2); border-radius: var(--radius-sm);
+  background: var(--bg); color: var(--text); resize: vertical;
+}
+.trend-feed input[type="text"]:focus, .trend-feed textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+.trend-feed-actions { display: flex; align-items: center; gap: 10px; }
+.trend-analysis {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg); padding: 13px 15px; margin-top: 6px;
+}
+.trend-analysis-h { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.trend-analysis-h strong { font-size: 14px; }
+.trend-summary { margin: 2px 0 8px; }
+.trend-sect { margin-top: 10px; }
+.trend-sect p { margin: 2px 0; font-size: 13px; line-height: 1.55; }
+.trend-sect ul { margin: 2px 0; padding-left: 18px; font-size: 13px; line-height: 1.55; }
+.trend-label {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--accent); margin-bottom: 2px;
+}
+.trend-opp { font-size: 12.5px; color: var(--accent-hover); margin-top: 1px; }
+.trend-opener {
+  font-family: var(--mono); font-size: 12px; color: var(--text-2);
+  border-left: 2px solid var(--accent-soft); padding: 3px 8px; margin: 3px 0 2px;
+  background: var(--surface-2); border-radius: 0 6px 6px 0;
+}
+.trend-find-btn { margin-top: 6px; }
+.trend-row {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg); margin-bottom: 8px;
+}
+.trend-row > summary {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 13px; cursor: pointer; list-style: none;
+}
+.trend-row > summary::before { content: '▸'; color: var(--muted); font-size: 11px; }
+.trend-row[open] > summary::before { content: '▾'; }
+.trend-row-title { font-weight: 600; font-size: 13.5px; }
+.trend-row .trend-analysis { border: none; border-top: 1px solid var(--border); border-radius: 0; margin-top: 0; }
+
 .watch-group { margin-bottom: 22px; }
 .watch-group-h { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
 .watch-finding {

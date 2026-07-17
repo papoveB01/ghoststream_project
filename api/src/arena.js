@@ -172,7 +172,8 @@ async function startSession({ portalId, persona = DEFAULT_PERSONA, repUserId = n
   // Meter the session against the plan's monthly Arena cap (Infinity = no-op for
   // Pro+; Starter gets a limited allowance). consume() throws 402 at the cap,
   // falling through to purchased research credits first (user-initiated).
-  await usage.consume(tenantId, 'arena', ent.caps ? ent.caps.arena : 0, { useCredits: true, lifetime: ent.lifetimeCaps });
+  const arenaLifetime = Array.isArray(ent.lifetimeMeters) ? ent.lifetimeMeters.includes('arena') : !!ent.lifetimeCaps;
+  await usage.consume(tenantId, 'arena', ent.caps ? ent.caps.arena : 0, { useCredits: true, lifetime: arenaLifetime });
 
   const cacheRecord = await ensurePersonaCache(persona);
 

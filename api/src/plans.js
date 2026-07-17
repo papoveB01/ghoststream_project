@@ -47,6 +47,16 @@ function meterKey(version, meter) {
 }
 function metersFor(version) { return (version || 1) >= 2 ? METERS_V2 : METERS; }
 
+// Which meters use the LIFETIME bucket (never reset) for a plan. A plan either
+// lists them explicitly (lifetimeMeters, e.g. v2 Free's ['engagements']) or,
+// legacy, flags the WHOLE plan lifetime (lifetimeCaps → every meter). Paid plans
+// declare neither, so this is [] → all meters are monthly.
+function lifetimeMetersFor(plan, version) {
+  if (!plan) return [];
+  if (Array.isArray(plan.lifetimeMeters)) return plan.lifetimeMeters;
+  return plan.lifetimeCaps ? metersFor(version || plan.version || 1) : [];
+}
+
 const PLANS = {
   // Caps below follow ADR-0003 "Option B": generous limits on the cheap meters
   // (discovery/competitor/arena/market — near-zero marginal cost) and disciplined
@@ -111,10 +121,16 @@ const PLANS = {
 const PLANS_V2 = {
   trial: {
     key: 'trial', version: 2, name: 'Free', selfServe: false, monthly: 0,
-    blurb: 'Free forever, no card. Try discovery, competitor battlecards and one AI-joined call — upgrade or buy credits when you need more.',
-    features: [FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS],
-    caps: { research: 10, engagements: 1, market_monitoring: 0, arena: 0 },
-    lifetimeCaps: true,
+    blurb: 'Free forever, no card. Discovery, competitor battlecards, Arena practice and one AI-joined call — the cheap meters refresh monthly; upgrade or buy credits when you need more.',
+    features: [FEATURES.DISCOVERY, FEATURES.COMPETITOR_RESEARCH, FEATURES.ENGAGEMENTS, FEATURES.ARENA],
+    // Activation revision (docs/pricing/market-benchmark-2026.md §6a.1): activate
+    // on the near-zero-COGS bundle, not the bot. research + Arena refresh MONTHLY
+    // to build the habit; the one expensive meter (a ~$1 Recall bot) stays a
+    // single LIFETIME taste, with overflow going to PAYG credits. lifetimeMeters
+    // lists exactly which meters use the never-reset bucket — everything else is
+    // monthly. (Replaces the old whole-plan `lifetimeCaps: true`.)
+    caps: { research: 20, engagements: 1, market_monitoring: 0, arena: 10 },
+    lifetimeMeters: ['engagements'],
     seats: { included: 1 },
   },
   starter: {
@@ -122,7 +138,10 @@ const PLANS_V2 = {
     blurb: 'Foundation, 75 researched prospects a month, AI-covered calls and Arena practice for a small team.',
     features: [...CORE, FEATURES.ARENA],
     caps: { research: 75, engagements: 10, market_monitoring: 0, arena: 25 },
-    seats: { included: 1, priceMonthly: 19, priceEnv: 'STRIPE_PRICE_SEAT_STARTER', max: 3, perSeat: { research: 25, engagements: 5 } },
+    // max raised 3 → 5 (§6a.2): seats are already individually priced, so headcount
+    // is monetized without the cap; let feature-need (CRM/Calendly/API/Market Watch)
+    // be the organic Starter→Pro trigger instead of a hard seat wall.
+    seats: { included: 1, priceMonthly: 19, priceEnv: 'STRIPE_PRICE_SEAT_STARTER', max: 5, perSeat: { research: 25, engagements: 5 } },
   },
   pro: {
     key: 'pro', version: 2, name: 'Pro', selfServe: true, priceEnv: 'STRIPE_PRICE_PRO_V2', monthly: 149,
@@ -132,10 +151,15 @@ const PLANS_V2 = {
     seats: { included: 2, priceMonthly: 35, priceEnv: 'STRIPE_PRICE_SEAT_PRO', max: null, perSeat: { research: 25, engagements: 15 } },
     subAccountLimit: 5,
     subTenants: { included: 1, priceMonthly: 29, priceEnv: 'STRIPE_PRICE_SUBTENANT' },
-    // Past the engagement allowance (and any purchased credits) each extra
-    // AI-joined call is metered at $2.50 via a Stripe billing meter — the
-    // ADR-0003 "engagement overage" item, finally shipped.
-    overage: { engagements: { priceMonthly: 2.5, priceEnv: 'STRIPE_PRICE_ENG_OVERAGE' } },
+    // DEFERRED for launch (§6b.6): the post-paid $2.50 metered overage ships
+    // LATER, bundled with its safety tooling (burn dashboard + 60/80/90% alerts +
+    // soft/hard-cap toggle) so a live money-meter never launches without guardrails.
+    // Until then, Pro past its allowance falls through allowance → prepaid credits
+    // ($2.00/call) → hard stop (same shape as Starter) — no surprise invoice is
+    // possible. `overagePriceIdFor` returns null while this is absent, so no meter
+    // line is added at checkout and gating never wires useOverage. Re-enable by
+    // restoring this key when the tooling lands:
+    //   overage: { engagements: { priceMonthly: 2.5, priceEnv: 'STRIPE_PRICE_ENG_OVERAGE' } },
   },
   enterprise: {
     key: 'enterprise', version: 2, name: 'Enterprise', selfServe: false, contactSales: true,
@@ -238,7 +262,8 @@ function catalog() {
       monthly: p.monthly != null ? p.monthly : null, // 0 = free, null = custom (Enterprise)
       selfServe: !!p.selfServe,
       contactSales: !!p.contactSales,
-      lifetimeCaps: !!p.lifetimeCaps,
+      lifetimeCaps: !!p.lifetimeCaps, // legacy whole-plan flag (false for the mixed v2 Free tier)
+      lifetimeMeters: lifetimeMetersFor(p, 2), // per-meter: which caps are lifetime vs monthly
       hasPrice: !!priceIdFor(p.key, 2),
       features: p.features,
       caps,
@@ -256,7 +281,7 @@ function catalog() {
 
 module.exports = {
   FEATURES, ALL, METERS, METERS_V2, RESEARCH_METER, PLANS, PLANS_V2,
-  planFor, planForTenant, effectiveCaps, meterKey, metersFor,
+  planFor, planForTenant, effectiveCaps, meterKey, metersFor, lifetimeMetersFor,
   priceIdFor, seatPriceIdFor, subTenantPriceIdFor, overagePriceIdFor,
   trialDaysFor, subAccountLimitFor, catalog, capForJson,
 };

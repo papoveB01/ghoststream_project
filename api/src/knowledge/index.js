@@ -231,7 +231,7 @@ router.get('/research/:companyId', async (req, res, next) => {
 // AI synthesis — ADR-0004 §3.2): feature-gated and capacity-metered like
 // /companies/discover. The charge maps to the v2 `research` pool (v1:
 // discovery meter). Fire-and-forget: the unit is pre-charged on admission.
-router.post('/research/:companyId', gating.requireFeature('discovery'), gating.requireCapacity('discovery'), async (req, res, next) => {
+router.post('/research/:companyId', gating.requireFeature('discovery'), gating.requireCapacity('discovery', { setupAction: 'research' }), async (req, res, next) => {
   try { res.status(202).json({ ok: true, research: await research.start(req.tenantId, req.params.companyId) }); }
   catch (err) {
     await gating.refundCapacity(req); // start() itself failed → give the unit back

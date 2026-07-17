@@ -25,9 +25,29 @@ async function current(tenantId, meter) {
   return r.rows[0] ? r.rows[0].count : 0;
 }
 
-// Snapshot of all meters for the relevant period (for the Billing UI). Free-tier
-// (lifetime) tenants read the fixed lifetime bucket; paid tiers the current month.
-async function summary(tenantId, { lifetime = false } = {}) {
+// Snapshot of all meters for the relevant period (for the Billing UI). Meters
+// resolve to their own bucket:
+//   - `lifetimeMeters` (array) — MIXED plans (v2 Free): each listed meter reads
+//     the fixed lifetime bucket, every other meter reads the current month.
+//   - `lifetime` (bool) — legacy whole-plan flag: all meters read one bucket.
+// When lifetimeMeters is given it takes precedence; both periods are fetched and
+// each meter is picked from the bucket that applies to it.
+async function summary(tenantId, { lifetime = false, lifetimeMeters = null } = {}) {
+  if (Array.isArray(lifetimeMeters)) {
+    const lt = new Set(lifetimeMeters);
+    const month = currentPeriod();
+    const r = await db.query(
+      `SELECT meter, period, count FROM usage_counters
+        WHERE tenant_id = $1 AND period = ANY($2)`,
+      [tenantId, [LIFETIME_PERIOD, month]]
+    );
+    const out = {};
+    for (const row of r.rows) {
+      const want = lt.has(row.meter) ? LIFETIME_PERIOD : month;
+      if (row.period === want) out[row.meter] = row.count;
+    }
+    return out;
+  }
   const r = await db.query(
     `SELECT meter, count FROM usage_counters WHERE tenant_id = $1 AND period = $2`,
     [tenantId, periodFor(lifetime)]

@@ -544,15 +544,18 @@ router.get('/competitors/:id/battlecards/summary', async (req, res, next) => {
 
 // POST /portfolio/competitors/:id/battlecard/regenerate[?product=<id>] — runs
 // the Gemini synthesis + persists. Keeps any existing manualEdits intact.
+// Body (optional): { market } — a region/country/city; the card is then judged
+// for that market specifically (and records it in battlecard.market).
 router.post('/competitors/:id/battlecard/regenerate', async (req, res, next) => {
   try {
     const productId = readProductScope(req);
     const competitorProductId = readCompetitorProductScope(req);
+    const market = String((req.body && req.body.market) || req.query.market || '').trim().slice(0, 80) || null;
     const existing = await readBattlecardRow(req.tenantId, req.params.id, productId, competitorProductId);
     if (!existing.found) return res.status(404).json({ error: 'not found' });
     const manualEdits = (existing.stored && existing.stored.manualEdits) || {};
 
-    const fresh = await assessment.extractBattlecard(req.tenantId, req.params.id, productId, competitorProductId);
+    const fresh = await assessment.extractBattlecard(req.tenantId, req.params.id, productId, competitorProductId, market);
     const base = { ...fresh, manualEdits };
     // Snapshot this generation into history first, then point the live card at
     // that history row so the UI can flag which version is current.
@@ -791,13 +794,25 @@ async function resolveOffering(tenantId, competitorId, offeringId) {
   return r.rows[0] || null;
 }
 
+// Optional market scope for battlecard research — "<city>, <country>" beats a
+// broad region (same most-specific-wins convention as prospect discovery).
+// Appended to the search query so the evidence — and the battlecard built on
+// it — reflects how the matchup plays in that market.
+function researchLocation(body) {
+  const region  = String((body && body.region)  || '').trim().slice(0, 80);
+  const country = String((body && body.country) || '').trim().slice(0, 80);
+  const city    = String((body && body.city)    || '').trim().slice(0, 80);
+  return [city, country].filter(Boolean).join(', ') || region;
+}
+
 // POST /portfolio/competitors/:id/offerings/:offeringId/research — a wide web
 // search by "<competitor> <offering>". Returns hits for the rep to PICK from;
 // nothing is ingested here (preview step). Result count is plan-gated.
+// Body (all optional): { region, country, city } — scope the search to a market.
 router.post('/competitors/:id/offerings/:offeringId/research', async (req, res, next) => {
   try {
     if (!web.isConfigured() && !web.isBraveConfigured()) {
-      return res.status(503).json({ error: 'web search is not configured on this workspace' });
+      return res.status(503).json({ error: 'AI search is not configured on this workspace' });
     }
     const o = await resolveOffering(req.tenantId, req.params.id, req.params.offeringId);
     if (!o) return res.status(404).json({ error: 'offering not found' });
@@ -805,7 +820,8 @@ router.post('/competitors/:id/offerings/:offeringId/research', async (req, res, 
       return res.status(409).json({ error: knowledge.MAIN_INTEL_REQUIRED_MSG });
     }
     const limit = offeringResearchLimit();
-    const query = `${o.competitor_name} ${o.offering_name}`;
+    const loc = researchLocation(req.body);
+    const query = `${o.competitor_name} ${o.offering_name}${loc ? ` ${loc}` : ''}`;
     const hits = await web.search(query, { limit });
     const seen = new Set();
     const results = [];
@@ -850,15 +866,17 @@ router.post('/competitors/:id/offerings/:offeringId/research/ingest', async (req
 // competitor's name. The offering-agnostic twin of the offering research route,
 // so the "Company-wide" node gets the same file/URL/web-search trio. No
 // main-intel guard — this is a primary way to BOOTSTRAP that main intel.
+// Body (all optional): { region, country, city } — scope the search to a market.
 router.post('/competitors/:id/research', async (req, res, next) => {
   try {
     if (!web.isConfigured() && !web.isBraveConfigured()) {
-      return res.status(503).json({ error: 'web search is not configured on this workspace' });
+      return res.status(503).json({ error: 'AI search is not configured on this workspace' });
     }
     const c = await db.query(`SELECT name FROM competitors WHERE tenant_id = $1 AND id = $2`, [req.tenantId, req.params.id]);
     if (!c.rows[0]) return res.status(404).json({ error: 'competitor not found' });
     const limit = offeringResearchLimit();
-    const query = c.rows[0].name;
+    const loc = researchLocation(req.body);
+    const query = `${c.rows[0].name}${loc ? ` ${loc}` : ''}`;
     const hits = await web.search(query, { limit });
     const seen = new Set();
     const results = [];
@@ -901,7 +919,7 @@ router.post('/competitors/:id/research/ingest', async (req, res, next) => {
 router.post('/competitors/:id/discover-products', async (req, res, next) => {
   try {
     if (!web.isConfigured() && !web.isBraveConfigured()) {
-      return res.status(503).json({ error: 'web search is not configured on this workspace' });
+      return res.status(503).json({ error: 'AI search is not configured on this workspace' });
     }
     const c = await db.query(`SELECT name, description FROM competitors WHERE tenant_id = $1 AND id = $2`, [req.tenantId, req.params.id]);
     if (!c.rows[0]) return res.status(404).json({ error: 'competitor not found' });
@@ -940,10 +958,10 @@ router.post('/competitors/:id/discover-products', async (req, res, next) => {
 // ingest, no creation): returns candidates; the rep adds the relevant ones one
 // by one via POST /portfolio/competitors. Existing competitors are flagged.
 // Body: { region?: string }
-router.post('/competitors/discover', gating.requireFeature('competitor_research'), gating.requireCapacity('competitor_research'), async (req, res, next) => {
+router.post('/competitors/discover', gating.requireFeature('competitor_research'), gating.requireCapacity('competitor_research', { setupAction: 'competitors' }), async (req, res, next) => {
   try {
     if (!web.isConfigured() && !web.isBraveConfigured()) {
-      return res.status(503).json({ error: 'web search is not configured on this workspace' });
+      return res.status(503).json({ error: 'AI search is not configured on this workspace' });
     }
     const broadRegion = String((req.body && req.body.region) || '').trim();
     const country = String((req.body && req.body.country) || '').trim();

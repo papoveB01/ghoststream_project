@@ -332,7 +332,7 @@ const BATTLECARD_SCHEMA = {
 // bodies) and THEIR side (every competitor doc + per-doc assessments). The
 // productName, when set, narrows OUR side to one product line.
 // competitorProductName, when set, narrows THEIR side to one of their offerings.
-function buildBattlecardPrompt({ competitorName, productName, competitorProductName, usEvidence, aggregatedAxes, themEvidence }) {
+function buildBattlecardPrompt({ competitorName, productName, competitorProductName, usEvidence, aggregatedAxes, themEvidence, market }) {
   const ourSide = productName ? `our product ${productName}` : 'our whole portfolio';
   const theirSide = competitorProductName ? `their product ${competitorProductName}` : `${competitorName}`;
   const productFocus = productName
@@ -341,10 +341,14 @@ function buildBattlecardPrompt({ competitorName, productName, competitorProductN
   const theirFocus = competitorProductName
     ? `On the competitor side, focus specifically on their product ${competitorProductName} (one of ${competitorName}'s offerings) — judge "${theirSide}", not ${competitorName} as a whole, even though the evidence below spans the competitor. `
     : '';
+  const marketFocus = market
+    ? `Judge this matchup FOR THE ${market} MARKET specifically: weigh local presence, reference customers, partnerships, regulatory/compliance fit, pricing and support coverage in ${market}; prefer evidence about that market, and explicitly flag claims where the evidence doesn't cover ${market}. `
+    : '';
   return (
     'You are a senior sales enablement strategist building a BATTLECARD — the artefact a rep reads RIGHT BEFORE a call where the prospect is comparing us against a specific competitor. ' +
     productFocus +
     theirFocus +
+    marketFocus +
     'Write in FIRST PERSON PLURAL about us ("we", "our"), third person about the competitor and the prospect. ' +
     'The talk track and objection responses should be DIRECT QUOTES the rep can say out loud on a call — not bullet points, not theory. Conversational. Specific. ' +
     'Be honest. Where we lose, say so + name the concrete fix. Never write "we lead on everything" — that\'s useless. ' +
@@ -462,7 +466,7 @@ function formatAggregateAxesForPrompt(agg) {
   return lines.join('\n');
 }
 
-async function extractBattlecard(tenantId, competitorId, productId = null, competitorProductId = null) {
+async function extractBattlecard(tenantId, competitorId, productId = null, competitorProductId = null, market = null) {
   if (!tenantId || !competitorId) {
     const e = new Error('tenantId and competitorId required'); e.status = 400; throw e;
   }
@@ -554,6 +558,7 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
       sourceDocIds,
       productId: productId || null,
       competitorProductId: competitorProductId || null,
+      market: market || null,
       manualEdits: {},
       lastRefreshedAt: new Date().toISOString(),
       model: null,
@@ -575,6 +580,7 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
     usEvidence,
     aggregatedAxes: formatAggregateAxesForPrompt(aggregated),
     themEvidence,
+    market,
   });
 
   try {
@@ -629,6 +635,7 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
       sourceDocIds,
       productId: productId || null,
       competitorProductId: competitorProductId || null,
+      market: market || null,
       // Manual edits are preserved by the caller — extractBattlecard only
       // produces the AI fields; the route stitches them with stored edits.
       lastRefreshedAt: new Date().toISOString(),

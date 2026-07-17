@@ -244,7 +244,7 @@ async function enrichCompany(tenantId, { force = false } = {}) {
   const t = (await db.query(`SELECT name, domain FROM tenants WHERE id = $1`, [tenantId])).rows[0];
   if (!t || !t.name) { const e = new Error('set your company name first'); e.status = 422; throw e; }
   if (!t.domain) { const e = new Error('no company website on file to enrich from'); e.status = 422; throw e; }
-  if (!web.isConfigured() && !web.isBraveConfigured()) { const e = new Error('web search is not configured on this workspace'); e.status = 503; throw e; }
+  if (!web.isConfigured() && !web.isBraveConfigured()) { const e = new Error('AI search is not configured on this workspace'); e.status = 503; throw e; }
 
   const [{ pages, sourceUrls }, { org, leadership }, news] = await Promise.all([
     gatherWebsite(t.domain),

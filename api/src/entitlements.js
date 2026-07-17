@@ -42,7 +42,7 @@ function trialDaysLeft(tenant) {
 // the plan caps. Standalone tenants ignore all of this (no parent passed).
 function entitlementsFor(tenant, opts = {}) {
   if (!tenant) {
-    return { active: false, reason: 'no_tenant', planKey: null, planName: null, planVersion: 1, features: [], caps: {}, lifetimeCaps: false, daysLeft: null, isSubtenant: false, parentTenantId: null, seats: null, overage: null };
+    return { active: false, reason: 'no_tenant', planKey: null, planName: null, planVersion: 1, features: [], caps: {}, lifetimeCaps: false, lifetimeMeters: [], daysLeft: null, isSubtenant: false, parentTenantId: null, seats: null, overage: null };
   }
   const isSub = !!tenant.parent_tenant_id;
   const parent = isSub ? (opts.parent || null) : null;
@@ -59,6 +59,10 @@ function entitlementsFor(tenant, opts = {}) {
   // v2: paid extra seats grow the research/engagement allowances (ADR-0004 §4.1).
   let caps = plans.effectiveCaps(plan, (billingTenant && billingTenant.extra_seats) || 0);
   let lifetimeCaps = !!plan.lifetimeCaps;
+  // Per-meter lifetime set (v2 Free is mixed: engagements lifetime, the rest
+  // monthly). Threaded into usage.consume/summary/refund so each meter reads and
+  // writes the correct period bucket.
+  let lifetimeMeters = plans.lifetimeMetersFor(plan, planVersion);
   let active = state.active;
   let reason = state.reason;
 
@@ -78,6 +82,7 @@ function entitlementsFor(tenant, opts = {}) {
     caps = (tenant.cap_overrides && typeof tenant.cap_overrides === 'object')
       ? { ...plan.caps, ...tenant.cap_overrides } : plan.caps;
     lifetimeCaps = false; // a sub-tenant under a paid parent uses monthly caps
+    lifetimeMeters = [];  // …so no meter is lifetime for a sub-tenant
     if (!parentEntitled) { active = false; reason = 'account_downgraded'; }
   }
 
@@ -112,6 +117,7 @@ function entitlementsFor(tenant, opts = {}) {
     features,
     caps,
     lifetimeCaps,
+    lifetimeMeters,
     seats,
     overage,
     daysLeft: trialDaysLeft(billingTenant || tenant),
@@ -153,6 +159,7 @@ function toJson(ent) {
     features: ent.features,
     caps,
     lifetimeCaps: !!ent.lifetimeCaps,
+    lifetimeMeters: Array.isArray(ent.lifetimeMeters) ? ent.lifetimeMeters : [],
     seats: ent.seats || null,
     overage: ent.overage ? { meter: ent.overage.meter, priceMonthly: ent.overage.priceMonthly } : null,
     daysLeft: ent.daysLeft,

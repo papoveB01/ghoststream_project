@@ -166,11 +166,11 @@
       { h: 'Priority opportunities & engagements', b: 'The actual signals from research (expand a row for the full why-now, then “Brief me” to prefill a call), and your scheduled calls.' },
     ] },
     company: { title: 'Company — your foundation', intro: 'Everything DealScope generates — discovery, briefs, battlecards, proposals — is grounded in what this page knows about YOUR business. Sharper foundation = sharper everything.', blocks: [
-      { h: 'Data foundation score', b: 'The 0–100 health card at the top scores how well we know you. <b>“Enrich from web”</b> is the one-click builder: it reads your website (plus Apollo and news) and drafts your positioning, ICP, products and personas. Run it first; re-run any time to refresh.' },
+      { h: 'Data foundation score', b: 'The 0–100 health card at the top scores how well we know you. <b>“Enrich with AI”</b> is the one-click builder: it reads your website (plus Apollo and news) and drafts your positioning, ICP, products and personas. Run it first; re-run any time to refresh.' },
       { h: 'Intel tab', b: 'Your foundation as prose — what you do, who you sell to (ICP), goals. Click <b>✎ Edit</b> to refine by hand or <b>Draft with AI</b> to regenerate. Below it, the intel library holds files, notes and pages you file about your own company.' },
       { h: 'Products tab', b: 'Your product lines. Each needs a one-line description — discovery searches for the NEED your product solves, not your brand name. “AI” badges mean we drafted it; review and edit. Open a product to see the competitors it faces and its filed intel.' },
       { h: 'Personas tab', b: 'The buyer types you sell to (CFO, Head of Payments…). They shape pre-call briefs and auto-link to contacts with matching roles.' },
-      { h: 'How to proceed', b: '1) Hit <b>Enrich from web</b>. 2) Read the ICP it drafted — fix anything wrong (this is the single biggest driver of discovery quality). 3) Give every product a description. Then move on to Prospects.' },
+      { h: 'How to proceed', b: '1) Hit <b>Enrich with AI</b>. 2) Read the ICP it drafted — fix anything wrong (this is the single biggest driver of discovery quality). 3) Give every product a description. Then move on to Prospects.' },
     ] },
     prospects: { title: 'Prospects — who you\'ll sell to', intro: 'The companies you pursue, with AI research, contacts and outreach in one place.', blocks: [
       { h: 'Adding prospects', b: 'Three ways via <b>＋ Add prospects</b>: type one manually (we research it immediately), pull from a connected CRM, or <b>✦ Discover online</b> — AI finds real companies matching WHO YOU SELL TO, ranked by buying signals. Companies you already track are never re-suggested; they show in a strip with re-analyze / update-intel shortcuts.' },
@@ -191,7 +191,8 @@
       { h: 'Cross-links', b: 'A dashed line from a competitor to a prospect means our intel shows they\'re entangled at that account — your contested deals at a glance.' },
       { h: 'Interacting', b: 'Drag the background to orbit, scroll to zoom, drag nodes to rearrange, click to open the entity. <b>Fullscreen</b> turns clicks into an in-map detail panel so you never leave the view.' },
     ] },
-    'market-signals': { title: 'Alerts — what changed out there', intro: 'Market Watch findings land here for review — fundings, launches, leadership moves at the prospects and competitors you watch.', blocks: [
+    'market-signals': { title: 'Market trend & Alerts — what changed out there', intro: 'Market Watch findings land here for review — fundings, launches, leadership moves at the prospects and competitors you watch. And when YOU spot something, feed it in here too.', blocks: [
+      { h: 'Feed market intel', b: 'Paste a regulation, news item or market shift into <b>✦ Feed market intel</b> — the AI assesses the impact on your company and each product, gives you motives to engage clients (with openers you can use verbatim) and a prospecting angle, and files everything into your intel library.' },
       { h: 'Reviewing', b: 'Each card shows the development, its source and materiality (●●●●●). <b>Accept</b> files it into that company\'s intel (it then feeds briefs and proposals); <b>Dismiss</b> drops it. NEW items count on the 🔔 bell and the nav badge.' },
       { h: 'Where findings come from', b: 'Turn on Market Watch on any prospect or competitor (their detail page) and pick a schedule — or hit “Run now” there for an immediate check.' },
       { h: 'How to proceed', b: 'Review NEW items regularly; accept what matters. Accepted intel makes every downstream brief sharper.' },
@@ -322,7 +323,7 @@
         } },
         { element: '#foundation-enrich-btn', popover: {
             title: '1 · Ground your workspace',
-            description: '<b>Click “Enrich from web”.</b> We read your website and build your positioning, products and buyer personas — every brief, battlecard and discovery is grounded in this.',
+            description: '<b>Click “Enrich with AI”.</b> We read your website and build your positioning, products and buyer personas — every brief, battlecard and discovery is grounded in this.',
             side: 'bottom', align: 'start',
             nextBtnText: 'Skip →',
         } },
@@ -601,7 +602,7 @@
       prospects: 'Prospects',
       competitors: 'Competitors',
       'market-map': 'Market Map',
-      'market-signals': 'Alerts',
+      'market-signals': 'Market trend & Alerts',
       calls: 'Calls',
       'calls-ops': 'Calls — Operations',
       platform: 'Platform overview',
@@ -2176,7 +2177,7 @@
     const limit = Math.max(1, Math.min(100, parseInt($('pdisc-limit').value, 10) || 30));
     const where = [city, country].filter(Boolean).join(', ') || (region && !/global|any/i.test(region) ? region : '');
     btn.disabled = true; const o = btn.textContent; btn.textContent = 'Searching…';
-    body.innerHTML = `<div class="kb-subtle" style="padding:12px">Searching the web for up to ${limit} prospects${industry ? ` in ${escapeHtml(industry)}` : ''}${where ? ` · ${escapeHtml(where)}` : ''}…</div>`;
+    body.innerHTML = `<div class="kb-subtle" style="padding:12px">AI is searching for up to ${limit} prospects${industry ? ` in ${escapeHtml(industry)}` : ''}${where ? ` · ${escapeHtml(where)}` : ''}…</div>`;
     try {
       const data = await fetchJson('/api/companies/discover', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3287,12 +3288,29 @@
     // shows the offering name (not its slug) as a pill on the card.
     const offeringNames = new Map((competitorOfferings || []).map((o) => [o.id, o.name]));
     const scopeLabel = scope === 'TENANT' ? 'workspace intel' : scope === 'PROSPECT' ? 'prospect memory' : 'battlecards';
+    const scopeDesc = scope === 'TENANT'
+      ? 'Files, web pages and notes about your own company. The AI reads everything here — the more you file, the sharper your briefs, battlecards and research.'
+      : scope === 'PROSPECT'
+        ? 'Files, links and notes about this prospect. Everything filed here feeds its research summary, pre-call briefs and proposals.'
+        : 'Decks, pages and notes about this rival. Everything filed here powers its battlecards and threat profile.';
+    // Product-line picker options (TENANT scope) — existing lines plus an inline
+    // "＋ Add new product…" entry so a product can be created without leaving the
+    // Intel tab. The sentinel value is handled by wireProductLineSelect() below.
+    const productLineOptions = () =>
+      `<option value="">— Company-wide —</option>`
+      + products.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('')
+      + `<option value="__newprod__">＋ Add new product…</option>`;
+
+    container.classList.add('intel-lib-card');
     container.innerHTML = `
       <div class="intel-lib-h">
-        <strong>${docs.length} doc${docs.length === 1 ? '' : 's'}</strong>
-        <span class="kb-subtle"> · ${scopeLabel} on file</span>
-        <button class="kb-secondary-btn intel-lib-add-btn" id="intel-lib-add-btn">Add intel</button>
+        <button class="primary-cta intel-lib-add-btn" id="intel-lib-add-btn">＋ Add intel</button>
+        <div class="intel-lib-head-text">
+          <strong>📚 Intel library</strong>
+          <span class="kb-subtle">${docs.length} doc${docs.length === 1 ? '' : 's'} · ${scopeLabel} on file</span>
+        </div>
       </div>
+      <p class="intel-lib-desc">${scopeDesc}</p>
       <div class="intel-lib-add-pane hidden" id="intel-lib-add-pane">
         <div class="prospect-intel-add-tabs">
           <button class="kb-tab active" id="intel-lib-tab-file" data-intel-lib-tab="file">File</button>
@@ -3320,17 +3338,17 @@
         ` : ''}
         <div class="intel-lib-tab-pane" id="intel-lib-pane-file">
           <input type="file" id="intel-lib-file" accept=".pdf,.md,.txt,.docx">
-          ${products.length && scope === 'TENANT'
+          ${scope === 'TENANT'
             ? `<label class="kb-subtle" style="display:block;margin-top:6px">Product line (optional)
-                 <select id="intel-lib-product"><option value="">— Company-wide —</option>${products.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('')}</select>
+                 <select id="intel-lib-product">${productLineOptions()}</select>
                </label>` : ''}
           <button class="kb-secondary-btn" id="intel-lib-file-submit">Upload &amp; index</button>
         </div>
         <div class="intel-lib-tab-pane hidden" id="intel-lib-pane-web">
           <input type="url" id="intel-lib-url" placeholder="https://example.com/page">
-          ${products.length && scope === 'TENANT'
+          ${scope === 'TENANT'
             ? `<label class="kb-subtle" style="display:block;margin-top:6px">Product line (optional)
-                 <select id="intel-lib-url-product"><option value="">— Company-wide —</option>${products.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('')}</select>
+                 <select id="intel-lib-url-product">${productLineOptions()}</select>
                </label>` : ''}
           <button class="kb-secondary-btn" id="intel-lib-url-submit">Fetch &amp; index</button>
         </div>
@@ -3355,6 +3373,49 @@
         q('intel-lib-pane-file').classList.toggle('hidden', t !== 'file');
         q('intel-lib-pane-web').classList.toggle('hidden',  t !== 'web');
       }));
+    // "＋ Add new product…" on the TENANT product-line selects: prompt for a
+    // name, create it via the portfolio API, then inject + select it across both
+    // (File + URL) selects so the choice survives a pane switch.
+    function wireProductLineSelect(sel) {
+      if (!sel) return;
+      let prev = sel.value;
+      sel.addEventListener('change', async () => {
+        if (sel.value !== '__newprod__') { prev = sel.value; return; }
+        const name = (window.prompt('New product name:') || '').trim();
+        if (!name) { sel.value = prev; return; }
+        const result = q('intel-lib-result');
+        try {
+          const resp = await fetchJson('/api/portfolio/products', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: slugify(name), name, description: null }),
+          });
+          const prod = (resp && resp.product) || { id: slugify(name), name };
+          // products === _companyData.products (same ref) for TENANT scope, so
+          // pushing keeps the cached catalog in sync without a reassign.
+          if (!products.some((p) => p.id === prod.id)) products.push({ id: prod.id, name: prod.name });
+          [q('intel-lib-product'), q('intel-lib-url-product')].forEach((s) => {
+            if (!s) return;
+            if (!Array.from(s.options).some((o) => o.value === prod.id)) {
+              s.add(new Option(prod.name, prod.id), s.querySelector('option[value="__newprod__"]'));
+            }
+          });
+          sel.value = prod.id; prev = prod.id;
+          if (result) {
+            result.classList.remove('hidden', 'error'); result.classList.add('success');
+            result.textContent = `Added product “${prod.name}”.`;
+          }
+        } catch (err) {
+          sel.value = prev;
+          if (result) {
+            result.classList.remove('hidden', 'success'); result.classList.add('error');
+            result.textContent = `Couldn't add product: ${err.message}`;
+          }
+        }
+      });
+    }
+    wireProductLineSelect(q('intel-lib-product'));
+    wireProductLineSelect(q('intel-lib-url-product'));
+
     // Competitor "applies to" toggle
     const allBox = q('intel-lib-applies-all');
     if (allBox) {
@@ -3587,7 +3648,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
             Find competitors automatically
           </button>
-          <span class="kb-subtle">— we'll search the web for rivals in a region you pick.</span>
+          <span class="kb-subtle">— let AI find rivals in a region you pick.</span>
         </div>
       </div>`;
 
@@ -3889,7 +3950,7 @@
         ? `competitors threatening ${escapeHtml($('comp-finder-product').selectedOptions[0].textContent)}`
         : 'competitors';
     btn.disabled = true; const o = btn.textContent; btn.textContent = 'Searching…';
-    body.innerHTML = `<div class="kb-subtle" style="padding:14px">Searching the web for ${what}${where && focus !== 'prospect' ? ` in ${escapeHtml(where)}` : ''}…</div>`;
+    body.innerHTML = `<div class="kb-subtle" style="padding:14px">AI is searching for ${what}${where && focus !== 'prospect' ? ` in ${escapeHtml(where)}` : ''}…</div>`;
     try {
       const data = await fetchJson('/api/portfolio/competitors/discover', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4008,6 +4069,7 @@
     // renders the matchup node list + opens the default matchup workspace).
     _bcScope.product = '';
     _bcScope.competitorProduct = '';
+    _bcScope.market = '';
     loadCompetitorPortfolio(competitor);
     $('competitor-save-btn').addEventListener('click', async (e) => {
       const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Saving…';
@@ -4053,7 +4115,8 @@
   // Battlecard matchup scope: '' on a side = "the whole side".
   //   product           = one of OUR product lines (or '')
   //   competitorProduct = one of THEIR offerings (or '')
-  const _bcScope = { product: '', competitorProduct: '' };
+  //   market            = optional region/country/city the card is judged for
+  const _bcScope = { product: '', competitorProduct: '', market: '' };
 
   function bcScopeQuery() {
     const q = [];
@@ -4159,7 +4222,7 @@
       const offeringNames = new Map(data.offerings.map((o) => [o.id, o.name]));
       grid.innerHTML = list.length
         ? list.map((d) => companyIntelCard(d, { deletable: true, keyPointsAction: true, compProductName: offeringNames.get((d.metadata || {}).competitorProductId) })).join('')
-        : '<div class="empty" style="padding:12px">No evidence yet — add a deck, URL, or web search below.</div>';
+        : '<div class="empty" style="padding:12px">No evidence yet — add a deck, a URL, or let AI search below.</div>';
       wireEvidenceCards(grid, list, competitor);
     }
     markBattlecardStale();
@@ -4185,7 +4248,7 @@
     const addRow = hasMainIntel
       ? `<div class="comp-node-add"><input id="comp-new-product" type="text" placeholder="Add their product (e.g. Forecast)" maxlength="200"><button class="kb-secondary-btn" id="comp-add-product-btn">＋ Add their product</button></div><div class="kb-result hidden" id="comp-add-product-result"></div>`
       : `<div class="comp-node-add-hint kb-subtle">🔒 Add Company-wide intel first to break out ${escapeHtml(competitor.name)}'s individual products.</div>`;
-    const discoverRow = `<div class="comp-discover-row"><button class="kb-secondary-btn" id="comp-discover-btn">Discover their products</button><span class="kb-subtle">Don’t know their lineup? Search the web + map it against our products.</span></div>`;
+    const discoverRow = `<div class="comp-discover-row"><button class="kb-secondary-btn" id="comp-discover-btn">Discover their products</button><span class="kb-subtle">Don’t know their lineup? Let AI find their products and map them against ours.</span></div>`;
     host.innerHTML = `<div class="comp-node-list">${companyRow}${productRows}</div>${addRow}${discoverRow}`;
     host.querySelectorAll('[data-node]').forEach((b) => b.addEventListener('click', () => {
       _bcScope.competitorProduct = b.dataset.node || '';
@@ -4201,7 +4264,7 @@
   async function discoverCompetitorProducts(competitor, hasMainIntel) {
     const btn = $('comp-discover-btn');
     const orig = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = 'Searching the web…'; }
+    if (btn) { btn.disabled = true; btn.textContent = 'AI searching…'; }
     try {
       const data = await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/discover-products`, { method: 'POST' });
       openDiscoveryModal(competitor, data, hasMainIntel);
@@ -4236,7 +4299,7 @@
     const foot = overlay.querySelector('.comp-discover-foot');
 
     if (!products.length) {
-      body.innerHTML = '<div class="empty" style="padding:16px">No products surfaced from the web. Try adding them manually, or run again later.</div>';
+      body.innerHTML = '<div class="empty" style="padding:16px">No products surfaced. Try adding them manually, or run again later.</div>';
       foot.innerHTML = '';
       overlay.classList.remove('hidden');
       return;
@@ -4319,12 +4382,14 @@
     const offeringNames = new Map(offerings.map((o) => [o.id, o.name]));
     const evidenceCards = docs.length
       ? docs.map((d) => companyIntelCard(d, { deletable: true, keyPointsAction: true, compProductName: offeringNames.get((d.metadata || {}).competitorProductId) })).join('')
-      : '<div class="empty" style="padding:12px">No evidence yet — add a deck, URL, or web search below.</div>';
+      : '<div class="empty" style="padding:12px">No evidence yet — add a deck, a URL, or let AI search below.</div>';
     host.innerHTML = `
       <div class="comp-matchup-h">
         <span class="comp-matchup-their">${escapeHtml(theirLabel)}</span>
         <span class="comp-matchup-x">vs</span>
         <select id="comp-our-select" class="comp-our-select">${ourOpts}</select>
+        <span class="comp-matchup-x">in</span>
+        <input type="text" id="comp-market-input" class="comp-market-input" placeholder="Any market — or a region / country / city" maxlength="80" value="${escapeHtml(_bcScope.market || '')}" title="Scope the battlecard to a market: the next Regenerate judges the matchup for this region, country or city">
         ${node ? '<button type="button" class="kb-link-btn comp-remove-product" id="comp-remove-product-btn" title="Remove this product (its evidence is kept, moved to Company-wide)">✕ Remove product</button>' : ''}
       </div>
       <div id="competitor-battlecard-host" class="competitor-battlecard-host"></div>
@@ -4335,6 +4400,8 @@
       </div>`;
     const ourSel = $('comp-our-select');
     if (ourSel) ourSel.addEventListener('change', () => { _bcScope.product = ourSel.value; loadCompetitorBattlecard(competitor); });
+    const marketIn = $('comp-market-input');
+    if (marketIn) marketIn.addEventListener('change', () => { _bcScope.market = marketIn.value.trim(); });
     const rm = $('comp-remove-product-btn');
     if (rm) rm.addEventListener('click', async () => {
       if (!confirm(`Remove "${theirLabel}"?\n\nIts product-vs-product battlecards are deleted, but its filed evidence is KEPT and moved to ${competitor.name}'s Company-wide intel.`)) return;
@@ -4367,7 +4434,7 @@
         <div class="off-intel-tabs">
           <button type="button" class="kb-tab active" data-ev-tab="file">Deck</button>
           <button type="button" class="kb-tab" data-ev-tab="url">URL</button>
-          <button type="button" class="kb-tab" data-ev-tab="web">Web search</button>
+          <button type="button" class="kb-tab" data-ev-tab="web">AI search</button>
         </div>
         <div class="off-intel-pane" data-ev-pane="file">
           <input type="file" class="ev-file" accept=".pdf,.md,.txt,.docx">
@@ -4378,8 +4445,14 @@
           <button type="button" class="kb-secondary-btn ev-url-btn">Fetch &amp; index</button>
         </div>
         <div class="off-intel-pane hidden" data-ev-pane="web">
-          <span class="kb-subtle">Search the web for "${escapeHtml(searchLabel)}", then pick which results to file.</span>
-          <button type="button" class="kb-secondary-btn ev-web-btn">Search the web</button>
+          <span class="kb-subtle">Let AI search for "${escapeHtml(searchLabel)}", then pick which results to file.</span>
+          <div class="ev-web-loc">
+            <span class="kb-subtle">Scope to a market (optional) — see how this matchup plays there:</span>
+            <input type="text" class="ev-web-region" placeholder="Region (e.g. EMEA, Southeast Asia)" maxlength="80">
+            <input type="text" class="ev-web-country" placeholder="Country" maxlength="80">
+            <input type="text" class="ev-web-city" placeholder="City" maxlength="80">
+          </div>
+          <button type="button" class="kb-secondary-btn ev-web-btn">Let AI search</button>
           <div class="ev-web-results"></div>
         </div>
         <div class="kb-result hidden ev-result"></div>
@@ -4439,8 +4512,16 @@
       const base = compProductId
         ? `/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/offerings/${encodeURIComponent(compProductId)}/research`
         : `/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/research`;
+      // Optional market scope — region / country / city narrow the search so
+      // the evidence (and the battlecard built on it) reflects that market.
+      const locBody = {};
+      for (const [cls, key] of [['.ev-web-region', 'region'], ['.ev-web-country', 'country'], ['.ev-web-city', 'city']]) {
+        const input = sel(cls);
+        const v = input && input.value.trim();
+        if (v) locBody[key] = v;
+      }
       try {
-        const data = await fetchJson(base, { method: 'POST' });
+        const data = await fetchJson(base, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(locBody) });
         renderCompetitorWebResults(competitor, compProductId, host, data);
       } catch (err) { note(err.message, false); }
       finally { webBtn.disabled = false; webBtn.textContent = o; }
@@ -4574,7 +4655,7 @@
         <div class="bc-h">
           <div>
             <h3 style="margin:0">Battlecard · ${escapeHtml(competitor.name)}</h3>
-            <div class="bc-verdict bc-verdict-${verdictClass}">${escapeHtml(verdictLabel)}</div>
+            <div class="bc-verdict bc-verdict-${verdictClass}">${escapeHtml(verdictLabel)}${bc.market ? ` <span class="bc-market-chip" title="This card was generated for this market — clear the market field and regenerate for a global view">📍 ${escapeHtml(bc.market)}</span>` : ''}</div>
           </div>
           <div class="bc-h-actions">
             <span class="bc-stale-flag hidden" id="competitor-battlecard-stale-flag">New evidence — regenerate to refresh</span>
@@ -4709,10 +4790,17 @@
     if (regen) regen.addEventListener('click', async () => {
       const result = $('bc-action-result');
       if (result) { result.classList.add('hidden'); result.classList.remove('error', 'success'); }
-      if (!confirm('Regenerate the battlecard? Costs one AI call; manual edits will be preserved.')) return;
+      // Pick up the market field as typed, even if its change event hasn't fired yet.
+      const marketField = $('comp-market-input');
+      if (marketField) _bcScope.market = marketField.value.trim();
+      const market = _bcScope.market;
+      if (!confirm(`Regenerate the battlecard${market ? ` for the ${market} market` : ''}? Costs one AI call; manual edits will be preserved.`)) return;
       regen.disabled = true; const orig = regen.textContent; regen.textContent = 'Synthesising…';
       try {
-        await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/battlecard/regenerate${bcScopeQuery()}`, { method: 'POST' });
+        await fetchJson(`/api/portfolio/competitors/${encodeURIComponent(competitor.id)}/battlecard/regenerate${bcScopeQuery()}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(market ? { market } : {}),
+        });
         await loadCompetitorBattlecard(competitor);
       } catch (err) {
         if (result) {
@@ -6644,7 +6732,7 @@
         ${(m.ms_event_id || m.g_event_id) ? `
           <button class="kb-secondary-btn" id="missions-edit-teams-btn" title="Update the calendar event + re-send invites">🎥 Edit ${m.g_event_id ? 'Google Meet' : 'Teams meeting'}</button>
           <button class="kb-secondary-btn" id="missions-cancel-teams-btn" title="Cancel the calendar event + notify attendees">🛑 Cancel ${m.g_event_id ? 'Google Meet' : 'Teams meeting'}</button>` : ''}
-        <span class="kb-action-hint">Generate brief: researches the web and writes your prep notes. Send bot: sends an AI notetaker to join the call (~30s).</span>
+        <span class="kb-action-hint">Generate brief: AI researches the account and writes your prep notes. Send bot: sends an AI notetaker to join the call (~30s).</span>
       </div>
       ${hasBrief ? `
         <div class="missions-brief-frame">
@@ -7539,7 +7627,7 @@
             <strong>Data foundation</strong>
             <div class="kb-subtle">Richer data = sharper, more localized discovery. <span title="${escapeHtml(enrichedNote)}">${escapeHtml(enrichedNote)}</span></div>
           </div>
-          <button class="primary-cta" id="foundation-enrich-btn">Enrich from web</button>
+          <button class="primary-cta" id="foundation-enrich-btn">Enrich with AI</button>
         </div>
         ${gaps ? `<ul class="foundation-gaps">${gaps}</ul>` : '<div class="kb-subtle" style="margin-top:8px">Your foundation looks strong. 🎉</div>'}
         <div class="kb-result hidden" id="foundation-enrich-result"></div>
@@ -7568,7 +7656,7 @@
     } catch (err) {
       if (result) { result.classList.remove('hidden', 'success'); result.classList.add('error'); result.textContent = `Couldn't enrich: ${err.message}`; }
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = 'Enrich from web'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Enrich with AI'; }
     }
   }
 
@@ -7841,8 +7929,9 @@
       <div class="company-prod-section"><div class="company-field-label">Competitors it faces</div><div id="company-prod-competitors" class="kb-subtle">Loading…</div></div>
       <div class="company-prod-section"><div class="company-field-label">AI product analysis</div><div id="company-prod-analysis" class="kb-subtle">Loading…</div></div>
       <div class="company-prod-section">
-        <div class="company-field-label">Filed intel <button class="kb-secondary-btn company-prod-add-intel-btn" id="company-prod-add-intel">Create intel for this product</button></div>
+        <div class="company-field-label">📚 Filed intel</div>
         <p class="kb-subtle" style="margin:0 0 8px">${INTEL_EXPLAINER}</p>
+        <div style="margin:0 0 10px"><button class="primary-cta company-prod-add-intel-btn" id="company-prod-add-intel">＋ Add intel for this product</button></div>
         <div id="company-prod-docs" class="intel-lib-list company-intel-grid">Loading…</div>
       </div>`;
     $('company-prod-back').addEventListener('click', () => { _companyProductOpen = null; renderCompanyWorkspace(); });
@@ -7910,9 +7999,7 @@
     body.innerHTML = `
       <div id="company-profile-host"></div>
       <div class="company-bootstrap-block" id="company-bootstrap-host"></div>
-      <div class="company-field-label" style="margin-top:18px">Intel library</div>
-      <p class="kb-subtle">${INTEL_EXPLAINER} Optionally file a doc under a product line.</p>
-      <div id="company-intel-host"></div>`;
+      <div id="company-intel-host" style="margin-top:18px"></div>`;
     renderCompanyProfileEditor($('company-profile-host'));
     renderCompanyBootstrap($('company-bootstrap-host'));
     await renderIntelLibrary({ container: $('company-intel-host'), scope: 'TENANT', products: _companyData.products, onChange: () => { loaded.company = false; } });
@@ -10105,7 +10192,7 @@
   let _setup = null;            // { steps:[{key,label,done}], gateComplete }
   let _setupTimer = null;
   const SETUP_TARGETS = {
-    foundation:  { sec: 'company',     hint: 'Click “Enrich from web” (or fill the foundation by hand) and make sure at least one product is listed under Products.' },
+    foundation:  { sec: 'company',     hint: 'Click “Enrich with AI” (or fill the foundation by hand) and make sure at least one product is listed under Products.' },
     discover:    { sec: 'prospects',   hint: 'Use “Discover online”, pull from your CRM, or add a prospect manually — you need at least one.' },
     competitors: { sec: 'competitors', hint: 'Run “✦ Find competitors automatically” and add the rivals that matter — or add one manually. You need at least one.' },
     research:    { sec: 'prospects',   hint: 'Open your prospect and hit “Research / refresh” on the Why-now tab (or “Research now” right after adding one). Takes ~60s.' },
@@ -10113,6 +10200,22 @@
   };
   const SETUP_ALLOWED = new Set(['company', 'prospects', 'competitors', 'integrations']);
   let _setupStepKey = null; // the step the user is working on (advance is click-driven)
+  // Each step's instructions first appear zoomed-in over a dimmed backdrop;
+  // "Got it" docks the banner back to the top. Acks live in sessionStorage so
+  // the 7s poll re-renders (and same-tab reloads) don't re-trigger the zoom.
+  let _setupAcked = null;
+  function setupAckedSet() {
+    if (!_setupAcked) {
+      _setupAcked = new Set();
+      try { JSON.parse(sessionStorage.getItem('ds.gateAcked') || '[]').forEach((k) => _setupAcked.add(k)); } catch { /* storage blocked */ }
+    }
+    return _setupAcked;
+  }
+  function setupAck(key) {
+    const s = setupAckedSet();
+    s.add(key);
+    try { sessionStorage.setItem('ds.gateAcked', JSON.stringify([...s])); } catch { /* storage blocked */ }
+  }
   function setupGating() {
     if (!_setup) return false;
     if (!_setup.gateComplete) return true;
@@ -10127,6 +10230,28 @@
     }
     return (_setup && _setup.steps.find((x) => !x.done)) || null;
   }
+  // Credit microcopy — what this step costs. The first run of each gated step
+  // is free while the gate is open (server-side freebies); extra runs draw on
+  // the research allowance the /setup payload reports.
+  function setupCostNote(key) {
+    if (key === 'foundation') return '✓ Free — enriching your foundation never uses research credits.';
+    const free = !!(_setup && _setup.freebies && _setup.freebies[key]);
+    if (key === 'contacts') {
+      return free
+        ? '✓ Previewing people is free, and your first contact reveal is on us during setup. After that, each revealed contact uses 1 research credit.'
+        : 'Previewing people is free; each revealed contact uses 1 research credit.';
+    }
+    const noun = { discover: 'discovery run', competitors: 'competitor search', research: 'research run' }[key] || 'run';
+    return free
+      ? `✓ Your first ${noun} is free during setup. Extra runs use 1 research credit each.`
+      : `Each ${noun} uses 1 research credit.`;
+  }
+  function setupCreditsChip() {
+    const r = _setup && _setup.research;
+    if (!r || r.remaining == null) return '';
+    const total = r.remaining + (r.credits || 0);
+    return `<span class="setup-gate-credits" title="Research credits power discovery, competitor searches, prospect research and contact reveals${r.lifetime ? '. The Free plan includes 10 — required setup steps don’t use them' : ''}.">✦ ${total} research credit${total === 1 ? '' : 's'} left</span>`;
+  }
   async function refreshSetupState() {
     try { _setup = await fetchJson('/api/dashboard/setup'); } catch { /* keep last */ }
     return _setup;
@@ -10136,6 +10261,8 @@
     if (!setupGating()) {
       document.body.classList.remove('setup-mode');
       if (bar) bar.remove();
+      const bd = $('setup-gate-backdrop');
+      if (bd) bd.remove();
       return;
     }
     document.body.classList.add('setup-mode');
@@ -10151,24 +10278,84 @@
       const content = document.querySelector('.content');
       if (content) content.prepend(bar); else document.body.prepend(bar);
     }
+    // Spotlight: un-acked step instructions take over the screen until Got it.
+    const zoom = !!(step && !stepDone && !setupAckedSet().has(step.key));
+    let backdrop = $('setup-gate-backdrop');
+    if (zoom) {
+      if (!backdrop) {
+        backdrop = document.createElement('div');
+        backdrop.id = 'setup-gate-backdrop';
+        backdrop.className = 'setup-gate-backdrop';
+        document.body.appendChild(backdrop);
+      }
+      bar.classList.add('zoom');
+    } else if (!bar.classList.contains('dock')) {
+      bar.classList.remove('zoom');
+      if (backdrop) backdrop.remove();
+    }
     bar.innerHTML = `
       <div class="setup-gate-head">
         <span class="setup-gate-title">✦ Get up to speed</span>
         <span class="setup-gate-sub">${_setup.steps.length} quick steps before your cockpit unlocks</span>
+        ${setupCreditsChip()}
       </div>
       <div class="setup-gate-steps">
         ${_setup.steps.map((st, i) => `
-          <span class="setup-gate-step${st.done ? ' done' : ''}${i === idx ? ' active' : ''}">
+          <span class="setup-gate-step${st.done ? ' done' : ''}${i === idx ? ' active' : ''}" data-step-key="${escapeHtml(st.key)}" role="button" tabindex="0" title="Go to: ${escapeHtml(st.label.split(' — ')[0])}">
             <i>${st.done ? '✓' : i + 1}</i>${escapeHtml(st.label.split(' — ')[0])}
           </span>`).join('')}
       </div>
-      ${step && !stepDone ? `<div class="setup-gate-hint"><strong>Step ${idx + 1}:</strong> ${SETUP_TARGETS[step.key].hint}</div>` : ''}
+      ${step && !stepDone ? `<div class="setup-gate-hint"><strong>Step ${idx + 1}:</strong> ${SETUP_TARGETS[step.key].hint}<div class="setup-gate-cost">${setupCostNote(step.key)}</div></div>` : ''}
+      ${zoom ? '<div class="setup-gate-actions"><button type="button" class="setup-gate-gotit" id="setup-gate-gotit">Got it →</button></div>' : ''}
       ${stepDone ? `<div class="setup-gate-next">
         <span>✓ ${escapeHtml(step.label.split(' — ')[0])} — done${next ? '' : '. That was the last one!'}</span>
         <button type="button" class="primary-cta" id="setup-gate-continue">${next ? `Continue: ${escapeHtml(next.label.split(' — ')[0])} →` : '🎉 Enter your cockpit →'}</button>
       </div>` : ''}`;
     const cont = $('setup-gate-continue');
     if (cont) cont.onclick = () => setupAdvance();
+    // Step pills navigate — click any step to jump to its page.
+    bar.querySelectorAll('[data-step-key]').forEach((el) => {
+      const goStep = () => setupNavTo(el.dataset.stepKey);
+      el.onclick = goStep;
+      el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goStep(); } };
+    });
+    const gotit = $('setup-gate-gotit');
+    if (gotit) {
+      const dismiss = () => setupDismissZoom(step.key);
+      gotit.onclick = dismiss;
+      if (backdrop) backdrop.onclick = dismiss;
+    }
+  }
+  // Play the dock-to-top animation, then re-render the banner in its resting
+  // place at the top of the page.
+  function setupDismissZoom(stepKey) {
+    setupAck(stepKey);
+    const bar = $('setup-gate');
+    const backdrop = $('setup-gate-backdrop');
+    if (backdrop) backdrop.classList.add('out');
+    if (bar) bar.classList.add('dock');
+    setTimeout(() => {
+      if (bar) bar.classList.remove('zoom', 'dock');
+      const bd = $('setup-gate-backdrop');
+      if (bd) bd.remove();
+      renderSetupGate();
+      try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* older browser */ }
+    }, 460);
+  }
+  // Jump to a step's page (used by Continue and by clicking a step pill) —
+  // sets up the page state each step expects, then navigates.
+  function setupNavTo(key) {
+    const st = _setup && _setup.steps.find((x) => x.key === key);
+    if (!st || !SETUP_TARGETS[key]) return;
+    _setupStepKey = key;
+    renderSetupGate();
+    const target = SETUP_TARGETS[key].sec;
+    if (key === 'discover') { _prospectMode = 'discover'; _prospectFormOpen = true; loaded.prospects = false; }
+    if (key === 'research' || key === 'contacts') { _prospectFormOpen = false; loaded.prospects = false; }
+    window.location.hash = '#' + target;
+    if (currentSection === target) { loaded[target] = false; switchSection(target); }
+    // Competitor step: open the finder so the first search is one click away.
+    if (key === 'competitors' && !st.done) setTimeout(() => { try { openCompetitorFinderModal(); } catch { /* page still loading */ } }, 500);
   }
   // Click-driven advance — the user reviews their results and decides when to
   // move on; the gate never yanks them mid-flow.
@@ -10185,15 +10372,7 @@
       if (currentSection === 'overview') switchSection('overview');
       return;
     }
-    _setupStepKey = next.key;
-    renderSetupGate();
-    const target = SETUP_TARGETS[next.key].sec;
-    if (next.key === 'discover') { _prospectMode = 'discover'; _prospectFormOpen = true; loaded.prospects = false; }
-    if (next.key === 'research' || next.key === 'contacts') { _prospectFormOpen = false; loaded.prospects = false; }
-    window.location.hash = '#' + target;
-    if (currentSection === target) { loaded[target] = false; switchSection(target); }
-    // Competitor step: open the finder so the first search is one click away.
-    if (next.key === 'competitors') setTimeout(() => { try { openCompetitorFinderModal(); } catch { /* page still loading */ } }, 500);
+    setupNavTo(next.key);
   }
   async function setupPoll() {
     clearTimeout(_setupTimer);
@@ -10243,7 +10422,7 @@
     { label: 'Add a prospect', hint: 'Manual / CRM / discovery', kw: 'new company create', run: () => { _prospectMode = 'manual'; _prospectFormOpen = true; loaded.prospects = false; go('prospects'); } },
     { label: 'Add a competitor', hint: 'Name + website', kw: 'new rival create', run: () => { _competitorFormOpen = true; loaded.competitors = false; go('competitors'); } },
     { label: 'Schedule an engagement', hint: 'AI joins the call', kw: 'call meeting new book', run: () => { try { sessionStorage.setItem('ds.missionsTab', 'schedule'); } catch { /* ignore */ } missionsCurrentTab = 'schedule'; loaded.missions = false; go('missions'); } },
-    { label: 'Review alerts', hint: 'New market developments', kw: 'signals watch notifications', run: () => go('market-signals') },
+    { label: 'Review market trends & alerts', hint: 'New market developments', kw: 'signals watch notifications', run: () => go('market-signals') },
     { label: 'Go to Overview', kw: 'home dashboard cockpit', run: () => go('overview') },
     { label: 'Go to Company foundation', kw: 'profile products personas intel', run: () => go('company') },
     { label: 'Go to Prospects', kw: 'pipeline buyers companies', run: () => go('prospects') },
@@ -10468,11 +10647,270 @@
       refreshBtn.dataset.wired = '1';
       refreshBtn.addEventListener('click', () => { loaded['market-signals'] = false; switchSection('market-signals'); });
     }
+    host.innerHTML = `
+      <div class="signals-layout">
+        <div class="signals-left">
+          <div class="signals-pane-h">Watch alerts <span class="kb-subtle">— from the prospects &amp; competitors you watch</span></div>
+          <div id="watch-findings-body"><div class="kb-subtle">Loading…</div></div>
+        </div>
+        <div class="signals-right">
+          <div class="trend-feed">
+            <div class="trend-feed-h">
+              <strong>✦ Market trends</strong>
+              <span class="kb-subtle">Feed a development you spotted — or let AI retrieve what's moving in a segment — and get its impact on your company and products, plus concrete motives to engage clients.</span>
+            </div>
+            <div class="off-intel-tabs trend-tabs">
+              <button type="button" class="kb-tab active" data-trend-tab="feed">Paste intel</button>
+              <button type="button" class="kb-tab" data-trend-tab="retrieve">✦ Retrieve with AI</button>
+            </div>
+            <div class="trend-pane" data-trend-pane="feed">
+              <input type="text" id="trend-title" placeholder="Title (optional — e.g. CBN MFA mandate)" maxlength="160">
+              <textarea id="trend-text" rows="4" placeholder="Paste the article or type the development… e.g. “CBN has issued a mandate for all banks to implement MFA on top of OTP.”"></textarea>
+              <div class="trend-feed-actions"><button type="button" class="primary-cta" id="trend-analyze-btn">✦ Analyze impact</button></div>
+            </div>
+            <div class="trend-pane hidden" data-trend-pane="retrieve">
+              <div class="trend-retrieve-form">
+                <label class="comp-finder-field">Industry / segment <span class="trend-req">*</span>
+                  <select id="trend-industry"><option value="">Pick an industry…</option></select>
+                </label>
+                <label class="comp-finder-field">Region <span class="trend-req">*</span>
+                  <select id="trend-region">${COMPETITOR_REGIONS.map((r) => `<option>${escapeHtml(r)}</option>`).join('')}</select>
+                </label>
+                <label class="comp-finder-field">Country <span class="kb-subtle">(optional)</span>
+                  <select id="trend-country">${countryOptions()}</select>
+                </label>
+                <label class="comp-finder-field">How recent
+                  <select id="trend-recency">
+                    <option value="latest">Latest (past month)</option>
+                    <option value="3m">Last 3 months</option>
+                    <option value="6m">Last 6 months</option>
+                    <option value="12m">Last 12 months</option>
+                  </select>
+                </label>
+                <button type="button" class="primary-cta" id="trend-retrieve-btn">✦ Retrieve trends</button>
+              </div>
+              <span class="kb-subtle">AI scans recent developments — regulations, mandates, market shifts — for that segment and geography (max 5 per run, sources never older than a year). You review each source and keep what matters.</span>
+            </div>
+            <div class="kb-result hidden" id="trend-feed-result"></div>
+            <div id="trend-analysis-host"></div>
+          </div>
+          <div id="trend-list"></div>
+        </div>
+      </div>`;
+    host.querySelectorAll('[data-trend-tab]').forEach((t) => t.addEventListener('click', () => {
+      host.querySelectorAll('[data-trend-tab]').forEach((x) => x.classList.toggle('active', x === t));
+      host.querySelectorAll('[data-trend-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.trendPane !== t.dataset.trendTab));
+    }));
+    wireTrendFeed();
+    wireTrendRetrieve();
+    decorateSpend('#trend-analyze-btn', 'research credit');
+    decorateSpend('#trend-retrieve-btn', 'research credit');
+    try {
+      const { industries } = await fetchJson('/api/onboarding/industries');
+      const sel = $('trend-industry');
+      if (sel) (industries || []).forEach((i) => { const o = document.createElement('option'); o.value = i; o.textContent = i; sel.appendChild(o); });
+    } catch { /* dropdown keeps the default option */ }
+    wireRegionCountry('trend-region', 'trend-country');
+    loadTrendList();
+    const fhost = $('watch-findings-body');
     let data;
     try { data = await fetchJson('/api/watch/findings?limit=200'); }
-    catch (err) { host.innerHTML = `<div class="kb-subtle">Couldn't load: ${escapeHtml(err.message)}</div>`; return; }
-    renderMarketSignals(host, (data && data.findings) || []);
+    catch (err) { fhost.innerHTML = `<div class="kb-subtle">Couldn't load: ${escapeHtml(err.message)}</div>`; return; }
+    renderMarketSignals(fhost, (data && data.findings) || []);
     refreshWatchBadge();
+  }
+
+  // ── Market trend feed — manual intel with AI impact analysis ─────────────
+  function trendMatDots(n) { return '●'.repeat(Math.max(1, Math.min(5, n || 3))); }
+  function renderTrendAnalysisHtml(a) {
+    const angle = a.prospectingAngle || {};
+    return `
+      <div class="trend-analysis">
+        <div class="trend-analysis-h">
+          <strong>${escapeHtml(a.headline || 'Impact analysis')}</strong>
+          <span class="watch-mat" title="Materiality (impact on your business)">${trendMatDots(a.materiality)}</span>
+        </div>
+        ${a.summary ? `<p class="trend-summary kb-subtle">${escapeHtml(a.summary)}</p>` : ''}
+        <div class="trend-sect"><div class="trend-label">Impact on your company</div><p>${escapeHtml(a.companyImpact || '—')}</p></div>
+        ${(a.productImpacts || []).length ? `<div class="trend-sect"><div class="trend-label">Impact on your products</div><ul>${a.productImpacts.map((p) => `
+          <li><strong>${escapeHtml(p.product || '')}</strong> — ${escapeHtml(p.impact || '')}${p.opportunity ? `<div class="trend-opp">↗ ${escapeHtml(p.opportunity)}</div>` : ''}</li>`).join('')}</ul></div>` : ''}
+        ${(a.engagementMotives || []).length ? `<div class="trend-sect"><div class="trend-label">Motives to engage clients</div><ul>${a.engagementMotives.map((m) => `
+          <li>${m.who ? `<strong>${escapeHtml(m.who)}</strong> — ` : ''}${escapeHtml(m.motive || '')}${m.opener ? `<div class="trend-opener">“${escapeHtml(m.opener)}”</div>` : ''}</li>`).join('')}</ul></div>` : ''}
+        ${(angle.who || angle.rationale) ? `<div class="trend-sect"><div class="trend-label">Prospecting angle</div>
+          <p>${escapeHtml([angle.who, angle.industry, angle.region].filter(Boolean).join(' · '))}${angle.rationale ? ` — ${escapeHtml(angle.rationale)}` : ''}</p>
+          <button type="button" class="kb-secondary-btn trend-find-btn" data-industry="${escapeHtml(angle.industry || '')}">✦ Find prospects for this angle</button></div>` : ''}
+        ${(a.recommendedActions || []).length ? `<div class="trend-sect"><div class="trend-label">Recommended actions</div><ul>${a.recommendedActions.map((x) => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>` : ''}
+      </div>`;
+  }
+  function wireTrendFindButtons(scopeEl) {
+    scopeEl.querySelectorAll('.trend-find-btn').forEach((b) => b.addEventListener('click', () => {
+      // Pre-seed the prospect discovery form with the angle's segment, then go.
+      const cached = loadDiscovery('prospects') || {};
+      saveDiscovery('prospects', { inputs: { ...(cached.inputs || {}), industry: b.dataset.industry || '' } });
+      _prospectMode = 'discover'; _prospectFormOpen = true; loaded.prospects = false;
+      window.location.hash = '#prospects';
+      if (currentSection === 'prospects') switchSection('prospects');
+    }));
+  }
+  function wireTrendFeed() {
+    const btn = $('trend-analyze-btn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      const text = ($('trend-text').value || '').trim();
+      const title = ($('trend-title').value || '').trim();
+      const result = $('trend-feed-result');
+      const note = (msg, ok) => { if (!result) return; result.classList.remove('hidden', 'error', 'success'); result.classList.add(ok ? 'success' : 'error'); result.textContent = msg; };
+      if (text.length < 40) { note('Paste or type the development first — a few sentences minimum.', false); return; }
+      if (result) result.classList.add('hidden');
+      btn.disabled = true; const o = btn.textContent; btn.textContent = 'Analyzing impact…';
+      try {
+        const r = await fetchJson('/api/watch/trends', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, title }),
+        });
+        const ahost = $('trend-analysis-host');
+        if (ahost) { ahost.innerHTML = renderTrendAnalysisHtml(r.analysis); wireTrendFindButtons(ahost); }
+        note('✓ Analyzed and saved to your intel library — it now feeds briefs, battlecards and research.', true);
+        $('trend-text').value = ''; $('trend-title').value = '';
+        loadTrendList();
+        decorateSpend('#trend-analyze-btn', 'research credit');
+      } catch (err) { note(err.message, false); }
+      finally { btn.disabled = false; btn.textContent = o; }
+    });
+  }
+  // AI-retrieved trends: scan a segment/geo for recent developments (max 5 per
+  // run), render each as a BRIEF card with its source link; "Retrieve more"
+  // continues without repeating, until the window (≤12 months) is exhausted.
+  let _trendRetrieved = [];      // accumulated results this session
+  let _trendRetrieveParams = null;
+  function renderTrendBriefCard(t, i) {
+    const date = t.sourceDate ? new Date(t.sourceDate).toLocaleDateString() : '';
+    return `
+      <div class="trend-retrieved">
+        <div class="trend-analysis trend-brief">
+          <div class="trend-analysis-h">
+            <strong>${escapeHtml(t.headline || 'Development')}</strong>
+            <span class="watch-mat" title="Materiality (impact on your business)">${trendMatDots(t.materiality)}</span>
+            ${date ? `<span class="kb-subtle">${escapeHtml(date)}</span>` : ''}
+          </div>
+          ${t.summary ? `<p class="trend-summary kb-subtle">${escapeHtml(t.summary)}</p>` : ''}
+          <p class="trend-brief-impact">${escapeHtml(t.companyImpact || '')}</p>
+          <details class="trend-more">
+            <summary>Full impact brief — products, motives to engage, actions</summary>
+            ${renderTrendAnalysisHtml(t)}
+          </details>
+        </div>
+        <div class="trend-retrieved-foot">
+          ${t.sourceUrl ? `<a href="${escapeHtml(t.sourceUrl)}" target="_blank" rel="noopener" title="Review the source">${escapeHtml(t.sourceTitle || 'Source')} ↗</a>` : '<span class="kb-subtle">No source link</span>'}
+          <button type="button" class="kb-secondary-btn trend-save-btn" data-i="${i}">＋ Save to intel</button>
+        </div>
+      </div>`;
+  }
+  function renderTrendRetrieved(exhausted, noteText) {
+    const ahost = $('trend-analysis-host');
+    if (!ahost) return;
+    ahost.innerHTML =
+      _trendRetrieved.map((t, i) => renderTrendBriefCard(t, i)).join('') +
+      (exhausted
+        ? `<div class="trend-exhausted">${escapeHtml(noteText || "You're up to date — nothing new within the selected window.")}</div>`
+        : (_trendRetrieved.length ? '<div class="trend-more-row"><button type="button" class="kb-secondary-btn" id="trend-more-btn">⟲ Retrieve more</button></div>' : ''));
+    wireTrendFindButtons(ahost);
+    ahost.querySelectorAll('.trend-save-btn').forEach((b) => b.addEventListener('click', async () => {
+      const t = _trendRetrieved[Number(b.dataset.i)];
+      if (!t) return;
+      b.disabled = true; b.textContent = 'Saving…';
+      try {
+        await fetchJson('/api/watch/trends/save', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ analysis: t, title: t.headline, sourceUrl: t.sourceUrl || '' }),
+        });
+        b.textContent = '✓ Saved to intel';
+        b.classList.add('ev-added');
+        t._saved = true;
+        loadTrendList();
+      } catch (err) { b.textContent = '⚠ Failed — retry'; b.disabled = false; }
+    }));
+    // Saved state survives re-renders (e.g. after Retrieve more).
+    ahost.querySelectorAll('.trend-save-btn').forEach((b) => {
+      const t = _trendRetrieved[Number(b.dataset.i)];
+      if (t && t._saved) { b.disabled = true; b.textContent = '✓ Saved to intel'; b.classList.add('ev-added'); }
+    });
+    const more = $('trend-more-btn');
+    if (more) {
+      more.addEventListener('click', () => runTrendRetrieve(true));
+      decorateSpend('#trend-more-btn', 'research credit');
+    }
+  }
+  async function runTrendRetrieve(loadMore) {
+    const btn = loadMore ? $('trend-more-btn') : $('trend-retrieve-btn');
+    const result = $('trend-feed-result');
+    const note = (msg, ok) => { if (!result) return; result.classList.remove('hidden', 'error', 'success'); result.classList.add(ok ? 'success' : 'error'); result.textContent = msg; };
+    if (result) result.classList.add('hidden');
+    let params = _trendRetrieveParams;
+    if (!loadMore) {
+      const industry = ($('trend-industry') || {}).value || '';
+      const region = ($('trend-region') || {}).value || '';
+      if (!industry) { note('Pick an industry/segment — it focuses the scan.', false); return; }
+      if (!region || /global|any/i.test(region)) { note('Pick a specific region (not Global/Any) — it focuses the scan.', false); return; }
+      params = {
+        industry, region,
+        country: ($('trend-country') || {}).value || '',
+        recency: ($('trend-recency') || {}).value || 'latest',
+      };
+      _trendRetrieveParams = params;
+      _trendRetrieved = [];
+    }
+    if (!params) return;
+    const exclude = _trendRetrieved.flatMap((t) => [t.sourceUrl, t.headline]).filter(Boolean);
+    if (btn) { btn.disabled = true; btn.dataset.o = btn.textContent; btn.textContent = 'Retrieving…'; }
+    if (!loadMore) {
+      const ahost = $('trend-analysis-host');
+      if (ahost) ahost.innerHTML = '<div class="kb-subtle" style="padding:10px 0">AI is scanning recent developments and assessing the impact on you… (~30s)</div>';
+    }
+    try {
+      const r = await fetchJson('/api/watch/trends/discover', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...params, exclude }),
+      });
+      const fresh = (r && r.trends) || [];
+      _trendRetrieved = _trendRetrieved.concat(fresh);
+      renderTrendRetrieved(!!(r && r.exhausted) || !fresh.length, r && r.note);
+      decorateSpend('#trend-retrieve-btn', 'research credit');
+    } catch (err) {
+      if (!loadMore) { const ahost = $('trend-analysis-host'); if (ahost) ahost.innerHTML = ''; }
+      note(err.message, false);
+      if (loadMore) renderTrendRetrieved(false);
+    } finally {
+      if (btn && document.body.contains(btn)) { btn.disabled = false; btn.textContent = btn.dataset.o || btn.textContent; }
+    }
+  }
+  function wireTrendRetrieve() {
+    const btn = $('trend-retrieve-btn');
+    if (btn) btn.addEventListener('click', () => runTrendRetrieve(false));
+  }
+  async function loadTrendList() {
+    const el = $('trend-list');
+    if (!el) return;
+    try {
+      const { trends } = await fetchJson('/api/watch/trends');
+      if (!trends || !trends.length) { el.innerHTML = ''; return; }
+      el.innerHTML = `
+        <div class="watch-group-h" style="margin:16px 0 6px">
+          <span class="pill pill-info">Trends</span>
+          <strong>Fed market intel</strong>
+          <span class="kb-subtle">${trends.length} item${trends.length === 1 ? '' : 's'}</span>
+        </div>
+        ${trends.map((t) => `
+          <details class="trend-row">
+            <summary>
+              <span class="trend-row-title">${escapeHtml((t.analysis && t.analysis.headline) || t.title.replace(/^\[Trend\]\s*/, ''))}</span>
+              <span class="watch-mat" title="Materiality">${trendMatDots(t.analysis && t.analysis.materiality)}</span>
+              <span class="kb-subtle">${t.createdAt ? new Date(t.createdAt).toLocaleDateString() : ''}</span>
+            </summary>
+            ${t.analysis ? renderTrendAnalysisHtml(t.analysis) : '<div class="kb-subtle" style="padding:8px 0">No analysis stored for this item.</div>'}
+          </details>`).join('')}`;
+      wireTrendFindButtons(el);
+    } catch { el.innerHTML = ''; }
   }
 
   function renderMarketSignals(host, findings) {
@@ -10997,15 +11435,21 @@
       const capLabel = cap == null ? '∞' : cap;
       const pct = cap == null || cap === 0 ? 0 : Math.min(100, Math.round((used / cap) * 100));
       const over = cap != null && used >= cap;
+      // Per-meter unit: v2 Free's engagement is a one-time "total"; its research/
+      // arena reset monthly ("/mo"). Unlimited meters carry no unit.
+      const mLifetime = Array.isArray(b.lifetimeMeters) ? b.lifetimeMeters.includes(m) : !!b.lifetimeCaps;
+      const unit = cap == null ? '' : (mLifetime ? ' total' : '/mo');
       return `
         <div class="usage-row">
-          <div class="usage-top"><span>${escapeHtml(METER_LABELS[m] || m)}</span><span class="${over ? 'usage-over' : ''}">${used} / ${capLabel}</span></div>
+          <div class="usage-top"><span>${escapeHtml(METER_LABELS[m] || m)}</span><span class="${over ? 'usage-over' : ''}">${used} / ${capLabel}${unit}</span></div>
           <div class="usage-bar"><i style="width:${pct}%" class="${over ? 'over' : ''}"></i></div>
         </div>`;
     }).join('') + `<div class="bill-sub" style="margin-top:10px">${
-      b.lifetimeCaps
-        ? 'One-time allowance on the Free plan — upgrade for monthly limits, or buy credits to keep going.'
-        : 'Resets on the 1st of each month (UTC).'
+      (Array.isArray(b.lifetimeMeters) && b.lifetimeMeters.length === 0)
+        ? 'Resets on the 1st of each month (UTC).'
+        : (b.lifetimeCaps
+            ? 'One-time allowance on the Free plan — upgrade for monthly limits, or buy credits to keep going.'
+            : 'Monthly meters reset on the 1st (UTC). Your Free AI-joined call is a one-time allowance — buy credits or upgrade for more.')
     }</div>`;
   }
 
@@ -11179,8 +11623,10 @@
         if (isV2 && f === 'discovery') { label = 'Prospect &amp; competitor research'; capKey = 'research'; }
         // Skip a feature the plan can't actually use (cap 0, e.g. Market Watch on Starter).
         if (METERED_FEATURES.has(f) && p.caps && p.caps[capKey] === 0) return '';
+        // Per-meter lifetime: v2 Free is mixed (engagements "total", research/arena "/mo").
+        const capLifetime = Array.isArray(p.lifetimeMeters) ? p.lifetimeMeters.includes(capKey) : !!p.lifetimeCaps;
         const cap = (!isEnterprise && METERED_FEATURES.has(f) && p.caps && capKey in p.caps)
-          ? ` <span class="plan-cap">${capBadge(p.caps[capKey], p.lifetimeCaps)}</span>` : '';
+          ? ` <span class="plan-cap">${capBadge(p.caps[capKey], capLifetime)}</span>` : '';
         return `<li>${label}${cap}</li>`;
       }).join('');
       // v2 commercial shape: included seats (+price per extra), paid

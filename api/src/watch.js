@@ -319,6 +319,283 @@ router.post('/findings/:id/accept', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── Market trends — manually fed intel ──────────────────────────────────────
+// The rep pastes a news item / regulation / market development ("CBN mandates
+// MFA on top of OTP for all banks"); the AI judges its impact on OUR company
+// and products, derives engagement motives (reasons + openers to reach out to
+// clients) and a prospecting angle, and the whole thing is filed as TENANT
+// intel (metadata.isMarketTrend) so it feeds briefs/battlecards like any doc.
+const TREND_SCHEMA = {
+  type: 'object',
+  properties: {
+    headline:    { type: 'string', description: 'one-line restatement of the development' },
+    summary:     { type: 'string', description: 'what happened, 2-3 neutral sentences' },
+    materiality: { type: 'integer', description: '1-5 impact on OUR business (5 = existential/major opportunity)' },
+    companyImpact: { type: 'string', description: 'how this impacts our company specifically, given our positioning and ICP' },
+    productImpacts: { type: 'array', items: { type: 'object', properties: {
+      product:     { type: 'string', description: 'one of OUR product names' },
+      impact:      { type: 'string' },
+      opportunity: { type: 'string', description: 'the sales opportunity this creates for that product, if any' },
+    }, required: ['product', 'impact'] } },
+    engagementMotives: { type: 'array', items: { type: 'object', properties: {
+      who:    { type: 'string', description: 'which client/prospect type to engage' },
+      motive: { type: 'string', description: 'the reason this development justifies reaching out NOW' },
+      opener: { type: 'string', description: 'a line the rep can say or write verbatim to open the conversation' },
+    }, required: ['motive'] } },
+    prospectingAngle: { type: 'object', properties: {
+      who:       { type: 'string', description: 'the kind of companies to go find' },
+      industry:  { type: 'string', description: 'their industry/segment, one or two words' },
+      region:    { type: 'string', description: 'geography this applies to, if any' },
+      rationale: { type: 'string' },
+    } },
+    recommendedActions: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['headline', 'summary', 'materiality', 'companyImpact'],
+};
+
+async function analyzeTrend(tenantId, text, title) {
+  const tctx = await keypoints.tenantContextText(tenantId);
+  const prods = await db.query(`SELECT name, description FROM products WHERE tenant_id = $1 ORDER BY name LIMIT 30`, [tenantId]);
+  const productList = prods.rows.map((p) => `- ${p.name}${p.description ? `: ${String(p.description).slice(0, 200)}` : ''}`).join('\n') || '(no products on file)';
+  const prompt =
+    'You are the market-intelligence analyst for OUR company. A rep just fed in a market development ' +
+    '(news, regulation, industry shift). Assess what it means FOR US — our company, each of our products — ' +
+    'and how our sales team can USE it: concrete motives to engage existing clients (with an opener they can say verbatim) ' +
+    'and a prospecting angle (who to go find because of this). Be specific and honest: if the development is ' +
+    'irrelevant to our business, say so and score materiality 1 — never invent relevance. Ground every claim in ' +
+    'the development text and our context below.\n\n' +
+    `===OUR COMPANY===\n${String(tctx || '').slice(0, 2500)}\n\n` +
+    `===OUR PRODUCTS===\n${productList}\n\n` +
+    `===THE DEVELOPMENT${title ? ` — "${title}"` : ''}===\n${text.slice(0, 20000)}`;
+  const ai = gemini.getClient();
+  const resp = await withRetry(() => ai.models.generateContent({
+    model: MODEL,
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    config: { temperature: 0.3, maxOutputTokens: 2400, responseMimeType: 'application/json', responseSchema: TREND_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
+  }));
+  costs.recordGemini(tenantId, 'watch.trend', MODEL, resp.usageMetadata);
+  return JSON.parse(resp.text);
+}
+
+// File a trend (development text + its analysis) as retrievable TENANT intel.
+async function fileTrendDoc(tenantId, { text, title, analysis, sourceUrl = null, retrieved = false }) {
+  const heading = title || analysis.headline || 'Market trend';
+  const md = [
+    `# ${heading}`,
+    text ? `\n## The development\n\n${text}` : (analysis.summary ? `\n## The development\n\n${analysis.summary}` : ''),
+    `\n## Impact on us\n\n${analysis.companyImpact || ''}`,
+    (analysis.productImpacts || []).length
+      ? `\n## Product impact\n\n${analysis.productImpacts.map((p) => `- **${p.product}** — ${p.impact}${p.opportunity ? ` Opportunity: ${p.opportunity}` : ''}`).join('\n')}` : '',
+    (analysis.engagementMotives || []).length
+      ? `\n## Engagement motives\n\n${analysis.engagementMotives.map((m) => `- ${m.who ? `**${m.who}** — ` : ''}${m.motive}${m.opener ? ` Opener: "${m.opener}"` : ''}`).join('\n')}` : '',
+    analysis.prospectingAngle && (analysis.prospectingAngle.who || analysis.prospectingAngle.rationale)
+      ? `\n## Prospecting angle\n\n${[analysis.prospectingAngle.who, analysis.prospectingAngle.industry, analysis.prospectingAngle.region].filter(Boolean).join(' · ')}\n${analysis.prospectingAngle.rationale || ''}` : '',
+    sourceUrl ? `\nSource: ${sourceUrl}` : '',
+    `\n_Filed from Market trend & Alerts${retrieved ? ' (AI-retrieved)' : ''}._`,
+  ].filter(Boolean).join('\n');
+  return knowledge.ingest({
+    tenantId,
+    file: { buffer: Buffer.from(md, 'utf8'), mimetype: 'text/markdown', originalname: 'market-trend.md' },
+    title: `[Trend] ${heading}`.slice(0, 200),
+    category: 'ORG_INTELLIGENCE',
+    scope: 'TENANT',
+    streamType: sourceUrl ? 'WEB' : 'FILE',
+    sourceUrl: sourceUrl || null,
+    metadata: { isMarketTrend: true, retrieved, trendAnalysis: analysis, materiality: analysis.materiality || 3 },
+  });
+}
+
+// POST /watch/trends { text, title? } — analyze + file as TENANT intel.
+// User-initiated AI analysis → costs one research unit (credits-eligible).
+router.post('/trends', async (req, res, next) => {
+  try {
+    const text = String((req.body && req.body.text) || '').trim();
+    const title = String((req.body && req.body.title) || '').trim().slice(0, 160);
+    if (text.length < 40) return res.status(400).json({ error: 'Paste or type the development first (a few sentences minimum).' });
+
+    const charge = await gating.chargeUnit(req, 'discovery');
+    let analysis;
+    try {
+      analysis = await analyzeTrend(req.tenantId, text, title);
+    } catch (err) {
+      await usage.refund(req.tenantId, charge.meter, charge.consumed, { lifetime: charge.lifetime });
+      throw err;
+    }
+    const doc = await fileTrendDoc(req.tenantId, { text, title, analysis });
+    res.json({ analysis, documentId: doc && doc.id });
+  } catch (err) {
+    if (err.status === 402 || err.code === 'USAGE_LIMIT') return res.status(402).json({ error: err.message, code: err.code || 'USAGE_LIMIT' });
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+
+// POST /watch/trends/discover { industry?, region?, country? } — AI-retrieved
+// market trends: web-search recent developments for the segment/geo, pick the
+// material ones, and return each with the full impact analysis (NOT saved —
+// the rep reviews and saves the ones that matter via /trends/save).
+// Costs one research unit.
+const TRENDS_DISCOVERED_SCHEMA = {
+  type: 'object',
+  properties: {
+    trends: { type: 'array', items: { type: 'object', properties: {
+      ...TREND_SCHEMA.properties,
+      sourceUrl:   { type: 'string', description: 'best source url from the findings, if evident' },
+      sourceTitle: { type: 'string' },
+      sourceDate:  { type: 'string', description: 'source publication date, YYYY-MM-DD, if evident' },
+    }, required: TREND_SCHEMA.required } },
+  },
+  required: ['trends'],
+};
+// Recency filter → search-engine freshness + a hard date window the results
+// must fall inside. Anything older than 12 months is never returned.
+const TREND_RECENCY = {
+  latest: { days: 31,  freshness: () => 'pm' },
+  '3m':   { days: 92,  freshness: (from, to) => `${from}to${to}` },
+  '6m':   { days: 183, freshness: (from, to) => `${from}to${to}` },
+  '12m':  { days: 366, freshness: () => 'py' },
+};
+router.post('/trends/discover', async (req, res, next) => {
+  try {
+    const web = require('./knowledge/web');
+    if (!web.isConfigured() && !web.isBraveConfigured()) {
+      return res.status(503).json({ error: 'AI search is not configured on this workspace' });
+    }
+    const industry = String((req.body && req.body.industry) || '').trim().slice(0, 80);
+    const region   = String((req.body && req.body.region)   || '').trim().slice(0, 80);
+    const country  = String((req.body && req.body.country)  || '').trim().slice(0, 80);
+    // Industry + a concrete region are mandatory — they focus the scan.
+    if (!industry) return res.status(400).json({ error: 'Pick an industry/segment — it focuses the scan.' });
+    if (!region || /global|any/i.test(region)) return res.status(400).json({ error: 'Pick a specific region (not Global/Any) — it focuses the scan.' });
+    const geo = country || region;
+    const recencyKey = ['latest', '3m', '6m', '12m'].includes(req.body && req.body.recency) ? req.body.recency : 'latest';
+    const recency = TREND_RECENCY[recencyKey];
+    const cutoff = new Date(Date.now() - recency.days * 86400000);
+    const fmt = (d) => d.toISOString().slice(0, 10);
+    const freshness = recency.freshness(fmt(cutoff), fmt(new Date()));
+    // Already-shown results (urls + headlines) from prior "Retrieve more" runs.
+    const exclude = (Array.isArray(req.body && req.body.exclude) ? req.body.exclude : [])
+      .map((x) => String(x || '').trim().toLowerCase()).filter(Boolean).slice(0, 200);
+    const excludeSet = new Set(exclude);
+
+    const charge = await gating.chargeUnit(req, 'discovery');
+    try {
+      const tctx = await keypoints.tenantContextText(req.tenantId);
+      const queries = [
+        `${industry} new regulation mandate ${geo}`,
+        `${industry} market trends news ${geo}`,
+        `${industry} industry developments ${geo}`,
+      ];
+      const seen = new Set();
+      const hits = [];
+      for (const q of queries) {
+        let batch = [];
+        try { batch = (await web.search(q, { limit: 10, freshness })) || []; } catch { /* engine hiccup — other queries may still land */ }
+        for (const h of batch) {
+          if (!h.url || seen.has(h.url)) continue;
+          seen.add(h.url);
+          // Drop already-shown sources and anything dated outside the window.
+          if (excludeSet.has(h.url.toLowerCase())) continue;
+          if (h.publishedTime) {
+            const d = new Date(h.publishedTime);
+            if (!Number.isNaN(d.getTime()) && d < cutoff) continue;
+          }
+          hits.push(h);
+        }
+      }
+      if (!hits.length) {
+        await usage.refund(req.tenantId, charge.meter, charge.consumed, { lifetime: charge.lifetime });
+        return res.json({ trends: [], exhausted: true, note: `Nothing new within the selected window — you're up to date on ${industry} in ${geo}.` });
+      }
+      const findingsText = hits.slice(0, 30).map((h) => `- ${h.title || h.url}\n  ${h.url}${h.publishedTime ? `\n  dated: ${String(h.publishedTime).slice(0, 10)}` : ''}\n  ${String(h.description || '').slice(0, 280)}`).join('\n');
+      const prods = await db.query(`SELECT name, description FROM products WHERE tenant_id = $1 ORDER BY name LIMIT 30`, [req.tenantId]);
+      const productList = prods.rows.map((p) => `- ${p.name}${p.description ? `: ${String(p.description).slice(0, 200)}` : ''}`).join('\n') || '(no products on file)';
+      const prompt =
+        'You are the market-intelligence analyst for OUR company. Below are fresh web findings about ' +
+        `${industry} in ${geo}. Pick up to 5 developments that are RECENT (source dated within the last ${recency.days} days — ` +
+        'check the dated: lines; skip anything older or undatable beyond doubt), REAL (supported by the findings — never invented) ' +
+        'and MATERIAL to our business. For each produce a BRIEF impact assessment — the rep opens the source link for depth: ' +
+        'summary ≤2 sentences; companyImpact ≤2 sentences; at most 3 productImpacts (one sentence each); at most 2 engagementMotives ' +
+        '(short motive + a one-line opener); a one-line prospecting angle; at most 3 recommendedActions. ' +
+        'Always include the source url and its date (sourceDate, YYYY-MM-DD). ' +
+        (exclude.length ? `DO NOT repeat developments already shown to the rep:\n${exclude.slice(0, 60).map((x) => `- ${x}`).join('\n')}\n` : '') +
+        'If nothing new and material remains, return an empty list.\n\n' +
+        `===OUR COMPANY===\n${String(tctx || '').slice(0, 2500)}\n\n` +
+        `===OUR PRODUCTS===\n${productList}\n\n` +
+        `===WEB FINDINGS===\n${findingsText}`;
+      const ai = gemini.getClient();
+      const resp = await withRetry(() => ai.models.generateContent({
+        model: MODEL,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: { temperature: 0.3, maxOutputTokens: 6000, responseMimeType: 'application/json', responseSchema: TRENDS_DISCOVERED_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
+      }));
+      costs.recordGemini(req.tenantId, 'watch.trendDiscover', MODEL, resp.usageMetadata);
+      const parsed = JSON.parse(resp.text);
+      let trends = Array.isArray(parsed.trends) ? parsed.trends.slice(0, 5) : [];
+      // Hard guards the model can't bypass: no repeats, nothing dated outside
+      // the window (and never older than 12 months).
+      trends = trends.filter((t) => {
+        const url = String(t.sourceUrl || '').trim().toLowerCase();
+        const head = String(t.headline || '').trim().toLowerCase();
+        if ((url && excludeSet.has(url)) || (head && excludeSet.has(head))) return false;
+        if (t.sourceDate) {
+          const d = new Date(t.sourceDate);
+          if (!Number.isNaN(d.getTime()) && d < cutoff) return false;
+        }
+        return true;
+      });
+      res.json({ trends, exhausted: trends.length === 0, ...(trends.length === 0 ? { note: `Nothing new within the selected window — you're up to date on ${industry} in ${geo}.` } : {}) });
+    } catch (err) {
+      await usage.refund(req.tenantId, charge.meter, charge.consumed, { lifetime: charge.lifetime });
+      throw err;
+    }
+  } catch (err) {
+    if (err.status === 402 || err.code === 'USAGE_LIMIT') return res.status(402).json({ error: err.message, code: err.code || 'USAGE_LIMIT' });
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+
+// POST /watch/trends/save { analysis, title?, text?, sourceUrl? } — file an
+// AI-retrieved trend the rep chose to keep. No AI call → free.
+router.post('/trends/save', async (req, res, next) => {
+  try {
+    const analysis = (req.body && req.body.analysis) || null;
+    if (!analysis || typeof analysis !== 'object' || !analysis.headline || !analysis.companyImpact) {
+      return res.status(400).json({ error: 'analysis (with headline and companyImpact) required' });
+    }
+    const doc = await fileTrendDoc(req.tenantId, {
+      text: String((req.body && req.body.text) || '').trim().slice(0, 20000),
+      title: String((req.body && req.body.title) || '').trim().slice(0, 160),
+      analysis,
+      sourceUrl: String((req.body && req.body.sourceUrl) || '').trim().slice(0, 500) || null,
+      retrieved: true,
+    });
+    res.json({ documentId: doc && doc.id });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+
+// GET /watch/trends — previously analyzed trends, newest first.
+router.get('/trends', async (req, res, next) => {
+  try {
+    const r = await db.query(
+      `SELECT id, title, metadata, created_at FROM kb_documents
+        WHERE tenant_id = $1 AND scope = 'TENANT' AND COALESCE(metadata->>'isMarketTrend', '') = 'true'
+        ORDER BY created_at DESC LIMIT 50`,
+      [req.tenantId]
+    );
+    res.json({ trends: r.rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      createdAt: row.created_at,
+      analysis: (row.metadata && row.metadata.trendAnalysis) || null,
+    })) });
+  } catch (err) { next(err); }
+});
+
 // Lightweight: does the caller's plan include Market Watch? The per-entity
 // schedule UI keys off this (the schedule itself now lives on each entity, set
 // via PATCH /companies/:id and /portfolio/competitors/:id).

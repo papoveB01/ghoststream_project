@@ -226,10 +226,10 @@ router.post('/', gating.requireFeature('discovery'), async (req, res, next) => {
 // POST /companies/discover { region, industry } — web-search for potential
 // prospects (companies showing a buying signal that fits OUR products), ranked by
 // priority. Read-only research (no creation); the rep adds the relevant ones.
-router.post('/discover', gating.requireFeature('discovery'), gating.requireCapacity('discovery'), async (req, res, next) => {
+router.post('/discover', gating.requireFeature('discovery'), gating.requireCapacity('discovery', { setupAction: 'discover' }), async (req, res, next) => {
   try {
     if (!web.isConfigured() && !web.isBraveConfigured()) {
-      return res.status(503).json({ error: 'web search is not configured on this workspace' });
+      return res.status(503).json({ error: 'AI search is not configured on this workspace' });
     }
     const broadRegion = String((req.body && req.body.region) || '').trim();
     const country = String((req.body && req.body.country) || '').trim();
@@ -386,7 +386,9 @@ router.post('/:id/find-contacts', gating.requireFeature('discovery'), async (req
     // search) is the honest UX. Probe by charging one unit and refunding it.
     try {
       const usage = require('./usage');
-      const probe = await gating.chargeUnit(req, 'discovery');
+      // peekFreebie: if the setup gate's first-reveal freebie is still open the
+      // search must proceed even with 0 allowance left — without claiming it.
+      const probe = await gating.chargeUnit(req, 'discovery', { setupAction: 'contacts', peekFreebie: true });
       await usage.refund(req.tenantId, probe.meter, probe.consumed, { lifetime: probe.lifetime });
     } catch (e) {
       if (e.code === 'USAGE_LIMIT' || e.code === 'SUBSCRIPTION_REQUIRED') {
@@ -482,7 +484,7 @@ router.post('/:id/add-contacts', gating.requireFeature('discovery'), async (req,
     // there and reports the partial result instead of failing the request.
     const usage = require('./usage');
     const revealOpts = {
-      charge: () => gating.chargeUnit(req, 'discovery'),
+      charge: () => gating.chargeUnit(req, 'discovery', { setupAction: 'contacts' }),
       refund: (h) => usage.refund(req.tenantId, h.meter, h.consumed, { lifetime: h.lifetime }),
     };
 
