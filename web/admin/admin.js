@@ -3287,6 +3287,13 @@
     // shows the offering name (not its slug) as a pill on the card.
     const offeringNames = new Map((competitorOfferings || []).map((o) => [o.id, o.name]));
     const scopeLabel = scope === 'TENANT' ? 'workspace intel' : scope === 'PROSPECT' ? 'prospect memory' : 'battlecards';
+    // Product-line picker options (TENANT scope) — existing lines plus an inline
+    // "＋ Add new product…" entry so a product can be created without leaving the
+    // Intel tab. The sentinel value is handled by wireProductLineSelect() below.
+    const productLineOptions = () =>
+      `<option value="">— Company-wide —</option>`
+      + products.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('')
+      + `<option value="__newprod__">＋ Add new product…</option>`;
     container.innerHTML = `
       <div class="intel-lib-h">
         <strong>${docs.length} doc${docs.length === 1 ? '' : 's'}</strong>
@@ -3320,17 +3327,17 @@
         ` : ''}
         <div class="intel-lib-tab-pane" id="intel-lib-pane-file">
           <input type="file" id="intel-lib-file" accept=".pdf,.md,.txt,.docx">
-          ${products.length && scope === 'TENANT'
+          ${scope === 'TENANT'
             ? `<label class="kb-subtle" style="display:block;margin-top:6px">Product line (optional)
-                 <select id="intel-lib-product"><option value="">— Company-wide —</option>${products.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('')}</select>
+                 <select id="intel-lib-product">${productLineOptions()}</select>
                </label>` : ''}
           <button class="kb-secondary-btn" id="intel-lib-file-submit">Upload &amp; index</button>
         </div>
         <div class="intel-lib-tab-pane hidden" id="intel-lib-pane-web">
           <input type="url" id="intel-lib-url" placeholder="https://example.com/page">
-          ${products.length && scope === 'TENANT'
+          ${scope === 'TENANT'
             ? `<label class="kb-subtle" style="display:block;margin-top:6px">Product line (optional)
-                 <select id="intel-lib-url-product"><option value="">— Company-wide —</option>${products.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('')}</select>
+                 <select id="intel-lib-url-product">${productLineOptions()}</select>
                </label>` : ''}
           <button class="kb-secondary-btn" id="intel-lib-url-submit">Fetch &amp; index</button>
         </div>
@@ -3355,6 +3362,49 @@
         q('intel-lib-pane-file').classList.toggle('hidden', t !== 'file');
         q('intel-lib-pane-web').classList.toggle('hidden',  t !== 'web');
       }));
+    // "＋ Add new product…" on the TENANT product-line selects: prompt for a
+    // name, create it via the portfolio API, then inject + select it across both
+    // (File + URL) selects so the choice survives a pane switch.
+    function wireProductLineSelect(sel) {
+      if (!sel) return;
+      let prev = sel.value;
+      sel.addEventListener('change', async () => {
+        if (sel.value !== '__newprod__') { prev = sel.value; return; }
+        const name = (window.prompt('New product name:') || '').trim();
+        if (!name) { sel.value = prev; return; }
+        const result = q('intel-lib-result');
+        try {
+          const resp = await fetchJson('/api/portfolio/products', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: slugify(name), name, description: null }),
+          });
+          const prod = (resp && resp.product) || { id: slugify(name), name };
+          // products === _companyData.products (same ref) for TENANT scope, so
+          // pushing keeps the cached catalog in sync without a reassign.
+          if (!products.some((p) => p.id === prod.id)) products.push({ id: prod.id, name: prod.name });
+          [q('intel-lib-product'), q('intel-lib-url-product')].forEach((s) => {
+            if (!s) return;
+            if (!Array.from(s.options).some((o) => o.value === prod.id)) {
+              s.add(new Option(prod.name, prod.id), s.querySelector('option[value="__newprod__"]'));
+            }
+          });
+          sel.value = prod.id; prev = prod.id;
+          if (result) {
+            result.classList.remove('hidden', 'error'); result.classList.add('success');
+            result.textContent = `Added product “${prod.name}”.`;
+          }
+        } catch (err) {
+          sel.value = prev;
+          if (result) {
+            result.classList.remove('hidden', 'success'); result.classList.add('error');
+            result.textContent = `Couldn't add product: ${err.message}`;
+          }
+        }
+      });
+    }
+    wireProductLineSelect(q('intel-lib-product'));
+    wireProductLineSelect(q('intel-lib-url-product'));
+
     // Competitor "applies to" toggle
     const allBox = q('intel-lib-applies-all');
     if (allBox) {

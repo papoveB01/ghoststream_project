@@ -182,6 +182,28 @@ body {
   font-size: 13.5px;
   margin-bottom: 14px;
 }
+/* Positive counterpart to .error — used for the "reset link sent" / "password
+   updated" confirmations on the login page. */
+.login-note {
+  background: var(--green-wash, rgba(30,125,69,.10));
+  border: 1px solid rgba(30,125,69,.30);
+  color: var(--accent);
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
+  margin-bottom: 14px;
+}
+/* "Forgot password?" link sitting just under the Sign in button. */
+.login-aux {
+  text-align: center;
+  margin-top: 14px;
+}
+.login-aux a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+}
+.login-aux a:hover { color: var(--accent); }
 .login-foot {
   text-align: center;
   margin-top: 22px;

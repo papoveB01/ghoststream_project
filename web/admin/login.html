@@ -35,6 +35,44 @@
         </div>
         <div class="error hidden" id="error"></div>
         <button type="submit" class="primary-cta" id="submit-btn">Sign in</button>
+        <div class="login-aux"><a href="#" id="forgot-link">Forgot password?</a></div>
+      </form>
+
+      <!-- Forgot password: request a reset link by email. Shown when the
+           "Forgot password?" link is clicked, while #login-form is hidden. -->
+      <form id="forgot-form" class="hidden">
+        <p class="lede">Enter your account email and we'll send you a link to reset your password.</p>
+        <div class="field">
+          <label for="forgot-email">Email</label>
+          <input type="email" id="forgot-email" autocomplete="username" required placeholder="you@company.com">
+        </div>
+        <div class="error hidden" id="forgot-error"></div>
+        <div class="login-note hidden" id="forgot-note"></div>
+        <button type="submit" class="primary-cta" id="forgot-submit-btn">Send reset link</button>
+        <div class="login-foot">
+          <a href="#" id="forgot-back">← Back to sign in</a>
+        </div>
+      </form>
+
+      <!-- Reset password: shown when the page is opened from an emailed reset
+           link (i.e. ?token=… is present in the URL). -->
+      <form id="reset-form" class="hidden">
+        <p class="lede">Choose a new password for your DealScope account.</p>
+        <div class="field">
+          <label for="reset-password">New password</label>
+          <input type="password" id="reset-password" autocomplete="new-password" required minlength="12"
+                 placeholder="At least 12 characters">
+        </div>
+        <div class="field">
+          <label for="reset-password2">Confirm new password</label>
+          <input type="password" id="reset-password2" autocomplete="new-password" required minlength="12">
+        </div>
+        <div class="error hidden" id="reset-error"></div>
+        <div class="login-note hidden" id="reset-note"></div>
+        <button type="submit" class="primary-cta" id="reset-submit-btn">Set new password</button>
+        <div class="login-foot">
+          <a href="/admin/login.html" id="reset-back">← Back to sign in</a>
+        </div>
       </form>
 
       <!-- New-device verification: shown after a correct password on an
