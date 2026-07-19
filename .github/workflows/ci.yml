@@ -10,7 +10,9 @@ on:
 jobs:
   api-tests:
     name: API tests
-    runs-on: ubuntu-latest
+    # Self-hosted runner on our own host (no GitHub-hosted minutes billed). The
+    # runner box has Docker, so the redis service container below still works.
+    runs-on: [self-hosted, linux]
     services:
       redis:
         image: redis:7-alpine
@@ -45,7 +47,7 @@ jobs:
 
   audit:
     name: Dependency audit (advisory)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     continue-on-error: true   # informational for now — known aging deps (multer 1.x, pdf-parse); tighten later
     steps:
       - uses: actions/checkout@v4
