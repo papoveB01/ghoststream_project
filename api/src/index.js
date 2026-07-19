@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const personas = require('./personas');
 const gemini = require('./gemini');
 const analysis = require('./analysis');
@@ -134,7 +135,7 @@ app.delete('/gemini/caches/:name', auth.authMiddleware, auth.requireSuperadmin, 
   } catch (err) { next(err); }
 });
 
-app.post('/gemini/roleplay/:slug', async (req, res, next) => {
+app.post('/gemini/roleplay/:slug', auth.authMiddleware, async (req, res, next) => {
   try {
     const seed = personas[req.params.slug];
     if (!seed) return res.status(404).json({ error: 'unknown persona', slug: req.params.slug });
@@ -167,7 +168,7 @@ app.post('/gemini/roleplay/:slug', async (req, res, next) => {
 
 // POST /meetings  { meetingUrl, botName? }
 // Creates a Recall.ai bot that joins the call with real-time transcription.
-app.post('/meetings', async (req, res, next) => {
+app.post('/meetings', auth.authMiddleware, async (req, res, next) => {
   try {
     const { meetingUrl, botName } = req.body || {};
     if (!meetingUrl) return res.status(400).json({ error: 'meetingUrl required' });
@@ -213,6 +214,25 @@ app.get('/meetings/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Guards the /_internal/* endpoints, which are called server-to-server by the
+// capture service (never by a browser). Requires a shared secret in the
+// X-Internal-Secret header, compared in constant time. Fails CLOSED: with no
+// INTERNAL_API_SECRET set we refuse rather than run unauthenticated. nginx also
+// 404s /api/_internal at the public edge, so this is defence in depth.
+const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || '';
+function requireInternalAuth(req, res, next) {
+  if (!INTERNAL_API_SECRET) {
+    console.error('[internal] INTERNAL_API_SECRET is not set — refusing internal request');
+    return res.status(503).json({ error: 'internal endpoint not configured' });
+  }
+  const provided = Buffer.from(String(req.get('X-Internal-Secret') || ''));
+  const expected = Buffer.from(INTERNAL_API_SECRET);
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  return next();
+}
+
 // Internal hook: capture calls this after a Recall webhook event so the brain
 // (Gemini analysis) runs in the api service that owns the GEMINI_API_KEY.
 //
@@ -224,7 +244,7 @@ app.get('/meetings/:id', async (req, res, next) => {
 //   2. Already-completed meetings (portalId set) short-circuit so Recall's
 //      webhook retries don't duplicate the Cloudflare Stream ingest or the
 //      portal record.
-app.post('/_internal/meetings/:id/process', async (req, res, next) => {
+app.post('/_internal/meetings/:id/process', requireInternalAuth, async (req, res, next) => {
   try {
     const m = await store.getMeeting(req.params.id);
     if (!m) return res.status(404).json({ error: 'meeting not found' });
@@ -389,13 +409,14 @@ app.post('/_internal/meetings/:id/process', async (req, res, next) => {
 // First Loop — full pipeline on the sample 5-minute call
 // =========================================================================
 
-app.post('/first-loop', async (req, res, next) => {
+app.post('/first-loop', auth.authMiddleware, async (req, res, next) => {
   try {
     const transcript = (req.body && req.body.transcript) || sampleTranscript;
 
-    // First-loop is an unauth demo endpoint scoped to the Founders tenant
-    // (it exercises the recall.ai → portal flow against the seeded demo KB).
-    // Runs unfiltered (no engagement profile, no mission tags).
+    // First-loop is a demo endpoint scoped to the Founders tenant (it exercises
+    // the recall.ai → portal flow against the seeded demo KB). Requires a
+    // session (see fix/gate-cost-endpoints): it drives paid Gemini analysis, so
+    // it must not be anonymous. Runs unfiltered (no engagement profile / tags).
     const meeting = await store.createMeeting({
       source: 'first-loop',
       meetingUrl: '(mock 5-minute call)',
@@ -587,9 +608,17 @@ app.get('/portals/:id', async (req, res, next) => {
 
     // Anonymous viewers see a stripped meeting ref (no botId / tenantId /
     // missionId) — those are operator metadata, not customer-facing.
-    const meeting = meetingRefFromRecord(await store.getMeeting(p.meetingId));
+    const meetingRecord = await store.getMeeting(p.meetingId);
+    const meeting = meetingRefFromRecord(meetingRecord);
     const claims = auth.verifyToken(auth.tokenFromRequest(req));
-    const meetingForViewer = meeting && (claims
+    // Manager view requires belonging to the portal's tenant (or superadmin).
+    // Portal ids are the public share-link identifiers handed to prospects, so
+    // a valid session for a DIFFERENT tenant must be treated as a public viewer
+    // — otherwise any authenticated user could read another tenant's internal
+    // knowledgeGaps just by holding a share link.
+    const portalTenantId = (meetingRecord && meetingRecord.meta && meetingRecord.meta.tenantId) || null;
+    const isManager = !!(claims && (claims.adm || (portalTenantId && claims.tid === portalTenantId)));
+    const meetingForViewer = meeting && (isManager
       ? meeting
       : {
           id: meeting.id,
@@ -599,7 +628,7 @@ app.get('/portals/:id', async (req, res, next) => {
           createdAt: meeting.createdAt,
         });
 
-    const safe = claims
+    const safe = isManager
       ? p
       : { ...p, moments: { ...(p.moments || {}), knowledgeGaps: [] } };
 
@@ -612,7 +641,7 @@ app.get('/portals/:id', async (req, res, next) => {
         ...pubPortal,
         meeting: meetingForViewer,
         audit,
-        viewerRole: claims ? 'admin' : 'public',
+        viewerRole: isManager ? 'admin' : 'public',
       },
     });
   } catch (err) { next(err); }
@@ -1219,6 +1248,14 @@ app.put('/portals/:id/engagement', auth.authMiddleware, async (req, res, next) =
   try {
     const p = await store.getPortal(req.params.id);
     if (!p) return res.status(404).json({ error: 'portal not found' });
+    // Tenant ownership: portal ids are public share links, so a valid session
+    // is not enough — the caller must belong to the portal's tenant (or be a
+    // superadmin). Mirrors the check on POST /portals/:id/save-intel.
+    const m = p.meetingId ? await store.getMeeting(p.meetingId) : null;
+    const ownerTenantId = (m && m.meta && m.meta.tenantId) || null;
+    if (!req.user.adm && (!ownerTenantId || ownerTenantId !== req.tenantId)) {
+      return res.status(404).json({ error: 'portal not found' });
+    }
     const profile = sanitizeEngagementPayload(req.body || {});
     p.engagement = profile;
     // Re-save the whole portal record via setJson-style overwrite.
@@ -1238,6 +1275,14 @@ app.post('/portals/:id/reanalyze', auth.authMiddleware, async (req, res, next) =
     const p = await store.getPortal(req.params.id);
     if (!p) return res.status(404).json({ error: 'portal not found' });
     const meeting = p.meetingId ? await store.getMeeting(p.meetingId) : null;
+    // Tenant ownership (portal ids are public share links — see the same check
+    // on GET /portals/:id and POST /portals/:id/save-intel). Without this any
+    // authenticated user could re-run analysis against another tenant's KB,
+    // overwrite their stored report, and burn their Gemini quota.
+    const ownerTenantId = (meeting && meeting.meta && meeting.meta.tenantId) || null;
+    if (!req.user.adm && (!ownerTenantId || ownerTenantId !== req.tenantId)) {
+      return res.status(404).json({ error: 'portal not found' });
+    }
     const transcript = meeting && meeting.transcript;
     if (!transcript) {
       return res.status(422).json({

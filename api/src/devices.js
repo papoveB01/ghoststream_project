@@ -30,11 +30,23 @@ const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex'
 // ---- fingerprint -----------------------------------------------------------
 
 // Real client IP. Express has no `trust proxy` set, so req.ip is the nginx
-// container — read the forwarded headers nginx sets (proxy/nginx.conf).
+// container. The host nginx sets X-Real-IP to the true client address
+// (overwriting any client-supplied value) and the container proxy forwards it
+// unchanged (proxy/nginx.conf), so it is the trustworthy source — prefer it.
+//
+// X-Forwarded-For is only a fallback and must NOT be read left-to-right: a
+// client can prepend arbitrary values, so the leftmost token is attacker-
+// controlled (which would defeat the per-IP login / password-reset throttles
+// and let forged IPs into the audit log). The rightmost entry is the address
+// the nearest trusted proxy actually observed, so use that.
 function clientIp(req) {
+  const realIp = req.headers['x-real-ip'];
+  if (realIp) return String(realIp).trim();
   const xff = req.headers['x-forwarded-for'];
-  if (xff) return String(xff).split(',')[0].trim();
-  if (req.headers['x-real-ip']) return String(req.headers['x-real-ip']).trim();
+  if (xff) {
+    const parts = String(xff).split(',').map((s) => s.trim()).filter(Boolean);
+    if (parts.length) return parts[parts.length - 1];
+  }
   return (req.socket && req.socket.remoteAddress) || '';
 }
 
