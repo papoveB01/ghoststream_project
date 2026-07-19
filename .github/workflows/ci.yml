@@ -11,12 +11,14 @@ jobs:
   api-tests:
     name: API tests
     # Self-hosted runner on our own host (no GitHub-hosted minutes billed). The
-    # runner box has Docker, so the redis service container below still works.
+    # box is shared with other projects, so we must NOT hard-bind host port 6379
+    # (cardsix-redis already holds it). Publish only the container port and let
+    # Docker pick a free host port, read back via job.services.redis.ports below.
     runs-on: [self-hosted, linux]
     services:
       redis:
         image: redis:7-alpine
-        ports: ['6379:6379']
+        ports: ['6379']          # host port auto-assigned → no collision on the shared box
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -24,7 +26,6 @@ jobs:
           --health-retries 5
     env:
       REDIS_HOST: localhost
-      REDIS_PORT: '6379'
       JWT_SECRET: ci-test-jwt-secret-at-least-32-bytes-long-xx
       ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret
       NODE_ENV: test
@@ -43,6 +44,10 @@ jobs:
         run: node -e "const fs=require('fs'),cp=require('child_process');function walk(d){for(const f of fs.readdirSync(d,{withFileTypes:true})){const p=d+'/'+f.name;if(f.isDirectory())walk(p);else if(f.name.endsWith('.js'))cp.execSync('node --check '+JSON.stringify(p));}}walk('src');console.log('syntax ok');"
       - name: Run tests
         working-directory: api
+        env:
+          # Docker-assigned host port for the redis service (avoids the fixed-6379
+          # collision with other projects on this shared self-hosted runner).
+          REDIS_PORT: ${{ job.services.redis.ports['6379'] }}
         run: npm test
 
   audit:
