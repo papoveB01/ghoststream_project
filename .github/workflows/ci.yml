@@ -98,7 +98,7 @@ jobs:
         run: node -e "const fs=require('fs'),cp=require('child_process');function walk(d){for(const f of fs.readdirSync(d,{withFileTypes:true})){const p=d+'/'+f.name;if(f.isDirectory())walk(p);else if(f.name.endsWith('.js'))cp.execSync('node --check '+JSON.stringify(p));}}walk('web');walk('mcp/src');console.log('syntax ok');"
 
   nginx-config:
-    name: nginx config validity (proxy/nginx.conf)
+    name: config validity (nginx, workflows)
     # proxy/nginx.conf is the only file under proxy/ that actually ships — it's
     # bind-mounted into the running container as conf.d/default.conf (see
     # docker-compose.yml). The rest of proxy/ (host-*.conf) are host-level TLS
@@ -110,6 +110,33 @@ jobs:
       - uses: actions/checkout@v4
       - name: nginx -t
         run: docker run --rm -v "$PWD/proxy/nginx.conf:/etc/nginx/conf.d/default.conf:ro" nginx:1.27-alpine nginx -t
+      # Self-lint. A job-level `container:` runs as root and leaves root-owned
+      # files in the workspace every job here shares, so the NEXT job's
+      # actions/checkout dies with EACCES — the offending job passes and takes
+      # down everything after it (that is exactly what happened on run
+      # 30464769240). Parsed as YAML rather than grepped so a `container:`
+      # mentioned in a comment doesn't trip it, and a real one can't hide.
+      - name: No job-level `container:` (unsafe on the shared runner)
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = []
+          for f in sorted(glob.glob('.github/workflows/*.yml')):
+              doc = yaml.safe_load(open(f)) or {}
+              for job_name, job in (doc.get('jobs') or {}).items():
+                  if isinstance(job, dict) and 'container' in job:
+                      bad.append(f'{f}: job "{job_name}"')
+          if bad:
+              print('ERROR: job-level `container:` is unsafe on this self-hosted runner.')
+              print('Every job shares one workspace; a container job runs as root and')
+              print('leaves files the next job (running as `admin`) cannot delete, so its')
+              print('actions/checkout fails with EACCES before any step runs.')
+              print('Use `docker run` in a step instead — see the capture-tests job.')
+              for b in bad:
+                  print('  ' + b)
+              sys.exit(1)
+          print('workflow lint ok — no job-level container:')
+          PY
 
   capture-tests:
     name: capture/ tests (Python)
