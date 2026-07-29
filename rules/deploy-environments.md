@@ -1,5 +1,8 @@
 # Deploy & environments
 
+*Read when: deploying, or reasoning about which environment a checkout is. The
+promotion order that gets you here is in [conventions](./conventions.md).*
+
 `./deploy.sh {staging|production}` — run from the environment's own checkout. It `git pull --ff-only`s, rebuilds the **api image from the working tree**, runs pending migrations on boot, and bounces the proxy.
 
 **The same host runs multiple environments off separate checkouts of this repo**, distinguished only by `CONTAINER_PREFIX` / `COMPOSE_PROJECT_NAME` + env file:

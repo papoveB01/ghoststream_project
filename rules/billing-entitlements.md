@@ -1,5 +1,7 @@
 # Billing & entitlements — the core cross-cutting system
 
+*Read when: changing plans, caps, features, usage metering, credits, gating, or Stripe.*
+
 This is the most load-bearing subsystem; changes here need care and usually an ADR. Governed by **ADR-0003** (feature packaging) and **ADR-0004** (seat-based cost model) in `docs/adr/` — read them before touching pricing.
 
 - **`plans.js`** — the plan catalog and single source of truth for tiers, features, monthly caps, and Stripe price linkage. Two catalogs coexist: `PLANS` (v1) and `PLANS_V2` (v2); a tenant's `plan_version` selects which. **Grandfathering depends on v1 and v2 Stripe price ids staying distinct — never repoint a v1 `STRIPE_PRICE_*` at a v2 price.** Every cap number must clear a ≥35% gross margin (ADR-0004 §4.3) — check before editing.

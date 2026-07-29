@@ -1,5 +1,8 @@
 # Architecture
 
+*Read when: touching `api/src/`. For the frontend see [frontend](./frontend.md); for
+plans/usage/Stripe see [billing-entitlements](./billing-entitlements.md).*
+
 ## Request pipeline (`api/src/index.js`)
 Routers are mounted with a consistent middleware chain — read a mount line to know a route's contract:
 ```

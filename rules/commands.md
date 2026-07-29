@@ -1,5 +1,7 @@
 # Commands
 
+*Read when: running tests, migrations, or the api locally; anything touching CI.*
+
 Run from `api/` (Node 22). Note: `node`/`npm` may not be on the host PATH — if so, run inside the api image, e.g. `docker run --rm -v "$PWD":/app -w /app <api-image> <cmd>`.
 
 ```bash

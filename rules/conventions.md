@@ -1,6 +1,8 @@
 # Conventions
 
-## Code style
+*Read when: writing code, commits, PRs, migrations, or ADRs — i.e. before you commit.*
+
+## Code style (`api/`, `mcp/`)
 - **Vanilla JS, CommonJS** (`require`/`module.exports`) — no TypeScript, no ESM. 2-space indent, single quotes, semicolons, `camelCase`, template literals, UTC for all date math.
 - No formatter/linter is enforced (CI only `node --check`s syntax). **Match the surrounding file** for spacing, naming, and structure.
 - **Comment the *why*, not the *what*.** Load-bearing modules (`plans.js`, `usage.js`, `entitlements.js`, `credits.js`) open with a paragraph explaining the design and inline-note every non-obvious invariant. Keep this density when editing them; a throwaway comment on a one-off is not expected.
