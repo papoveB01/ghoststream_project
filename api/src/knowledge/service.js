@@ -30,6 +30,16 @@ const { FOUNDERS_TENANT_ID } = require('../users');
 const VALID_CATEGORIES = new Set(['PRODUCT_INTEL', 'ORG_INTELLIGENCE', 'BATTLECARDS']);
 const VALID_STREAM_TYPES = new Set(['FILE', 'WEB', 'SOCIAL']);
 
+// Ingest ceiling — bounds how many chunks (and therefore Gemini embed calls,
+// plus per-row INSERTs inside the single ingest transaction) one upload can
+// produce. MAX_MB (index.js) only bounds byte size, and a plain-text/markdown
+// file chunks into ~512-token windows regardless of encoding overhead, so a
+// 25MB .txt can still yield tens of thousands of chunks — each an embed call
+// held open inside one HTTP request/transaction. Enforced right after
+// chunking and before any embedding spend. ~1000 chunks ≈ 512K tokens, well
+// past any legitimate single document; env-tunable for the rare exception.
+const MAX_CHUNKS = parseInt(process.env.KB_MAX_CHUNKS || '1000', 10);
+
 // Product-level competitor intel is gated behind the competitor first having at
 // least one main-company (competitor-wide) doc. Shared 409 message so the API
 // and the per-route guards in portfolio.js speak with one voice.
@@ -265,6 +275,14 @@ async function ingest({
   if (chunks.length === 0) {
     const err = new Error('no chunks produced from file');
     err.status = 400; throw err;
+  }
+  if (chunks.length > MAX_CHUNKS) {
+    // Reject BEFORE spending anything on embeddings — this is the cheapest
+    // point to bail, right after chunking and before the network/DB work.
+    const err = new Error(
+      `document too large: ${chunks.length} chunks exceeds the ${MAX_CHUNKS}-chunk ingest limit — split it into smaller documents and upload separately`
+    );
+    err.status = 413; throw err;
   }
 
   // 4. Embed (network — slowest step; if this fails, no DB state is touched yet)

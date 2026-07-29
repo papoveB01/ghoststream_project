@@ -158,15 +158,34 @@ async function bootstrapFoundersAdmin() {
   }
   const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
-  const existing = await db.query(`SELECT id FROM users WHERE lower(email) = lower($1) LIMIT 1`, [email]);
+  // Scoped to the Founders tenant on BOTH the lookup and the UPDATE: ADMIN_EMAIL
+  // is trusted to promote to platform superadmin, but only for a row that
+  // already lives in Founders. Without this, pointing ADMIN_EMAIL at an address
+  // a self-serve tenant happens to own (new ops owner, rotated admin identity,
+  // fresh prod stand-up) would flip an ordinary customer's account to
+  // is_admin=true on the next boot — their next JWT carries adm:true, which
+  // passes requireSuperadmin and skips RLS entirely.
+  const existing = await db.query(
+    `SELECT id FROM users WHERE lower(email) = lower($1) AND tenant_id = $2 LIMIT 1`,
+    [email, FOUNDERS_TENANT_ID]
+  );
   if (existing.rows[0]) {
     await db.query(
       `UPDATE users SET password_hash = $1, is_admin = true, email_verified = true,
                         email_verified_at = COALESCE(email_verified_at, now()), updated_at = now()
-        WHERE id = $2`,
-      [hash, existing.rows[0].id]
+        WHERE id = $2 AND tenant_id = $3`,
+      [hash, existing.rows[0].id, FOUNDERS_TENANT_ID]
     );
     return existing.rows[0].id;
+  }
+
+  // Address exists, but in a different (non-Founders) tenant: never promote a
+  // customer account. Log and skip rather than throwing, so a startup typo in
+  // ADMIN_EMAIL doesn't take the whole api down.
+  const elsewhere = await db.query(`SELECT id FROM users WHERE lower(email) = lower($1) LIMIT 1`, [email]);
+  if (elsewhere.rows[0]) {
+    console.error(`[users] ADMIN_EMAIL ${email} belongs to a non-Founders user — refusing to promote to superadmin`);
+    return null;
   }
   const inserted = await db.query(
     `INSERT INTO users (tenant_id, email, password_hash, name, role, is_admin, email_verified, email_verified_at)

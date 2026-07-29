@@ -27,12 +27,24 @@ const service = require('./service');
 const BRIEF_MODEL = require('../models').modelFor('brief');
 const BRIEF_RETRIEVAL_K = parseInt(process.env.BRIEF_RETRIEVAL_K || '8', 10);
 const APPENDIX_CHUNK_COUNT = parseInt(process.env.BRIEF_APPENDIX_CHUNKS || '4', 10);
+// generateContent has no default timeout in the SDK — an upstream hang here
+// blocks the scheduler's tick() for as long as it hangs (tick briefs run
+// serially under one `running` flag). Bound it so one bad Gemini call can
+// never wedge every tenant's brief generation for longer than this.
+const BRIEF_GEN_TIMEOUT_MS = parseInt(process.env.BRIEF_GEN_TIMEOUT_MS || '60000', 10);
 
 // Translate raw Gemini SDK errors (the JSON-in-message ones) into a clean
 // HTTP-shaped error so the admin UI / scheduler don't surface walls of
 // provider JSON to the user. Returns the original error if it doesn't match
 // a known pattern.
 function translateGeminiError(err) {
+  // AbortSignal.timeout() rejects with a DOMException named 'TimeoutError' —
+  // give it a clean message rather than falling through to the raw abort text.
+  if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+    const e = new Error('AI provider took too long to respond — retry shortly.');
+    e.status = 504; e.code = 'GEMINI_TIMEOUT';
+    return e;
+  }
   const msg = String(err?.message || err || '');
   // The SDK puts the upstream JSON straight into err.message — try to parse it.
   let upstream = null;
@@ -265,7 +277,10 @@ async function generate(missionId, tenantId) {
     response = await ai.models.generateContent({
       model: BRIEF_MODEL,
       contents: [{ role: 'user', parts: [{ text: promptParts.join('\n') }] }],
-      config: { temperature: 0.4, maxOutputTokens: 2048, thinkingConfig: { thinkingBudget: 0 } },
+      config: {
+        temperature: 0.4, maxOutputTokens: 2048, thinkingConfig: { thinkingBudget: 0 },
+        abortSignal: AbortSignal.timeout(BRIEF_GEN_TIMEOUT_MS),
+      },
     });
   } catch (raw) {
     const clean = translateGeminiError(raw);

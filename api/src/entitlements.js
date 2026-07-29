@@ -79,6 +79,17 @@ function entitlementsFor(tenant, opts = {}) {
     // Parent-allocated caps override the plan caps per meter; unspecified meters
     // fall back to the plan's BASE caps (a child never inherits the parent's
     // per-seat bonuses — the parent allocates explicitly via cap_overrides).
+    // NOTE (ADR-0004 §4.3 margin floor): this per-meter default is the full
+    // base cap, so N children left unallocated can each read the full cap
+    // independently — this function only derives one child's view and never
+    // sums across siblings, so it can't enforce a parent-wide budget itself.
+    // The budget guard lives at write-time instead: subaccounts.js's
+    // assertWithinParentCapacity rejects a NEW/EDITED cap_overrides write that
+    // would over-commit the parent's own effective cap across all children +
+    // live invites. Changing THIS default (e.g. defaulting unallocated meters
+    // to 0, or splitting the base cap across children) is a separate,
+    // customer-visible pricing decision that needs its own ADR — deliberately
+    // not done here.
     caps = (tenant.cap_overrides && typeof tenant.cap_overrides === 'object')
       ? { ...plan.caps, ...tenant.cap_overrides } : plan.caps;
     lifetimeCaps = false; // a sub-tenant under a paid parent uses monthly caps

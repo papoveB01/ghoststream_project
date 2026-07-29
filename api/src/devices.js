@@ -230,10 +230,20 @@ function emailHint(addr) {
 }
 
 // Sends the code. Returns true if a real email went out, false when SendGrid is
-// unconfigured (caller surfaces a devCode in that case, mirroring onboarding).
+// unconfigured (caller surfaces a devCode in that case, mirroring onboarding —
+// but only outside production, see the fail-closed guard below).
 async function sendOtpEmail(to, code) {
   if (!email.isConfigured()) {
-    console.log(`[devices] OTP for ${to} (email not configured): ${code}`);
+    // Fail CLOSED in production: an unset/rotated-out SENDGRID_API_KEY must
+    // never turn new-device verification into a no-op. Without this, a
+    // stolen/credential-stuffed password would sail through login the moment
+    // email is unconfigured. Dev/staging keep the console fallback so local
+    // work doesn't need real email. Never log the code itself — stdout ends
+    // up in docker logs, which would leak the OTP to anyone with log access.
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('[devices] cannot send device OTP: email is not configured');
+    }
+    console.log(`[devices] OTP for ${to} (email not configured)`);
     return false;
   }
   const mins = Math.round(OTP_TTL_SEC / 60);

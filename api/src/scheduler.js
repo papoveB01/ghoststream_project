@@ -78,13 +78,23 @@ async function findMissionsDueForBot() {
   return r.rows;
 }
 
-let running = false;
+// Two INDEPENDENT guards, not one shared `running` flag. Bot dispatch is the
+// phase with real money on it (a paid engagement unit) and a hard 5-minute
+// back-window — it must never queue behind brief generation. Briefs do a
+// Firecrawl scrape + retrieval + an LLM call per mission, run serially, up to
+// 5 per tick; if one of those hangs (even with the generateContent timeout
+// above, a slow-but-not-timed-out call can still eat most of a tick), a single
+// shared flag would leave bot dispatch starved platform-wide until the brief
+// phase finally clears. Splitting the guard means a stuck/slow brief tick
+// simply skips itself (still returns early on its OWN flag) while the next
+// per-minute tick's bot-dispatch phase runs regardless.
+let briefRunning = false;
+let botRunning = false;
 
-async function tick() {
-  if (running) return; // single-instance guard
-  running = true;
+async function runBriefPhase() {
+  if (briefRunning) return; // single-instance guard, briefs only
+  briefRunning = true;
   try {
-    // 1. Pre-Call Briefs at T-24h.
     const due = await findDueMissions();
     if (due.length > 0) {
       console.log(`[scheduler] ${due.length} mission(s) due for brief generation`);
@@ -102,12 +112,22 @@ async function tick() {
         }
       }
     }
+  } catch (err) {
+    console.error('[scheduler] brief phase failed:', err.message);
+  } finally {
+    briefRunning = false;
+  }
+}
 
-    // 2. Recall.ai bot dispatch at T-BOT_LEAD_MINUTES.
-    //    Disabled by setting BOT_LEAD_MINUTES=0. Failures here DON'T flip
-    //    the mission to FAILED — the mission's primary state machine is
-    //    about briefs, not bot dispatch. We log + leave recall_bot_id NULL
-    //    so the next tick retries until scheduled_at + 5min back-window.
+async function runBotPhase() {
+  if (botRunning) return; // single-instance guard, bot dispatch only
+  botRunning = true;
+  try {
+    // Recall.ai bot dispatch at T-BOT_LEAD_MINUTES. Disabled by setting
+    // BOT_LEAD_MINUTES=0. Failures here DON'T flip the mission to FAILED —
+    // the mission's primary state machine is about briefs, not bot dispatch.
+    // We log + leave recall_bot_id NULL so the next tick retries until
+    // scheduled_at + 5min back-window.
     const dueBots = await findMissionsDueForBot();
     if (dueBots.length > 0) {
       console.log(`[scheduler] ${dueBots.length} mission(s) due for Recall.ai bot dispatch`);
@@ -122,10 +142,19 @@ async function tick() {
       }
     }
   } catch (err) {
-    console.error('[scheduler] tick failed:', err.message);
+    console.error('[scheduler] bot dispatch phase failed:', err.message);
   } finally {
-    running = false;
+    botRunning = false;
   }
+}
+
+// Fire both phases concurrently every tick (not one `await`ed after the
+// other) — otherwise a brief phase that's still working through its serial
+// batch would delay THIS tick's bot-dispatch phase from even starting.
+// allSettled (not all) because each phase already catches its own errors
+// internally; this is just a defensive backstop.
+async function tick() {
+  await Promise.allSettled([runBriefPhase(), runBotPhase()]);
 }
 
 let watchRunning = false;

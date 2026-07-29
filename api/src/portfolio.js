@@ -4,14 +4,18 @@
 //
 // Known limitation (Phase 1): the entity `id` is a global TEXT primary key,
 // so two tenants can't both create an entity with the same id (the second
-// gets a 409 "already exists" rather than a clean per-tenant insert). Phase 1
-// onboarding doesn't let trial tenants create entities, so this isn't
-// reachable yet. Fixing it properly = UUID PKs + composite junction keys.
+// gets a 409 "already exists" rather than a clean per-tenant insert). This
+// IS reachable today — POST /products, /personas, /competitors (plus
+// /competitors/discover/add and /competitors/manual-add) are open to every
+// authenticated tenant, so cross-tenant slug squatting and an existence
+// oracle are live, not theoretical. Fixing it properly = UUID PKs + composite
+// junction keys; that's a storage change and needs its own ADR.
 
 const express = require('express');
 const db = require('./db');
 const auth = require('./auth');
 const watchSchedule = require('./watchSchedule');
+const redis = require('./redis'); // hoisted up front — also used by /competitors/threats below
 
 const TABLES = {
   products:    { table: 'products',    junction: 'kb_document_products',    column: 'product_id' },
@@ -244,9 +248,31 @@ router.get('/products/:id/competitors', async (req, res, next) => {
 //   watch       — materiality-weighted Market Watch findings, last 90 days
 // Missing factors drop out and the weights renormalize, so a competitor with
 // only a battlecard still scores honestly instead of being dragged to zero.
+//
+// The "prospects" factor (the `overlap` query below) is the expensive part:
+// it substring-searches every intel chunk against every prospect name, and
+// that predicate can't use an index. Two mitigations, both needed on a heavy
+// tenant (hundreds of competitor docs / thousands of prospects):
+//   1. The whole response is cached per tenant in Redis for
+//      MARKET_MAP_THREATS_TTL_SEC, so repeat Market Map opens are free.
+//   2. On a cache miss, the overlap scan itself is capped (most-recent-first,
+//      deterministic via ORDER BY) rather than run unbounded. On a tenant
+//      over the caps this can miss an overlap involving an older prospect or
+//      an older intel doc — acceptable, since the prior behaviour was an
+//      unbounded multi-minute scan on every page load, not a correctness
+//      guarantee.
+const marketMapThreatsKey = (tenantId) => `market-map:threats:${tenantId}`;
+const MARKET_MAP_THREATS_TTL_SEC = 3600; // 1h — recomputation is expensive; see comment above
+const OVERLAP_COMPANIES_CAP = 400; // most-recently-added prospects considered
+const OVERLAP_CHUNKS_CAP = 3000; // most-recent intel chunks considered
+
 router.get('/competitors/threats', async (req, res, next) => {
   try {
     const t = req.tenantId;
+    const cacheKey = marketMapThreatsKey(t);
+    const cached = await redis.get(cacheKey);
+    if (cached) return res.json(JSON.parse(cached));
+
     const [comps, prodTotal, pins, bc, overlap, watch] = await Promise.all([
       db.query(`SELECT id, name FROM competitors WHERE tenant_id = $1`, [t]),
       db.query(`SELECT count(*)::int AS n FROM products WHERE tenant_id = $1`, [t]),
@@ -262,16 +288,28 @@ router.get('/competitors/threats', async (req, res, next) => {
                    AND ch.text ~ 'Competing-threat level:'
                  GROUP BY j.competitor_id`, [t]),
       // Prospects named inside this competitor's intel docs (name >= 4 chars to
-      // keep short names from false-matching prose).
-      db.query(`SELECT j.competitor_id, count(DISTINCT co.id)::int AS n, array_agg(DISTINCT co.name) AS names
-                  FROM kb_chunks ch
-                  JOIN kb_documents d ON d.id = ch.document_id
-                  JOIN kb_document_competitors j ON j.document_id = d.id
-                  JOIN companies co ON co.tenant_id = d.tenant_id
-                 WHERE d.tenant_id = $1 AND d.status = 'READY'
-                   AND length(co.name) >= 4
-                   AND position(lower(co.name) IN lower(ch.text)) > 0
-                 GROUP BY j.competitor_id`, [t]),
+      // keep short names from false-matching prose). Bounded on both sides
+      // (most-recent companies × most-recent chunks, explicit ORDER BY so the
+      // cap is deterministic) so this can't turn into an unbounded
+      // companies × kb_chunks substring scan on a heavy tenant.
+      db.query(`WITH bounded_co AS (
+                  SELECT id, name FROM companies
+                   WHERE tenant_id = $1 AND length(name) >= 4
+                   ORDER BY created_at DESC
+                   LIMIT ${OVERLAP_COMPANIES_CAP}
+                ), bounded_ch AS (
+                  SELECT ch.text, j.competitor_id
+                    FROM kb_chunks ch
+                    JOIN kb_documents d ON d.id = ch.document_id
+                    JOIN kb_document_competitors j ON j.document_id = d.id
+                   WHERE d.tenant_id = $1 AND d.status = 'READY'
+                   ORDER BY d.created_at DESC
+                   LIMIT ${OVERLAP_CHUNKS_CAP}
+                )
+                SELECT bc.competitor_id, count(DISTINCT co.id)::int AS n, array_agg(DISTINCT co.name) AS names
+                  FROM bounded_ch bc
+                  JOIN bounded_co co ON position(lower(co.name) IN lower(bc.text)) > 0
+                 GROUP BY bc.competitor_id`, [t]),
       db.query(`SELECT subject_id AS competitor_id, sum(COALESCE(materiality, 3))::int AS w
                   FROM watch_findings
                  WHERE tenant_id = $1 AND scope = 'COMPETITOR'
@@ -304,7 +342,9 @@ router.get('/competitors/threats', async (req, res, next) => {
         overlapProspects: ov ? (ov.names || []).slice(0, 8) : [],
       };
     }
-    res.json({ threats });
+    const payload = { threats };
+    await redis.set(cacheKey, JSON.stringify(payload), 'EX', MARKET_MAP_THREATS_TTL_SEC);
+    res.json(payload);
   } catch (err) { next(err); }
 });
 
@@ -319,7 +359,6 @@ const knowledge = require('./knowledge/service');
 const relevance = require('./knowledge/relevance');
 const discovery = require('./knowledge/discovery');
 const keypoints = require('./knowledge/keypoints');
-const redis = require('./redis');
 const companyBrief = require('./companyBrief');
 const foundation = require('./foundation');
 const gating = require('./gating');

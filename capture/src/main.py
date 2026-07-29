@@ -6,6 +6,7 @@ Responsibility split:
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -312,11 +313,17 @@ def _normalize_recall_transcript(bot: dict[str, Any], transcript_raw: Any) -> di
 
 
 async def _archive_video(bot_id: str, video_url: str) -> dict[str, Any]:
-    """Stream the Recall.ai video URL into R2 under recordings/<bot>/<ts>.mp4."""
+    """Stream the Recall.ai video URL into R2 under recordings/<bot>/<ts>.mp4.
+
+    Must genuinely stream: recordings run 1-2h and are multi-GB, and this
+    container's /tmp is a 64MB tmpfs (docker-compose.yml), so neither
+    buffering into memory (the old `upstream.aread()`) nor spooling to disk
+    is an option — either OOM-kills ghost-capture mid-pipeline or blows the
+    tmpfs. r2.upload_video_from_url wraps boto3's upload_fileobj (which reads
+    in bounded chunks and multipart-uploads them, so peak memory is one chunk,
+    not the whole file); boto3 has no async form, so it runs off the event
+    loop via asyncio.to_thread.
+    """
     timestamp = int(time.time())
     key = f"recordings/{bot_id}/{timestamp}.mp4"
-    async with httpx.AsyncClient(timeout=300) as client:
-        async with client.stream("GET", video_url) as upstream:
-            upstream.raise_for_status()
-            content = await upstream.aread()
-    return r2.upload_bytes(key, content, content_type="video/mp4")
+    return await asyncio.to_thread(r2.upload_video_from_url, key, video_url, "video/mp4")

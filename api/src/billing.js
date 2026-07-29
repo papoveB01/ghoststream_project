@@ -131,6 +131,19 @@ async function createCheckout({ tenantId, email, plan, trial = false, successUrl
 router.post('/checkout', async (req, res, next) => {
   try {
     if (!isConfigured()) return res.status(503).json({ error: 'Billing is not configured yet.', code: 'BILLING_NOT_CONFIGURED' });
+    // Checkout always creates a NEW subscription — it can't be used to change an
+    // existing one. Letting a tenant with a live sub through here double-bills:
+    // Stripe ends up with two subscriptions and applySubscription() only ever
+    // overwrites stripe_subscription_id with the newest, so the old one keeps
+    // invoicing with nothing in the app able to see or cancel it. Plan changes
+    // must go through the Billing Portal (subscriptions.update), not Checkout.
+    const tenant = await tenants.get(req.tenantId, { fresh: true });
+    if (tenant.stripe_subscription_id) {
+      return res.status(409).json({
+        error: 'You already have an active subscription. Use the billing portal to change your plan.',
+        code: 'SUBSCRIPTION_EXISTS',
+      });
+    }
     const session = await createCheckout({
       tenantId: req.tenantId,
       email: req.user && req.user.email,
@@ -750,6 +763,17 @@ async function webhook(req, res) {
         const sub = event.data.object;
         const tenantId = (sub.metadata && sub.metadata.tenantId) || await tenants.findIdByStripeCustomer(sub.customer);
         if (tenantId) {
+          // Re-read fresh and verify this event is about the tenant's CURRENT
+          // subscription. Cancel-then-resubscribe mid-period (sub A cancelled,
+          // sub B started) means Stripe still fires this `deleted` for A once
+          // A's period lapses, arriving after stripe_subscription_id already
+          // points at B — applying it unconditionally would null out B's id
+          // and reset a paying tenant to Free for up to a full billing cycle.
+          const tenant = await tenants.get(tenantId, { fresh: true });
+          if (tenant && tenant.stripe_subscription_id && tenant.stripe_subscription_id !== sub.id) {
+            console.log(`[billing] tenant ${tenantId} got subscription.deleted for stale sub ${sub.id} (current sub is ${tenant.stripe_subscription_id}) — skipping downgrade`);
+            break;
+          }
           await tenants.update(tenantId, {
             subscription_status: 'TRIAL',
             plan: 'trial',

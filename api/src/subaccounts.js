@@ -71,12 +71,54 @@ function sanitizeCaps(input, parentTenant) {
   return out;
 }
 
+// ADR-0004 margin floor guard: sanitizeCaps only clamps ONE child's allocation
+// against the plan's full base cap — it never looks at siblings. A meter an
+// allocation leaves unset still defaults to the full base cap at read time
+// (entitlements.js), by design (changing that default is a pricing decision,
+// out of scope here). Left unchecked, N children each holding/defaulting to
+// the full base cap multiplies COGS by N with no misconfiguration required.
+// This only blocks a NEW or EDITED allocation from pushing the parent's total
+// committed capacity (existing children + still-live invites, since an invite
+// becomes a child on accept) over its own effective cap for that meter.
+async function assertWithinParentCapacity(parentTenant, caps, { excludeChildId, excludeInviteId } = {}) {
+  const plan = plans.planForTenant(parentTenant);
+  const parentCaps = plans.effectiveCaps(plan, parentTenant.extra_seats || 0);
+  const childRows = (await sys().query(
+    `SELECT cap_overrides FROM tenants WHERE parent_tenant_id = $1${excludeChildId ? ' AND id <> $2' : ''}`,
+    excludeChildId ? [parentTenant.id, excludeChildId] : [parentTenant.id]
+  )).rows;
+  const inviteRows = (await sys().query(
+    `SELECT cap_overrides FROM subtenant_invites WHERE parent_tenant_id = $1 AND status = 'PENDING' AND expires_at > now()${excludeInviteId ? ' AND id <> $2' : ''}`,
+    excludeInviteId ? [parentTenant.id, excludeInviteId] : [parentTenant.id]
+  )).rows;
+  const committed = childRows.concat(inviteRows);
+  for (const meter of plans.metersFor(parentTenant.plan_version)) {
+    const ceil = parentCaps[meter];
+    if (!Number.isFinite(ceil)) continue; // unlimited meter — nothing to over-commit
+    let sum = Number.isFinite(caps[meter]) ? caps[meter] : plan.caps[meter];
+    for (const row of committed) {
+      const v = (row.cap_overrides && Number.isFinite(row.cap_overrides[meter])) ? row.cap_overrides[meter] : plan.caps[meter];
+      if (!Number.isFinite(v)) { sum = Infinity; break; }
+      sum += v;
+    }
+    if (sum > ceil) {
+      const err = new Error(`This allocation would commit ${sum} ${meter}/mo across your team — more than your plan provides (${ceil}). Lower this allocation or another team member's first.`);
+      err.status = 400; err.code = 'SUBACCOUNT_CAP_OVERCOMMIT';
+      throw err;
+    }
+  }
+}
+
 async function parentRow(req) {
   return req.tenantRecord || await tenants.get(req.tenantId, { fresh: true });
 }
 async function usedCount(parentId) {
   const c = await sys().query('SELECT count(*)::int AS n FROM tenants WHERE parent_tenant_id = $1', [parentId]);
-  const i = await sys().query("SELECT count(*)::int AS n FROM subtenant_invites WHERE parent_tenant_id = $1 AND status = 'PENDING'", [parentId]);
+  // An expired PENDING invite can never be accepted (liveInvite requires
+  // expires_at > now()) and nothing transitions it out of PENDING — without
+  // this filter it would occupy a slot (and keep billing the $29/mo add-on)
+  // forever for capacity that can never materialise.
+  const i = await sys().query("SELECT count(*)::int AS n FROM subtenant_invites WHERE parent_tenant_id = $1 AND status = 'PENDING' AND expires_at > now()", [parentId]);
   return c.rows[0].n + i.rows[0].n;
 }
 
@@ -123,17 +165,11 @@ router.post('/invite', async (req, res, next) => {
     if (used >= limit) {
       return res.status(400).json({ error: `You've reached your team-member limit (${Number.isFinite(limit) ? limit : '—'}). Remove one or upgrade.`, code: 'SUBACCOUNT_LIMIT' });
     }
-    // ADR-0004: on a v2 plan the first sub-account is included, each further
-    // one is a $29/mo add-on — the Stripe quantity must go through BEFORE the
-    // invite exists (never provision unbilled capacity). v1 parents are
-    // grandfathered (their plan's sub-accounts stay free) and skip this.
-    const billing = require('./billing');
-    try {
-      await billing.syncSubtenantQuantity(parent, used + 1);
-    } catch (e) {
-      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
-      throw e;
-    }
+    // All request validation (email format, company-domain match, duplicate
+    // invite, cap over-commit) MUST run before the Stripe sync below — a
+    // rejected request must never touch billing. This previously ran after
+    // the sync, so a typo'd/duplicate email still left the Stripe quantity
+    // bumped (and prorated) with no invite row to show for it.
     const b = req.body || {};
     const inviteEmail = String(b.email || '').trim().toLowerCase().slice(0, 320);
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(inviteEmail)) return res.status(400).json({ error: 'A valid owner email is required.' });
@@ -154,14 +190,42 @@ router.post('/invite', async (req, res, next) => {
 
     const features = sanitizeFeatures(b.features, allowedFeatures(parent));
     const caps = sanitizeCaps(b.caps, parent);
+    try {
+      await assertWithinParentCapacity(parent, caps, {});
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      throw e;
+    }
+
+    // ADR-0004: on a v2 plan the first sub-account is included, each further
+    // one is a $29/mo add-on. Every validation check above has already passed,
+    // so it's now safe to charge the Stripe quantity. v1 parents are
+    // grandfathered (their plan's sub-accounts stay free) and skip this.
+    const billing = require('./billing');
+    try {
+      await billing.syncSubtenantQuantity(parent, used + 1);
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      throw e;
+    }
     const token = crypto.randomBytes(24).toString('base64url');
 
-    const ins = await sys().query(
-      `INSERT INTO subtenant_invites (parent_tenant_id, company_name, domain, email, features, cap_overrides, token, created_by, expires_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8, now() + ($9 || ' days')::interval)
-       RETURNING id, company_name, email, status, expires_at`,
-      [req.tenantId, companyName, companyDomain || emailDomain, inviteEmail, JSON.stringify(features), JSON.stringify(caps), token, (req.user && req.user.sub) || null, String(INVITE_TTL_DAYS)]
-    );
+    let ins;
+    try {
+      ins = await sys().query(
+        `INSERT INTO subtenant_invites (parent_tenant_id, company_name, domain, email, features, cap_overrides, token, created_by, expires_at)
+         VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8, now() + ($9 || ' days')::interval)
+         RETURNING id, company_name, email, status, expires_at`,
+        [req.tenantId, companyName, companyDomain || emailDomain, inviteEmail, JSON.stringify(features), JSON.stringify(caps), token, (req.user && req.user.sub) || null, String(INVITE_TTL_DAYS)]
+      );
+    } catch (e) {
+      // The Stripe quantity is already bumped — if the invite row itself
+      // fails to write, resync back to the pre-invite quantity so this
+      // failure can't leave the parent billed for a slot that doesn't exist.
+      // Best-effort: don't let a Stripe hiccup here mask the original error.
+      try { await billing.syncSubtenantQuantity(parent, used); } catch (e2) { console.warn('[subaccounts] resync after failed invite insert failed:', e2.message); }
+      throw e;
+    }
 
     const link = `${APP_BASE_URL}/join/?token=${encodeURIComponent(token)}`;
     if (email.isConfigured()) {
@@ -256,7 +320,18 @@ router.patch('/:childId', async (req, res, next) => {
     const b = req.body || {};
     const sets = []; const vals = []; let i = 1;
     if (Array.isArray(b.features)) { sets.push(`feature_overrides = $${i++}::jsonb`); vals.push(JSON.stringify(sanitizeFeatures(b.features, allowedFeatures(parent)))); }
-    if (b.caps && typeof b.caps === 'object') { sets.push(`cap_overrides = $${i++}::jsonb`); vals.push(JSON.stringify(sanitizeCaps(b.caps, parent))); }
+    if (b.caps && typeof b.caps === 'object') {
+      const caps = sanitizeCaps(b.caps, parent);
+      // Exclude this child from the sibling sum — we're replacing its
+      // allocation, not adding to it.
+      try {
+        await assertWithinParentCapacity(parent, caps, { excludeChildId: req.params.childId });
+      } catch (e) {
+        if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+        throw e;
+      }
+      sets.push(`cap_overrides = $${i++}::jsonb`); vals.push(JSON.stringify(caps));
+    }
     if (!sets.length) return res.status(400).json({ error: 'Nothing to update.' });
     vals.push(req.params.childId, req.tenantId);
     await sys().query(`UPDATE tenants SET ${sets.join(', ')}, updated_at = now() WHERE id = $${i++} AND parent_tenant_id = $${i}`, vals);

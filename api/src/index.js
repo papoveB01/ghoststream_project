@@ -787,7 +787,7 @@ app.post('/auth/login', async (req, res, next) => {
       code: 'OTP_REQUIRED',
       challengeId: ch.challengeId,
       emailHint: devices.emailHint(user.email),
-      ...(sent ? {} : { devCode: ch.code }), // dev fallback when email unconfigured
+      ...((!sent && process.env.NODE_ENV !== 'production') ? { devCode: ch.code } : {}), // dev-only fallback when email unconfigured; devices.sendOtpEmail() fails closed in production so `sent` is always true there, but gate here too so this can never regress into leaking the OTP
     });
   } catch (err) { next(err); }
 });

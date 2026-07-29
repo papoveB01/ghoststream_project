@@ -38,7 +38,7 @@ router.get('/', async (req, res, next) => {
     // gauges); cached, so this is effectively free on the hot path.
     const tenantRow = await tenants.get(t);
     const ent = await entitlements.resolveEntitlementsFor(tenantRow);
-    const [usedSummary, prospectsR, prodR, persR, compR, compIntelR, intelR, engCountR, profR, oppR, engR, crmR, upcR, freshR, namesR, setupR, contactsByCoR, trendR] = await Promise.all([
+    const [usedSummary, prospectsR, prodR, persR, compR, compIntelR, intelR, engCountR, profR, oppR, engR, crmR, upcR, freshR, setupR, contactsByCoR, trendR] = await Promise.all([
       usage.summary(t, { lifetimeMeters: ent.lifetimeMeters }),
       db.query(`SELECT count(*)::int AS total,
                        count(*) FILTER (WHERE created_at >= now() - interval '7 days')::int AS new_week
@@ -57,10 +57,28 @@ router.get('/', async (req, res, next) => {
                  WHERE tenant_id = $1 AND status IN ('PENDING','BRIEFED')
                    AND scheduled_at >= now() AND scheduled_at < now() + interval '7 days'`, [t]),
       db.query(`SELECT positioning, objectives FROM tenant_profiles WHERE tenant_id = $1`, [t]),
-      db.query(`SELECT DISTINCT ON (pr.company_id) pr.company_id, c.name AS company_name, pr.opportunities, pr.created_at
-                  FROM prospect_research pr JOIN companies c ON c.id = pr.company_id
-                 WHERE pr.tenant_id = $1 AND pr.status = 'DONE' AND jsonb_array_length(pr.opportunities) > 0
-                 ORDER BY pr.company_id, pr.created_at DESC`, [t]),
+      // Latest-per-company research row (with its opportunities JSONB blob).
+      // Unbounded, this loaded one row per EVERY researched company — after a
+      // CRM pull dumps tens of thousands of companies into the tenant, that's
+      // tens of thousands of opportunities arrays materialized on each
+      // Overview load. Bounded to the 500 most-recently-researched companies:
+      // a plain LIMIT can't sit on the DISTINCT ON query directly (its ORDER
+      // BY is pinned to company_id to pick "latest per group"), so the
+      // recency ordering + cap is applied in an outer wrapper instead. This
+      // caps openSignals/strengthBreakdown/topProspects-heat to the most
+      // recently researched 500 companies rather than the tenant's full
+      // history — identical to today's behavior for every tenant under that
+      // size (i.e. everyone except the runaway-CRM-import case this fixes).
+      db.query(`SELECT company_id, company_name, opportunities, created_at
+                  FROM (
+                    SELECT DISTINCT ON (pr.company_id) pr.company_id, c.name AS company_name,
+                           pr.opportunities, pr.created_at
+                      FROM prospect_research pr JOIN companies c ON c.id = pr.company_id
+                     WHERE pr.tenant_id = $1 AND pr.status = 'DONE' AND jsonb_array_length(pr.opportunities) > 0
+                     ORDER BY pr.company_id, pr.created_at DESC
+                  ) latest
+                 ORDER BY created_at DESC
+                 LIMIT 500`, [t]),
       db.query(`SELECT sm.id, sm.scheduled_at, sm.status, sm.company_id, sm.prospect_emails, c.name AS company_name
                   FROM scheduled_meetings sm LEFT JOIN companies c ON c.id = sm.company_id
                  WHERE sm.tenant_id = $1 AND sm.status IN ('PENDING','BRIEFED') AND sm.scheduled_at >= now()
@@ -75,7 +93,6 @@ router.get('/', async (req, res, next) => {
       db.query(`SELECT subject_id, count(*)::int AS n FROM watch_findings
                  WHERE tenant_id = $1 AND scope = 'PROSPECT' AND status = 'NEW'
                  GROUP BY subject_id`, [t]),
-      db.query(`SELECT id, name FROM companies WHERE tenant_id = $1`, [t]),
       // Setup-checklist facts: any completed research, any saved contact, any
       // engagement ever scheduled, any Market Watch enabled anywhere.
       db.query(`SELECT
@@ -150,6 +167,16 @@ router.get('/', async (req, res, next) => {
     }
     for (const r of upcR.rows) heatRow(r.company_id).upcoming = r.n;
     for (const r of freshR.rows) heatRow(r.subject_id).fresh = r.n;
+    // Only fetch names for the handful of companies that actually have heat —
+    // this used to be `SELECT id, name FROM companies WHERE tenant_id = $1`
+    // with no LIMIT, i.e. every company the tenant has (a CRM pull can import
+    // 50k+), just to label ≤6 "top prospects". heatBy's keys are already
+    // tenant-scoped and bounded by real signal volume, so querying by id is
+    // both correct and cheap.
+    const heatIds = [...heatBy.keys()];
+    const namesR = heatIds.length > 0
+      ? await db.query(`SELECT id, name FROM companies WHERE tenant_id = $1 AND id = ANY($2)`, [t, heatIds])
+      : { rows: [] };
     const nameById = new Map(namesR.rows.map((r) => [r.id, r.name]));
     const topProspects = [...heatBy.values()]
       .map((h) => ({ ...h, name: nameById.get(h.companyId) || 'Unknown', heat: h.strong * 3 + (h.signals - h.strong) + h.upcoming * 2 + h.fresh * 2 }))

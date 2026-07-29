@@ -43,6 +43,18 @@ const SESSION_TTL_SEC = parseInt(process.env.ONBOARDING_SESSION_TTL_SEC || '1800
 const VERIFY_TTL_SEC = parseInt(process.env.ONBOARDING_VERIFY_TTL_SEC || '86400', 10); // 24h to click the email link
 const MIN_PASSWORD_LEN = parseInt(process.env.ONBOARDING_MIN_PASSWORD_LEN || '12', 10);
 
+// Abuse caps for the public, unauthenticated /start endpoint — modeled on
+// passwordReset.checkRateLimit. Two independent axes: per-IP caps the bcrypt
+// (cost 12, ~0.9 CPU-sec/call) hashing work one caller can force onto the
+// event loop; per-target-email caps mail-relay abuse, since the attacker
+// supplies BOTH website and email, so `domainsRelated` alone doesn't stop
+// someone spamming a DealScope-branded verify link to an address they don't
+// own. Both must be checked before hashPassword/email.send run, not after.
+const SIGNUP_RL_IP_WINDOW_SEC = parseInt(process.env.ONBOARDING_RL_IP_WINDOW_SEC || String(60 * 60), 10); // 1h
+const SIGNUP_RL_IP_CAP = parseInt(process.env.ONBOARDING_RL_IP_CAP || '5', 10);
+const SIGNUP_RL_EMAIL_WINDOW_SEC = parseInt(process.env.ONBOARDING_RL_EMAIL_WINDOW_SEC || String(24 * 60 * 60), 10); // 24h
+const SIGNUP_RL_EMAIL_CAP = parseInt(process.env.ONBOARDING_RL_EMAIL_CAP || '3', 10);
+
 // Where a freshly-verified owner lands: the Company → Intel tab in "welcome"
 // mode, which auto-runs the pull-from-website + confirm bootstrap.
 const WELCOME_REDIRECT = '/admin/#company?tab=intel&welcome=1';
@@ -163,6 +175,38 @@ function normalizeWebsiteUrl(website) {
   catch { return null; }
 }
 
+// Rate-limit /start by caller IP and by the target email, BEFORE the caller
+// bcrypt-hashes a password or an email gets sent. Returns { ok } or
+// { ok:false, retryAfter }. Best-effort: a Redis hiccup fails open so a
+// transient cache outage never blocks a legitimate signup.
+async function checkSignupRateLimit(req, addr) {
+  // Required lazily to sidestep any require-cycle risk, same as
+  // passwordReset.checkRateLimit. Must be devices.clientIp(req), NOT raw
+  // X-Forwarded-For: nginx appends to a client-supplied XFF, so the leftmost
+  // hop is attacker-controlled and lets a caller rotate "IPs" per request to
+  // dodge this exact cap.
+  const devices = require('./devices');
+  const ip = devices.clientIp(req) || 'unknown';
+  try {
+    const emailHash = crypto.createHash('sha256').update(String(addr).toLowerCase()).digest('hex');
+    const checks = [
+      { key: `onboarding:rl:ip:${ip}`, cap: SIGNUP_RL_IP_CAP, windowSec: SIGNUP_RL_IP_WINDOW_SEC },
+      { key: `onboarding:rl:email:${emailHash}`, cap: SIGNUP_RL_EMAIL_CAP, windowSec: SIGNUP_RL_EMAIL_WINDOW_SEC },
+    ];
+    for (const { key, cap, windowSec } of checks) {
+      const n = await redis.incr(key);
+      if (n === 1) await redis.expire(key, windowSec);
+      if (n > cap) {
+        const ttl = await redis.ttl(key);
+        return { ok: false, retryAfter: ttl > 0 ? ttl : windowSec };
+      }
+    }
+  } catch {
+    return { ok: true };
+  }
+  return { ok: true };
+}
+
 // ---------------------------------------------------------------- router
 
 const router = express.Router();
@@ -248,6 +292,17 @@ router.post('/start', async (req, res, next) => {
         code: 'TENANT_EXISTS',
         tenant: { id: existingTenant.rows[0].id, name: existingTenant.rows[0].name },
       });
+    }
+
+    // Rate-check BEFORE the bcrypt hash and before any email is queued — this
+    // route is public/unauthenticated, so without a gate here an attacker can
+    // force cost-12 bcrypt work onto the event loop and relay unsolicited
+    // DealScope-branded mail to any address (the domain gate is self-satisfied
+    // by supplying a matching website + victim email in the same request).
+    const signupGate = await checkSignupRateLimit(req, emailAddr);
+    if (!signupGate.ok) {
+      res.set('Retry-After', String(signupGate.retryAfter));
+      return res.status(429).json({ error: 'Too many signup attempts. Please try again later.', code: 'RATE_LIMITED' });
     }
 
     const passwordHash = await users.hashPassword(password);

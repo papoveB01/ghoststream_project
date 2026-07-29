@@ -53,8 +53,13 @@ async function consumeToken(token) {
 // { ok } or { ok:false, retryAfter }. Best-effort: a Redis hiccup fails open
 // so a transient cache outage never blocks a legitimate reset.
 async function checkRateLimit(req, addr) {
-  const ip = (req.headers['x-forwarded-for'] || req.ip || req.connection?.remoteAddress || 'unknown')
-    .toString().split(',')[0].trim();
+  // Required lazily (not at module top) to avoid a require cycle risk with
+  // devices.js. Must use the hardened helper, NOT raw X-Forwarded-For: nginx
+  // appends to client-supplied XFF, so the leftmost token is attacker-
+  // controlled — reading it lets a caller rotate IPs per request and never
+  // trip this per-IP cap (see devices.clientIp's own warning about this).
+  const devices = require('./devices');
+  const ip = devices.clientIp(req) || 'unknown';
   try {
     const checks = [
       { key: `${KEY_PREFIX}rl:email:${sha256(String(addr).toLowerCase())}`, cap: RL_EMAIL_CAP },

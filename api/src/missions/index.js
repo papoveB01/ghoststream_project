@@ -84,11 +84,26 @@ router.post('/:id/brief', async (req, res, next) => {
 //   ?force=1 re-dispatches even if recall_bot_id is already set (useful when
 //   the prior bot crashed; no attempt to revoke the old bot — Recall just
 //   spawns a second one).
-router.post('/:id/dispatch-bot', async (req, res, next) => {
+//
+// Metering: scheduling (POST /) already charged one `engagements` unit for
+// this mission, so a plain re-dispatch of a mission that hasn't sent a bot
+// yet is free. But `force` spawns an ADDITIONAL bot on top of whatever
+// already exists — that's a second ~$1 Recall bot — so only the `force`
+// path charges an extra unit here, gated + refunded the same way POST /
+// does above. requireFeature still applies unconditionally: a tenant whose
+// plan doesn't include engagements can't dispatch at all, force or not.
+router.post('/:id/dispatch-bot', gating.requireFeature('engagements'), async (req, res, next) => {
+  const force = req.query.force === '1' || req.query.force === 'true';
   try {
-    const force = req.query.force === '1' || req.query.force === 'true';
+    if (force) {
+      req._capacity = await gating.chargeUnit(req, 'engagements');
+    }
     const result = await dispatch.dispatchBot(req.tenantId, req.params.id, { force });
     if (result.alreadyDispatched) {
+      // For `force`, alreadyDispatched now only happens when dispatchBot lost
+      // the atomic claim race (see dispatch.js) — no bot was actually
+      // created on this call, so give back the unit we just charged.
+      if (force) await gating.refundCapacity(req);
       return res.status(200).json({ ok: true, alreadyDispatched: true, botId: result.botId });
     }
     res.status(201).json({
@@ -97,7 +112,12 @@ router.post('/:id/dispatch-bot', async (req, res, next) => {
       meetingId: result.meeting && result.meeting.id,
       botStatus: result.bot && result.bot.status_changes?.slice(-1)[0]?.code || 'pending',
     });
-  } catch (err) { next(err); }
+  } catch (err) {
+    // Dispatch failed after the charge (bad meeting URL, Recall rejected the
+    // bot, etc.) — refund so a failed force re-dispatch doesn't burn a unit.
+    if (force) await gating.refundCapacity(req);
+    next(err);
+  }
 });
 
 module.exports = { router };

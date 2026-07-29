@@ -11,12 +11,27 @@ verified by the coordinator against the source before any fix was applied.
 | Severity | Found | Fixed | Open |
 | --- | --- | --- | --- |
 | Critical | 4 | **4** | 0 |
-| High | 27 | 9 | 18 |
+| High | 27 | **25** | 2 (both need an ADR) |
 | Medium | ~53 | 1 | ~52 |
-| Low | ~38 | 1 | ~37 |
+| Low | ~38 | 2 | ~36 |
 
-Criticals are all closed. Open Mediums are tracked by this document, per the rubric's
-"deferrable only with a tracking ticket" rule.
+Criticals and Highs are closed except the two below, which are **deliberately deferred
+because they are decisions, not defects** — fixing either changes customer-visible
+behaviour and belongs in an ADR, not in a review-remediation commit:
+
+- **Sub-tenant cap default** (`entitlements.js`) — unallocated child meters currently
+  fall back to the *full* plan cap. Write-time enforcement now prevents new
+  over-allocation (the sum across children can no longer exceed the parent's effective
+  cap), but changing the *default* retroactively reduces existing sub-tenants'
+  capacity. That is a pricing change under ADR-0004.
+- **Global TEXT primary keys** on products/personas/competitors (`portfolio.js`) —
+  cross-tenant slug squatting and an existence oracle are live now that the create
+  routes are reachable by every tenant. The stale comment claiming otherwise has been
+  corrected. The real fix is UUID PKs + composite junction keys: a storage change
+  needing its own ADR and migration.
+
+Open Mediums are tracked by this document, per the rubric's "deferrable only with a
+tracking ticket" rule.
 
 ---
 
@@ -71,58 +86,49 @@ company UUID could attach a contact and read that company's name/domain back.
 | H8 | `capture/src/main.py` | Recall webhook `_verify_svix_signature` returned success when the signing secret was unset, and compose defaults it empty — a missing env var leaves `/webhooks/recall` fully unauthenticated and replayable. Now fails closed outside dev. |
 | H9 | `proxy/nginx.conf` | `location ~ ^/api/_internal` is case-sensitive but Express routes case-insensitively — `/api/_Internal/...` reached internal endpoints from the public internet. Now `~*`. |
 
-## High — open
+## High — fixed in the second remediation pass (`hub-and-spoke`, Sonnet spokes)
 
-Ordered by my read of exposure. All are blockers per the rubric.
+Applied by eight fix spokes over disjoint file sets, each finding verified by the
+coordinator before and after. All 34 tests pass.
 
-**Billing / money**
-1. `billing.js` — `POST /billing/checkout` never checks for an existing
-   `stripe_subscription_id`; upgrading creates a *second* subscription and the old one
-   invoices forever. Silent double-charge.
-2. `billing.js` — `customer.subscription.deleted` doesn't verify `sub.id` matches the
-   tenant's current subscription; a stale cancel downgrades a paying tenant to Free.
-3. `subaccounts.js` — `syncSubtenantQuantity` (a prorated Stripe charge) runs *before*
-   email/domain/duplicate validation; a rejected invite still bills.
-4. `subaccounts.js` — `usedCount` counts PENDING invites with no `expires_at` filter, so
-   expired invites occupy a billed slot forever.
-5. `entitlements.js` + `subaccounts.js` — unallocated child caps default to the **full**
-   plan cap and no sum-across-children check exists: a v2 Pro parent with 5 children
-   yields 180 engagements/mo against ~$265 revenue, breaking the ADR-0004 ≥35% floor by
-   default.
-6. `missions/index.js` — `POST /missions/:id/dispatch-bot?force=1` has no capacity check
-   and bypasses the idempotency guard: unlimited unmetered $1 bots.
-7. `missions/dispatch.js` — no atomic claim before `recall.createBot`; a rep clicking
-   "send bot now" as the cron fires dispatches two bots to the customer's meeting.
+**Billing / money** — checkout now 409s instead of creating a second subscription
+(silent double-billing); `customer.subscription.deleted` verifies the subscription id
+before downgrading, so a stale cancel can no longer drop a paying tenant to Free;
+sub-tenant invite validates fully *before* touching Stripe and resyncs the quantity on
+a late failure; expired PENDING invites no longer occupy a billed slot forever;
+`dispatch-bot?force=1` now charges an engagement unit (with refund on failure or a
+lost race) instead of spawning unlimited free $1 bots; `dispatchBot` claims the row
+atomically via a `dispatching` sentinel before calling Recall, so a rep clicking "send
+bot now" as the cron fires can no longer put two bots in a customer's meeting.
 
-**Auth / security**
-8. `passwordReset.js` — rate limit keys on the attacker-controlled leftmost
-   `X-Forwarded-For` instead of `devices.clientIp(req)`; per-IP throttle trivially evaded.
-9. `devices.js` + `index.js` — when email is unconfigured the device OTP is returned in
-   the login response (`devCode`) and logged; new-device 2FA becomes a no-op if the
-   SendGrid key is ever unset.
-10. `users.js` — `bootstrapFoundersAdmin` promotes *any* user matching `ADMIN_EMAIL` to
-    superadmin without checking tenant, granting cross-tenant RLS bypass.
+**Auth / security** — password-reset rate limiting keys on `devices.clientIp(req)`
+instead of the client-controlled leftmost `X-Forwarded-For`; the device OTP is no
+longer logged or returned in the login response, and fails closed in production;
+`bootstrapFoundersAdmin` scopes both its lookup and its UPDATE to the Founders tenant,
+so `ADMIN_EMAIL` pointed at a customer address can no longer grant them cross-tenant
+superadmin.
 
-**Performance / availability**
-11. `dashboard.js` — unbounded `SELECT` of every company + every research
-    `opportunities` blob on each Overview load; OOM after a large CRM import.
-12. `portfolio.js` — Market Map threat scoring cross-joins `kb_chunks × companies` with
-    per-row `position()`, unindexable and unbounded, synchronously on every page load.
-13. `store.js` — `/admin/calls` `KEYS` + `MGET`s every meeting blob (full transcripts)
-    platform-wide before filtering to one tenant's page.
-14. `knowledge/service.js` — no chunk-count cap: a 25 MB `.txt` becomes ~13,000 embed
-    calls and 13,000 inserts inside one transaction, held open on the HTTP request.
-15. `scheduler.js` — no LLM/HTTP timeouts and briefs run serially under a single
-    `running` flag: one hung Gemini call wedges briefs *and* bot dispatch platform-wide.
-16. `capture/src/main.py` — `_archive_video` does `await upstream.aread()`, buffering a
-    multi-GB recording into RAM despite the docstring claiming it streams.
-17. `onboarding.js` — public signup runs bcrypt (cost 12) before any rate check and
-    mails arbitrary recipients; ~54k unsolicited emails/hour from one IP past nginx.
-18. `portfolio.js` — globally-unique TEXT PKs on products/personas/competitors allow
-    cross-tenant slug squatting and an existence oracle; the header comment claiming
-    this is unreachable is now false.
+**Performance / availability** — dashboard bounds both unbounded reads (company names
+now fetched only for the ~6 candidates, research capped at 500 most-recent);
+`/admin/calls` replaces blocking `KEYS` with `scanStream` and projects each blob as it
+is parsed so full transcripts are never retained; Market Map threat scoring is cached
+per tenant for an hour and its cross-join bounded on both sides; ingest rejects
+documents over `KB_MAX_CHUNKS` (default 1000) with a 413 before spending on
+embeddings; brief generation has a `generateContent` timeout and the scheduler's brief
+and bot-dispatch phases now run under independent guards, so a hung LLM call can no
+longer wedge bot dispatch platform-wide; `_archive_video` streams to R2 via
+`upload_fileobj` instead of buffering a multi-GB recording into RAM; public signup
+rate-limits per IP and per target email *before* bcrypt, closing the mail-relay and
+CPU-sink vector.
 
----
+**Behaviour changes worth knowing about**
+- Market Map refreshes at most hourly per tenant (was live), and on tenants past 400
+  prospects / 3000 intel chunks the overlap factor considers only the most recent of
+  each.
+- Dashboard signal aggregates derive from the 500 most-recently-researched companies;
+  identical output for any tenant below that, which is every tenant today.
+- Upgrading plan via the Pro card now returns 409 directing the user to the billing
+  portal, rather than silently creating a second subscription.
 
 ## Medium (~53) — tracked, not fixed
 

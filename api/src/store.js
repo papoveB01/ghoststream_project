@@ -258,11 +258,47 @@ function _parseDateParam(name, value) {
   return t;
 }
 
+// Non-blocking replacement for `redis.keys(prefix + '*')` + a full-blob MGET:
+// KEYS blocks the Redis event loop while it walks the whole keyspace, and
+// materializing every matched blob before projecting it down (meeting blobs
+// carry the full transcript + analysis) is what let a few hundred recorded
+// calls balloon into tens-to-hundreds of MB of node heap on every request.
+// SCAN iterates the keyspace in small non-blocking batches; `project` runs on
+// each blob the moment its batch is fetched, so only one batch of raw blobs —
+// never the whole keyspace's worth — is ever resident at once. Returns the
+// flat list of non-null projections, in SCAN's (unspecified) order.
+function _scanProjected(prefix, project) {
+  return new Promise((resolve, reject) => {
+    const out = [];
+    const stream = redis.scanStream({ match: prefix + '*', count: 100 });
+    stream.on('data', (keys) => {
+      if (!keys.length) return;
+      stream.pause(); // backpressure: don't fetch the next batch until this one is projected and freed
+      redis.mget(keys)
+        .then((raws) => {
+          for (const raw of raws) {
+            if (!raw) continue;
+            let parsed;
+            try { parsed = JSON.parse(raw); } catch { continue; } // corrupt blob — skip
+            const projected = project(parsed);
+            if (projected != null) out.push(projected);
+          }
+          stream.resume();
+        })
+        .catch((err) => { stream.destroy(); reject(err); });
+    });
+    stream.on('end', () => resolve(out));
+    stream.on('error', reject);
+  });
+}
+
 // buildCallsList — unified store query backing GET /api/admin/calls.
 //
-// Reads both prefix scans (meetings + portals), joins on portal.meetingId,
-// derives the bucketed status, applies filters and pagination, returns
-// { calls[], pageInfo, facets }.
+// Reads both prefix scans (meetings + portals) via _scanProjected — SCAN
+// batches projected down to the compact call-row shape as they arrive, so
+// the full transcript/analysis payloads are never all resident at once —
+// joins on portal.meetingId, derives the bucketed status, applies filters
+// and pagination, returns { calls[], pageInfo, facets }.
 //
 // Facets are computed over the tenant-scoped full set — before other filters
 // — so the UI can display how many calls exist in each bucket regardless of
@@ -293,28 +329,22 @@ async function buildCallsList(filters = {}) {
   const limit = Math.min(Math.max(parseInt(limitParam, 10) || 50, 1), 200);
 
   // ── 1. Load portals → build meetingId → portal map ──────────────────────
-  const pKeys = await redis.keys(NS.portal + '*');
-  const pRaws = pKeys.length > 0 ? await redis.mget(pKeys) : [];
-  const portalByMeeting = new Map();
-  for (const raw of pRaws) {
-    if (!raw) continue;
-    try {
-      const p = JSON.parse(raw);
-      if (p && p.meetingId) portalByMeeting.set(p.meetingId, p);
-    } catch { /* corrupt blob — skip */ }
-  }
+  // Projected to the safe list-view shape (portalRefFromRecord) as each SCAN
+  // batch arrives — the raw portal blob is discarded right after, so a
+  // portal's transcript/analysis/grounding fields never sit in this map.
+  const portalPairs = await _scanProjected(NS.portal, (p) => (
+    p && p.meetingId ? [p.meetingId, portalRefFromRecord(p)] : null
+  ));
+  const portalByMeeting = new Map(portalPairs);
 
-  // ── 2. Load all meetings ─────────────────────────────────────────────────
-  const mKeys = await redis.keys(NS.meeting + '*');
-  const mRaws = mKeys.length > 0 ? await redis.mget(mKeys) : [];
-  const allMeetings = mRaws
-    .filter(Boolean)
-    .map((v) => { try { return JSON.parse(v); } catch { return null; } })
-    .filter(Boolean);
-
-  // ── 3. Build unified call rows ───────────────────────────────────────────
-  let calls = allMeetings.map((m) => {
-    const portal = portalByMeeting.get(m.id) || null;
+  // ── 2 & 3. Load meetings and build unified call rows in the same pass ───
+  // The raw meeting blob (full transcript + analysis) only ever exists
+  // inside this callback, one SCAN batch at a time, and is reduced to the
+  // compact call-row shape before that batch is released — never held for
+  // the whole keyspace at once (that was the OOM path this fixes).
+  let calls = await _scanProjected(NS.meeting, (m) => {
+    if (!m) return null;
+    const portal = portalByMeeting.get(m.id) || null; // already a safe ref, or null
     const bucket = _bucketStatus(m.status || '', !!portal);
     return {
       id: m.id,
@@ -323,7 +353,7 @@ async function buildCallsList(filters = {}) {
       source: m.source || null,
       createdAt: m.createdAt || null,
       meeting: _meetingRefForCall(m),
-      portal: portalRefFromRecord(portal),
+      portal,
     };
   });
 
