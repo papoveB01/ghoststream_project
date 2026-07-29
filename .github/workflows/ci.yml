@@ -127,17 +127,29 @@ jobs:
     #   * _HttpxStreamReader must stream read(size) chunks, never materialise
     #     the whole recording body — capture's /tmp is a 64MB tmpfs and
     #     recordings run 1-2h / multi-GB.
+    #
+    # Runs python via `docker run`, NOT via a job-level `container:`. That is
+    # load-bearing on a self-hosted runner: every job here shares ONE workspace
+    # (_work/<repo>/<repo>), and a `container:` job runs as root, so its
+    # checkout leaves root-owned files that the next job — running as the
+    # `admin` service user — cannot delete. actions/checkout then dies with
+    # EACCES before any step runs. That is exactly what happened on run
+    # 30464769240: this job passed, then poisoned the workspace and took
+    # api-tests, the audit and the web/mcp syntax check down with it.
+    #
+    # So: mount the source READ-ONLY and keep all writes inside the container.
+    # PYTHONPYCACHEPREFIX redirects .pyc output off the mount, and pytest runs
+    # with no cacheprovider so it never tries to create .pytest_cache in it.
+    # Net effect: nothing this job does can touch the shared workspace.
     runs-on: [self-hosted, linux]
-    container:
-      image: python:3.12-slim
     steps:
       - uses: actions/checkout@v4
-      - name: Install (dev + runtime deps)
-        working-directory: capture
-        run: pip install -q -r requirements-dev.txt
-      - name: Syntax check src/
-        working-directory: capture
-        run: python -m compileall -q src
-      - name: Run tests
-        working-directory: capture
-        run: python -m pytest tests -q
+      - name: compileall + pytest (python:3.12-slim, read-only mount)
+        run: |
+          docker run --rm \
+            -v "$PWD/capture":/c:ro \
+            -e PYTHONPYCACHEPREFIX=/tmp/pyc \
+            -w /c python:3.12-slim \
+            sh -c 'pip install -q -r requirements-dev.txt \
+                   && python -m compileall -q src \
+                   && python -m pytest tests -q -p no:cacheprovider'
