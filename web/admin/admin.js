@@ -6465,30 +6465,15 @@
     return d.toLocaleString();
   }
 
-  function escapeHtml(s) {
-    return String(s || '').replace(/[&<>"']/g, (c) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    }[c]));
-  }
-
-  // True only for link URLs safe to put in an href. Blocks javascript:, data:,
-  // vbscript:, etc. — ingested docs, scraped pages and AI briefs can carry
-  // hostile links that would otherwise execute in the authenticated admin
-  // origin on click. Allows http(s)/mailto and scheme-less URLs (relative,
-  // anchor, path, protocol-relative); rejects anything else by detecting a
-  // scheme colon before the first path separator. Because it keys off that
-  // colon rather than a scheme allowlist, whitespace/control-char obfuscation
-  // (e.g. "java\nscript:…") is caught too — the colon still precedes any slash.
-  function isSafeUrl(url) {
-    const u = String(url || '');
-    if (/^\s*(https?:|mailto:)/i.test(u)) return true;
-    // No scheme colon before the first '/', '?' or '#' → treat as relative/safe.
-    return !u.split(/[/?#]/)[0].includes(':');
-  }
-  // href value for an untrusted URL: the escaped URL when safe, else '#'.
-  function safeHref(url) {
-    return isSafeUrl(url) ? escapeHtml(url) : '#';
-  }
+  // Thin delegates to /shared/url.js, which is the single source of truth for
+  // all three static apps (see that file for why hand-copying these drifted
+  // into a real vulnerability). Kept as hoisted function declarations, NOT
+  // `const … = DSText.x`: init() runs at the top of this IIFE, thousands of
+  // lines above here, and a const would put these in the temporal dead zone
+  // for every call made during startup.
+  function escapeHtml(s) { return DSText.escapeHtml(s); }
+  function isSafeUrl(url) { return DSText.isSafeUrl(url); }
+  function safeHref(url) { return DSText.safeHref(url); }
 
   function fmtNum(n) {
     return (n == null) ? '0' : Number(n).toLocaleString();

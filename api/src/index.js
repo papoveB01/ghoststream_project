@@ -1069,7 +1069,12 @@ app.get('/tenant', auth.authMiddleware, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.get('/admin/overview', auth.authMiddleware, async (_req, res, next) => {
+// SUPERADMIN-ONLY: store.getCounts() is a global redis scan across every
+// tenant's portals/sessions/meetings, and the payload also carries infra
+// config (model names, recall region, APP_BASE_URL). Same shape as the
+// /admin/portals and /admin/meetings exposure — plain authMiddleware over an
+// unscoped global read. Surfaced by the route-contract test.
+app.get('/admin/overview', auth.authMiddleware, auth.requireSuperadmin, async (_req, res, next) => {
   try {
     const [counts, cachesList] = await Promise.all([
       store.getCounts(),
@@ -1254,7 +1259,11 @@ app.get('/tenants', auth.authMiddleware, auth.requireSuperadmin, async (_req, re
   } catch (err) { next(err); }
 });
 
-app.get('/admin/caches', auth.authMiddleware, async (_req, res, next) => {
+// SUPERADMIN-ONLY: this is an unscoped duplicate of GET /gemini/caches, which
+// was deliberately locked to superadmin ("require a superadmin session rather
+// than leaving it open") — this copy was missed. It lists platform-wide Gemini
+// cache records. Surfaced by the route-contract test.
+app.get('/admin/caches', auth.authMiddleware, auth.requireSuperadmin, async (_req, res, next) => {
   try { res.json({ caches: await gemini.listCachedRecords() }); }
   catch (err) { next(err); }
 });
@@ -1572,4 +1581,15 @@ async function boot() {
   });
 }
 
-boot();
+// Export the configured app so the route-contract test can walk the router
+// stack and assert every mount's middleware chain — the check that would have
+// caught three of the four Criticals in the 2026-07-29 review, all of which
+// were a missing auth/gating/superadmin middleware rather than a logic bug.
+//
+// boot() must NOT run on require: it applies migrations, seeds the Founders
+// admin, starts cron and binds a port. Guarding on require.main keeps
+// `node src/index.js` (the Dockerfile CMD and npm start) behaving exactly as
+// before while making the app inspectable from a test.
+module.exports = app;
+
+if (require.main === module) boot();

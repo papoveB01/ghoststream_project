@@ -231,9 +231,10 @@
     show('scorecard');
   }
 
-  function escapeHtml(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
+  // Thin delegates to /shared/url.js. arena.js previously had escapeHtml but no
+  // URL guard at all — it now gets safeHref for free, so any future href built
+  // here has the right helper within reach.
+  function escapeHtml(s) { return DSText.escapeHtml(s); }
+  function isSafeUrl(url) { return DSText.isSafeUrl(url); }
+  function safeHref(url) { return DSText.safeHref(url); }
 })();

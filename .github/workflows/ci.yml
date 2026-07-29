@@ -79,3 +79,65 @@ jobs:
       - name: npm audit (high+)
         working-directory: api
         run: npm audit --audit-level=high
+
+  web-mcp-syntax:
+    name: Syntax check (web/, mcp/)
+    # web/ and mcp/ get NO gate today: web/ is a live nginx bind mount (edits
+    # ship the instant they land, no build/deploy step to catch a typo) and
+    # mcp/ has no test suite. This mirrors api-tests' "Syntax check all
+    # source" step for the same cheap catch — parse every .js, nothing more —
+    # so a broken admin.js/portal.js/arena.js/url.js etc. fails the push
+    # instead of shipping straight to prod.
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check web/ and mcp/src/
+        run: node -e "const fs=require('fs'),cp=require('child_process');function walk(d){for(const f of fs.readdirSync(d,{withFileTypes:true})){const p=d+'/'+f.name;if(f.isDirectory())walk(p);else if(f.name.endsWith('.js'))cp.execSync('node --check '+JSON.stringify(p));}}walk('web');walk('mcp/src');console.log('syntax ok');"
+
+  nginx-config:
+    name: nginx config validity (proxy/nginx.conf)
+    # proxy/nginx.conf is the only file under proxy/ that actually ships — it's
+    # bind-mounted into the running container as conf.d/default.conf (see
+    # docker-compose.yml). The rest of proxy/ (host-*.conf) are host-level TLS
+    # vhost configs referencing /etc/letsencrypt paths that don't exist in a
+    # container, so `nginx -t`-ing the whole directory doesn't work; this
+    # deliberately validates only the one file that's actually deployed.
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: nginx -t
+        run: docker run --rm -v "$PWD/proxy/nginx.conf:/etc/nginx/conf.d/default.conf:ro" nginx:1.27-alpine nginx -t
+
+  capture-tests:
+    name: capture/ tests (Python)
+    # capture/ (Python/FastAPI) has zero CI coverage today. Run in a
+    # python:3.12-slim container (matches capture/Dockerfile's base image) so
+    # nothing touches the shared runner's host Python. Scope is deliberately
+    # narrow rather than a full port of api-tests: compileall catches syntax
+    # errors across src/, and the two pytest files pin behavior this week's
+    # fixes depend on — both fail silently-wrong (not a crash) if regressed:
+    #   * _verify_svix_signature must fail CLOSED with no
+    #     RECALL_AI_WEBHOOK_SECRET set (compose defaults it to empty) —
+    #     otherwise /webhooks/recall is unauthenticated and replayable,
+    #     letting anyone re-trigger the archive+Gemini pipeline and burn the
+    #     ~$1/bot engagement meter.
+    #   * _HttpxStreamReader must stream read(size) chunks, never materialise
+    #     the whole recording body — capture's /tmp is a 64MB tmpfs and
+    #     recordings run 1-2h / multi-GB.
+    runs-on: [self-hosted, linux]
+    container:
+      image: python:3.12-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install (dev + runtime deps)
+        working-directory: capture
+        run: pip install -q -r requirements-dev.txt
+      - name: Syntax check src/
+        working-directory: capture
+        run: python -m compileall -q src
+      - name: Run tests
+        working-directory: capture
+        run: python -m pytest tests -q

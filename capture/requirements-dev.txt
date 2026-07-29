@@ -1,0 +1,5 @@
+# Test-only deps, kept out of requirements.txt so the runtime image (and its
+# attack surface) doesn't grow for something CI-only. Pulls runtime deps in too
+# (via -r) because the tests import src.main / src.r2 directly.
+-r requirements.txt
+pytest==8.3.3

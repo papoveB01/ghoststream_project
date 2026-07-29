@@ -897,6 +897,8 @@
   </div>
 
   <script src="/admin/vendor/driver.js.iife.js"></script>
+  <!-- Must load before admin.js: publishes DSText (escapeHtml/isSafeUrl/safeHref). -->
+  <script src="/shared/url.js"></script>
   <script src="/admin/admin.js"></script>
 </body>
 </html>

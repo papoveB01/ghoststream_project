@@ -605,26 +605,10 @@
     }
   }
 
-  function escapeHtml(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    }[c]));
-  }
-
-  // Ported from admin.js. escapeHtml does NOT neutralise a scheme — it leaves ':'
-  // alone — so an href built from it still executes `javascript:…`. KB citation
-  // sourceUrls come from ingested and scraped documents, and this portal is opened
-  // by signed-in admins too (viewerRole === 'admin' can write intel from here), so
-  // a hostile link would run in the dealscope.io origin with their session.
-  // Allows http(s)/mailto and relative URLs; anything with a scheme colon before
-  // the first path separator is rejected — which also catches whitespace and
-  // control-character obfuscation, since the colon still precedes any slash.
-  function isSafeUrl(url) {
-    const u = String(url || '');
-    if (/^\s*(https?:|mailto:)/i.test(u)) return true;
-    return !u.split(/[/?#]/)[0].includes(':');
-  }
-  function safeHref(url) {
-    return isSafeUrl(url) ? escapeHtml(url) : '#';
-  }
+  // Thin delegates to /shared/url.js — the single source of truth for all three
+  // static apps. These were hand-copied from admin.js, which is exactly how this
+  // file ended up with no safeHref at all until the 2026-07-29 review.
+  function escapeHtml(s) { return DSText.escapeHtml(s); }
+  function isSafeUrl(url) { return DSText.isSafeUrl(url); }
+  function safeHref(url) { return DSText.safeHref(url); }
 })();
