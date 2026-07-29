@@ -50,10 +50,15 @@ opened the rule file yet:
 - **Never edit an applied migration** — add a new numbered one.
 - **Never repoint a v1 `STRIPE_PRICE_*` at a v2 price.** Grandfathering depends on v1
   and v2 price ids staying distinct.
-- **Never `deploy.sh production` over a dirty tree.** Production is human-gated and
-  needs a snapshot branch of the live tree first; prod checkouts carry hand-edits that
-  never went back to git.
+- **Pushing to `main` deploys production.** CI green on `main` → CD deploys staging,
+  smoke-tests it, then production, unattended. Nothing else is required, so don't
+  fast-forward `main` until the change is meant to be live.
+- **Anything uncommitted in an environment checkout leaves the working tree on the
+  next deploy.** CD snapshots it to a `<env>-live-snapshot-<utc>` branch first, so it
+  is recoverable — but the staging checkout is also the dev workspace, so commit or
+  stash work in progress.
 - **Don't infer the environment from the folder name** — verify via the env file's
-  `APP_BASE_URL` / `CONTAINER_PREFIX` and the running container prefix.
+  `APP_BASE_URL` / `CONTAINER_PREFIX` and the running container prefix. (`ops/cd-deploy.sh`
+  enforces this automatically; a by-hand `deploy.sh` does not.)
 - **Every plan cap must clear the ≥35% gross-margin floor** (ADR-0004 §4.3) before it
   ships.

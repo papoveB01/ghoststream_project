@@ -6,6 +6,11 @@
 # web/ and proxy/ are live bind-mounts (no rebuild needed for those). This
 # fast-forwards the checkout, then rebuilds the api image + recreates any
 # service whose config changed. Pending DB migrations run on api boot.
+#
+# DEPLOY_SKIP_PULL=1 skips the fast-forward and builds whatever the tree is at.
+# CD sets this: ops/cd-deploy.sh has already pinned the checkout to the exact
+# commit CI tested, and pulling again here would silently widen the deploy to
+# any commit that landed on origin in between.
 set -euo pipefail
 
 ENV="${1:-}"
@@ -19,7 +24,11 @@ cd "$(dirname "$0")"
 [ -f "$ENV_FILE" ] || { echo "[deploy] missing $ENV_FILE in $(pwd)" >&2; exit 1; }
 
 echo "[deploy] env=$ENV  file=$ENV_FILE  dir=$(pwd)"
-git pull --ff-only
+if [ "${DEPLOY_SKIP_PULL:-0}" = "1" ]; then
+  echo "[deploy] skipping git pull (DEPLOY_SKIP_PULL=1) — deploying $(git rev-parse --short HEAD) as-is"
+else
+  git pull --ff-only
+fi
 docker compose --env-file "$ENV_FILE" up -d --build
 # Rebuilding api recreates its container (new IP); the in-container nginx
 # resolves upstreams once at start, so it'd keep proxying the OLD ip and 502.

@@ -1,0 +1,117 @@
+name: CD
+
+# Continuous deployment. CI is the gate — this only fires after the CI workflow
+# finishes *successfully* on main, and it deploys the exact SHA CI tested.
+#
+# staging → smoke-test → production, in that order, in one run. No human presses a
+# button, but the documented promotion order still holds: production is not attempted
+# unless staging deployed and answered on /api/health, /capture/health and /.
+#
+# Deploys run on the self-hosted runner, which lives on the deploy host as the same
+# user that owns both environment checkouts — so there is no SSH hop, no registry and
+# no deploy credential to leak. All of the actual logic is in ops/cd-deploy.sh so a
+# deploy can be reproduced by hand when Actions is down.
+#
+# NOTE: workflow_run only fires for the copy of this file on the default branch, so CD
+# is inert until this lands on main.
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Environment(s) to deploy
+        type: choice
+        options: [both, staging, production]
+        default: both
+      ref:
+        description: Git ref to deploy (branch or SHA)
+        default: main
+
+permissions:
+  contents: read
+
+# One deploy at a time, host-wide. Queue rather than cancel: a half-applied
+# `docker compose up` that gets killed mid-build is worse than a late deploy.
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve target
+    runs-on: [self-hosted, linux]
+    # Skip silently when CI failed — workflow_run fires on every conclusion.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      ref: ${{ steps.r.outputs.ref }}
+      staging: ${{ steps.r.outputs.staging }}
+      production: ${{ steps.r.outputs.production }}
+    steps:
+      - id: r
+        # Inputs go through env, never string-interpolated into the script body.
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_REF: ${{ inputs.ref }}
+          IN_TARGET: ${{ inputs.target }}
+          CI_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = 'workflow_dispatch' ]; then
+            REF="${IN_REF:-main}"; TARGET="${IN_TARGET:-both}"
+          else
+            REF="$CI_SHA"; TARGET='both'
+          fi
+          case "$TARGET" in
+            both)       STG=true;  PRD=true  ;;
+            staging)    STG=true;  PRD=false ;;
+            production) STG=false; PRD=true  ;;
+            *) echo "unknown target '$TARGET'" >&2; exit 1 ;;
+          esac
+          {
+            echo "ref=$REF"
+            echo "staging=$STG"
+            echo "production=$PRD"
+          } >> "$GITHUB_OUTPUT"
+          echo "Deploying ref=$REF (staging=$STG production=$PRD)"
+
+  staging:
+    name: Deploy staging
+    needs: resolve
+    if: ${{ needs.resolve.outputs.staging == 'true' }}
+    runs-on: [self-hosted, linux]
+    environment:
+      name: staging
+      url: https://staging.dealscope.io
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - name: Deploy + smoke-test
+        env:
+          REF: ${{ needs.resolve.outputs.ref }}
+        run: ops/cd-deploy.sh staging "$REF"
+
+  production:
+    name: Deploy production
+    needs: [resolve, staging]
+    # `always()` so a production-only dispatch still runs with staging skipped, but a
+    # *failed* staging deploy stops the promotion — that is the whole point of ordering.
+    if: >-
+      ${{ always()
+          && needs.resolve.outputs.production == 'true'
+          && (needs.staging.result == 'success' || needs.staging.result == 'skipped') }}
+    runs-on: [self-hosted, linux]
+    environment:
+      name: production
+      url: https://dealscope.io
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - name: Deploy + smoke-test
+        env:
+          REF: ${{ needs.resolve.outputs.ref }}
+        run: ops/cd-deploy.sh production "$REF"

@@ -1,11 +1,26 @@
 name: CI
 
-# Change-management gate (SOC 2 CC8.1): every push / PR runs the test suite and
-# a dependency audit, giving a reviewable, reproducible build record.
+# Change-management gate (SOC 2 CC8.1): every push runs the test suite and a
+# dependency audit, giving a reviewable, reproducible build record. It is also the
+# trigger for CD — a green run on main deploys staging then production (cd.yml).
+#
+# Push-only, deliberately. `pull_request` would (a) double-run every PR branch commit
+# on a runner we share with other projects, and (b) execute fork-authored code on our
+# own deploy host. Check runs attach to the head commit either way, so PRs still show
+# CI status and branch protection still works.
 on:
   push:
     branches: ['**']
-  pull_request:
+
+# Least privilege: nothing here writes to the repo.
+permissions:
+  contents: read
+
+# Superseded pushes on the same branch are pointless work on a single shared runner.
+# Never cancel main: its run is what gates the production deploy.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   api-tests:

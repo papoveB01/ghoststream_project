@@ -3,7 +3,9 @@
 *Read when: deploying, or reasoning about which environment a checkout is. The
 promotion order that gets you here is in [conventions](./conventions.md).*
 
-`./deploy.sh {staging|production}` — run from the environment's own checkout. It `git pull --ff-only`s, rebuilds the **api image from the working tree**, runs pending migrations on boot, and bounces the proxy.
+`./deploy.sh {staging|production}` — run from the environment's own checkout. It `git pull --ff-only`s, rebuilds the **api image from the working tree**, runs pending migrations on boot, and bounces the proxy. `DEPLOY_SKIP_PULL=1` suppresses the pull so the caller controls exactly which commit ships.
+
+**Normally you don't run it directly** — CD does, via `ops/cd-deploy.sh`, which adds the identity check, the live-tree snapshot, commit pinning and a smoke test. See [conventions](./conventions.md) for the pipeline; use `ops/cd-deploy.sh {staging|production} [ref]` for a by-hand deploy that behaves identically.
 
 **The same host runs multiple environments off separate checkouts of this repo**, distinguished only by `CONTAINER_PREFIX` / `COMPOSE_PROJECT_NAME` + env file:
 

@@ -19,15 +19,16 @@
 
 ## Merge & promotion (hub-and-spoke)
 `origin` on GitHub is the **hub**; each environment is a **spoke** checkout that deploys itself. Promotion order:
-1. Implement on a branch; validate on **staging** first.
+1. Implement on a branch; validate on **staging** first — either `./deploy.sh staging` in the staging checkout, or dispatch **CD** with `target: staging` and the branch as `ref`.
 2. Before promoting, **merge `origin/main` *into* the branch** and re-validate — this pulls in fixes that landed on `main` (e.g. security PRs) so the promotion can't silently regress them. Then `main` fast-forwards cleanly.
-3. Fast-forward `main`, deploy staging, smoke-test.
-4. **Production is gated:** explicit human go + green CI + **a snapshot branch of the prod checkout's live tree** (`git checkout -b prod-live-snapshot-<date>; git add -A; git commit`) captured *before* touching it, so nothing is lost. Then reconcile the prod checkout to `main`, `./deploy.sh production`, and smoke-test.
-- Prod checkouts may carry hand-edits that never went back to git — never `deploy.sh production` over a dirty tree without snapshotting and reconciling it against `main` first.
+3. **Fast-forwarding `main` and pushing *is* the promotion.** CI runs; on green, CD deploys staging, smoke-tests it, then deploys production. There is no separate production step to remember.
+4. Watch the CD run. A failed staging smoke test means production is never attempted. A failed production deploy stops with the rollback command printed — CD does **not** auto-revert, because migrations run on api boot and are forward-only, so a blind revert can leave the schema ahead of the code.
+- Prod checkouts may carry hand-edits that never went back to git. You no longer protect them by hand: `ops/cd-deploy.sh` commits any dirty or unmerged state to a `<env>-live-snapshot-<utc>` branch (pushed when it can be) *before* reconciling the checkout. Nothing is discarded — but it does mean **anything uncommitted in a checkout leaves the working tree on the next deploy**, which matters most for the staging checkout, since that doubles as the dev workspace.
 
 ## CI/CD (as executed)
-- **CI** — `.github/workflows/ci.yml` runs on **every push (all branches) and PRs**, on a **self-hosted runner** (systemd service on the deploy host; GitHub-hosted minutes are not used). Jobs: `npm ci` → syntax-check all of `src/` → `npm test` (Redis service on an auto-assigned host port, since the box is shared) → advisory `npm audit`.
-- **CD is manual, not automatic.** Pushing/merging never deploys. Deployment is `./deploy.sh {staging|production}` run on the environment's checkout (see [deploy-environments](./deploy-environments.md)). Migrations run on api boot as part of the deploy.
+- **CI** — `.github/workflows/ci.yml` runs on **every push, all branches** (push-only: `pull_request` would double-run each commit and would execute fork code on our own deploy host). Self-hosted runner, systemd service on the deploy host; GitHub-hosted minutes are not used. Jobs: `npm ci` → syntax-check all of `src/` → `npm test` (Redis service on an auto-assigned host port, since the box is shared) → advisory `npm audit`. Runs are cancelled when superseded — except on `main`, whose run gates the deploy.
+- **CD is automatic** — `.github/workflows/cd.yml`, triggered by `workflow_run` on a **successful CI run on `main`**, deploying that exact SHA. Order is staging → smoke-test → production, serialized host-wide by a `concurrency: cd` group. `workflow_dispatch` allows a manual deploy of any ref to either environment (that's how you put a branch on staging).
+- The pipeline is thin on purpose: all logic lives in **`ops/cd-deploy.sh`**, which verifies the checkout's identity, snapshots local state, pins the checkout to one commit, runs `deploy.sh` with `DEPLOY_SKIP_PULL=1`, and smoke-tests `/api/health`, `/capture/health` and `/` through the proxy. Run it by hand when Actions is unavailable and you get the same deploy. Migrations run on api boot as part of it.
 
 ## Migrations
 - Live in `api/db/migrations/NNNN_*.sql`, applied in lexical order by `db/migrate.js` (tracked in `schema_migrations`), automatically on api boot. **Never edit an applied migration — add a new numbered one.**
