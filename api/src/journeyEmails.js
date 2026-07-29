@@ -53,6 +53,12 @@ async function tick() {
     )).rows;
 
     for (const t of tenants) {
+      // Per-tenant isolation is load-bearing. Without it a single SendGrid
+      // rejection (bounce-suppressed or invalid owner domain) threw out of the
+      // whole loop, and because the candidate query ordering is stable that same
+      // tenant threw on every hourly tick — so no tenant ordered after it ever
+      // received day2/day7 again, signalled only by one console.error.
+      try {
       const ageDays = (Date.now() - new Date(t.created_at).getTime()) / 86400000;
 
       // day2_foundation
@@ -116,6 +122,9 @@ async function tick() {
         } else if (meetings > 0) {
           await markSent(t.id, 'day7_signals'); // already engaging — never nag
         }
+      }
+      } catch (err) {
+        console.error(`[journey] tenant ${t.id} failed, continuing:`, err.message);
       }
     }
   } catch (err) {

@@ -163,8 +163,23 @@ async function getOrCreateCache({
   }
 }
 
+// SCAN, never KEYS. This Redis is shared with sessions, login-guard counters,
+// device OTP challenges and onboarding state; KEYS walks the entire keyspace
+// regardless of pattern and blocks the single-threaded server while it does, so
+// at production key counts every cache invalidation stalled auth and rate-limit
+// lookups for everyone. Same cursor pattern as platformAdmin.scanExists.
+function scanKeys(pattern) {
+  return new Promise((resolve, reject) => {
+    const s = redis.scanStream({ match: pattern, count: 100 });
+    const out = [];
+    s.on('data', (keys) => { for (const k of keys) out.push(k); });
+    s.on('end', () => resolve(out));
+    s.on('error', reject);
+  });
+}
+
 async function listCachedRecords() {
-  const keys = await redis.keys(REGISTRY_PREFIX + '*');
+  const keys = await scanKeys(REGISTRY_PREFIX + '*');
   if (keys.length === 0) return [];
   const values = await redis.mget(keys);
   return values.filter(Boolean).map((v) => JSON.parse(v));
@@ -181,7 +196,7 @@ async function invalidate(name) {
   }
   await redis.del(registryKey);
   // Also drop any skip flags for this name.
-  const skipKeys = await redis.keys(SKIP_PREFIX + name + ':*');
+  const skipKeys = await scanKeys(SKIP_PREFIX + name + ':*');
   if (skipKeys.length) await redis.del(...skipKeys);
   return true;
 }

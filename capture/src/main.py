@@ -35,6 +35,9 @@ RECALL_BASE = f"https://{RECALL_REGION}.recall.ai/api/v1"
 # empty we log a warning and accept anyway (dev mode — required so a fresh
 # checkout can run before the operator has registered a subscription).
 RECALL_WEBHOOK_SECRET = os.environ.get("RECALL_AI_WEBHOOK_SECRET", "")
+# Explicit opt-in to accept UNSIGNED Recall webhooks (local dev only). Without
+# it a missing RECALL_AI_WEBHOOK_SECRET now rejects rather than accepts.
+ALLOW_UNSIGNED_WEBHOOKS = os.environ.get("ALLOW_UNSIGNED_WEBHOOKS", "") == "1"
 # Replay-protection window. Svix recommends 5 minutes.
 RECALL_WEBHOOK_TOLERANCE_SEC = 5 * 60
 
@@ -73,7 +76,16 @@ def _verify_svix_signature(headers, body: bytes) -> tuple[bool, str]:
       svix-signature header = "v1,<sig1> v1,<sig2> ..." (rotation-friendly)
     """
     if not RECALL_WEBHOOK_SECRET:
-        return True, "no-secret-configured"
+        # FAIL CLOSED. This used to accept every request when the secret was
+        # unset, and compose defaults it to empty — so one missing line in an
+        # env file left /webhooks/recall completely unauthenticated. Anyone
+        # could POST a bot.status_change "done" for a known bot id and replay
+        # the archive + Gemini pipeline, burning the ~$1/bot meter and
+        # reprocessing past meetings, with only a log line as the signal.
+        # Local dev without a secret must opt in explicitly.
+        if ALLOW_UNSIGNED_WEBHOOKS:
+            return True, "no-secret-configured-dev-optin"
+        return False, "no-secret-configured"
 
     if not RECALL_WEBHOOK_SECRET.startswith("whsec_"):
         return False, "secret-missing-whsec-prefix"

@@ -8247,7 +8247,7 @@
     const streamType = String(d.stream_type || 'FILE').toUpperCase();
     const streamPill = `<span class="kb-stream-pill stream-${streamType.toLowerCase()}">${escapeHtml(streamType)}</span>`;
     const title = d.source_url
-      ? `<a href="${escapeHtml(d.source_url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(d.source_url)}">${escapeHtml(d.title)} ↗</a>`
+      ? `<a href="${safeHref(d.source_url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(d.source_url)}">${escapeHtml(d.title)} ↗</a>`
       : escapeHtml(d.title);
     const md = d.metadata || {};
     const points = Array.isArray(md.keyPoints) ? md.keyPoints.filter(Boolean) : [];
@@ -10984,7 +10984,7 @@
           </div>
           <div class="watch-finding-body">${escapeHtml(f.summary || '')}</div>
           <div class="watch-finding-foot">
-            ${f.source_url ? `<a href="${escapeHtml(f.source_url)}" target="_blank" rel="noopener">${escapeHtml(f.source_title || 'Source')} ↗</a>` : '<span class="kb-subtle">No source link</span>'}
+            ${f.source_url ? `<a href="${safeHref(f.source_url)}" target="_blank" rel="noopener">${escapeHtml(f.source_title || 'Source')} ↗</a>` : '<span class="kb-subtle">No source link</span>'}
             ${dt ? `<span class="kb-subtle"> · ${escapeHtml(dt)}</span>` : ''}
             ${f.status === 'NEW' || f.status === 'REVIEWED' ? `
               <span class="watch-finding-actions">

@@ -451,7 +451,7 @@
           ? `<pre class="drawer-chunk-text">${escapeHtml(c.text)}</pre>`
           : `<div class="drawer-chunk-fallback">The full chunk text isn't included in this portal record — only the citation, document, and category. Open the Knowledge Base admin panel for the original.</div>`;
         const sourceLink = c.sourceUrl
-          ? `<a class="drawer-chunk-source" href="${escapeHtml(c.sourceUrl)}" target="_blank" rel="noopener noreferrer">Open source ↗</a>`
+          ? `<a class="drawer-chunk-source" href="${safeHref(c.sourceUrl)}" target="_blank" rel="noopener noreferrer">Open source ↗</a>`
           : '';
         // Tri-Tiered tier badge. BASIS docs are the default product/battlecard
         // material; PROSPECT_MEMORY is "this exact account" intel; LIVE_PULSE
@@ -609,5 +609,22 @@
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[c]));
+  }
+
+  // Ported from admin.js. escapeHtml does NOT neutralise a scheme — it leaves ':'
+  // alone — so an href built from it still executes `javascript:…`. KB citation
+  // sourceUrls come from ingested and scraped documents, and this portal is opened
+  // by signed-in admins too (viewerRole === 'admin' can write intel from here), so
+  // a hostile link would run in the dealscope.io origin with their session.
+  // Allows http(s)/mailto and relative URLs; anything with a scheme colon before
+  // the first path separator is rejected — which also catches whitespace and
+  // control-character obfuscation, since the colon still precedes any slash.
+  function isSafeUrl(url) {
+    const u = String(url || '');
+    if (/^\s*(https?:|mailto:)/i.test(u)) return true;
+    return !u.split(/[/?#]/)[0].includes(':');
+  }
+  function safeHref(url) {
+    return isSafeUrl(url) ? escapeHtml(url) : '#';
   }
 })();

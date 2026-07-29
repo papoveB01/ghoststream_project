@@ -141,13 +141,17 @@ async function watchTick() {
       `SELECT * FROM (
          SELECT 'PROSPECT'::text AS scope, c.id::text AS id, c.name,
                 c.watch_frequency, c.watch_day, c.watch_timezone, c.watch_email_digest, c.watch_next_run_at,
-                t.id AS tenant_id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end
+                t.id AS tenant_id, t.plan, t.plan_version, t.subscription_status, t.trial_ends_at, t.current_period_end
            FROM companies c JOIN tenants t ON t.id = c.tenant_id
           WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
          UNION ALL
          SELECT 'COMPETITOR'::text AS scope, c.id::text AS id, c.name,
                 c.watch_frequency, c.watch_day, c.watch_timezone, c.watch_email_digest, c.watch_next_run_at,
-                t.id AS tenant_id, t.plan, t.subscription_status, t.trial_ends_at, t.current_period_end
+                -- plan_version is load-bearing: entitlementsFor() defaults a missing
+                -- one to 1, so omitting it here evaluated every v2 tenant's scheduled
+                -- watch run against the v1 catalog (v1 Pro 500 vs v2 Pro 250 — double
+                -- the paid allowance). The manual-run path already selects it.
+                t.id AS tenant_id, t.plan, t.plan_version, t.subscription_status, t.trial_ends_at, t.current_period_end
            FROM competitors c JOIN tenants t ON t.id = c.tenant_id
           WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
        ) q
