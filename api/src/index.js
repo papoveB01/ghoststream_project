@@ -1130,7 +1130,7 @@ function meetingRefFromRecord(m) {
 // scope non-superadmins, so this was a regression against its own contract.
 app.get('/admin/portals', auth.authMiddleware, auth.requireSuperadmin, async (_req, res, next) => {
   try {
-    res.set('X-Deprecated', 'use /admin/calls — see docs/architecture/assessment-003-portals-meetings-consolidation.md');
+    res.set('X-Deprecated', 'use /admin/calls - see docs/architecture/assessment-003-portals-meetings-consolidation.md');
     const portals = await store.listPortals(100);
     // Batched MGET avoids N+1 — one Redis call for all parent meetings.
     const meetings = await store.getMeetingsByIds(portals.map((p) => p.meetingId));
@@ -1171,7 +1171,7 @@ app.get('/admin/sessions/:id', auth.authMiddleware, async (req, res, next) => {
 // an unscoped global scan and meeting records carry full transcripts.
 app.get('/admin/meetings', auth.authMiddleware, auth.requireSuperadmin, async (_req, res, next) => {
   try {
-    res.set('X-Deprecated', 'use /admin/calls — see docs/architecture/assessment-003-portals-meetings-consolidation.md');
+    res.set('X-Deprecated', 'use /admin/calls - see docs/architecture/assessment-003-portals-meetings-consolidation.md');
     res.json({ meetings: await store.listMeetings(100) });
   } catch (err) { next(err); }
 });
