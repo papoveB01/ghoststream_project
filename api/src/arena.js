@@ -180,7 +180,7 @@ async function startSession({ portalId, persona = DEFAULT_PERSONA, repUserId = n
   // Pull Company Intelligence + Battlecards. Returns '' if no ORG_INTELLIGENCE
   // or BATTLECARDS docs are uploaded yet — grounding gracefully degrades.
   let intelligenceText = '';
-  try { intelligenceText = await globalCache.getGlobalText(); }
+  try { intelligenceText = await globalCache.getGlobalText(tenantId); }
   catch (err) { console.warn('[arena] global cache fetch failed:', err.message); }
 
   const grounding = buildGrounding({ portal, objection, intelligenceText });

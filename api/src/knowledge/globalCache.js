@@ -42,7 +42,9 @@ async function assembleContent() {
   // The global Gemini context cache is currently a singleton built only from
   // the Founders tenant's ORG_INTELLIGENCE + BATTLECARDS docs. Per-tenant
   // context caches are Phase 2; until then this is explicitly "the Founders
-  // company-intelligence cache" and the Arena (a Founders feature) reads it.
+  // company-intelligence cache". Arena is NO LONGER Founders-only — it is a
+  // general Pro feature — so getGlobalText() below refuses to serve this to
+  // any other tenant. Do not reintroduce an unscoped read.
   const docs = await db.query(
     `SELECT id, category, title, source_type, metadata, token_count
        FROM kb_documents
@@ -196,7 +198,17 @@ async function getRow() {
 
 // Read just the content_text — used by arena.js to inject the punchlines into
 // the persona grounding. Returns '' if no cache has been built yet.
-async function getGlobalText() {
+//
+// TENANT-SCOPED, and it must stay that way: assembleContent() above builds this
+// singleton exclusively from the Founders tenant's ORG_INTELLIGENCE +
+// BATTLECARDS docs. Arena is sold to every Pro tenant, not just Founders, so
+// returning the cache unconditionally pasted Founders' battlecards, escalation
+// paths and competitor punchlines into other tenants' roleplay grounding —
+// where the model would then say them out loud (ADR-0001 cross-tenant leak).
+// Non-Founders callers get '' and grounding degrades gracefully, exactly as it
+// does before any cache is built. Lift this when per-tenant caches ship.
+async function getGlobalText(tenantId) {
+  if (!tenantId || tenantId !== FOUNDERS_TENANT_ID) return '';
   const r = await db.query(
     `SELECT content_text FROM kb_global_cache WHERE id = 1`
   );

@@ -82,7 +82,11 @@ const SELECT_COLUMNS = `
 `;
 const FROM_JOIN = `
   FROM prospect_contacts pc
-  LEFT JOIN companies c ON c.id = pc.company_id
+  -- The tenant predicate here is load-bearing, not decorative: companies.id is
+  -- a bare FK, so without it a contact row carrying another tenant's company_id
+  -- renders that tenant's company_name/company_domain straight into this
+  -- tenant's contact list (ADR-0001). Matches the personas/products joins below.
+  LEFT JOIN companies c ON c.id = pc.company_id AND c.tenant_id = pc.tenant_id
   LEFT JOIN personas  p ON p.id = pc.persona_id AND p.tenant_id = pc.tenant_id
   LEFT JOIN products  pr ON pr.id = pc.likely_product_id AND pr.tenant_id = pc.tenant_id
 `;
@@ -141,6 +145,22 @@ async function create(tenantId, userId, { companyId, name, email, role, personaI
 
   const finalRole = (role && String(role).trim()) || 'Unknown';
   const finalPersonaId = personaId !== undefined ? (personaId || null) : await inferPersonaIdForRole(tenantId, finalRole);
+
+  // Verify the caller-supplied companyId is actually theirs. The INSERT's FK is
+  // tenant-blind — it is satisfied by ANY companies.id in the table — so on its
+  // own it let a tenant attach a contact to another tenant's company and read
+  // that company back through the join above.
+  if (companyId) {
+    const owned = await db.query(
+      `SELECT 1 FROM companies WHERE id = $1 AND tenant_id = $2`,
+      [companyId, tenantId]
+    );
+    if (!owned.rows[0]) {
+      const e = new Error('company not found in your workspace');
+      e.status = 404; e.code = 'COMPANY_NOT_FOUND'; throw e;
+    }
+  }
+
   try {
     const r = await db.query(
       `INSERT INTO prospect_contacts

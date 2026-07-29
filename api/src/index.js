@@ -168,10 +168,22 @@ app.post('/gemini/roleplay/:slug', auth.authMiddleware, async (req, res, next) =
 
 // POST /meetings  { meetingUrl, botName? }
 // Creates a Recall.ai bot that joins the call with real-time transcription.
-app.post('/meetings', auth.authMiddleware, async (req, res, next) => {
+// Gated + metered like POST /missions: this dispatches a real Recall.ai bot at
+// ~$1 COGS, the one genuinely expensive meter. With plain authMiddleware any
+// ACTIVE tenant could loop this endpoint past its engagement cap for free —
+// billingGate only blocks *inactive* subscriptions, so nothing else stopped it.
+app.post('/meetings', auth.authMiddleware,
+  gating.requireFeature(plans.FEATURES.ENGAGEMENTS),
+  gating.requireCapacity(plans.FEATURES.ENGAGEMENTS),
+  async (req, res, next) => {
   try {
     const { meetingUrl, botName } = req.body || {};
-    if (!meetingUrl) return res.status(400).json({ error: 'meetingUrl required' });
+    if (!meetingUrl) {
+      // requireCapacity already charged the engagement; give it back so a
+      // rejected request never bills for a bot that was never dispatched.
+      await gating.refundCapacity(req);
+      return res.status(400).json({ error: 'meetingUrl required' });
+    }
 
     // Recording privacy settings (per-tenant when authed; defaults otherwise).
     const recTenantId = req.tenantId || null;
@@ -203,13 +215,33 @@ app.post('/meetings', auth.authMiddleware, async (req, res, next) => {
       meta: { ...meeting.meta, bot },
     });
     res.json({ ok: true, meeting: updated });
-  } catch (err) { next(err); }
+  } catch (err) {
+    // Recall rejected the URL, the bot failed to dispatch, or the store write
+    // blew up — no engagement happened, so refund the pre-charged unit.
+    await gating.refundCapacity(req);
+    next(err);
+  }
 });
 
-app.get('/meetings/:id', async (req, res, next) => {
+// GET /meetings/:id — the FULL operator record: transcript, analysis (incl. the
+// internal knowledgeGaps coaching notes), meta.tenantId and the raw Recall bot
+// payload. It must never be readable outside the owning tenant. This was
+// unauthenticated, which was directly exploitable: GET /portals/:id publishes
+// `meeting.id` to anonymous share-link holders (see the two-tier trust model
+// below), so any prospect could trade that id for the unstripped record. The
+// stripped public shape lives on /portals/:id — use that, not this.
+app.get('/meetings/:id', auth.authMiddleware, async (req, res, next) => {
   try {
     const m = await store.getMeeting(req.params.id);
     if (!m) return res.status(404).json({ error: 'not found' });
+    // 404 rather than 403: a foreign tenant must not be able to confirm the id
+    // exists. Meetings with no meta.tenantId (legacy /first-loop records) fail
+    // closed here and stay superadmin-only.
+    const owner = (m.meta && m.meta.tenantId) || null;
+    const isSuper = !!(req.user && req.user.adm);
+    if (!isSuper && (!owner || owner !== req.tenantId)) {
+      return res.status(404).json({ error: 'not found' });
+    }
     res.json({ meeting: m });
   } catch (err) { next(err); }
 });
@@ -1085,7 +1117,13 @@ function meetingRefFromRecord(m) {
 // Endpoint stays functional for one release so any consumers (none known
 // outside the admin UI, which has been migrated to /admin/calls in this PR)
 // have time to migrate. Slated for removal in a follow-up.
-app.get('/admin/portals', auth.authMiddleware, async (_req, res, next) => {
+// SUPERADMIN-ONLY: store.listPortals is a global Redis prefix scan with no
+// tenant predicate, so with plain authMiddleware any signed-in user of any
+// tenant read the 100 most recent portals platform-wide — moments, email
+// drafts, reports, grounding. The deprecation note above covers keeping the
+// route alive, not leaving it unscoped; the replacement /admin/calls does
+// scope non-superadmins, so this was a regression against its own contract.
+app.get('/admin/portals', auth.authMiddleware, auth.requireSuperadmin, async (_req, res, next) => {
   try {
     res.set('X-Deprecated', 'use /admin/calls — see docs/architecture/assessment-003-portals-meetings-consolidation.md');
     const portals = await store.listPortals(100);
@@ -1124,7 +1162,9 @@ app.get('/admin/sessions/:id', auth.authMiddleware, async (req, res, next) => {
 
 // /admin/meetings — DEPRECATED per ADR-003 Phase 3 step 5. Use /admin/calls.
 // Same migration timeline as /admin/portals above.
-app.get('/admin/meetings', auth.authMiddleware, async (_req, res, next) => {
+// SUPERADMIN-ONLY for the same reason as /admin/portals above: listMeetings is
+// an unscoped global scan and meeting records carry full transcripts.
+app.get('/admin/meetings', auth.authMiddleware, auth.requireSuperadmin, async (_req, res, next) => {
   try {
     res.set('X-Deprecated', 'use /admin/calls — see docs/architecture/assessment-003-portals-meetings-consolidation.md');
     res.json({ meetings: await store.listMeetings(100) });
