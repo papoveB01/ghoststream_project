@@ -39,6 +39,7 @@ these are lazily loaded on purpose, so don't work from the summaries below.
 | `rules/architecture.md` | Touching `api/src/` — the request pipeline, multi-tenancy, knowledge base, engagements, or the cross-cutting modules. |
 | `rules/billing-entitlements.md` | **Any** change to plans, caps, features, usage metering, credits, gating, or Stripe. The most load-bearing subsystem in the repo. |
 | `rules/frontend.md` | Editing anything under `web/` — the admin SPA, landing page, or the other static apps. |
+| `rules/code-review.md` | Reviewing code or triaging findings — the Critical/High/Medium/Low rubric and what blocks a merge. |
 | `rules/deploy-environments.md` | Deploying, or reasoning about which environment a checkout is. |
 | `rules/conventions.md` | Writing code, commits, PRs, migrations, or ADRs — i.e. essentially always before you commit. |
 
