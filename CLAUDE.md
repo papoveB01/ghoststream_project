@@ -61,5 +61,10 @@ opened the rule file yet:
 - **Don't infer the environment from the folder name** — verify via the env file's
   `APP_BASE_URL` / `CONTAINER_PREFIX` and the running container prefix. (`ops/cd-deploy.sh`
   enforces this automatically; a by-hand `deploy.sh` does not.)
+- **Never plain-`git checkout` a branch in an environment checkout.** CD leaves it
+  detached at the deployed SHA, and the local branch ref is usually stale — since
+  `web/`/`proxy/` are live bind mounts, `git checkout main` silently serves the previous
+  release's frontend with no deploy and no signal. Use `git checkout -B main <deployed-sha>`
+  so the pointer moves and the working tree doesn't.
 - **Every plan cap must clear the ≥35% gross-margin floor** (ADR-0004 §4.3) before it
   ships.
