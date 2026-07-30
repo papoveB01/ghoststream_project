@@ -3,6 +3,11 @@
 *Read when: reviewing code, triaging review findings, or deciding whether something
 blocks a merge.*
 
+This file is the **rubric** — how to classify a finding once you have it. The **process**
+that produces the findings (per-file spokes → cross-integration → confidence
+verification → verdict, mandatory before any merge) is in `CLAUDE.md` § "Reviewing a PR".
+Both apply to every PR.
+
 Every finding gets exactly one of four severities. The severity determines whether it
 blocks, not how annoying it is. When a finding could sit in two tiers, classify by
 **worst realistic production outcome**, not by how hard it is to fix.
