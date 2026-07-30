@@ -38,6 +38,11 @@ const WATCH_CONCURRENCY = Math.max(1, parseInt(process.env.WATCH_CONCURRENCY || 
 // Floor is 1s, not a minute: it exists to stop a typo'd 0/NaN from disabling the
 // bound entirely, not to mandate a realistic value — tests need to drive it low.
 const WATCH_ENTITY_TIMEOUT_MS = Math.max(1000, parseInt(process.env.WATCH_ENTITY_TIMEOUT_MS || '600000', 10) || 600000);
+// Throughput ceiling per tick, and the per-tenant slice of it. The ceiling is
+// what caps platform-wide Market Watch volume (WATCH_TICK_LIMIT × ticks/hour);
+// the per-tenant cap is what stops one tenant consuming the whole ceiling.
+const WATCH_TICK_LIMIT = Math.max(1, parseInt(process.env.WATCH_TICK_LIMIT || '25', 10) || 25);
+const WATCH_PER_TENANT_MAX = Math.max(1, parseInt(process.env.WATCH_PER_TENANT_MAX || '5', 10) || 5);
 
 // Note: this bounds how long we WAIT, not the work itself — Promise.race can't
 // cancel the underlying call, so a hung request still dangles until the process
@@ -201,26 +206,43 @@ async function watchTick() {
     // Per-entity: any watched prospect/competitor whose own schedule is due,
     // across all tenants. The entitlement/active/cap re-check lives inside
     // watch.runEntityScheduled. Both tables joined to their tenant.
+    //
+    // ROW_NUMBER caps how many of one tenant's entities a single tick may take.
+    // A flat "oldest due first, LIMIT 25" let one tenant watching many entities
+    // occupy whole ticks and push everyone else's schedule back indefinitely —
+    // at 25 runs/hour platform-wide that starves the small tenants first.
+    // Nothing is dropped: an entity that misses the cut keeps its past-due
+    // watch_next_run_at, so it stays due and, being the oldest by then, wins the
+    // next tick. Both bounds are env-tunable so raising throughput doesn't need
+    // a code change.
     const due = (await db.query(
       `SELECT * FROM (
-         SELECT 'PROSPECT'::text AS scope, c.id::text AS id, c.name,
-                c.watch_frequency, c.watch_day, c.watch_timezone, c.watch_email_digest, c.watch_next_run_at,
-                t.id AS tenant_id, t.plan, t.plan_version, t.subscription_status, t.trial_ends_at, t.current_period_end
-           FROM companies c JOIN tenants t ON t.id = c.tenant_id
-          WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
-         UNION ALL
-         SELECT 'COMPETITOR'::text AS scope, c.id::text AS id, c.name,
-                c.watch_frequency, c.watch_day, c.watch_timezone, c.watch_email_digest, c.watch_next_run_at,
-                -- plan_version is load-bearing: entitlementsFor() defaults a missing
-                -- one to 1, so omitting it here evaluated every v2 tenant's scheduled
-                -- watch run against the v1 catalog (v1 Pro 500 vs v2 Pro 250 — double
-                -- the paid allowance). The manual-run path already selects it.
-                t.id AS tenant_id, t.plan, t.plan_version, t.subscription_status, t.trial_ends_at, t.current_period_end
-           FROM competitors c JOIN tenants t ON t.id = c.tenant_id
-          WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
-       ) q
-       ORDER BY watch_next_run_at ASC NULLS FIRST
-       LIMIT 25`
+         SELECT q.*, ROW_NUMBER() OVER (
+                  PARTITION BY q.tenant_id
+                  ORDER BY q.watch_next_run_at ASC NULLS FIRST, q.id
+                ) AS rn
+         FROM (
+           SELECT 'PROSPECT'::text AS scope, c.id::text AS id, c.name,
+                  c.watch_frequency, c.watch_day, c.watch_timezone, c.watch_email_digest, c.watch_next_run_at,
+                  t.id AS tenant_id, t.plan, t.plan_version, t.subscription_status, t.trial_ends_at, t.current_period_end
+             FROM companies c JOIN tenants t ON t.id = c.tenant_id
+            WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
+           UNION ALL
+           SELECT 'COMPETITOR'::text AS scope, c.id::text AS id, c.name,
+                  c.watch_frequency, c.watch_day, c.watch_timezone, c.watch_email_digest, c.watch_next_run_at,
+                  -- plan_version is load-bearing: entitlementsFor() defaults a missing
+                  -- one to 1, so omitting it here evaluated every v2 tenant's scheduled
+                  -- watch run against the v1 catalog (v1 Pro 500 vs v2 Pro 250 — double
+                  -- the paid allowance). The manual-run path already selects it.
+                  t.id AS tenant_id, t.plan, t.plan_version, t.subscription_status, t.trial_ends_at, t.current_period_end
+             FROM competitors c JOIN tenants t ON t.id = c.tenant_id
+            WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
+         ) q
+       ) r
+       WHERE r.rn <= $1
+       ORDER BY r.watch_next_run_at ASC NULLS FIRST
+       LIMIT $2`,
+      [WATCH_PER_TENANT_MAX, WATCH_TICK_LIMIT]
     )).rows;
     if (!due.length) return;
     console.log(`[scheduler] ${due.length} watched entit(ies) due for Market Watch (concurrency ${WATCH_CONCURRENCY})`);

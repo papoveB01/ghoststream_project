@@ -119,10 +119,31 @@ async function knownContext(tenantId, scope, subject) {
   return [String(row.description || ''), bc].filter(Boolean).join('\n');
 }
 
+// Prior findings for one entity, newest first. Two consumers with different needs:
+//
+//   - the PROMPT gets a bounded slice (token budget). The model is the only thing
+//     here that can recognise a genuine REWORDING — "appoints Dana Reed as CTO"
+//     vs "names Dana Reed chief technology officer" share almost no tokens — so
+//     the fix for resurfacing is to give it more history, not more string logic.
+//   - the INSERT guard uses the whole window. dedup_key hashes the source url, or
+//     the raw lowercased title when there is no url, so the same headline
+//     syndicated to a second outlet under different capitalisation or punctuation
+//     produces a different key and slips through.
+//
+// The flat LIMIT 40 served both, which is why an entity with heavy coverage lost
+// its older history from the prompt and started repeating itself.
+const DEDUPE_WINDOW_DAYS = Math.max(1, parseInt(process.env.WATCH_DEDUPE_WINDOW_DAYS || '180', 10) || 180);
+const DEDUPE_MAX_TITLES = Math.max(1, parseInt(process.env.WATCH_DEDUPE_MAX_TITLES || '200', 10) || 200);
+const PROMPT_PRIOR_TITLES = Math.max(1, parseInt(process.env.WATCH_PROMPT_PRIOR_TITLES || '40', 10) || 40);
+
 async function recentFindingTitles(tenantId, scope, subjectId) {
   const r = await db.query(
-    `SELECT title FROM watch_findings WHERE tenant_id = $1 AND scope = $2 AND subject_id = $3 ORDER BY created_at DESC LIMIT 40`,
-    [tenantId, scope, subjectId]
+    `SELECT title FROM watch_findings
+      WHERE tenant_id = $1 AND scope = $2 AND subject_id = $3
+        AND created_at > now() - make_interval(days => $4)
+      ORDER BY created_at DESC
+      LIMIT $5`,
+    [tenantId, scope, subjectId, DEDUPE_WINDOW_DAYS, DEDUPE_MAX_TITLES]
   );
   return r.rows.map((x) => x.title);
 }
@@ -182,13 +203,34 @@ async function runEntity(tenantId, scope, subject) {
   ]);
 
   let devs;
-  try { devs = await extractDevelopments({ tenantId, name, scope, tctx, known, priorTitles, findingsText: findings.text }); }
-  catch (err) { throw watchFailure(`extract failed for ${scope} ${subject.id}: ${err.message}`); }
+  try {
+    devs = await extractDevelopments({
+      tenantId, name, scope, tctx, known,
+      // Only the newest slice goes in the prompt — the rest of the window is for
+      // the insert guard below, which costs no tokens.
+      priorTitles: priorTitles.slice(0, PROMPT_PRIOR_TITLES),
+      findingsText: findings.text,
+    });
+  } catch (err) { throw watchFailure(`extract failed for ${scope} ${subject.id}: ${err.message}`); }
 
+  // Normalised-title guard. Catches only what dedup_key structurally cannot: the
+  // SAME headline at a different url, differing by case, punctuation, smart
+  // quotes or spacing — the ordinary syndication pattern. It does NOT catch a
+  // genuine reword (different words normalise differently); that is the model's
+  // job, which is why the prompt now sees a wider window. Real semantic dedupe
+  // would need embeddings on watch_findings and a migration — deliberately out
+  // of scope rather than half-built here.
+  const seenTitles = new Set(priorTitles.map((t) => semantics.normalizeForMatch(t)).filter(Boolean));
+  let skippedDupes = 0;
   const inserted = [];
   for (const d of devs) {
     const title = String(d.title || '').trim();
     if (!title) continue;
+    // Also seeded from this batch, so one scan can't surface the same headline
+    // twice under two urls.
+    const titleKey = semantics.normalizeForMatch(title);
+    if (titleKey && seenTitles.has(titleKey)) { skippedDupes++; continue; }
+    if (titleKey) seenTitles.add(titleKey);
     const url = String(d.sourceUrl || '').trim();
     const dedup = sha256(`${scope}|${subject.id}|${url || title.toLowerCase()}`);
     const mat = Math.max(1, Math.min(5, Math.round(Number(d.materiality) || 3)));
@@ -214,6 +256,9 @@ async function runEntity(tenantId, scope, subject) {
     } catch (err) {
       console.warn(`[watch] finding insert failed for ${scope} ${subject.id} ("${title.slice(0, 60)}"): ${(err && err.message) || err}`);
     }
+  }
+  if (skippedDupes) {
+    console.log(`[watch] ${scope}/${subject.id}: skipped ${skippedDupes} re-run of an already-surfaced headline`);
   }
   return inserted;
 }
