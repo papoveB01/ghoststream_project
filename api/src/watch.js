@@ -122,22 +122,41 @@ async function knownContext(tenantId, scope, subject) {
 // Prior alerts fed to the model as "do NOT repeat". The model is the only thing
 // in this pipeline that can recognise a REWORDING — "appoints Dana Reed as CTO"
 // and "names Dana Reed chief technology officer" share almost no characters, so
-// no amount of string matching catches it, and dedup_key (which hashes the
-// source url) doesn't either once a second outlet covers the same event. The fix
-// for an entity resurfacing old news is therefore to give the model more
-// history, and 40 was too little for anything under weekly cadence: a monthly
-// watch forgot last quarter entirely.
+// no amount of string matching catches it. dedup_key doesn't either: it hashes
+// the source url (falling back to the lowercased title when there is none), so
+// a second outlet covering the same event produces a different key.
+//
+// This is a ROW count, not a time window, so the memory it buys is inversely
+// proportional to cadence: a daily watch finding a couple of items per run
+// exhausts 40 rows within weeks, while a monthly watch would take years. The
+// high-cadence entities were the starved ones.
 //
 // Deliberately NOT time-windowed. An age bound can only ever REMOVE titles the
 // model used to see, which for a quiet, long-watched entity makes resurfacing
 // more likely, not less — the opposite of the intent.
 //
-// 150 short headlines is roughly 2k input tokens on a call that already ships
-// the full scraped web findings, so the cost is noise. Not an env knob: no
-// WATCH_* variable is passed through the api service in docker-compose.yml, so
-// one would read as configurable while being unreachable in every deployed
-// environment. Plumbing those through is its own change.
+// Titles are stored truncated to 300 chars, so the worst case here is ~45KB;
+// they are re-sliced into the prompt below to keep the exclusion list from
+// outweighing the web findings it filters. Kept as a constant rather than an
+// env knob simply because it isn't worth tuning per environment.
 const PRIOR_TITLES_LIMIT = 150;
+// Per-title ceiling inside the prompt. A headline needs far less than the 300
+// chars the column allows, and 150 untrimmed titles could otherwise be more than
+// twice the size of the findings block they exist to filter.
+//
+// promptSafeTitle also neutralises the section-header syntax. Titles are
+// model-authored from scraped pages and stored raw, so they are attacker-
+// influenceable and get replayed into every subsequent prompt for that entity.
+// Collapsing whitespace alone is not enough: it stops a title opening a new
+// LINE, but leaves the literal `===WEB FINDINGS===` token sitting inline where
+// it can still read as structure. Squashing runs of `=` removes the pattern
+// while leaving the words legible.
+const PROMPT_TITLE_CHARS = 140;
+const promptSafeTitle = (t) => String(t)
+  .replace(/\s+/g, ' ')
+  .replace(/=+/g, '=')
+  .trim()
+  .slice(0, PROMPT_TITLE_CHARS);
 
 async function recentFindingTitles(tenantId, scope, subjectId) {
   const r = await db.query(
@@ -159,7 +178,7 @@ async function extractDevelopments({ tenantId, name, scope, tctx, known, priorTi
     'For each: category, a short title, a 1-2 sentence summary that says why it matters to US given OUR PRODUCTS, materiality 1-5, and the best source url/title/date if evident.\n\n' +
     `===OUR COMPANY (what we sell)===\n${String(tctx || '').slice(0, 1500)}\n\n` +
     `===WHAT WE ALREADY KNOW ABOUT ${name}===\n${known}\n\n` +
-    `===PRIOR ALERTS (already surfaced — do NOT repeat)===\n${priorTitles.length ? priorTitles.map((t) => `- ${t}`).join('\n') : '(none)'}\n\n` +
+    `===PRIOR ALERTS (already surfaced — do NOT repeat)===\n${priorTitles.length ? priorTitles.map((t) => `- ${promptSafeTitle(t)}`).join('\n') : '(none)'}\n\n` +
     `===WEB FINDINGS===\n${findingsText}`;
   const ai = gemini.getClient();
   const resp = await withRetry(() => ai.models.generateContent({
