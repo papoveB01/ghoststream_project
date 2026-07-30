@@ -201,25 +201,57 @@ async function watchTick() {
     // Per-entity: any watched prospect/competitor whose own schedule is due,
     // across all tenants. The entitlement/active/cap re-check lives inside
     // watch.runEntityScheduled. Both tables joined to their tenant.
+    //
+    // Round-robin across accounts, not oldest-first globally. `rn` numbers each
+    // account's due entities by age, and ordering by rn first interleaves them:
+    // every account's oldest entity, then every account's second-oldest, and so
+    // on until the tick is full.
+    //
+    // Under a flat "oldest first, LIMIT 25" a large backlog monopolises the tick
+    // until it drains — measured at 200 due vs 2 due, the small tenant waits
+    // until tick 9, i.e. eight hours on the hourly cron. It becomes permanent
+    // starvation only once the platform is over capacity (a sustained due-rate
+    // above 25/tick), but hours of latency for a two-entity tenant is already
+    // the wrong behaviour. Interleaving serves it in the first round instead.
+    //
+    // Deliberately a re-ORDER rather than a per-tenant cap. A cap throttles
+    // unconditionally: it leaves slots idle when nobody else is waiting, and it
+    // silently lowers a large tenant's achievable cadence even on a quiet
+    // platform. Interleaving self-limits only under contention — one tenant due
+    // alone still takes every slot, and a backlog still drains (verified over 40
+    // simulated ticks: 100 due entities all ran, none starved, drained by tick 6,
+    // slots per tick 1/18/25/25/25/6 as contention fell away).
+    //
+    // Partitioned by BILLING ACCOUNT, not workspace: sub-tenants are ordinary
+    // `tenants` rows, so partitioning on tenant_id alone would hand a parent one
+    // share per sub-workspace — measured 21 of 25 slots for a parent with five
+    // sub-workspaces against 4 for a single-workspace tenant with the same
+    // backlog, which is exactly the monopolisation this exists to stop.
     const due = (await db.query(
       `SELECT * FROM (
-         SELECT 'PROSPECT'::text AS scope, c.id::text AS id, c.name,
-                c.watch_frequency, c.watch_day, c.watch_timezone, c.watch_email_digest, c.watch_next_run_at,
-                t.id AS tenant_id, t.plan, t.plan_version, t.subscription_status, t.trial_ends_at, t.current_period_end
-           FROM companies c JOIN tenants t ON t.id = c.tenant_id
-          WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
-         UNION ALL
-         SELECT 'COMPETITOR'::text AS scope, c.id::text AS id, c.name,
-                c.watch_frequency, c.watch_day, c.watch_timezone, c.watch_email_digest, c.watch_next_run_at,
-                -- plan_version is load-bearing: entitlementsFor() defaults a missing
-                -- one to 1, so omitting it here evaluated every v2 tenant's scheduled
-                -- watch run against the v1 catalog (v1 Pro 500 vs v2 Pro 250 — double
-                -- the paid allowance). The manual-run path already selects it.
-                t.id AS tenant_id, t.plan, t.plan_version, t.subscription_status, t.trial_ends_at, t.current_period_end
-           FROM competitors c JOIN tenants t ON t.id = c.tenant_id
-          WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
-       ) q
-       ORDER BY watch_next_run_at ASC NULLS FIRST
+         SELECT q.*, ROW_NUMBER() OVER (
+                  PARTITION BY COALESCE(q.parent_tenant_id, q.tenant_id)
+                  ORDER BY q.watch_next_run_at ASC NULLS FIRST, q.id
+                ) AS rn
+         FROM (
+           SELECT 'PROSPECT'::text AS scope, c.id::text AS id, c.name,
+                  c.watch_frequency, c.watch_day, c.watch_timezone, c.watch_email_digest, c.watch_next_run_at,
+                  t.id AS tenant_id, t.parent_tenant_id, t.plan, t.plan_version, t.subscription_status, t.trial_ends_at, t.current_period_end
+             FROM companies c JOIN tenants t ON t.id = c.tenant_id
+            WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
+           UNION ALL
+           SELECT 'COMPETITOR'::text AS scope, c.id::text AS id, c.name,
+                  c.watch_frequency, c.watch_day, c.watch_timezone, c.watch_email_digest, c.watch_next_run_at,
+                  -- plan_version is load-bearing: entitlementsFor() defaults a missing
+                  -- one to 1, so omitting it here evaluated every v2 tenant's scheduled
+                  -- watch run against the v1 catalog (v1 Pro 500 vs v2 Pro 250 — double
+                  -- the paid allowance). The manual-run path already selects it.
+                  t.id AS tenant_id, t.parent_tenant_id, t.plan, t.plan_version, t.subscription_status, t.trial_ends_at, t.current_period_end
+             FROM competitors c JOIN tenants t ON t.id = c.tenant_id
+            WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
+         ) q
+       ) r
+       ORDER BY r.rn ASC, r.watch_next_run_at ASC NULLS FIRST, r.id
        LIMIT 25`
     )).rows;
     if (!due.length) return;
