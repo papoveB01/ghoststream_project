@@ -119,31 +119,33 @@ async function knownContext(tenantId, scope, subject) {
   return [String(row.description || ''), bc].filter(Boolean).join('\n');
 }
 
-// Prior findings for one entity, newest first. Two consumers with different needs:
+// Prior alerts fed to the model as "do NOT repeat". The model is the only thing
+// in this pipeline that can recognise a REWORDING — "appoints Dana Reed as CTO"
+// and "names Dana Reed chief technology officer" share almost no characters, so
+// no amount of string matching catches it, and dedup_key (which hashes the
+// source url) doesn't either once a second outlet covers the same event. The fix
+// for an entity resurfacing old news is therefore to give the model more
+// history, and 40 was too little for anything under weekly cadence: a monthly
+// watch forgot last quarter entirely.
 //
-//   - the PROMPT gets a bounded slice (token budget). The model is the only thing
-//     here that can recognise a genuine REWORDING — "appoints Dana Reed as CTO"
-//     vs "names Dana Reed chief technology officer" share almost no tokens — so
-//     the fix for resurfacing is to give it more history, not more string logic.
-//   - the INSERT guard uses the whole window. dedup_key hashes the source url, or
-//     the raw lowercased title when there is no url, so the same headline
-//     syndicated to a second outlet under different capitalisation or punctuation
-//     produces a different key and slips through.
+// Deliberately NOT time-windowed. An age bound can only ever REMOVE titles the
+// model used to see, which for a quiet, long-watched entity makes resurfacing
+// more likely, not less — the opposite of the intent.
 //
-// The flat LIMIT 40 served both, which is why an entity with heavy coverage lost
-// its older history from the prompt and started repeating itself.
-const DEDUPE_WINDOW_DAYS = Math.max(1, parseInt(process.env.WATCH_DEDUPE_WINDOW_DAYS || '180', 10) || 180);
-const DEDUPE_MAX_TITLES = Math.max(1, parseInt(process.env.WATCH_DEDUPE_MAX_TITLES || '200', 10) || 200);
-const PROMPT_PRIOR_TITLES = Math.max(1, parseInt(process.env.WATCH_PROMPT_PRIOR_TITLES || '40', 10) || 40);
+// 150 short headlines is roughly 2k input tokens on a call that already ships
+// the full scraped web findings, so the cost is noise. Not an env knob: no
+// WATCH_* variable is passed through the api service in docker-compose.yml, so
+// one would read as configurable while being unreachable in every deployed
+// environment. Plumbing those through is its own change.
+const PRIOR_TITLES_LIMIT = 150;
 
 async function recentFindingTitles(tenantId, scope, subjectId) {
   const r = await db.query(
     `SELECT title FROM watch_findings
       WHERE tenant_id = $1 AND scope = $2 AND subject_id = $3
-        AND created_at > now() - make_interval(days => $4)
       ORDER BY created_at DESC
-      LIMIT $5`,
-    [tenantId, scope, subjectId, DEDUPE_WINDOW_DAYS, DEDUPE_MAX_TITLES]
+      LIMIT $4`,
+    [tenantId, scope, subjectId, PRIOR_TITLES_LIMIT]
   );
   return r.rows.map((x) => x.title);
 }
@@ -203,34 +205,13 @@ async function runEntity(tenantId, scope, subject) {
   ]);
 
   let devs;
-  try {
-    devs = await extractDevelopments({
-      tenantId, name, scope, tctx, known,
-      // Only the newest slice goes in the prompt — the rest of the window is for
-      // the insert guard below, which costs no tokens.
-      priorTitles: priorTitles.slice(0, PROMPT_PRIOR_TITLES),
-      findingsText: findings.text,
-    });
-  } catch (err) { throw watchFailure(`extract failed for ${scope} ${subject.id}: ${err.message}`); }
+  try { devs = await extractDevelopments({ tenantId, name, scope, tctx, known, priorTitles, findingsText: findings.text }); }
+  catch (err) { throw watchFailure(`extract failed for ${scope} ${subject.id}: ${err.message}`); }
 
-  // Normalised-title guard. Catches only what dedup_key structurally cannot: the
-  // SAME headline at a different url, differing by case, punctuation, smart
-  // quotes or spacing — the ordinary syndication pattern. It does NOT catch a
-  // genuine reword (different words normalise differently); that is the model's
-  // job, which is why the prompt now sees a wider window. Real semantic dedupe
-  // would need embeddings on watch_findings and a migration — deliberately out
-  // of scope rather than half-built here.
-  const seenTitles = new Set(priorTitles.map((t) => semantics.normalizeForMatch(t)).filter(Boolean));
-  let skippedDupes = 0;
   const inserted = [];
   for (const d of devs) {
     const title = String(d.title || '').trim();
     if (!title) continue;
-    // Also seeded from this batch, so one scan can't surface the same headline
-    // twice under two urls.
-    const titleKey = semantics.normalizeForMatch(title);
-    if (titleKey && seenTitles.has(titleKey)) { skippedDupes++; continue; }
-    if (titleKey) seenTitles.add(titleKey);
     const url = String(d.sourceUrl || '').trim();
     const dedup = sha256(`${scope}|${subject.id}|${url || title.toLowerCase()}`);
     const mat = Math.max(1, Math.min(5, Math.round(Number(d.materiality) || 3)));
@@ -256,9 +237,6 @@ async function runEntity(tenantId, scope, subject) {
     } catch (err) {
       console.warn(`[watch] finding insert failed for ${scope} ${subject.id} ("${title.slice(0, 60)}"): ${(err && err.message) || err}`);
     }
-  }
-  if (skippedDupes) {
-    console.log(`[watch] ${scope}/${subject.id}: skipped ${skippedDupes} re-run of an already-surfaced headline`);
   }
   return inserted;
 }

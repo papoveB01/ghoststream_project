@@ -38,11 +38,6 @@ const WATCH_CONCURRENCY = Math.max(1, parseInt(process.env.WATCH_CONCURRENCY || 
 // Floor is 1s, not a minute: it exists to stop a typo'd 0/NaN from disabling the
 // bound entirely, not to mandate a realistic value — tests need to drive it low.
 const WATCH_ENTITY_TIMEOUT_MS = Math.max(1000, parseInt(process.env.WATCH_ENTITY_TIMEOUT_MS || '600000', 10) || 600000);
-// Throughput ceiling per tick, and the per-tenant slice of it. The ceiling is
-// what caps platform-wide Market Watch volume (WATCH_TICK_LIMIT × ticks/hour);
-// the per-tenant cap is what stops one tenant consuming the whole ceiling.
-const WATCH_TICK_LIMIT = Math.max(1, parseInt(process.env.WATCH_TICK_LIMIT || '25', 10) || 25);
-const WATCH_PER_TENANT_MAX = Math.max(1, parseInt(process.env.WATCH_PER_TENANT_MAX || '5', 10) || 5);
 
 // Note: this bounds how long we WAIT, not the work itself — Promise.race can't
 // cancel the underlying call, so a hung request still dangles until the process
@@ -207,14 +202,19 @@ async function watchTick() {
     // across all tenants. The entitlement/active/cap re-check lives inside
     // watch.runEntityScheduled. Both tables joined to their tenant.
     //
-    // ROW_NUMBER caps how many of one tenant's entities a single tick may take.
-    // A flat "oldest due first, LIMIT 25" let one tenant watching many entities
-    // occupy whole ticks and push everyone else's schedule back indefinitely —
-    // at 25 runs/hour platform-wide that starves the small tenants first.
-    // Nothing is dropped: an entity that misses the cut keeps its past-due
-    // watch_next_run_at, so it stays due and, being the oldest by then, wins the
-    // next tick. Both bounds are env-tunable so raising throughput doesn't need
-    // a code change.
+    // Round-robin across tenants, not oldest-first globally. `rn` numbers each
+    // tenant's due entities by age, and ordering by rn first interleaves them:
+    // every tenant's oldest entity, then every tenant's second-oldest, and so on
+    // until the tick is full. A flat "oldest first, LIMIT 25" let one tenant with
+    // a large backlog fill the whole tick and keep filling it, because its
+    // unrun entities stay as old as the ones just run — so a tenant watching two
+    // things could wait indefinitely behind a tenant watching two hundred.
+    //
+    // Deliberately a re-ORDER rather than a per-tenant cap. A cap throttles
+    // unconditionally: it leaves slots idle when nobody else is waiting, and it
+    // silently lowers a large tenant's achievable cadence even on a quiet
+    // platform. Interleaving self-limits only under contention — one tenant due
+    // alone still takes every slot.
     const due = (await db.query(
       `SELECT * FROM (
          SELECT q.*, ROW_NUMBER() OVER (
@@ -239,10 +239,8 @@ async function watchTick() {
             WHERE c.watch_enabled AND (c.watch_next_run_at IS NULL OR c.watch_next_run_at <= now())
          ) q
        ) r
-       WHERE r.rn <= $1
-       ORDER BY r.watch_next_run_at ASC NULLS FIRST
-       LIMIT $2`,
-      [WATCH_PER_TENANT_MAX, WATCH_TICK_LIMIT]
+       ORDER BY r.rn ASC, r.watch_next_run_at ASC NULLS FIRST
+       LIMIT 25`
     )).rows;
     if (!due.length) return;
     console.log(`[scheduler] ${due.length} watched entit(ies) due for Market Watch (concurrency ${WATCH_CONCURRENCY})`);
