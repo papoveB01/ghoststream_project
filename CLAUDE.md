@@ -43,10 +43,45 @@ these are lazily loaded on purpose, so don't work from the summaries below.
 | `rules/deploy-environments.md` | Deploying, or reasoning about which environment a checkout is. |
 | `rules/conventions.md` | Writing code, commits, PRs, migrations, or ADRs — i.e. essentially always before you commit. |
 
+## Reviewing a PR
+
+Reading a diff top-to-bottom finds the wrong class of defect. The damage lives in how a
+changed value is *consumed* somewhere the diff never shows. So a review is four passes,
+in this order, and **no PR merges until all four have run**:
+
+1. **Per-file passes, fanned out — one spoke per file** (or per tightly-coupled pair).
+   Each reads the *whole* file plus the callers of what changed, never the diff alone,
+   and is briefed with the rubric in `rules/code-review.md` plus the specific risk that
+   file carries. Spokes review only — they never edit.
+2. **Cross-integration pass.** One reviewer over the entire change set, looking for what
+   a per-file pass structurally cannot see: a field that became nullable and its readers
+   in `web/` or another module, a vocabulary that drifted between producer and consumer,
+   a guard whose meaning changed for a caller that didn't change, and **data already
+   stored in the old shape** — every review must state what happens to existing rows.
+3. **Confidence verification.** Prove the claims instead of accepting them. Run the suite
+   yourself and quote the numbers. For a regression fix, revert the fix and confirm the
+   new test actually fails. For anything the harness cannot reach — a live model schema,
+   a provider response — exercise it against the real dependency **before** merge; CI
+   being green says nothing about it.
+4. **Verdict.** `SAFE TO MERGE` / `MERGE WITH FIXES` / `DO NOT MERGE`, each finding with
+   `file:line`, its concrete failure, and the fix — plus an explicit list of what was
+   checked and found clean, so "no finding" is distinguishable from "never looked".
+
+Why this shape: in PR #40 (2026-07-30) the review caught that awaiting the Market Watch
+worker pool turned one hung model call into a silent, indefinite outage for every tenant
+— invisible in a diff that showed only a loop becoming a worker pool — and that nothing
+in CI or the CD smoke test ever exercised a Gemini response schema against the live API,
+so a rejected schema would have 502'd discovery for every tenant with the deploy still
+reporting green.
+
 ## Non-negotiables
 
 These are the ones that cause unrecoverable damage, so they apply even if you haven't
 opened the rule file yet:
+
+- **Never merge on a single-pass review.** Per-file spokes → cross-integration →
+  confidence verification → verdict, every time (see "Reviewing a PR" above). Merging to
+  `main` deploys production unattended, so the review *is* the gate.
 
 - **Never edit an applied migration** — add a new numbered one.
 - **Never repoint a v1 `STRIPE_PRICE_*` at a v2 price.** Grandfathering depends on v1
