@@ -14,6 +14,7 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('./db');
 const gemini = require('./gemini');
+const semantics = require('./semantics');
 const email = require('./email');
 const plans = require('./plans');
 const usage = require('./usage');
@@ -48,6 +49,12 @@ async function withRetry(fn, tries = 3) {
   throw lastErr;
 }
 
+// Closed set — a real schema enum, not a prose hint. The digest email groups by
+// this value and it is stored verbatim on watch_findings, so a synonym or a
+// plural from the model would silently create a category nobody renders.
+const WATCH_CATEGORIES = ['funding', 'product', 'leadership', 'partnership', 'm&a',
+  'regulatory', 'expansion', 'hiring', 'incident', 'other'];
+
 const DEV_SCHEMA = {
   type: 'object',
   properties: {
@@ -57,7 +64,7 @@ const DEV_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          category:    { type: 'string', description: 'One of: funding, product, leadership, partnership, m&a, regulatory, expansion, hiring, incident, other.' },
+          category:    { type: 'string', enum: WATCH_CATEGORIES, description: 'The kind of development. Use "other" when none of the named categories fits.' },
           title:       { type: 'string', description: 'Short headline of the development.' },
           summary:     { type: 'string', description: '1-2 sentences: what happened AND why it matters to US given OUR PRODUCTS.' },
           materiality: { type: 'integer', description: 'How material to our sales motion, 1 (minor) to 5 (major).' },
@@ -75,7 +82,13 @@ const DEV_SCHEMA = {
 // "Recent developments" angles — the watch is recency-oriented, so queries are
 // dated + change-focused (web search APIs have no freshness param plumbed).
 function buildWatchQueries(name) {
-  const year = '2026';
+  // Derived, never a literal. A hardcoded year keeps the watcher searching last
+  // year's news forever the moment the calendar rolls over — no error, results
+  // just quietly go stale. Early in the year most "recent" coverage still sits
+  // under the previous year, so widen the window until April.
+  const now = new Date();
+  const y = now.getFullYear();
+  const year = now.getMonth() < 3 ? `${y} OR ${y - 1}` : String(y);
   return [
     `${name} news ${year}`,
     `${name} announcement ${year}`,
@@ -160,16 +173,28 @@ async function runEntity(tenantId, scope, subject) {
     const url = String(d.sourceUrl || '').trim();
     const dedup = sha256(`${scope}|${subject.id}|${url || title.toLowerCase()}`);
     const mat = Math.max(1, Math.min(5, Math.round(Number(d.materiality) || 3)));
-    const publishedAt = /^\d{4}-\d{2}-\d{2}/.test(String(d.publishedAt || '')) ? d.publishedAt : null;
-    const r = await db.query(
-      `INSERT INTO watch_findings (tenant_id, scope, subject_id, subject_name, category, title, summary, materiality, source_url, source_title, published_at, dedup_key)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-       ON CONFLICT (tenant_id, dedup_key) DO NOTHING
-       RETURNING id`,
-      [tenantId, scope, subject.id, name, String(d.category || 'other').slice(0, 40), title.slice(0, 300),
-       String(d.summary || '').slice(0, 2000), mat, url || null, String(d.sourceTitle || '').slice(0, 300) || null, publishedAt, dedup]
-    );
-    if (r.rowCount) inserted.push({ id: r.rows[0].id, scope, subjectName: name, category: d.category, title, summary: d.summary, materiality: mat, sourceUrl: url, publishedAt });
+    // A shape check alone lets '2027-13-45' through to a timestamptz column,
+    // where Postgres rejects it and takes the whole batch's insert with it.
+    // realPastDate also drops dates in the future.
+    const publishedAt = semantics.realPastDate(d.publishedAt);
+    // Belt-and-braces: the schema enum constrains the model, this rejects
+    // anything that still arrives off-list rather than storing it verbatim.
+    const category = WATCH_CATEGORIES.includes(d.category) ? d.category : 'other';
+    // Per-row, not per-batch: one unusable value must not discard the other
+    // findings from the same scan (the caller only sees "failed" and re-arms).
+    try {
+      const r = await db.query(
+        `INSERT INTO watch_findings (tenant_id, scope, subject_id, subject_name, category, title, summary, materiality, source_url, source_title, published_at, dedup_key)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ON CONFLICT (tenant_id, dedup_key) DO NOTHING
+         RETURNING id`,
+        [tenantId, scope, subject.id, name, category, title.slice(0, 300),
+         String(d.summary || '').slice(0, 2000), mat, url || null, String(d.sourceTitle || '').slice(0, 300) || null, publishedAt, dedup]
+      );
+      if (r.rowCount) inserted.push({ id: r.rows[0].id, scope, subjectName: name, category, title, summary: d.summary, materiality: mat, sourceUrl: url, publishedAt });
+    } catch (err) {
+      console.warn(`[watch] finding insert failed for ${scope} ${subject.id} ("${title.slice(0, 60)}"): ${(err && err.message) || err}`);
+    }
   }
   return inserted;
 }
@@ -198,43 +223,69 @@ async function advanceEntity(scope, id, tenantId, e) {
 //   { scope, id, name, tenant_id, plan, subscription_status, trial_ends_at,
 //     current_period_end, watch_frequency, watch_day, watch_timezone, watch_email_digest }
 // `opts.advance` (default true) re-arms the cadence; manual "run now" passes false.
+// One run per entity at a time. The hourly pass and a rep hitting "run now" can
+// otherwise overlap on the same entity: dedup_key keeps duplicate rows out, but
+// usage.consume fires twice, so the tenant pays for two scans and gets one
+// scan's worth of findings. In-process, matching the scheduler's own
+// single-instance guard — a multi-instance deploy would need this in Redis.
+const inFlight = new Set();
+
 async function runEntityScheduled(e, opts = {}) {
-  const advance = opts.advance !== false;
-  const ent = entitlements.entitlementsFor({
-    plan: e.plan, plan_version: e.plan_version, subscription_status: e.subscription_status,
-    trial_ends_at: e.trial_ends_at, current_period_end: e.current_period_end,
-  });
-  const reArm = async () => { if (advance) await advanceEntity(e.scope, e.id, e.tenant_id, e); };
-
-  if (!ent.active || !entitlements.hasFeature(ent, plans.FEATURES.MARKET_MONITORING)) {
-    await reArm();
-    return { skipped: 'not_entitled', newCount: 0 };
+  const key = `${e.scope}:${e.id}`;
+  if (inFlight.has(key)) {
+    console.log(`[watch] ${key} (${e.name}): a run is already in progress — skipped`);
+    return { skipped: 'already_running', newCount: 0 };
   }
+  inFlight.add(key);
+  try {
+    const advance = opts.advance !== false;
+    const ent = entitlements.entitlementsFor({
+      plan: e.plan, plan_version: e.plan_version, subscription_status: e.subscription_status,
+      trial_ends_at: e.trial_ends_at, current_period_end: e.current_period_end,
+    });
+    const reArm = async () => { if (advance) await advanceEntity(e.scope, e.id, e.tenant_id, e); };
 
-  // market_monitoring keeps the same meter key in both catalog versions; the
-  // CAP differs (v1 Pro 500, v2 Pro 250) so read it off the entitlement.
-  const cap = (ent.caps && ent.caps.market_monitoring) ?? 0;
-  try { await usage.consume(e.tenant_id, 'market_monitoring', cap); }
-  catch (err) {
-    if (err && err.code === 'USAGE_LIMIT') {
-      console.warn(`[watch] ${e.scope}/${e.id}: monthly cap (${cap}) reached — skipped`);
+    if (!ent.active || !entitlements.hasFeature(ent, plans.FEATURES.MARKET_MONITORING)) {
       await reArm();
-      return { skipped: 'capped', newCount: 0 };
+      return { skipped: 'not_entitled', newCount: 0 };
     }
-    throw err;
-  }
 
-  let found = [];
-  try { found = await runEntity(e.tenant_id, e.scope, { id: e.id, name: e.name }); }
-  catch (err) { console.warn(`[watch] ${e.scope}/${e.id} failed: ${(err && err.message) || err}`); }
+    // market_monitoring keeps the same meter key in both catalog versions; the
+    // CAP differs (v1 Pro 500, v2 Pro 250) so read it off the entitlement.
+    const cap = (ent.caps && ent.caps.market_monitoring) ?? 0;
+    let consumed;
+    try { consumed = await usage.consume(e.tenant_id, 'market_monitoring', cap); }
+    catch (err) {
+      if (err && err.code === 'USAGE_LIMIT') {
+        console.warn(`[watch] ${e.scope}/${e.id}: monthly cap (${cap}) reached — skipped`);
+        await reArm();
+        return { skipped: 'capped', newCount: 0 };
+      }
+      throw err;
+    }
 
-  await reArm();
-  if (e.watch_email_digest && found.length) {
-    try { await sendDigest(e.tenant_id, e.name, found); }
-    catch (err) { console.warn(`[watch] digest failed for ${e.tenant_id}: ${err.message}`); }
+    let found = [];
+    try { found = await runEntity(e.tenant_id, e.scope, { id: e.id, name: e.name }); }
+    catch (err) {
+      // Refund: the unit bought a scan that produced nothing because WE failed
+      // (search provider down, model error) — not because there was no news.
+      // Both manual paths already refund on throw; the scheduled one silently
+      // kept the charge, quietly eating the tenant's monthly allowance.
+      console.warn(`[watch] ${e.scope}/${e.id} failed: ${(err && err.message) || err}`);
+      await usage.refund(e.tenant_id, 'market_monitoring', consumed)
+        .catch((rErr) => console.warn(`[watch] refund failed for ${e.tenant_id}: ${rErr.message}`));
+    }
+
+    await reArm();
+    if (e.watch_email_digest && found.length) {
+      try { await sendDigest(e.tenant_id, e.name, found); }
+      catch (err) { console.warn(`[watch] digest failed for ${e.tenant_id}: ${err.message}`); }
+    }
+    console.log(`[watch] ${e.scope}/${e.id} (${e.name}): ${found.length} new finding(s)`);
+    return { newCount: found.length };
+  } finally {
+    inFlight.delete(key);
   }
-  console.log(`[watch] ${e.scope}/${e.id} (${e.name}): ${found.length} new finding(s)`);
-  return { newCount: found.length };
 }
 
 // Email digest of one entity's new findings to the tenant's owner(s)/admins.
@@ -332,23 +383,23 @@ const TREND_SCHEMA = {
     summary:     { type: 'string', description: 'what happened, 2-3 neutral sentences' },
     materiality: { type: 'integer', description: '1-5 impact on OUR business (5 = existential/major opportunity)' },
     companyImpact: { type: 'string', description: 'how this impacts our company specifically, given our positioning and ICP' },
-    productImpacts: { type: 'array', items: { type: 'object', properties: {
+    productImpacts: { type: 'array', nullable: true, items: { type: 'object', properties: {
       product:     { type: 'string', description: 'one of OUR product names' },
       impact:      { type: 'string' },
-      opportunity: { type: 'string', description: 'the sales opportunity this creates for that product, if any' },
+      opportunity: { type: 'string', nullable: true, description: 'the sales opportunity this creates for that product, if any. null when it creates none.' },
     }, required: ['product', 'impact'] } },
-    engagementMotives: { type: 'array', items: { type: 'object', properties: {
-      who:    { type: 'string', description: 'which client/prospect type to engage' },
+    engagementMotives: { type: 'array', nullable: true, items: { type: 'object', properties: {
+      who:    { type: 'string', nullable: true, description: 'which client/prospect type to engage. null if the development does not point at a particular type.' },
       motive: { type: 'string', description: 'the reason this development justifies reaching out NOW' },
-      opener: { type: 'string', description: 'a line the rep can say or write verbatim to open the conversation' },
+      opener: { type: 'string', nullable: true, description: 'a line the rep can say or write verbatim to open the conversation. null if you cannot ground one.' },
     }, required: ['motive'] } },
-    prospectingAngle: { type: 'object', properties: {
-      who:       { type: 'string', description: 'the kind of companies to go find' },
-      industry:  { type: 'string', description: 'their industry/segment, one or two words' },
-      region:    { type: 'string', description: 'geography this applies to, if any' },
-      rationale: { type: 'string' },
+    prospectingAngle: { type: 'object', nullable: true, description: 'null when the development suggests no new prospecting angle.', properties: {
+      who:       { type: 'string', nullable: true, description: 'the kind of companies to go find' },
+      industry:  { type: 'string', nullable: true, description: 'their industry/segment, one or two words' },
+      region:    { type: 'string', nullable: true, description: 'geography this applies to, if any' },
+      rationale: { type: 'string', nullable: true },
     } },
-    recommendedActions: { type: 'array', items: { type: 'string' } },
+    recommendedActions: { type: 'array', nullable: true, items: { type: 'string' } },
   },
   required: ['headline', 'summary', 'materiality', 'companyImpact'],
 };
@@ -440,9 +491,9 @@ const TRENDS_DISCOVERED_SCHEMA = {
   properties: {
     trends: { type: 'array', items: { type: 'object', properties: {
       ...TREND_SCHEMA.properties,
-      sourceUrl:   { type: 'string', description: 'best source url from the findings, if evident' },
-      sourceTitle: { type: 'string' },
-      sourceDate:  { type: 'string', description: 'source publication date, YYYY-MM-DD, if evident' },
+      sourceUrl:   { type: 'string', nullable: true, description: 'best source url from the findings, if evident; null if none' },
+      sourceTitle: { type: 'string', nullable: true },
+      sourceDate:  { type: 'string', nullable: true, description: 'source publication date, YYYY-MM-DD, if evident; null if not stated' },
     }, required: TREND_SCHEMA.required } },
   },
   required: ['trends'],
@@ -539,8 +590,13 @@ router.post('/trends/discover', async (req, res, next) => {
         const head = String(t.headline || '').trim().toLowerCase();
         if ((url && excludeSet.has(url)) || (head && excludeSet.has(head))) return false;
         if (t.sourceDate) {
-          const d = new Date(t.sourceDate);
-          if (!Number.isNaN(d.getTime()) && d < cutoff) return false;
+          // Present-but-unusable (calendar-invalid, or dated in the future) is
+          // bad data, not a recency question — drop it either way. A trend with
+          // NO date still passes: the model legitimately can't always find one,
+          // and dropping those would cost real findings.
+          const iso = semantics.realPastDate(t.sourceDate);
+          if (!iso) return false;
+          if (new Date(iso) < cutoff) return false;
         }
         return true;
       });

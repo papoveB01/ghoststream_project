@@ -14,6 +14,7 @@
 //                 consolidated report) from the structured moments.
 
 const gemini = require('./gemini');
+const semantics = require('./semantics');
 const retrieval = require('./knowledge/retrieval');
 
 const { modelFor } = require('./models');
@@ -87,20 +88,28 @@ const MOMENTS_SCHEMA = {
   type: 'object',
   properties: {
     summary: { type: 'string', description: 'One-line summary of the call.' },
+    // objection/agreement stay in `required` (the key is always present) but are
+    // nullable: not every call has a raised objection or an explicit agreement,
+    // and a non-nullable object would force the model to invent a quote,
+    // category and timestamps to satisfy the schema. null = "there wasn't one".
     objection: {
       type: 'object',
+      nullable: true,
+      description: 'The single most important objection the prospect raised. null if the prospect raised no real objection — never invent one.',
       properties: {
         quote: { type: 'string' },
         category: { type: 'string', description: 'e.g. payback, security, layering, pricing' },
         startSeconds: { type: 'number' },
         endSeconds: { type: 'number' },
         resolved: { type: 'boolean' },
-        repResponseQuote: { type: 'string' },
+        repResponseQuote: { type: 'string', nullable: true, description: 'Exact quote of the rep answering the objection. null if the rep never responded.' },
       },
       required: ['quote', 'category', 'startSeconds', 'endSeconds', 'resolved'],
     },
     agreement: {
       type: 'object',
+      nullable: true,
+      description: 'The clearest thing the prospect agreed to. null if they committed to nothing — never invent one.',
       properties: {
         quote: { type: 'string' },
         commitment: { type: 'string', description: 'What the prospect agreed to do or accept.' },
@@ -127,7 +136,7 @@ const MOMENTS_SCHEMA = {
           repQuote:      { type: 'string', description: "Exact quote of the rep's incorrect claim." },
           kbCitation:    { type: 'string', description: 'Citation token: either a chunk token from [Grounded Knowledge] in the form doc-id:c-N, or the literal "[BRIEF]" when the contradiction is against the [Pre-Call Brief] section.' },
           contradiction: { type: 'string', description: 'One sentence: what the KB / brief says vs. what the rep said.' },
-          severity:      { type: 'string', description: 'HIGH (pricing/contract terms), MEDIUM (feature/spec), LOW (positioning).' },
+          severity:      { type: 'string', enum: ['HIGH', 'MEDIUM', 'LOW'], description: 'HIGH (pricing/contract terms), MEDIUM (feature/spec), LOW (positioning).' },
         },
         required: ['repQuote', 'kbCitation', 'contradiction', 'severity'],
       },
@@ -153,6 +162,65 @@ function formatTranscript(transcript) {
 // already pulls for analysis, so we just need the strategy header — first
 // ~2000 chars covers the predictions section comfortably.
 const BRIEF_PROMPT_TRUNCATE_CHARS = 2000;
+
+// Stage-1 output is schema-valid but not necessarily coherent with the call it
+// describes. Three things the schema cannot check, all verifiable here because
+// we still hold the inputs the model was given:
+//
+//   - timestamps: a clip range must sit inside THIS recording. These leave the
+//     process (stream.createClip → Cloudflare clipFrom/clipTo) and are shown to
+//     the rep as "At 3:45–4:12", so an out-of-range pair both breaks the clip
+//     and misinforms. Unusable ranges become null + timestampsUnverified.
+//   - kbCitation: must name a chunk actually in the retrieved set (or [BRIEF]).
+//     An unresolvable citation is the fact-checker citing something it was never
+//     shown.
+//   - quotes: repQuote/objection.quote/agreement.quote are specified as
+//     verbatim, so they must appear in the transcript.
+//
+// Nothing is deleted — a real objection with a mis-transcribed quote is still
+// worth showing. The flags travel with the data so the portal and the
+// high-severity tallies can decide what to trust.
+function verifyMoments(moments, { transcript, transcriptText, groundedKnowledge }) {
+  const duration = (transcript && Number(transcript.durationSeconds)) || null;
+  const validCitations = new Set(
+    ((groundedKnowledge && groundedKnowledge.chunks) || [])
+      .map((c) => c && c.citation).filter(Boolean)
+  );
+
+  for (const key of ['objection', 'agreement']) {
+    const m = moments[key];
+    if (!m) continue;
+    if (!semantics.validTimeRange(m.startSeconds, m.endSeconds, duration)) {
+      console.warn(`[analysis] ${key} timestamps outside the recording ` +
+        `(${m.startSeconds}–${m.endSeconds}, duration ${duration}) — dropping the range`);
+      m.startSeconds = null;
+      m.endSeconds = null;
+      m.timestampsUnverified = true;
+    }
+    if (m.quote && !semantics.quoteAppearsIn(m.quote, transcriptText)) {
+      m.quoteVerified = false;
+    }
+  }
+
+  const gaps = Array.isArray(moments.knowledgeGaps) ? moments.knowledgeGaps : [];
+  for (const g of gaps) {
+    if (!g) continue;
+    // [BRIEF] is a legitimate literal — the contradiction is against the
+    // pre-call brief rather than a KB chunk. Only check real chunk tokens, and
+    // only when a retrieved set exists to check against.
+    if (g.kbCitation && g.kbCitation !== '[BRIEF]' && validCitations.size
+        && !validCitations.has(g.kbCitation)) {
+      g.citationResolved = false;
+    }
+    if (g.repQuote && !semantics.quoteAppearsIn(g.repQuote, transcriptText)) {
+      g.repQuoteVerified = false;
+    }
+  }
+  const unverified = gaps.filter((g) => g && (g.citationResolved === false || g.repQuoteVerified === false)).length;
+  if (unverified) console.warn(`[analysis] ${unverified}/${gaps.length} knowledge gaps failed citation/quote verification`);
+
+  return moments;
+}
 
 async function findMoments(transcript, { groundedKnowledge, preCallBrief } = {}) {
   const formatted = formatTranscript(transcript);
@@ -214,7 +282,9 @@ async function findMoments(transcript, { groundedKnowledge, preCallBrief } = {})
               'You are the analysis brain inside a sales-enablement product. Read the transcript ' +
               'of this sales call and identify ONE Moment-of-Truth: the most important objection ' +
               'the prospect raised, and the most important agreement the prospect made. Return ' +
-              'precise timestamps so we can clip the audio/video later.\n\n' +
+              'precise timestamps so we can clip the audio/video later. If the prospect raised no ' +
+              'real objection, set `objection` to null; if they committed to nothing, set ' +
+              '`agreement` to null. Never fabricate either one to fill the field.\n\n' +
               '## Call metadata\n' +
               `Title: ${transcript.meetingTitle}\n` +
               `Duration: ${transcript.durationSeconds} seconds\n` +
@@ -245,7 +315,7 @@ async function findMoments(transcript, { groundedKnowledge, preCallBrief } = {})
   return {
     model: ANALYSIS_MODEL,
     usage: response.usageMetadata || null,
-    moments: parsed,
+    moments: verifyMoments(parsed, { transcript, transcriptText: formatted, groundedKnowledge }),
   };
 }
 
@@ -295,10 +365,11 @@ async function draftFollowups({ transcript, moments }) {
               'The report consolidates the whole meeting: a short overview, the key discussion points, every commitment made (by either side), and the risks/objections raised.\n\n' +
               `## Call summary\n${moments.summary}\n\n` +
               '## Prospect agreement\n' +
-              `${moments.agreement.quote}\n` +
-              `Commitment: ${moments.agreement.commitment}\n\n` +
+              (moments.agreement
+                ? `${moments.agreement.quote}\nCommitment: ${moments.agreement.commitment}\n\n`
+                : '(The prospect made no explicit commitment on this call — do not imply one.)\n\n') +
               '## Rep next steps\n' +
-              moments.nextSteps.map((s) => `- ${s}`).join('\n') +
+              (moments.nextSteps || []).map((s) => `- ${s}`).join('\n') +
               '\n\n' +
               '## Participants\n' +
               transcript.participants.map((p) => `- ${p.name} (${p.role}${p.title ? ', ' + p.title : ''})`).join('\n'),

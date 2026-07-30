@@ -13,6 +13,7 @@
 const express = require('express');
 const db = require('./db');
 const gemini = require('./gemini');
+const semantics = require('./semantics');
 const store = require('./store');
 const keypoints = require('./knowledge/keypoints');
 const service = require('./knowledge/service');
@@ -129,13 +130,16 @@ async function gatherEvidence(tenantId, companyId) {
 }
 
 // ── Synthesis schema ────────────────────────────────────────────────────────
-const section = (desc) => ({
+// nullable: true on a section lets the model return null for it rather than
+// inventing one — use it for sections the evidence may simply not support.
+const section = (desc, { nullable = false } = {}) => ({
   type: 'object',
+  ...(nullable ? { nullable: true } : {}),
   properties: {
     text: { type: 'string', description: desc },
     confidence: { type: 'string', enum: ['high', 'medium', 'low'], description: 'high = well grounded in evidence; low = mostly inference.' },
-    assumptions: { type: 'array', items: { type: 'string' }, description: 'Claims made WITHOUT supporting evidence (thin intel). Empty when fully grounded.' },
-    citations: { type: 'array', items: { type: 'integer' }, description: 'Evidence numbers [n] this section is grounded in.' },
+    assumptions: { type: 'array', nullable: true, items: { type: 'string' }, description: 'Claims made WITHOUT supporting evidence (thin intel). Empty or null when fully grounded.' },
+    citations: { type: 'array', nullable: true, items: { type: 'integer' }, description: 'Evidence numbers [n] this section is grounded in. null when the section cites nothing.' },
   },
   required: ['text', 'confidence'],
 });
@@ -148,7 +152,7 @@ const PROPOSAL_SCHEMA = {
     positioning:  section('How to position US given their inclinations and our strengths.'),
     outcomes:     section('The specific outcomes / metrics to emphasize to this prospect.'),
     edge:         section('Our differentiation vs the alternatives, relevant to THIS prospect.'),
-    proof:        section('Proof points to cite (case studies, results) — only if evidence exists.'),
+    proof:        section('Proof points to cite (case studies, results) — only if evidence exists.', { nullable: true }),
     objections: {
       type: 'array',
       description: 'Likely objections and how to preempt each. Empty if none are evidenced.',
@@ -157,13 +161,13 @@ const PROPOSAL_SCHEMA = {
         properties: {
           objection: { type: 'string' },
           response:  { type: 'string' },
-          citations: { type: 'array', items: { type: 'integer' } },
+          citations: { type: 'array', nullable: true, items: { type: 'integer' } },
         },
         required: ['objection', 'response'],
       },
     },
     nextMove:         section('The recommended next move to advance the engagement.'),
-    intelligenceGaps: { type: 'array', items: { type: 'string' }, description: 'What missing intel would most strengthen this recommendation.' },
+    intelligenceGaps: { type: 'array', nullable: true, items: { type: 'string' }, description: 'What missing intel would most strengthen this recommendation. null if nothing material is missing.' },
   },
   required: ['headline', 'situation', 'positioning', 'outcomes', 'edge', 'objections', 'nextMove'],
 };
@@ -173,6 +177,25 @@ const SYNTHESIS_PROMPT =
   'Consolidate OUR company profile, then the numbered EVIDENCE [n] about a PROSPECT (their research-derived opportunities, filed intel, our competitor intel, and what they said on calls), into an outcome-based recommendation: what to propose, how to position us, which outcomes to emphasize, and which objections to preempt. ' +
   'RULES: (1) Ground every claim in the evidence and cite the relevant [n] numbers. (2) Where evidence is thin, still give your best recommendation but list those claims under `assumptions` and set that section\'s `confidence` to "low" — NEVER invent facts, signals, or figures. (3) NO pricing, NO contract terms, NO deal-stage language — this is intelligence + suggestion only. (4) Be concrete and specific to THIS prospect; no generic sales filler. (5) Map positioning to products/strengths that actually appear in OUR profile. ' +
   '(6) COMPLETELY IGNORE website boilerplate in the evidence — cookie/consent banners, "we use cookies", "we value/take your privacy", privacy-policy and terms-of-use text, navigation, footers, copyright lines. None of that is a signal: never cite it, quote it, or build a point on it.';
+
+// Drop citations that point at evidence we never supplied. The schema can only
+// say "array of integers" — it cannot know that this request carried 4 evidence
+// items, so [9] is schema-valid and renders in the UI as a bare, unlinked [9]
+// (admin.js `cite`), indistinguishable at a glance from a real source.
+function pruneCitations(content, evidence) {
+  const valid = new Set((evidence || []).map((e) => e && e.n).filter(Number.isInteger));
+  let dropped = 0;
+  const prune = (obj) => {
+    if (!obj || !Array.isArray(obj.citations)) return;
+    const kept = semantics.keepCitations(obj.citations, valid);
+    dropped += obj.citations.length - kept.length;
+    obj.citations = kept;
+  };
+  for (const k of ['headline', 'situation', 'positioning', 'outcomes', 'edge', 'proof', 'nextMove']) prune(content[k]);
+  if (Array.isArray(content.objections)) content.objections.forEach(prune);
+  if (dropped) console.warn(`[proposals] dropped ${dropped} citation(s) pointing outside the ${valid.size} supplied evidence items`);
+  return content;
+}
 
 async function synthesize(companyName, profileText, evidence) {
   const ai = gemini.getClient();
@@ -190,8 +213,15 @@ async function synthesize(companyName, profileText, evidence) {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: { temperature: 0.4, maxOutputTokens: 3000, responseMimeType: 'application/json', responseSchema: PROPOSAL_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
   }));
-  const content = JSON.parse(resp.text);
-  return { content, usage: resp.usageMetadata || null };
+  // Fail with the offending output rather than a bare 500 — the route refunds
+  // the usage unit on any throw, and PROPOSAL_SCHEMA means a parse failure is a
+  // real anomaly worth seeing in the logs, not routine model chatter.
+  let content;
+  try { content = JSON.parse(resp.text); }
+  catch (err) {
+    throw new Error(`proposal synthesis: unparseable model output: ${(resp.text || '').slice(0, 300)}`);
+  }
+  return { content: pruneCitations(content, evidence), usage: resp.usageMetadata || null };
 }
 
 // Coverage/confidence = average of the section confidences (high/med/low →

@@ -24,6 +24,33 @@ const DIMENSIONS = [
   { key: 'close',     label: 'Close',              max: 25 },
 ];
 
+// Schema-enforced scorecard shape. Derived from DIMENSIONS so the contract can
+// never drift from the rubric: every dimension key is a required property, so
+// the model cannot silently rename, drop or invent one.
+const SCORECARD_SCHEMA = {
+  type: 'object',
+  properties: {
+    dimensions: {
+      type: 'object',
+      description: 'One entry per rubric dimension. Every key is required.',
+      properties: Object.fromEntries(DIMENSIONS.map((d) => [d.key, {
+        type: 'object',
+        description: `${d.label}, scored out of ${d.max}.`,
+        properties: {
+          score: { type: 'integer', description: `Whole number from 0 to ${d.max}.` },
+          note:  { type: 'string', description: 'One sentence justifying the score, citing what the rep actually said.' },
+        },
+        required: ['score', 'note'],
+      }])),
+      required: DIMENSIONS.map((d) => d.key),
+    },
+    feedback: { type: 'string', description: '2-3 sentence overall coaching summary addressed to the rep.' },
+    strengths: { type: 'array', items: { type: 'string' }, description: 'Short, specific things the rep did well. Empty array if there were none.' },
+    improvements: { type: 'array', items: { type: 'string' }, description: 'Short, specific things to work on. Empty array if there were none.' },
+  },
+  required: ['dimensions', 'feedback', 'strengths', 'improvements'],
+};
+
 const STALE_AFTER = "interval '1 hour'"; // matches the Redis session TTL
 
 function repTurnCount(turns) {
@@ -97,17 +124,6 @@ async function scoreSession(session) {
     'Score each rubric dimension on its own scale (higher = better):',
     rubric,
     '',
-    'Return ONLY valid JSON, no markdown, in exactly this shape:',
-    '{',
-    '  "dimensions": { "discovery": {"score": <int>, "note": "<one sentence>"},',
-    '                  "objection": {"score": <int>, "note": "..."},',
-    '                  "tone": {"score": <int>, "note": "..."},',
-    '                  "close": {"score": <int>, "note": "..."} },',
-    '  "feedback": "<2-3 sentence overall coaching summary>",',
-    '  "strengths": ["<short>", "..."],',
-    '  "improvements": ["<short>", "..."]',
-    '}',
-    '',
     '--- TRANSCRIPT ---',
     transcriptText(turns),
   ].join('\n');
@@ -121,17 +137,20 @@ async function scoreSession(session) {
       temperature: 0.4,
       maxOutputTokens: 900,
       responseMimeType: 'application/json',
+      responseSchema: SCORECARD_SCHEMA,
       thinkingConfig: { thinkingBudget: 0 },
     },
   });
 
+  // The schema guarantees the shape, so an unparseable response means something
+  // genuinely went wrong. Throw rather than fall back to `{}` — finalize()
+  // catches this and records error:'scoring_failed', which is honest. A silent
+  // {} would have written an all-zero scorecard as if the rep had earned it.
   let parsed;
   try {
     parsed = JSON.parse((response.text || '').trim());
-  } catch {
-    // Last-ditch: pull the first {...} block out of the response.
-    const m = (response.text || '').match(/\{[\s\S]*\}/);
-    parsed = m ? JSON.parse(m[0]) : {};
+  } catch (err) {
+    throw new Error(`arena scoring: unparseable model output: ${(response.text || '').slice(0, 200)}`);
   }
 
   const dims = parsed.dimensions || {};

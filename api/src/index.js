@@ -4,6 +4,7 @@ const personas = require('./personas');
 const gemini = require('./gemini');
 const analysis = require('./analysis');
 const recall = require('./recall');
+const semantics = require('./semantics');
 const stream = require('./stream');
 const store = require('./store');
 const arena = require('./arena');
@@ -384,8 +385,14 @@ app.post('/_internal/meetings/:id/process', requireInternalAuth, async (req, res
     // Clip generation is best-effort: a just-ingested copy-from-URL video may
     // not be encoded yet, so clipping can fail. That must NOT block the portal
     // (which still carries the full recording via videoUid). Degrade to no clip.
+    // moments.objection is nullable — a call where the prospect raised no real
+    // objection has nothing to clip, and that is not an error. Neither is an
+    // objection whose timestamps didn't survive verification: clipFrom/clipTo
+    // would be garbage, so skip rather than hand Cloudflare a bad range.
+    const objMoment = pipeline.moments.objection;
     let objectionClip = null;
-    if (videoUid) {
+    if (videoUid && objMoment
+        && semantics.validTimeRange(objMoment.startSeconds, objMoment.endSeconds, transcript.durationSeconds)) {
       try {
         objectionClip = await stream.createClip({
           videoUid,
@@ -470,12 +477,15 @@ app.post('/first-loop', auth.authMiddleware, async (req, res, next) => {
       `${APP_BASE_URL}/portal/sample.mp4`,
       transcript.meetingTitle
     );
-    const clip = await stream.createClip({
-      videoUid: ingest.uid,
-      startSeconds: pipeline.moments.objection.startSeconds,
-      endSeconds: pipeline.moments.objection.endSeconds,
-      label: 'Moment of Truth — Objection',
-    });
+    const flObj = pipeline.moments.objection;
+    const clip = (flObj && semantics.validTimeRange(flObj.startSeconds, flObj.endSeconds, transcript.durationSeconds))
+      ? await stream.createClip({
+        videoUid: ingest.uid,
+        startSeconds: flObj.startSeconds,
+        endSeconds: flObj.endSeconds,
+        label: 'Moment of Truth — Objection',
+      })
+      : null;
 
     const portal = await store.createPortal({
       meetingId: meeting.id,
@@ -631,10 +641,14 @@ app.get('/portals/:id', async (req, res, next) => {
 
     const allGaps = (p.moments && Array.isArray(p.moments.knowledgeGaps))
       ? p.moments.knowledgeGaps : [];
+    // A HIGH gap is what tells a rep they misspoke about pricing or contract
+    // terms, so it has to be grounded: a gap whose repQuote does not appear in
+    // the transcript (analysis.verifyMoments flagged it) still shows in the
+    // list, but does not raise the alarm.
     const audit = {
       gapCount: allGaps.length,
       hasHighSeverity: allGaps.some(
-        (g) => String(g.severity || '').toUpperCase() === 'HIGH'
+        (g) => String(g.severity || '').toUpperCase() === 'HIGH' && g.repQuoteVerified !== false
       ),
     };
 

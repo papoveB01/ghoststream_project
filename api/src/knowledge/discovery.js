@@ -40,7 +40,18 @@ const LIST_MAXTOK = parseInt(process.env.KB_DISCOVERY_LIST_MAXTOK || '8000', 10)
 const COMPETITOR_MAX_HITS = parseInt(process.env.KB_DISCOVERY_COMPETITOR_MAX_HITS || '32', 10);
 const COMPETITOR_SCRAPE_TOP = parseInt(process.env.KB_DISCOVERY_COMPETITOR_SCRAPE_TOP || '6', 10);
 
-const SCHEMA = {
+// Fields whose only valid values are ids/names from THIS tenant's own data get a
+// per-request enum. These schemas are rebuilt on every call anyway, so the closed
+// set can be enforced at generation time rather than filtered out afterwards —
+// the post-parse `ourIds.has(...)` / `prospectSet.get(...)` checks below stay as
+// the backstop. With nothing to enumerate the field is left unconstrained: an
+// empty enum is a schema with no legal value, which would fail every call.
+function closedSet(values, extra = {}) {
+  const list = [...new Set([...values])].filter(Boolean);
+  return list.length ? { type: 'string', enum: list, ...extra } : { type: 'string', ...extra };
+}
+
+const buildCompetitorProductsSchema = (ourIds) => ({
   type: 'object',
   properties: {
     products: {
@@ -52,16 +63,16 @@ const SCHEMA = {
           name: { type: 'string', description: 'The competitor product\'s name.' },
           description: { type: 'string', description: 'One sentence: what this product does.' },
           belongsToThisCompetitor: { type: 'boolean', description: 'TRUE only if the findings clearly attribute this product to THIS competitor (it is their OWN offering). FALSE if it actually belongs to a different company (e.g. mentioned in a comparison / "vs" / alternatives / roundup).' },
-          competesWithProductId: { type: 'string', description: 'The id of the ONE of OUR products it most directly competes with, chosen from the provided list. Empty string if none of ours is a direct competitor.' },
+          competesWithProductId: closedSet(ourIds, { nullable: true, description: 'The id of the ONE of OUR products it most directly competes with, chosen from the provided list. null if none of ours is a direct competitor.' }),
           theirStrength: { type: 'string', description: 'One short phrase: this product\'s main strength / why buyers pick it.' },
-          whereWeWin: { type: 'string', description: 'One short phrase: where our competing product would win. Empty if we have no direct competitor.' },
+          whereWeWin: { type: 'string', nullable: true, description: 'One short phrase: where our competing product would win. null if we have no direct competitor.' },
         },
         required: ['name', 'description', 'belongsToThisCompetitor', 'competesWithProductId', 'theirStrength', 'whereWeWin'],
       },
     },
   },
   required: ['products'],
-};
+});
 
 // Retry on transient Gemini errors (mirrors assessment.js / relevance.js).
 async function withRetry(fn, tries = 3) {
@@ -198,16 +209,16 @@ async function discoverCompetitorProducts({ competitorName, competitorDomain = '
 
   const portfolio = (ourProducts || []).length
     ? (ourProducts || []).map((p) => `- id="${p.id}" · ${p.name}${p.description ? ` — ${p.description}` : ''}`).join('\n')
-    : '(no products on file — leave competesWithProductId empty for all)';
+    : '(no products on file — leave competesWithProductId null for all)';
 
   const prompt =
     `You are a competitive-intelligence analyst cataloguing the product line of ONE specific competitor — "${name}"${domain ? ` (their website: ${domain})` : ''} — and mapping it against OUR portfolio. ` +
     'Using ONLY the web findings below, list ONLY the products/offerings that the findings clearly attribute to THIS competitor — products THIS company itself makes or sells.\n' +
     'CRITICAL — relevance to this competitor only: the findings may include comparison articles, "X vs Y", "alternatives to", or roundups that mention OTHER companies\' products. DO NOT list those. A product belongs here ONLY if it is one of ' +
     `${name}'s OWN offerings. If you are not sure a product is theirs, leave it out, and set belongsToThisCompetitor accordingly.\n` +
-    'For each of their products, choose which ONE of OUR products (by id, from the list) it most DIRECTLY competes with — or empty string if none. Give a one-phrase read of their strength and where our product would win.\n\n' +
+    'For each of their products, choose which ONE of OUR products (by id, from the list) it most DIRECTLY competes with — or null if none. Give a one-phrase read of their strength and where our product would win.\n\n' +
     'Rules: only products the findings attribute to THIS competitor (don\'t invent, don\'t borrow other vendors\' products); ' +
-    'competesWithProductId MUST be one of the provided ids or empty; keep strings short; ignore website boilerplate (cookie/nav/legal).\n\n' +
+    'competesWithProductId MUST be one of the provided ids or null; keep strings short; ignore website boilerplate (cookie/nav/legal).\n\n' +
     `===COMPETITOR===\n${name}${domain ? `\nWebsite: ${domain}` : ''}\n\n` +
     `===OUR PRODUCTS (choose competesWithProductId from these ids)===\n${portfolio}\n\n` +
     `===WEB FINDINGS===\n${findings.text}`;
@@ -221,7 +232,7 @@ async function discoverCompetitorProducts({ competitorName, competitorDomain = '
         temperature: 0.2,
         maxOutputTokens: LIST_MAXTOK,
         responseMimeType: 'application/json',
-        responseSchema: SCHEMA,
+        responseSchema: buildCompetitorProductsSchema(ourIds),
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));
@@ -276,7 +287,7 @@ function pickContact(c) {
 
 // ── Competitor discovery (find rivals of OUR company) ─────────────────────
 
-const COMPETITORS_SCHEMA = {
+const buildCompetitorsSchema = (ourIds, prospectNames) => ({
   type: 'object',
   properties: {
     competitors: {
@@ -291,9 +302,9 @@ const COMPETITORS_SCHEMA = {
           region:      { type: 'string', description: 'Their primary region or HQ if evident, else empty string.' },
           whyRelevant: { type: 'string', description: 'One short phrase: why they compete with us / overlap with our offering.' },
           theirStrength: { type: 'string', description: 'One short phrase: this competitor\'s main strength / why buyers pick them.' },
-          threatToProductIds: { type: 'array', items: { type: 'string' }, description: 'The ids of OUR products this competitor most directly threatens, chosen ONLY from the provided product id list. Empty array if none of ours overlaps.' },
+          threatToProductIds: { type: 'array', items: closedSet(ourIds), description: 'The ids of OUR products this competitor most directly threatens, chosen ONLY from the provided product id list. Empty array if none of ours overlaps.' },
           threatLevel: { type: 'integer', description: 'How directly/severely they compete with us, 1 (minimal) to 5 (critical / head-on). Weigh overlap with our products, their strength, and market presence.' },
-          incumbentAtProspects: { type: 'array', items: { type: 'string' }, description: 'Names chosen ONLY from the provided OUR PROSPECTS list that the findings indicate this competitor ALREADY works with / serves / is a vendor to. Empty array if none — do NOT guess.' },
+          incumbentAtProspects: { type: 'array', items: closedSet(prospectNames), description: 'Names chosen ONLY from the provided OUR PROSPECTS list that the findings indicate this competitor ALREADY works with / serves / is a vendor to. Empty array if none — do NOT guess.' },
           ...CONTACT_PROPS,
         },
         required: ['name', 'description', 'website', 'region', 'whyRelevant', 'theirStrength', 'threatToProductIds', 'threatLevel', 'incumbentAtProspects', ...CONTACT_REQUIRED],
@@ -301,7 +312,7 @@ const COMPETITORS_SCHEMA = {
     },
   },
   required: ['competitors'],
-};
+});
 
 // Shared grounding block for discovery prompts: separates WHAT WE DO
 // (positioning) from WHO WE SELL TO (ICP) so the model targets buyers, not peers.
@@ -434,6 +445,11 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
   const portfolio = (searchProducts || []).length
     ? (searchProducts || []).map((p) => `- id="${p.id}" · ${p.name}${p.description ? ` — ${p.description}` : ''}`).join('\n')
     : '(no products on file — leave threatToProductIds empty for all)';
+  // Legal values for incumbentAtProspects. The focus prospect may not be in the
+  // tracked list, but the ACCOUNT FOCUS prompt below tells the model to name it,
+  // so it has to be enumerable or the model would have no way to comply.
+  const incumbentNames = [...prospectNames,
+    focusProspect ? String(focusProspect.name || '').trim() : ''].filter(Boolean);
 
   const prompt =
     'You are a competitive-intelligence analyst with deep, current knowledge of this company\'s industry ' +
@@ -491,7 +507,7 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
         temperature: 0.2,
         maxOutputTokens: LIST_MAXTOK,
         responseMimeType: 'application/json',
-        responseSchema: COMPETITORS_SCHEMA,
+        responseSchema: buildCompetitorsSchema(ourIds, incumbentNames),
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));
@@ -542,7 +558,7 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
 
 // ── Prospect discovery (find potential CUSTOMERS for OUR company) ─────────
 
-const PROSPECTS_SCHEMA = {
+const buildProspectsSchema = (ourIds) => ({
   type: 'object',
   properties: {
     prospects: {
@@ -554,7 +570,7 @@ const PROSPECTS_SCHEMA = {
           name:       { type: 'string', description: 'The prospect company\'s name.' },
           domain:     { type: 'string', description: 'Their primary website domain (e.g. acme.com) if evident, else empty string.' },
           signal:     { type: 'string', description: 'The recent buying signal / why-now if one is evidenced in the findings (e.g. "rolled out a new core banking system", "raised Series B", "expanding to 3 new markets"). If this is a known ICP-fit company but the findings show no fresh event, give a short fit-based rationale instead — do NOT fabricate a specific event.' },
-          matchedProductIds: { type: 'array', items: { type: 'string' }, description: 'The ids of OUR products that fit the need this signal creates, chosen ONLY from the provided product id list. Empty if none clearly fits.' },
+          matchedProductIds: { type: 'array', items: closedSet(ourIds), description: 'The ids of OUR products that fit the need this signal creates, chosen ONLY from the provided product id list. Empty if none clearly fits.' },
           fitReason:  { type: 'string', description: 'One sentence: why our product(s) meet the need the signal creates.' },
           priority:   { type: 'integer', description: 'How strong + timely a prospect, 1 (low) to 5 (critical: clear product fit AND a fresh, relevant signal).' },
           ...CONTACT_PROPS,
@@ -564,7 +580,7 @@ const PROSPECTS_SCHEMA = {
     },
   },
   required: ['prospects'],
-};
+});
 
 // Find potential customers for OUR company, scoped by region + industry, ranked
 // by priority. Returns { prospects: [...] } (possibly empty) or null on failure.
@@ -678,7 +694,7 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
         // below the default, capped to the model's output ceiling.
         maxOutputTokens: Math.min(65000, Math.max(PROSPECT_MAXTOK, want * 400)),
         responseMimeType: 'application/json',
-        responseSchema: PROSPECTS_SCHEMA,
+        responseSchema: buildProspectsSchema(ourIds),
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));

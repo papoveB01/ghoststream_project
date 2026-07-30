@@ -307,7 +307,9 @@ router.post('/discover/add', async (req, res, next) => {
 
     // Build the opportunity (Signals-tab shape) from the discovery signal.
     const prio = Math.max(1, Math.min(5, Math.round(Number(b.priority) || 3)));
-    const strength = prio >= 4 ? 'strong' : prio === 3 ? 'tie' : 'weak';
+    // 'medium', not 'tie' — same vocabulary as ANALYSIS_SCHEMA's strength enum,
+    // so the dashboard donut and ranking see one set of values, not two.
+    const strength = prio >= 4 ? 'strong' : prio === 3 ? 'medium' : 'weak';
     const productNames = Array.isArray(b.matchedProductNames) ? b.matchedProductNames.filter(Boolean) : [];
     const PRIO = { 5: 'Critical', 4: 'High', 3: 'Medium', 2: 'Low', 1: 'Watch' };
     const title = `${PRIO[prio]} priority — ${String(b.signal || 'Opportunity').slice(0, 90)}`;
@@ -422,6 +424,10 @@ async function productFitForPeople(tenantId, people) {
   if (!products.length) return {};
   const gemini = require('./gemini');
   const models = require('./models');
+  // Both ids are closed sets known at call time (this tenant's products, the
+  // people passed in), so enumerate them in the schema instead of letting the
+  // model emit an arbitrary string that gets filtered out after the fact. The
+  // `byId.get` / `f.personId` checks below remain as the backstop.
   const SCHEMA = {
     type: 'object',
     properties: {
@@ -430,8 +436,8 @@ async function productFitForPeople(tenantId, people) {
         items: {
           type: 'object',
           properties: {
-            personId: { type: 'string' },
-            productId: { type: 'string', description: 'One of OUR product ids, or empty string when no product clearly maps to this role.' },
+            personId: { type: 'string', enum: list.map((p) => String(p.id)), description: 'One of the person ids listed below.' },
+            productId: { type: 'string', enum: products.map((p) => String(p.id)), nullable: true, description: 'One of OUR product ids, or null when no product clearly maps to this role.' },
           },
           required: ['personId', 'productId'],
         },
@@ -442,7 +448,7 @@ async function productFitForPeople(tenantId, people) {
   const prompt =
     'For each PERSON below (a role at a prospect company), pick which ONE of OUR PRODUCTS they are most ' +
     'likely the buyer/decision-maker for, judging purely from their title/seniority vs what each product does. ' +
-    'Use an empty productId when no product clearly maps. Do not guess wildly — empty is better than wrong.\n\n' +
+    'Use a null productId when no product clearly maps. Do not guess wildly — null is better than wrong.\n\n' +
     `===OUR PRODUCTS===\n${products.map((p) => `${p.id}: ${p.name}${p.description ? ` — ${String(p.description).slice(0, 120)}` : ''}`).join('\n')}\n\n` +
     `===PEOPLE===\n${list.map((p) => `${p.id}: ${[p.title, p.seniority].filter(Boolean).join(' · ') || 'Unknown role'}`).join('\n')}`;
   const ai = gemini.getClient();

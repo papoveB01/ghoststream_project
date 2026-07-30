@@ -198,10 +198,12 @@ function portalRefFromRecord(p) {
   if (!p) return null;
   const allGaps = (p.moments && Array.isArray(p.moments.knowledgeGaps))
     ? p.moments.knowledgeGaps : [];
+  // Same rule as the portal audit in index.js: an unverified repQuote can be
+  // listed but must not count as a HIGH-severity finding.
   const audit = {
     gapCount: allGaps.length,
     hasHighSeverity: allGaps.some(
-      (g) => String(g.severity || '').toUpperCase() === 'HIGH'
+      (g) => String(g.severity || '').toUpperCase() === 'HIGH' && g.repQuoteVerified !== false
     ),
   };
   return {

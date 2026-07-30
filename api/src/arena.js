@@ -66,7 +66,11 @@ function buildGrounding({ portal, objection, intelligenceText }) {
     `"${objection.quote}"`,
     ``,
     `Category: ${objection.category}`,
-    `Time on the original call: ${fmtTime(objection.startSeconds)}–${fmtTime(objection.endSeconds)}`,
+    // Omit the timestamp line entirely when the range didn't verify — telling
+    // the persona a made-up time is worse than telling it none.
+    objection.startSeconds == null || objection.endSeconds == null
+      ? ''
+      : `Time on the original call: ${fmtTime(objection.startSeconds)}–${fmtTime(objection.endSeconds)}`,
     objection.resolved
       ? `On the actual call, the rep gave this response and you accepted it: "${objection.repResponseQuote || '(no quote captured)'}"`
       : `On the actual call, this objection was NOT resolved.`,

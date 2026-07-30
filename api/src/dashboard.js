@@ -12,7 +12,14 @@ const credits = require('./credits');
 
 const router = express.Router();
 
-const STRENGTH_RANK = { strong: 3, tie: 2, weak: 1 };
+// Opportunity strength vocabulary. The canonical set is the research schema's
+// enum (knowledge/research.js ANALYSIS_SCHEMA): strong | medium | weak. The
+// discovery-add path (companies.js) used to write 'tie' for the middle value, so
+// stored rows carry both — canonStrength folds the legacy label in. Without it,
+// every 'medium' opportunity fell out of the donut entirely and sorted BELOW
+// 'weak' (unranked → 0), which is how this drift stayed invisible.
+const STRENGTH_RANK = { strong: 3, medium: 2, weak: 1 };
+const canonStrength = (s) => (s === 'tie' ? 'medium' : s);
 const CRM_LABELS = { hubspot: 'HubSpot', salesforce: 'Salesforce', zoho: 'Zoho CRM', pipedrive: 'Pipedrive', dynamics: 'Dynamics 365' };
 
 // Metered features → human label, in display order. The meter set follows the
@@ -133,7 +140,7 @@ router.get('/', async (req, res, next) => {
           companyId: row.company_id,
           companyName: row.company_name,
           title: o.title || 'Opportunity',
-          strength: o.strength || null,
+          strength: canonStrength(o.strength) || null,
           analysis: o.analysis || '',
           products: Array.isArray(o.products) ? o.products : [],
           pinned: !!o.pinned,
@@ -143,7 +150,7 @@ router.get('/', async (req, res, next) => {
     }
     const openSignals = allOpps.length;
     // Strength mix for the opportunity donut.
-    const strengthBreakdown = { strong: 0, tie: 0, weak: 0 };
+    const strengthBreakdown = { strong: 0, medium: 0, weak: 0 };
     for (const o of allOpps) { if (strengthBreakdown[o.strength] != null) strengthBreakdown[o.strength]++; }
     allOpps.sort((a, b) => {
       const ra = (a.pinned ? 10 : 0) + (STRENGTH_RANK[a.strength] || 0);

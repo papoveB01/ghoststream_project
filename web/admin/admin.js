@@ -819,7 +819,7 @@
   // ── Overview charts (inline SVG / CSS — no charting dependency) ───────────
   const DASH_STRENGTH_SEGS = [
     { key: 'strong', label: 'Strong', color: '#8ce046' },
-    { key: 'tie',    label: 'Even',   color: '#4da3e8' },
+    { key: 'medium', label: 'Medium', color: '#4da3e8' },
     { key: 'weak',   label: 'Weak',   color: '#39424e' },
   ];
 

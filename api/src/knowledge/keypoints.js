@@ -255,20 +255,22 @@ const COMPANY_ANALYSIS_SCHEMA = {
     executiveSummary: { type: 'string', description: '1-2 sentences IN FIRST PERSON PLURAL ("WE …"): what OUR company does, what WE sell, and the kind of customer WE serve. The kind of sentence a new salesperson on OUR team would write on day one. NEVER frame this as "this document covers X" — always as "We do X".' },
     services: {
       type: 'array',
-      description: 'Distinct services or product offerings WE provide that are described in this doc (not the whole portfolio — only what THIS doc covers).',
+      nullable: true,
+      description: 'Distinct services or product offerings WE provide that are described in this doc (not the whole portfolio — only what THIS doc covers). null if the doc describes none.',
       items: {
         type: 'object',
         properties: {
           name:        { type: 'string', description: 'Exact name of OUR offering as it appears in the doc.' },
           description: { type: 'string', description: '1 sentence written from OUR side: "We do X for buyers who Y" or "It does X for our customers". Not a buyer-side description.' },
-          audience:    { type: 'string', description: 'WHO BUYS THIS FROM US — role, industry, scale. Empty if not stated.' },
+          audience:    { type: 'string', nullable: true, description: 'WHO BUYS THIS FROM US — role, industry, scale. null if not stated.' },
         },
         required: ['name', 'description'],
       },
     },
     strengths: {
       type: 'array',
-      description: 'Up to 5 of OUR differentiators that this doc credibly establishes. First-person: "We are the only…", "We provide…". Each gets a one-sentence claim PLUS a short verbatim quote from the doc as evidence so a rep can re-use the line on a call.',
+      nullable: true,
+      description: 'Up to 5 of OUR differentiators that this doc credibly establishes. First-person: "We are the only…", "We provide…". Each gets a one-sentence claim PLUS a short verbatim quote from the doc as evidence so a rep can re-use the line on a call. null if the doc establishes none.',
       items: {
         type: 'object',
         properties: {
@@ -280,19 +282,22 @@ const COMPANY_ANALYSIS_SCHEMA = {
     },
     marketPosition: {
       type: 'object',
-      description: 'Where WE sit in the market.',
+      nullable: true,
+      description: 'Where WE sit in the market. null if the doc does not support a market-position read.',
       properties: {
-        category:       { type: 'string', description: 'The category WE compete in — buyers\' words, not marketing words.' },
-        differentiator: { type: 'string', description: '1 sentence in first person: "WE win because…". The honest defensible reason a buyer picks US over the obvious alternative.' },
+        category:       { type: 'string', nullable: true, description: 'The category WE compete in — buyers\' words, not marketing words.' },
+        differentiator: { type: 'string', nullable: true, description: '1 sentence in first person: "WE win because…". The honest defensible reason a buyer picks US over the obvious alternative.' },
         weaknesses: {
           type: 'array',
-          description: 'Up to 3 things WE don\'t address in this doc — gaps a buyer would push back on. Each in first person ("We don\'t cover X", "Our pricing isn\'t addressed here"). Empty array if the doc is itself thin.',
+          nullable: true,
+          description: 'Up to 3 things WE don\'t address in this doc — gaps a buyer would push back on. Each in first person ("We don\'t cover X", "Our pricing isn\'t addressed here"). Empty array or null if the doc is itself thin.',
           items: { type: 'string' },
         },
       },
     },
     competitors: {
       type: 'array',
+      nullable: true,
       description: 'Up to 6 named vendors / products WE compete with in the same buying conversation. Use real, current company names a buyer would recognise (Gong, Outreach, Salesforce, Chorus, Apollo, …). For each, name the closest overlap with US.',
       items: {
         type: 'object',
@@ -304,10 +309,11 @@ const COMPANY_ANALYSIS_SCHEMA = {
         required: ['name', 'reason', 'overlap'],
       },
     },
-    idealCustomerProfile: { type: 'string', description: '1-2 sentences DESCRIBING OUR BUYER (the customer WE sell to): "Our buyer is X in Y kind of company. They typically have Z signal." Always third-person about the buyer + first-person about us — never "this document targets" framing.' },
+    idealCustomerProfile: { type: 'string', nullable: true, description: '1-2 sentences DESCRIBING OUR BUYER (the customer WE sell to): "Our buyer is X in Y kind of company. They typically have Z signal." Always third-person about the buyer + first-person about us — never "this document targets" framing. null if the doc does not evidence a buyer profile.' },
     salesAngles: {
       type: 'array',
-      description: 'Up to 4 concrete plays for HOW A REP ON OUR TEAM should use this doc: "Lead with X in a discovery call against the Y objection". Each is an instruction TO THE REP.',
+      nullable: true,
+      description: 'Up to 4 concrete plays for HOW A REP ON OUR TEAM should use this doc: "Lead with X in a discovery call against the Y objection". Each is an instruction TO THE REP. null if the doc supports none.',
       items: { type: 'string' },
     },
   },
@@ -387,7 +393,8 @@ const PRODUCT_ANALYSIS_SCHEMA = {
     executiveSummary: { type: 'string', description: '1-2 sentences in first person plural: "OUR product [NAME] does X for Y kind of buyer." Specific to this product, not the broader company.' },
     capabilities: {
       type: 'array',
-      description: 'Up to 8 concrete capabilities OUR product has, as described in this doc. Each is one short noun-phrase + a one-line buyer-benefit, written from OUR side.',
+      nullable: true,
+      description: 'Up to 8 concrete capabilities OUR product has, as described in this doc. Each is one short noun-phrase + a one-line buyer-benefit, written from OUR side. null if the doc names none.',
       items: {
         type: 'object',
         properties: {
@@ -399,18 +406,21 @@ const PRODUCT_ANALYSIS_SCHEMA = {
     },
     problemsSolved: {
       type: 'array',
-      description: 'Up to 5 specific buyer problems OUR product addresses. Frame as the BUYER\'S problem, not our marketing.',
+      nullable: true,
+      description: 'Up to 5 specific buyer problems OUR product addresses. Frame as the BUYER\'S problem, not our marketing. null if the doc evidences none.',
       items: { type: 'string' },
     },
-    whoBuysIt: { type: 'string', description: '1-2 sentences: WHO ON THE BUYER SIDE buys OUR product — title, function, scale, signals. First-person about us, third-person about the buyer.' },
+    whoBuysIt: { type: 'string', nullable: true, description: '1-2 sentences: WHO ON THE BUYER SIDE buys OUR product — title, function, scale, signals. First-person about us, third-person about the buyer. null if the doc does not say.' },
     integrations: {
       type: 'array',
-      description: 'Up to 8 specific tools, platforms or systems OUR product integrates with as named in this doc. Tech stack signals only — drop if not stated.',
+      nullable: true,
+      description: 'Up to 8 specific tools, platforms or systems OUR product integrates with as named in this doc. Tech stack signals only — null if not stated.',
       items: { type: 'string' },
     },
-    pricingPosture: { type: 'string', description: '1 sentence on how OUR product is priced/packaged if the doc says — usage-based / per-seat / tier / not stated. Empty string if absent.' },
+    pricingPosture: { type: 'string', nullable: true, description: '1 sentence on how OUR product is priced/packaged if the doc says — usage-based / per-seat / tier. null if absent.' },
     competingProducts: {
       type: 'array',
+      nullable: true,
       description: 'Up to 6 SPECIFIC PRODUCTS (not just company names) that a buyer would shortlist alongside OURS for the same job. Use real, current product names (e.g. "Splunk SOAR" not just "Splunk"; "Salesforce Einstein Conversation Insights" not just "Salesforce").',
       items: {
         type: 'object',
@@ -424,7 +434,8 @@ const PRODUCT_ANALYSIS_SCHEMA = {
     },
     pitchAngles: {
       type: 'array',
-      description: 'Up to 4 concrete plays for selling OUR product: which buyer moment, which objection, which question. Each is an instruction to the rep.',
+      nullable: true,
+      description: 'Up to 4 concrete plays for selling OUR product: which buyer moment, which objection, which question. Each is an instruction to the rep. null if the doc supports none.',
       items: { type: 'string' },
     },
   },
