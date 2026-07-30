@@ -229,8 +229,12 @@ async function synthesize(companyName, profileText, evidence) {
 function computeCoverage(content, byLayer) {
   const weight = { high: 100, medium: 60, low: 25 };
   const keys = ['headline', 'situation', 'positioning', 'outcomes', 'edge', 'proof', 'nextMove'];
-  const scores = keys.map((k) => weight[content[k] && content[k].confidence] ?? 25);
-  const score = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+  // Skip sections the model legitimately returned as null (proof is nullable —
+  // the evidence may simply not support any). Scoring an absent section as 25
+  // would penalise honesty: a recommendation that admits it has no proof points
+  // would rank BELOW one that invented some, which inverts the whole intent.
+  const scores = keys.filter((k) => content[k]).map((k) => weight[content[k].confidence] ?? 25);
+  const score = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 25;
   return { score, byLayer, gaps: Array.isArray(content.intelligenceGaps) ? content.intelligenceGaps : [] };
 }
 

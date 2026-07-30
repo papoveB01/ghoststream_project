@@ -149,11 +149,30 @@ async function extractDevelopments({ tenantId, name, scope, tctx, known, priorTi
   return Array.isArray(parsed.developments) ? parsed.developments : [];
 }
 
+// A scan we could not perform, as opposed to a scan that found nothing. Only
+// the former refunds the usage unit: a quiet week is a successful scan, a dead
+// search provider is not. Both used to look identical — an empty array — which
+// is why the refund added alongside this was reachable only via a Postgres error.
+function watchFailure(message) {
+  const err = new Error(message);
+  err.watchFailed = true;
+  return err;
+}
+
 // Research one entity and insert any NET-NEW findings. Returns the inserted rows.
+// Throws watchFailure() when the scan itself could not be carried out.
 async function runEntity(tenantId, scope, subject) {
   const name = String(subject.name || '').trim();
   if (!name) return [];
   const findings = await discovery.gatherFromQueries(buildWatchQueries(name), { maxHits: 14, scrapeTop: 3, searchLimit: 5 });
+  // Zero hits across all six queries means the search layer returned nothing at
+  // all. gatherFromQueries swallows provider errors (discovery.js:150), so a
+  // down or rate-limited Brave/Firecrawl is indistinguishable from genuine
+  // absence here — and for a real company with six broad queries, the former is
+  // far likelier. Treat it as a failed scan so the tenant isn't billed for it.
+  if (!findings.hits || findings.hits.length === 0) {
+    throw watchFailure('search returned no results at all (provider down or rate-limited?)');
+  }
   if (!findings.text || findings.text.length < 60) return [];
 
   const [tctx, known, priorTitles] = await Promise.all([
@@ -164,7 +183,7 @@ async function runEntity(tenantId, scope, subject) {
 
   let devs;
   try { devs = await extractDevelopments({ tenantId, name, scope, tctx, known, priorTitles, findingsText: findings.text }); }
-  catch (err) { console.warn(`[watch] extract failed for ${scope} ${subject.id}: ${err.message}`); return []; }
+  catch (err) { throw watchFailure(`extract failed for ${scope} ${subject.id}: ${err.message}`); }
 
   const inserted = [];
   for (const d of devs) {

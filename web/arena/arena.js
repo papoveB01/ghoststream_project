@@ -46,7 +46,11 @@
     $('brief-title').textContent = `Practice · ${o.category || 'objection'}`;
     $('brief-objection').textContent = `"${o.quote || ''}"`;
     $('brief-persona').textContent = (s.persona || '').replace(/-/g, ' ');
-    $('brief-ts').textContent = `${fmtTime(o.startSeconds)} – ${fmtTime(o.endSeconds)}`;
+    // Null seconds mean the range failed verification against the recording
+    // (analysis.verifyMoments). fmtTime's `sec || 0` would render a confident
+    // "0:00 – 0:00"; show nothing instead. Mirrors web/portal/portal.js.
+    $('brief-ts').textContent = (o.startSeconds == null || o.endSeconds == null)
+      ? '—' : `${fmtTime(o.startSeconds)} – ${fmtTime(o.endSeconds)}`;
     $('brief-resolved').textContent = o.resolved ? 'Yes' : 'No';
     const mode = $('brief-mode');
     mode.textContent = s.cacheMode || 'inline';

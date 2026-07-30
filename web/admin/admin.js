@@ -174,7 +174,7 @@
     ] },
     prospects: { title: 'Prospects — who you\'ll sell to', intro: 'The companies you pursue, with AI research, contacts and outreach in one place.', blocks: [
       { h: 'Adding prospects', b: 'Three ways via <b>＋ Add prospects</b>: type one manually (we research it immediately), pull from a connected CRM, or <b>✦ Discover online</b> — AI finds real companies matching WHO YOU SELL TO, ranked by buying signals. Companies you already track are never re-suggested; they show in a strip with re-analyze / update-intel shortcuts.' },
-      { h: 'Why now tab', b: 'The research dossier: buying signals matched to your products, each with strength (strong/even/weak) and reasoning. <b>Research / refresh</b> runs it (~60s, watch the 🔔 bell for completion); <b>⚙︎ Re-analyze</b> re-reads existing findings.' },
+      { h: 'Why now tab', b: 'The research dossier: buying signals matched to your products, each with strength (strong/medium/weak) and reasoning. <b>Research / refresh</b> runs it (~60s, watch the 🔔 bell for completion); <b>⚙︎ Re-analyze</b> re-reads existing findings.' },
       { h: 'People tab', b: '<b>⤓ Find contacts</b> pulls decision-makers (with email) and tags each with the product they most likely buy. The 📍 location tells same-role people apart at global companies. <b>✉ Email</b> opens the AI composer — pick a focus product and the draft pitches only that.' },
       { h: 'Intel & Proposal tabs', b: '<b>Intel</b>: file notes, docs and captured email threads against this prospect — everything feeds briefs. <b>Proposal</b>: a consolidated, outcome-based recommendation synthesized from all of it.' },
       { h: 'Market Watch card', b: 'Toggle “Watch this prospect” and we monitor the web on a schedule — new funding, hires, launches land in Alerts and the bell.' },
@@ -915,7 +915,7 @@
     </div>`;
   }
 
-  // Donut of opportunity strength mix (strong / even / weak).
+  // Donut of opportunity strength mix (strong / medium / weak).
   function dashStrengthDonut(b) {
     const segs = DASH_STRENGTH_SEGS.map((s) => ({ ...s, value: b[s.key] || 0 }));
     const sum = segs.reduce((s, x) => s + x.value, 0);

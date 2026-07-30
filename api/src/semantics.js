@@ -77,7 +77,9 @@ function realPastDate(value, now = Date.now()) {
   // Any rollover (month 13, Feb 31) lands on a different calendar date.
   if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
   if (dt.getTime() > now + FUTURE_SLACK_MS) return null; // dated after the present
-  return raw;
+  // The validated prefix, not the raw input: '2026-06-04 <junk>' has a real date
+  // at the front but must not be handed on to a timestamptz bind intact.
+  return m[0];
 }
 
 // ── citation indices ──────────────────────────────────────────────────────

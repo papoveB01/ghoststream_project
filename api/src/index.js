@@ -641,15 +641,15 @@ app.get('/portals/:id', async (req, res, next) => {
 
     const allGaps = (p.moments && Array.isArray(p.moments.knowledgeGaps))
       ? p.moments.knowledgeGaps : [];
-    // A HIGH gap is what tells a rep they misspoke about pricing or contract
-    // terms, so it has to be grounded: a gap whose repQuote does not appear in
-    // the transcript (analysis.verifyMoments flagged it) still shows in the
-    // list, but does not raise the alarm.
+    // hasHighSeverity stays keyed on severity ALONE. Quote verification is a
+    // substring test against the formatted transcript, so it false-negatives on
+    // a quote spanning two utterances or lightly paraphrased — and semantics.js
+    // says so itself: flag, don't delete. Suppressing the only alarm is deleting.
+    // The unverified count rides alongside so the UI can de-emphasise instead.
     const audit = {
       gapCount: allGaps.length,
-      hasHighSeverity: allGaps.some(
-        (g) => String(g.severity || '').toUpperCase() === 'HIGH' && g.repQuoteVerified !== false
-      ),
+      hasHighSeverity: allGaps.some((g) => String(g.severity || '').toUpperCase() === 'HIGH'),
+      unverifiedGapCount: allGaps.filter((g) => g && (g.repQuoteVerified === false || g.citationResolved === false)).length,
     };
 
     // Anonymous viewers see a stripped meeting ref (no botId / tenantId /
@@ -674,9 +674,25 @@ app.get('/portals/:id', async (req, res, next) => {
           createdAt: meeting.createdAt,
         });
 
+    // verifyMoments' flags are internal QA metadata — "our AI may have made this
+    // quote up". Useful to the seller, not something to ship to the prospect in a
+    // share link. Same reasoning as stripping knowledgeGaps.
+    const stripQaFlags = (m) => {
+      if (!m) return m;
+      const { quoteVerified: _qv, timestampsUnverified: _tu, ...rest } = m;
+      return rest;
+    };
     const safe = isManager
       ? p
-      : { ...p, moments: { ...(p.moments || {}), knowledgeGaps: [] } };
+      : {
+        ...p,
+        moments: {
+          ...(p.moments || {}),
+          knowledgeGaps: [],
+          objection: stripQaFlags((p.moments || {}).objection),
+          agreement: stripQaFlags((p.moments || {}).agreement),
+        },
+      };
 
     // Model identifiers + token usage are internal telemetry — they stay on
     // the stored record but never ship in the report payload (any viewer).

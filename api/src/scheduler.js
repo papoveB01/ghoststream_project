@@ -26,6 +26,37 @@ const WATCH_CRON = process.env.WATCH_CRON || '0 * * * *';
 // ~6 searches + 3 scrapes + 1 model call, so this is the real throttle on the
 // hourly burst against the search/scrape providers.
 const WATCH_CONCURRENCY = Math.max(1, parseInt(process.env.WATCH_CONCURRENCY || '4', 10));
+// Hard ceiling on one entity's research pass. Awaiting the pool (below) is what
+// makes the watchRunning guard meaningful, but it also means an entity that
+// never settles would hold that guard for the life of the process — and NOTHING
+// in the path is time-bounded: gemini.js builds GoogleGenAI with no
+// httpOptions.timeout, so a hung model call hangs forever. That is the same
+// failure shape as the briefRunning incident this file already carries a
+// regression test for (test/schedulerPhases.test.js): one stuck call silently
+// starved every tenant until a restart. Per-entity rather than per-pool, so a
+// single bad entity doesn't cost the other 24 their run.
+// Floor is 1s, not a minute: it exists to stop a typo'd 0/NaN from disabling the
+// bound entirely, not to mandate a realistic value — tests need to drive it low.
+const WATCH_ENTITY_TIMEOUT_MS = Math.max(1000, parseInt(process.env.WATCH_ENTITY_TIMEOUT_MS || '600000', 10) || 600000);
+
+// Note: this bounds how long we WAIT, not the work itself — Promise.race can't
+// cancel the underlying call, so a hung request still dangles until the process
+// exits. That's acceptable (it's exactly what fire-and-forget did with every
+// run); what matters is that the pool advances and the guard is released.
+// The timer is deliberately NOT unref'd. An unref'd timer doesn't hold the event
+// loop open, so if the hung call is the only thing left in flight the loop drains
+// and the timeout never fires — the guard-release this exists for would silently
+// not happen. It is cleared as soon as the work settles, so the only case where
+// it holds the process is the hang it is there to break, and only until it fires.
+function withTimeout(promise, ms, label) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms);
+    }),
+  ]);
+}
 
 // Recording retention purge — deletes stored meeting video older than each
 // tenant's recording_retention_days (migration 0043). Transcript + portal text
@@ -215,7 +246,7 @@ async function watchTick() {
     const worker = async () => {
       while (next < due.length) {
         const e = due[next++];
-        try { await watch.runEntityScheduled(e); }
+        try { await withTimeout(watch.runEntityScheduled(e), WATCH_ENTITY_TIMEOUT_MS, `watch ${e.scope}/${e.id}`); }
         catch (err) { console.error(`[scheduler] market watch failed for ${e.scope}/${e.id}: ${(err && err.message) || err}`); }
       }
     };
