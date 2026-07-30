@@ -66,7 +66,10 @@
       $('objection-category').textContent = o.category || 'objection';
       $('objection-quote').textContent = `"${o.quote}"`;
       $('objection-speaker').textContent = speakerName('prospect', participants);
-      $('objection-timestamp').textContent = `${fmtTime(o.startSeconds)} – ${fmtTime(o.endSeconds)}`;
+      // Null seconds mean the range failed verification against the recording
+      // (see analysis.verifyMoments) — show nothing rather than a wrong 0:00.
+      $('objection-timestamp').textContent = (o.startSeconds == null || o.endSeconds == null)
+        ? '—' : `${fmtTime(o.startSeconds)} – ${fmtTime(o.endSeconds)}`;
       const status = $('objection-status');
       status.textContent = o.resolved ? '✓ Resolved' : '⚠ Open';
       status.className = o.resolved ? 'resolved' : 'unresolved';

@@ -75,7 +75,10 @@ const SUMMARY_SCHEMA = {
     suggestedCategory: {
       type: 'string',
       enum: KB_CATEGORIES,
+      nullable: true,
       description:
+        'null when the content is none of the three (an invoice, a contract, an ' +
+        'unrelated PDF) — a wrong suggestion is worse than none, so do not force a fit. ' +
         'Best-fit knowledge-base category. PRODUCT_INTEL: product datasheets, pricing/feature/spec pages, technical docs, API docs, case studies, anything describing what a product does. ' +
         'ORG_INTELLIGENCE: company overviews, org charts, leadership/team pages, mission, brand voice/messaging, internal process or policy docs. ' +
         'BATTLECARDS: competitor comparisons, win/loss notes, objection handling, positioning against named rivals.',
@@ -89,14 +92,14 @@ const SUMMARY_PROMPT =
   "knowledge base. Summarize it so the person uploading it can confirm it's the " +
   "right material before indexing. Be concrete — name real products/sections " +
   "from the text. Return documentType, a 2-4 sentence summary, 5-12 keyTopics, and " +
-  "suggestedCategory (the best-fit KB category from the allowed enum).";
+  "suggestedCategory (the best-fit KB category from the allowed enum, or null if none of them fits).";
 
 async function summarize(text, meta) {
   const fallback = () => ({
     documentType: (meta && meta.sourceType) || 'document',
     summary: (meta && (meta.description || meta.title)) || 'No automated summary available — see the extracted text below.',
     keyTopics: [],
-    suggestedCategory: 'PRODUCT_INTEL',
+    suggestedCategory: null, // no model verdict → no suggestion to apply
     source: 'fallback',
   });
   const body = String(text || '').trim();
@@ -119,7 +122,12 @@ async function summarize(text, meta) {
       documentType: parsed.documentType || ((meta && meta.sourceType) || 'document'),
       summary: parsed.summary || fallback().summary,
       keyTopics: Array.isArray(parsed.keyTopics) ? parsed.keyTopics.filter(Boolean).slice(0, 12) : [],
-      suggestedCategory: KB_CATEGORIES.includes(parsed.suggestedCategory) ? parsed.suggestedCategory : 'PRODUCT_INTEL',
+      // null, not PRODUCT_INTEL: the enum has no "unclassified" member (the
+      // kb_documents.category CHECK constraint only allows the three), so an
+      // absent/off-list value means "no suggestion" and the UI leaves the
+      // dropdown for the uploader to set. Defaulting here made "the model had no
+      // idea" indistinguishable from "the model chose PRODUCT_INTEL".
+      suggestedCategory: KB_CATEGORIES.includes(parsed.suggestedCategory) ? parsed.suggestedCategory : null,
       source: 'gemini',
     };
   } catch (err) {
@@ -166,12 +174,12 @@ const COMPARISON_SCHEMA = {
           ours:      { type: 'string', description: 'What WE offer on this dimension (from our portfolio). "Unknown" if not evident.' },
           theirs:    { type: 'string', description: 'What THEY offer on this dimension (from their content). "Unknown" if not evident.' },
           edge:      { type: 'string', description: 'Who has the advantage: "OURS", "THEIRS", or "EVEN".' },
-          note:      { type: 'string', description: 'One short clause explaining the call.' },
+          note:      { type: 'string', nullable: true, description: 'One short clause explaining the call. null when the edge speaks for itself.' },
         },
         required: ['dimension', 'ours', 'theirs', 'edge'],
       },
     },
-    similarities:  { type: 'array', items: { type: 'string' }, description: 'Genuine overlaps — things both companies do similarly.' },
+    similarities:  { type: 'array', nullable: true, items: { type: 'string' }, description: 'Genuine overlaps — things both companies do similarly. null if there are none worth naming.' },
     ourStrengths:  { type: 'array', items: { type: 'string' }, description: 'Where WE win — concrete differentiators to lead with.' },
     theirStrengths:{ type: 'array', items: { type: 'string' }, description: 'Where THEY win, or gaps in our portfolio — be honest.' },
     talkingPoints: { type: 'array', items: { type: 'string' }, description: '3-5 ready-to-say lines for positioning against this competitor on a call.' },

@@ -4,6 +4,7 @@ const personas = require('./personas');
 const gemini = require('./gemini');
 const analysis = require('./analysis');
 const recall = require('./recall');
+const semantics = require('./semantics');
 const stream = require('./stream');
 const store = require('./store');
 const arena = require('./arena');
@@ -384,8 +385,14 @@ app.post('/_internal/meetings/:id/process', requireInternalAuth, async (req, res
     // Clip generation is best-effort: a just-ingested copy-from-URL video may
     // not be encoded yet, so clipping can fail. That must NOT block the portal
     // (which still carries the full recording via videoUid). Degrade to no clip.
+    // moments.objection is nullable — a call where the prospect raised no real
+    // objection has nothing to clip, and that is not an error. Neither is an
+    // objection whose timestamps didn't survive verification: clipFrom/clipTo
+    // would be garbage, so skip rather than hand Cloudflare a bad range.
+    const objMoment = pipeline.moments.objection;
     let objectionClip = null;
-    if (videoUid) {
+    if (videoUid && objMoment
+        && semantics.validTimeRange(objMoment.startSeconds, objMoment.endSeconds, transcript.durationSeconds)) {
       try {
         objectionClip = await stream.createClip({
           videoUid,
@@ -470,12 +477,15 @@ app.post('/first-loop', auth.authMiddleware, async (req, res, next) => {
       `${APP_BASE_URL}/portal/sample.mp4`,
       transcript.meetingTitle
     );
-    const clip = await stream.createClip({
-      videoUid: ingest.uid,
-      startSeconds: pipeline.moments.objection.startSeconds,
-      endSeconds: pipeline.moments.objection.endSeconds,
-      label: 'Moment of Truth — Objection',
-    });
+    const flObj = pipeline.moments.objection;
+    const clip = (flObj && semantics.validTimeRange(flObj.startSeconds, flObj.endSeconds, transcript.durationSeconds))
+      ? await stream.createClip({
+        videoUid: ingest.uid,
+        startSeconds: flObj.startSeconds,
+        endSeconds: flObj.endSeconds,
+        label: 'Moment of Truth — Objection',
+      })
+      : null;
 
     const portal = await store.createPortal({
       meetingId: meeting.id,
@@ -631,11 +641,15 @@ app.get('/portals/:id', async (req, res, next) => {
 
     const allGaps = (p.moments && Array.isArray(p.moments.knowledgeGaps))
       ? p.moments.knowledgeGaps : [];
+    // hasHighSeverity stays keyed on severity ALONE. Quote verification is a
+    // substring test against the formatted transcript, so it false-negatives on
+    // a quote spanning two utterances or lightly paraphrased — and semantics.js
+    // says so itself: flag, don't delete. Suppressing the only alarm is deleting.
+    // The unverified count rides alongside so the UI can de-emphasise instead.
     const audit = {
       gapCount: allGaps.length,
-      hasHighSeverity: allGaps.some(
-        (g) => String(g.severity || '').toUpperCase() === 'HIGH'
-      ),
+      hasHighSeverity: allGaps.some((g) => String(g.severity || '').toUpperCase() === 'HIGH'),
+      unverifiedGapCount: allGaps.filter((g) => g && (g.repQuoteVerified === false || g.citationResolved === false)).length,
     };
 
     // Anonymous viewers see a stripped meeting ref (no botId / tenantId /
@@ -660,9 +674,25 @@ app.get('/portals/:id', async (req, res, next) => {
           createdAt: meeting.createdAt,
         });
 
+    // verifyMoments' flags are internal QA metadata — "our AI may have made this
+    // quote up". Useful to the seller, not something to ship to the prospect in a
+    // share link. Same reasoning as stripping knowledgeGaps.
+    const stripQaFlags = (m) => {
+      if (!m) return m;
+      const { quoteVerified: _qv, timestampsUnverified: _tu, ...rest } = m;
+      return rest;
+    };
     const safe = isManager
       ? p
-      : { ...p, moments: { ...(p.moments || {}), knowledgeGaps: [] } };
+      : {
+        ...p,
+        moments: {
+          ...(p.moments || {}),
+          knowledgeGaps: [],
+          objection: stripQaFlags((p.moments || {}).objection),
+          agreement: stripQaFlags((p.moments || {}).agreement),
+        },
+      };
 
     // Model identifiers + token usage are internal telemetry — they stay on
     // the stored record but never ship in the report payload (any viewer).

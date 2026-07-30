@@ -198,11 +198,12 @@ function portalRefFromRecord(p) {
   if (!p) return null;
   const allGaps = (p.moments && Array.isArray(p.moments.knowledgeGaps))
     ? p.moments.knowledgeGaps : [];
+  // Same rule as the portal audit in index.js: severity alone raises the alarm;
+  // quote verification is reported alongside it, never used to suppress it.
   const audit = {
     gapCount: allGaps.length,
-    hasHighSeverity: allGaps.some(
-      (g) => String(g.severity || '').toUpperCase() === 'HIGH'
-    ),
+    hasHighSeverity: allGaps.some((g) => String(g.severity || '').toUpperCase() === 'HIGH'),
+    unverifiedGapCount: allGaps.filter((g) => g && (g.repQuoteVerified === false || g.citationResolved === false)).length,
   };
   return {
     id: p.id,

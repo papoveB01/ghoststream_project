@@ -12,6 +12,7 @@
 
 const db = require('../db');
 const gemini = require('../gemini');
+const semantics = require('../semantics');
 const web = require('./web');
 const keypoints = require('./keypoints');
 const apollo = require('./apollo');
@@ -337,6 +338,10 @@ async function analyze(tenantId, name, dossier) {
   }));
   costs.recordGemini(tenantId, 'research.analyze', MODEL, resp.usageMetadata);
   const parsed = JSON.parse(resp.text);
+  // Which [n] the model was actually shown. Read back off the dossier string
+  // rather than the source array, because DOSSIER_CAP truncation can cut a
+  // source's head off — one that was never visible can't legitimately be cited.
+  const citable = semantics.citableNumbers(dossier);
   const opportunities = (Array.isArray(parsed.opportunities) ? parsed.opportunities : [])
     .map((o) => ({
       title: String(o.title || '').trim() || null,
@@ -345,7 +350,7 @@ async function analyze(tenantId, name, dossier) {
         .map((p) => String(p || '').trim())
         .filter((p) => p && p !== '—'),
       strength: ['strong', 'medium', 'weak'].includes(o.strength) ? o.strength : 'medium',
-      sources: Array.isArray(o.sources) ? o.sources.filter((x) => Number.isInteger(x)) : [],
+      sources: semantics.keepCitations(o.sources, citable),
     }))
     .filter((o) => o.analysis)
     .slice(0, 8);

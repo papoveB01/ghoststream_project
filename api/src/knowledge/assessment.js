@@ -298,22 +298,23 @@ const BATTLECARD_SCHEMA = {
         properties: {
           claim:    { type: 'string', description: 'What the prospect says: "Gong is the market leader" or "We already use them for X". Their voice, paraphrased.' },
           response: { type: 'string', description: 'What WE say back, in first person. Concrete, specific, includes a fact or proof point from the docs where possible.' },
-          evidence: { type: 'string', description: 'Optional: a short fact or quote that backs the response. Empty string if the response is positioning rather than fact-led.' },
+          evidence: { type: 'string', nullable: true, description: 'Optional: a short fact or quote that backs the response. null if the response is positioning rather than fact-led — never invent a fact to fill this.' },
         },
         required: ['claim', 'response'],
       },
     },
-    migrationStory: { type: 'string', description: '2-4 sentences: HOW we move a customer off this competitor onto us. Concrete steps if the docs surface them (data migration tooling, switching incentives, parallel run period, etc.). Empty string if the docs are silent.' },
+    migrationStory: { type: 'string', nullable: true, description: '2-4 sentences: HOW we move a customer off this competitor onto us. Concrete steps if the docs surface them (data migration tooling, switching incentives, parallel run period, etc.). null if the docs are silent.' },
     // Optional inline scoring — used when no per-doc assessments are
     // available (the aggregate above is all zero). When per-doc data IS
     // available, the aggregate wins; these are ignored.
     axesScored: {
       type: 'array',
-      description: 'OPTIONAL — only fill this in when the aggregate scoreboard above shows mostly zeros / no clear scores. Score the matchup across the 8 FIXED axes (product_strength, brand_credibility, pricing, customer_support, integrations, geographic_reach, customer_base, innovation_pace). Use evidence from the docs. Same conventions as a per-doc assessment.',
+      nullable: true,
+      description: `OPTIONAL — null unless the aggregate scoreboard above shows mostly zeros / no clear scores. Score the matchup across the 8 FIXED axes (${AXIS_KEYS.join(', ')}). Use evidence from the docs. Same conventions as a per-doc assessment.`,
       items: {
         type: 'object',
         properties: {
-          key:       { type: 'string', enum: ['product_strength', 'brand_credibility', 'pricing', 'customer_support', 'integrations', 'geographic_reach', 'customer_base', 'innovation_pace'] },
+          key:       { type: 'string', enum: AXIS_KEYS, description: 'Axis identifier — must be one of the fixed 8.' },
           weight:    { type: 'integer', description: '0-100, importance in this matchup. Sum across all 8 should equal 100.' },
           ourScore:  { type: 'integer', description: '0-10' },
           theirScore:{ type: 'integer', description: '0-10' },
