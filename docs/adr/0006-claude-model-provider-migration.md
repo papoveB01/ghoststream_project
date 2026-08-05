@@ -236,11 +236,16 @@ Two consequences for §9 item 4:
 - **Exceeding four `cache_control` blocks is a hard 400** (`"A maximum of 4
   blocks with cache_control may be provided. Found 5."`), not a silent drop —
   breakpoint budgeting is a validation constraint, not a best-effort one.
-- **The Arena persona seed is 2,722 tokens on Haiku's tokenizer** (3,783 on
-  Opus's) — above Opus's 512 and Sonnet's 1024, but *below* Haiku's 4096. So
-  `personas.js`'s comment that the seed "is substantial enough to clear the
-  model's minimum-cacheable" threshold becomes false the moment the persona
-  task resolves to Haiku, and it fails silently.
+- **The Arena persona seed is 2,723 tokens on Haiku's tokenizer** and 3,783 on
+  the Opus-5/Sonnet-5 one — above Opus's 512 and Sonnet's 1024, but *below*
+  Haiku's 4096. So `personas.js`'s comment that the seed "is substantial enough
+  to clear the model's minimum-cacheable" threshold becomes false the moment the
+  persona task resolves to Haiku, and it fails silently.
+
+  Measure the **cacheable prefix** — `systemInstruction` + `contents`, which is
+  what `getOrCreateCache` sends — not `contents` alone (3,350 / 2,495) and not
+  `personas.js` the source file. The three differ by enough to move a threshold
+  verdict, and two of the three are the wrong thing to measure.
 
 ### 4.4 Instrumentation is a prerequisite, gating the first task cutover
 
@@ -391,30 +396,51 @@ available, otherwise from prompt-cap constants in code, plus a tokenizer
 allowance on input counts because Claude and Gemini do not tokenize the same
 text into the same number of tokens.
 
-> **Amended 2026-08-05 — the allowance was too low, and the tables below are
-> understated.** The original +30% was taken from documentation. Measured with
-> both providers' `count_tokens` on identical text:
+The allowance in force for the table below is **+30% on input counts**, and it
+is **wrong in both directions**. Measured 2026-08-05 with both providers'
+`count_tokens` on identical text:
+
+| content | Opus 5 / Sonnet 5 | Haiku 4.5 |
+| --- | --- | --- |
+| Scraped web-findings prose | **1.59** | 1.11 |
+| Assembled `research.analyze` prompt | **1.66** | 1.08 |
+| Assembled `proposals.synthesize` prompt | **1.71** | 1.09 |
+| Call transcript | **1.26** | 0.95 |
+| Source code / markdown | 1.35–1.50 | 1.03–1.11 |
+| Structured JSON | 1.10 | 0.85 |
+
+> **Amended 2026-08-05.** A single blanket multiplier cannot be right, for two
+> independent reasons, and the first invalidates the way this allowance was
+> applied at all:
 >
-> | sample | Claude | Gemini | ratio |
-> | --- | --- | --- | --- |
-> | `analysis.js` source | 4,746 | 3,188 | **1.489** |
-> | `watch.js` source | 4,726 | 3,294 | **1.435** |
-> | this ADR's prose | 4,926 | 3,476 | **1.417** |
-> | Arena persona seed | 3,854 | 2,626 | **1.468** |
+> - **There are two tokenizer generations.** Opus 5 and Sonnet 5 return
+>   *identical* counts. **Haiku 4.5 is a different, near-parity tokenizer** —
+>   0.95–1.11 against Gemini, i.e. essentially no allowance is due. §4.1 puts
+>   five tasks on Haiku (`relevance`, `callEntities`, `preview`,
+>   `companyBrief`, doc-level `assessment`), so the entire `lite` tier was
+>   **over**-allowanced by ~30%.
+> - **The ratio is content-dependent, over a 1.26–1.71 range** on the same
+>   tokenizer. Prose-borne prompts (discovery, research, watch — scraped
+>   findings) sit near 1.60; transcript-borne ones (the engagement path) near
+>   1.26. That spread is wider than the correction itself.
 >
-> The real multiplier is **1.42–1.49, not 1.30** — so every input-derived line
-> below is understated by **11.5%** (1.45 / 1.30). §6 carries the corrected
-> margins. The direction matters: this makes the Pro-base case *worse*, not
-> safer, against a floor that ADR-0004 §4.3 makes non-negotiable.
+> A first attempt at this correction published a single 1.45 and was wrong: its
+> samples were source files and markdown, **not prompt text**, which is the only
+> text these units actually pay for. Recorded because the mistake is easy to
+> repeat — measure the assembled prompt, per tier.
 >
-> **Open, and larger than the correction above: output counts got no allowance
-> at all.** A denser tokenizer inflates generated tokens for the same answer
-> text just as it does prompt tokens. Where a line's output figure came from
-> observed *Gemini* output tokens it is understated by the full ~1.45; where it
-> came from a `max_tokens` cap it is already in Claude tokens and is correct.
-> §5.2 mixes both sources and does not record which is which per line, so this
-> cannot be resolved from the ADR — see §6's scenario B for what it costs if
-> the pessimistic reading holds, and §10.
+> §6 carries margins recomputed per unit by dominant content. **Remaining work:**
+> the per-unit ratios there are still keyed off representative samples, not off
+> each unit's real prompt distribution. That is the measurement §8 Phase 1 asks
+> for and it is not finished.
+>
+> **Separately open: output counts got no allowance at all.** A denser tokenizer
+> inflates generated tokens for the same answer text just as it does prompt
+> tokens. Where a line's output figure came from observed *Gemini* output it is
+> understated by the same ratio; where it came from a `max_tokens` cap it is
+> already in Claude tokens and is correct. This table mixes both sources without
+> recording which is which, so it cannot be settled here — §6 scenario B prices
+> the pessimistic reading. See §10.
 
 | Unit | ADR-0004 | **Balanced** (§4.1 map only) | **Optimized** (§4.1 + §4.3) | LLM share |
 | --- | --- | --- | --- | --- |
@@ -445,11 +471,32 @@ Two observations that matter more than the totals:
 Method matches ADR-0004 §4.3 exactly, including its per-line Stripe charge
 (2.9% + $0.30). Full cap utilization, v2 catalog.
 
-**The arithmetic is reproducible from §5.2 alone** — verified 2026-08-05 by
-re-deriving the published cells: Pro base `250×$0.17 + 30×$1.09 + 250×$0.063 +
-100×$0.10 + (149×0.029 + 0.30) = $105.57`, margin 29.1% against a published
-29.2%; Starter base lands on 43.1% exactly. State the method when amending this
-table, so the next person does not have to rediscover it.
+**Method, and which cells actually reproduce** (checked 2026-08-05 — it had
+never been written down, which is how a wrong tokenizer allowance survived in
+here for weeks). Multiply §5.2's unit COGS by the plan's caps, add the Stripe
+line, divide into revenue:
+
+```
+Pro base = 250×$0.17 + 30×$1.09 + 250×$0.063 + 100×$0.10 + (149×0.029 + 0.30)
+         = $105.57  →  (149 − 105.57)/149 = 29.1%   [published 29.2%]
+```
+
+The whole **ADR-0004 column reproduces on all eight rows**, which validates the
+method. In the Balanced/Optimized columns **four of eight rows do not**:
+
+| row | column | recomputed | published |
+| --- | --- | --- | --- |
+| Research credit | Balanced | 50.8% | 55.0% |
+| Pro extra seat | Optimized | 41.9% | 45.0% |
+| Starter extra seat | Balanced | 44.5% | 45.8% |
+| Sub-tenant add-on | Balanced | 62.6% | 63.1% |
+
+Research credit's published 55.0% is `(0.38 − 0.17)/0.38` — **it omits Stripe**,
+inconsistent with its own ADR-0004 cell. The extra-seat and sub-tenant cells
+solve backwards to an engagement unit of **$1.04–1.06, not §5.2's $1.09**, i.e.
+they are stale from an earlier draft. Treat those four as unreliable
+independently of anything below; Pro base, Starter base, Engagement credit and
+Free tier reproduce cleanly.
 
 | Revenue line | Price | ADR-0004 | **Balanced** | **Optimized** | Floor |
 | --- | --- | --- | --- | --- | --- |
@@ -462,45 +509,54 @@ table, so the next person does not have to rediscover it.
 | Sub-tenant add-on | $29 | 68.5% | **63.1%** ✅ | **68.0%** ✅ | ✅ |
 | Free tier (20 research, 10 arena) | $0 | −$3.90/mo | **−$4.40/mo** | **−$2.97/mo** | n/a |
 
-**Pro base is the only line that fails, and it fails only in the Balanced
-column.** This is the entire quantitative content of the decision: §4.3 is not
-optional engineering polish, it is what keeps the flagship tier above the
-floor. Ship the model map without the cost mechanics and Pro is 580bps
-underwater.
+~~**Pro base is the only line that fails, and it fails only in the Balanced
+column.** … Ship the model map without the cost mechanics and Pro is 580bps
+underwater.~~ **Superseded 2026-08-05 — see the corrected table below. The
+conclusion holds; the magnitude was understated.**
 
-> **Amended 2026-08-05 — the Balanced column above is optimistic.** Applying
-> §5.2's corrected tokenizer ratio (1.45, measured, not 1.30 assumed):
+> **Corrected for §5.2's tokenizer finding.** Per-unit input ratios keyed to
+> each unit's dominant content, on the Opus-5/Sonnet-5 tokenizer: research
+> **1.60** and watch **1.60** (scraped prose), engagement **1.25** (call
+> transcript, with Stage-0's Haiku leg at parity), arena **1.37** (mixed).
+> Each replaces the blanket 1.30 that is baked into the table above.
 >
-> | Revenue line | published | **A: input corrected** | **B: A + output corrected** |
-> | --- | --- | --- | --- |
-> | **Pro base** | 29.2% ❌ | **27.0%** ❌ | **20.5%** ❌ |
-> | Starter base | 43.1% ✅ | **41.4%** ✅ | **38.6%** ✅ |
-> | Pro extra seat | 37.4% ✅ | **35.7%** ✅ | **33.7%** ❌ |
-> | Starter extra seat | 45.8% ✅ | **43.0%** ✅ | **41.2%** ✅ |
+> | Revenue line | published | **A: input** | **B: A + output** | published | **A** | **B** |
+> | --- | --- | --- | --- | --- | --- | --- |
+> | | *Bal.* | *Bal.* | *Bal.* | *Opt.* | *Opt.* | *Opt.* |
+> | **Pro base** | 29.2% ❌ | **26.8%** ❌ | **19.5%** ❌ | 48.7% ✅ | **48.1%** ✅ | **46.1%** ✅ |
+> | Starter base | 43.1% ✅ | **41.5%** ✅ | **39.0%** ✅ | 53.2% ✅ | **52.7%** ✅ | **51.6%** ✅ |
+> | Pro extra seat | 37.4% ✅ | **37.0%** ✅ | **35.6%** ✅ | 45.0% ✅ | **42.0%** ✅ | **41.0%** ✅ |
+> | Starter extra seat | 45.8% ✅ | **43.3%** ✅ | **41.7%** ✅ | 52.6% ✅ | **50.4%** ✅ | **49.5%** ✅ |
 >
-> Corrected per-unit COGS (Balanced), scenario A: research $0.176, engagement
-> $1.119, watch $0.065, arena $0.106.
+> **A** corrects input-derived cost only. **B** additionally assumes output
+> counts were Gemini-derived and carry the same ratio (§5.2's open question).
+> Input share *of cost* at Claude's 5:1 output:input rate ratio is **measured**
+> for research (0.80, n=1) and watch (0.24, n=4) from `usage_costs`, and
+> **assumed** for engagement (0.75) and arena (0.50).
 >
-> **A** applies the correction to input-derived cost only — the ADR's own
-> framing. **B** additionally assumes output counts were Gemini-derived and so
-> carry the full 1.45 (§5.2's open question). Input share of *cost* at Claude's
-> 5:1 output:input rate ratio is **measured** for research (0.80, n=1) and
-> watch (0.24, n=4) from `usage_costs`, and **assumed** for engagement (0.75)
-> and arena (0.50) — those two assumptions are what a full re-baseline must
-> replace, and they are the widest source of error here.
+> What this changes, and what it does not:
 >
-> Two consequences:
+> - **Pro base's Balanced shortfall widens from 580bps to ~820bps (A) or
+>   ~1550bps (B).** The decision is unchanged and strengthened: §4.3's cost
+>   mechanics are load-bearing, not polish.
+> - **Optimized clears the floor on every line under every scenario** — 46.1%
+>   at the worst. Recomputed rather than asserted; an earlier draft waved this
+>   away with "cache reads bill at 0.1× so the correction is absorbed", which is
+>   the wrong mechanism (a rate multiplier does not cancel a count multiplier —
+>   the *relative* uplift is identical in both columns; Optimized moves less
+>   only because its input-cost base is smaller in dollars).
+> - **No second line fails**, and the near miss is instructive. Pro extra seat
+>   is engagement-heavy (15 eng vs 25 research), so its verdict swings on the
+>   engagement ratio alone: at the transcript-measured 1.25 it holds at 37.0%/
+>   35.6%; applying the prose ratio of 1.65 instead drops it to **33.5%, below
+>   the floor, under scenario A**. It is the one line whose pass/fail depends on
+>   a number §5.2 has not properly measured, which makes the engagement prompt
+>   mix the highest-value thing left to measure — ahead of the output question.
 >
-> - **Pro base's shortfall widens from 580bps to ~800bps (A), or ~1450bps (B).**
-> - **Under B a second line fails: Pro extra seat drops to 33.7%.** No line
->   other than Pro base failed at any published figure, so this would change
->   the decision's shape, not just its size. Resolving §5.2's output question
->   is therefore worth more than any further precision on input.
->
-> The Optimized column is not recomputed here. Cache reads bill at 0.1× input,
-> so a corrected input count is largely absorbed by the mechanic that column
-> assumes — the correction moves Optimized far less than Balanced. It is
-> re-derived when §9 item 6 lands with measured cache-hit data, per §8 Phase 4.
+> Four published rows are unreliable for the separate reason given above the
+> table; Research credit, Sub-tenant add-on and Free tier are therefore not
+> corrected here. For the record, Free-tier burn worsens from −$4.40/mo to
+> about −$4.6 (A) / −$4.9 (B).
 
 Two further notes:
 
@@ -605,32 +661,50 @@ creating one; `plans.js` has no code path that migrates a v1 tenant to v2.
   `watch.runEntityScheduled` in `withTimeout(..., WATCH_ENTITY_TIMEOUT_MS)`,
   covered by `watchEntityTimeout.test.js` and `schedulerPhases.test.js`. That
   guard sits above the model call and survives the migration unchanged. Keep
-  it even though the Anthropic SDK ships a default timeout — SDK
-  `timeout × (max_retries + 1)` can still exceed a caller's budget.
-- **~~Retry stacking.~~ Corrected 2026-08-05 — the risk is the inverse, and it
-  is silent.** This entry used to say that leaving the SDK's auto-retry
-  (408/409/429/5xx, `max_retries` 2) active *under* the app-level retry
-  compounds backoff, worst case `timeout × (max_retries + 1)`. Both halves are
-  wrong about what shipped:
+  it even though the Anthropic SDK ships a default timeout. (The original
+  reasoning here — "SDK `timeout × (max_retries + 1)` can still exceed a
+  caller's budget" — holds for a *bare* SDK call but not through
+  `anthropic.generate()`, which composes its own deadline; see the retry entry
+  below. The guard is still correct, because `withTimeout` bounds the whole
+  call site including anything wrapped around `generate()`.)
+- **Retry stacking — narrowed, not eliminated, and it comes with a silent
+  regression.** Corrected 2026-08-05 by running real SDK exceptions through
+  `translateError()` and then through all six call-site regexes verbatim:
 
-  - **The magnitude.** `anthropic.generate()` passes an
-    `AbortSignal.timeout(...)` on every call, and the SDK re-links a caller
-    signal onto each attempt — so the deadline bounds the entire retry
-    sequence, not each attempt. Measured at timeout=3s/maxRetries=2: 10.4s
-    with no caller signal, 4.0s with a 4s one.
-  - **The direction.** `translateError()` rewrites provider errors into our own
-    messages, so the six call-site `withRetry` regexes — which match Gemini
-    strings like `RESOURCE_EXHAUSTED` and `\b429\b` — no longer fire. Verified
-    by running real SDK exceptions through `translateError` and each regex: a
-    migrated call site **loses** app-level retry on 429, 500, and every
-    timeout/connection error, and retains it only on 503/529, where it matches
-    by accident (the status is interpolated into the message) and is unwanted.
+  | error | matches, raw | matches, translated |
+  | --- | --- | --- |
+  | 429 rate limit | 6/6 | **0/6** |
+  | timeout / connection / abort | 0–6/6 | **0/6** |
+  | 503, 529 | 6/6 | **6/6** |
 
-  So a cutover silently *reduces* resilience on the transient that matters
-  most. The consolidated helper (§8 Phase 1) must key off the typed SDK
-  exceptions, not message text, and the four `retryDelay` parsers are dead code
-  on Anthropic — it signals `retry-after` headers, which the SDK already
-  honours.
+  - **Stacking survives exactly where it is least wanted.** On 503/529 the app
+    layer still retries *over* the SDK's — up to 9 attempts on the statuses
+    Anthropic uses for overload. The original entry was right that stacking is
+    a risk; it was wrong that the risk is general.
+  - **And a cutover silently drops app-level retry on 429** — the transient
+    every one of these helpers was written for — because the message no longer
+    contains `429` or `RESOURCE_EXHAUSTED`. Gemini's `DEADLINE_EXCEEDED` cover
+    is lost the same way. (500 is *not* in this list: the Gemini-shaped regexes
+    never matched a 500 either, so nothing is lost there.)
+  - **The magnitude formula needs qualifying, not deleting.** `timeout ×
+    (max_retries + 1)` is correct for a bare SDK call — measured 10.3s at
+    timeout=3s/maxRetries=2. It does not apply *inside* `generate()`, which
+    composes an `AbortSignal.timeout(...)` the SDK re-links onto every attempt,
+    bounding the whole sequence (4.0s with a 4s signal). But the outer
+    multiplication is still live: each `withRetry` iteration calls `generate()`
+    afresh, so worst case is `ANTHROPIC_TIMEOUT_MS × outer attempts` ≈ **366s**
+    at the 120s default.
+  - **`DEFAULT_TIMEOUT_MS` is used for both the SDK `timeout` and the composed
+    deadline**, so on a hang the first attempt consumes the entire budget and
+    **the SDK's own retries are unreachable** — which undercuts the "the SDK
+    already retries, so we don't need to" premise. Give the deadline headroom
+    over the per-attempt timeout, or accept that SDK retries only ever fire on
+    fast failures.
+
+  The consolidated helper (§8 Phase 1) must therefore key off the **typed SDK
+  exceptions**, not message text; restore 429 coverage; stop retrying 503/529 at
+  the app layer; and drop the four `retryDelay` parsers, which are dead code on
+  Anthropic (it signals `retry-after`, which the SDK already honours).
 
 ## 8. Migration plan (staged; each phase independently revertable)
 
@@ -743,19 +817,26 @@ Not in scope for any PR above: embeddings (§4.2), `capture/`, `mcp/`, any
 
 ## 10. Open questions / follow-ups
 
+- **Measure the engagement path's real prompt mix** (raised 2026-08-05 — the
+  highest-value measurement left, ahead of the output question below). Pro
+  extra seat is the only line whose pass/fail swings on a single unmeasured
+  number: at the transcript ratio of 1.25 it holds at 37.0%, at the prose ratio
+  of 1.65 it drops to **33.5%, below the floor, under scenario A alone**. The
+  engagement prompt is transcript-dominated in principle, but "in principle" is
+  what the +30% allowance was too. Assemble the real Stage-0/1/2 and brief
+  prompts and count them per tier.
 - **Were output token counts under-allowanced too?** (Raised 2026-08-05 with
-  the §5.2 tokenizer correction — currently the highest-value open question
-  here, because it is the only one that changes which lines fail.) A denser
+  the §5.2 tokenizer correction.) A denser
   tokenizer inflates generated tokens for the same answer text exactly as it
   does prompt tokens, and §5.2 applied its allowance to input only. Lines whose
   output figure came from a `max_tokens` cap are already in Claude tokens and
   are fine; lines derived from observed *Gemini* output tokens are understated
-  by ~1.45. §5.2 does not record which source each line used. Under the
-  pessimistic reading (§6 scenario B) **Pro extra seat also drops below the
-  floor, at 33.7%** — the first line other than Pro base to fail at any
-  modelled figure. Resolving this is worth more than further precision on
-  input, and it is answerable by re-deriving §5.2 from the prompt builders in
-  code rather than from `usage_costs` (which stores counts, never prompt text).
+  by that unit's ratio. §5.2 does not record which source each line used.
+  §6 scenario B prices the pessimistic reading — it costs Pro base a further
+  ~730bps but flips no line's verdict, which is why the engagement prompt-mix
+  measurement above ranks ahead of it. Answerable by re-deriving §5.2 from the
+  prompt builders in code, not from `usage_costs`, which stores counts and
+  never prompt text.
 - **Engagement and Arena input-share are assumed, not measured** (0.75 / 0.50
   in §6). They are the widest source of error in the corrected table, and
   `usage_costs` cannot supply them until those paths run on Claude. Until then
