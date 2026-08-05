@@ -164,6 +164,137 @@ test('a cached system prompt becomes a block list with cache_control', async () 
   assert.strictEqual(last().system, 'stable prefix');
 });
 
+// ── multi-turn (ADR-0006 §9 item 4) ─────────────────────────────────────────
+//
+// Arena replays its whole transcript on every turn, so a wrapper hardcoded to
+// one user message could not serve arena.js at all — which is why the ADR makes
+// the seam a prerequisite for the Arena cutover rather than part of it.
+
+test('a conversation goes on the wire in order, with prompt as the one-turn sugar', async () => {
+  await anthropic.generate({
+    model: 'claude-sonnet-5',
+    messages: [
+      { role: 'user', content: 'grounding' },
+      { role: 'assistant', content: 'opener' },
+      { role: 'user', content: 'rep reply' },
+    ],
+  });
+  assert.deepStrictEqual(last().messages, [
+    { role: 'user', content: 'grounding' },
+    { role: 'assistant', content: 'opener' },
+    { role: 'user', content: 'rep reply' },
+  ]);
+  await anthropic.generate({ model: 'claude-sonnet-5', prompt: 'just one' });
+  assert.deepStrictEqual(last().messages, [{ role: 'user', content: 'just one' }]);
+});
+
+test('consecutive same-role turns are merged rather than sent as-is', async () => {
+  // Defensive, not a claim about what the API accepts: the seam concatenates a
+  // stable prefix with a live transcript, and whether that join lands
+  // user-on-user depends on how a given persona seed happens to end. Merging
+  // makes that a non-event instead of a 400 that only some personas trigger.
+  await anthropic.generate({
+    model: 'claude-sonnet-5',
+    messages: [
+      { role: 'user', content: 'prefix tail' },
+      { role: 'user', content: 'grounding' },
+      { role: 'assistant', content: 'a' },
+    ],
+  });
+  assert.deepStrictEqual(last().messages, [
+    { role: 'user', content: 'prefix tail\n\ngrounding' },
+    { role: 'assistant', content: 'a' },
+  ]);
+});
+
+test('merging preserves a cache_control block instead of flattening it to text', async () => {
+  // The breakpoint is the entire value of the Claude branch, and losing it
+  // fails silently: HTTP 200, full price, nothing in the response to look at.
+  await anthropic.generate({
+    model: 'claude-sonnet-5',
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'persona', cache_control: { type: 'ephemeral' } }] },
+      { role: 'user', content: 'grounding' },
+    ],
+  });
+  const [m] = last().messages;
+  assert.strictEqual(m.content.length, 2);
+  assert.deepStrictEqual(m.content[0].cache_control, { type: 'ephemeral' });
+  assert.strictEqual(m.content[1].text, 'grounding');
+});
+
+test('an invalid conversation is rejected here, not by the API', async () => {
+  const bad = (messages) => anthropic.generate({ model: 'claude-sonnet-5', messages });
+  await assert.rejects(() => bad([{ role: 'model', content: 'x' }]), /role must be "user" or "assistant"/,
+    'Gemini\'s "model" role is the spelling a mechanical port would carry over');
+  await assert.rejects(() => bad([{ role: 'system', content: 'x' }]), /role must be/);
+  await assert.rejects(() => bad([{ role: 'assistant', content: 'x' }]), /first message must be from the user/);
+  await assert.rejects(() => bad([]), /non-empty array/);
+  await assert.rejects(() => bad([{ role: 'user', content: 42 }]), /string or a block array/);
+  await assert.rejects(() => bad([{ role: 'user', content: '' }]), /no content/);
+});
+
+test('a fifth cache_control breakpoint is refused before the request is sent', async () => {
+  // The API's answer is a hard 400 ("A maximum of 4 blocks with cache_control
+  // may be provided. Found 5."), not a silent drop — so budgeting breakpoints
+  // is a validation constraint, and the message should name the budget.
+  const block = (t) => [{ type: 'text', text: t, cache_control: { type: 'ephemeral' } }];
+  const four = {
+    model: 'claude-sonnet-5',
+    system: block('sys'),
+    messages: [
+      { role: 'user', content: block('a') },
+      { role: 'assistant', content: block('b') },
+      { role: 'user', content: block('c') },
+    ],
+  };
+  await anthropic.generate(four);
+  assert.strictEqual(last().messages.length, 3, 'four is the limit, and four is allowed');
+
+  await assert.rejects(
+    () => anthropic.generate({
+      ...four,
+      messages: [...four.messages, { role: 'assistant', content: block('d') }, { role: 'user', content: 'x' }],
+    }),
+    /5 cache_control breakpoints, max is 4/
+  );
+});
+
+test('a prefix that asked to cache and cached nothing is reported', async () => {
+  // The silent failure this exists for: under a model's minimum cacheable
+  // prefix (512 / 1,024 / 4,096 tokens, and NOT in tier order — Haiku's is the
+  // largest) the call returns 200 with cache_creation_input_tokens: 0 and no
+  // warning field. The Arena persona seed sits above Opus's and Sonnet's
+  // minimum and below Haiku's, so this is a live path, not a theoretical one.
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (m) => warnings.push(String(m));
+  try {
+    await anthropic.generate({
+      model: 'claude-haiku-4-5', prompt: 'x', site: 'test.silentmiss',
+      system: 'short prefix', cacheSystem: true,
+    });
+    // Second identical call: the warning must not repeat in a per-turn loop.
+    await anthropic.generate({
+      model: 'claude-haiku-4-5', prompt: 'x', site: 'test.silentmiss',
+      system: 'short prefix', cacheSystem: true,
+    });
+  } finally { console.warn = realWarn; }
+  const hits = warnings.filter((w) => w.includes('nothing was cached'));
+  assert.strictEqual(hits.length, 1, 'warn once per model+site, not once per call');
+  assert.match(hits[0], /minimum cacheable size/);
+});
+
+test('no warning when a request never asked to cache anything', async () => {
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (m) => warnings.push(String(m));
+  try {
+    await anthropic.generate({ model: 'claude-sonnet-5', prompt: 'x', system: 'plain' });
+  } finally { console.warn = realWarn; }
+  assert.strictEqual(warnings.filter((w) => w.includes('nothing was cached')).length, 0);
+});
+
 test('a large max_tokens streams rather than risking an HTTP timeout', async () => {
   await anthropic.generate({ model: 'claude-opus-5', prompt: 'x', maxTokens: 64000 });
   assert.strictEqual(last().max_tokens, 64000);

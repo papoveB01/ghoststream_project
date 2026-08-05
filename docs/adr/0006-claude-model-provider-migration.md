@@ -5,7 +5,9 @@
 - **Date:** 2026-08-05
 - **Authors:** Builder (provider assessment)
 - **Affects (when implemented):** `api/src/gemini.js`, `api/src/models.js`,
-  `api/src/costs.js`, `api/src/knowledge/globalCache.js`, and the ~20
+  `api/src/costs.js`, `api/src/anthropic.js`, `api/src/schemaCompat.js`,
+  `api/src/aiContext.js`, `api/src/personas.js`,
+  `api/src/knowledge/globalCache.js`, and the ~20
   `generateContent` call sites in `api/src/analysis.js`,
   `api/src/knowledge/{discovery,keypoints,assessment,relevance,preview,research,ocr}.js`,
   `api/src/{watch,arena,arenaHistory,personas,proposals,enrichment,contacts,companies,companyBrief}.js`,
@@ -867,7 +869,9 @@ decomposition exists so that per-file spokes stay tractable.
    nullable field coming back non-null), and it says nothing about answer
    quality, since the prompts carry no real content. A transient 429/529 is
    reported as an *error*, never as a rejection; exit codes distinguish the two.
-4. **Caching redesign** (Phase 2). `api/src/gemini.js`,
+4. **Caching redesign** (Phase 2). ✅ *Shipped 2026-08-05 — see "What shipped"
+   below for the three deviations from the scope corrections.*
+   `api/src/gemini.js`,
    `api/src/knowledge/globalCache.js`, `api/test/globalCache.test.js` (must
    keep passing — it regression-tests a real ADR-0001 cross-tenant leak).
 
@@ -884,6 +888,20 @@ decomposition exists so that per-file spokes stay tractable.
      user turn — so it cannot serve `arena.js` or `arenaHistory.js` at all,
      cached or not. §9 item 5's arena group depends on this item precisely
      because of that, and it is a prerequisite, not a detail.
+
+     **Half of this was wrong, and the wrong half is the one that matters for
+     item 5.** `arena.js` genuinely needs multi-turn — it replays the whole
+     transcript on every turn. `arenaHistory.js` does not: `finalize()` builds
+     one string (rubric + `transcriptText(turns)`) and sends a single
+     structured call with `SCORECARD_SCHEMA`, which `generate({prompt, schema})`
+     already served. What `arenaHistory` actually carries is a *different*
+     hazard, recorded here so item 5 does not rediscover it: it scores with
+     `session.model || modelFor('personas')`, and `session.model` is a model id
+     **persisted in Redis when the session started**. A session opened before a
+     `personas` flip and scored after it hands a stale id to whichever client
+     the code picks — and it reaches `models.generateContent` directly, so the
+     `gemini.js` guard below does not cover it. Resolve the provider at scoring
+     time, or store the provider alongside the model.
    - **`personas.js` resolves `modelFor('personas')` at REQUIRE time** and feeds
      it straight to `gemini.caches.create()` via `arena.js`. Setting
      `AI_PROVIDER_PERSONAS=anthropic` hands a Claude model id to the Gemini
@@ -908,6 +926,122 @@ decomposition exists so that per-file spokes stay tractable.
    `cache_control` breakpoints and rejects a fifth with a hard 400; and the
    minimum cacheable prefix is 512 / 1024 / 4096 by tokenizer generation, which
    the Arena persona seed sits under on Haiku.
+
+   **What shipped (2026-08-05).** `api/src/aiContext.js` — `prepare()`,
+   `generate()`, `discard()` over a neutral `{role:'user'|'assistant', text}`
+   turn shape, dispatching on `models.resolve(task).provider`. `globalCache.js`
+   is its first consumer and no longer requires `gemini` at all;
+   `anthropic.generate()` gained `messages`; `personas.js` resolves its model on
+   read; `gemini.js` refuses a model id belonging to another provider. No task
+   joined `DISPATCH_READY`, so every path in production still resolves to Gemini
+   and the Gemini branch is byte-identical — the persona seed was diffed against
+   its pre-change literal to confirm that. Suite 263/263 (was 242 before, +21).
+
+   Three deviations from the scope corrections above, all deliberate:
+
+   - **The seam does not resolve `globalCache`'s model.** That cache has always
+     been built against `GEMINI_ANALYSIS_MODEL`, not its task's tier, and
+     `prepare()` takes a `geminiModel` escape hatch so it still is. Re-tiering a
+     cache inside a seam PR is exactly the silent behaviour change §9 item 2
+     refused to make for `keypoints`.
+   - **`personas.js` was moved AND the hazard was guarded**, not one or the
+     other. The lazy getter stops the require-time freeze; `models.providerOfModel()`
+     plus an assertion in `gemini.getOrCreateCache` / `generateForRecord` stops a
+     Claude id reaching Google's caches API even when something bypasses the
+     seam — which `arena.js` still does until item 5. It blocks a
+     confidently-wrong id rather than allow-listing, so a custom endpoint id or
+     a model released later still works.
+   - **One asymmetry is exposed rather than papered over.** A context with a
+     system instruction and no body is valid on Claude and is *not* preparable on
+     Gemini (`caches.create` rejects empty contents). `prepare()` throws there;
+     callers with a possibly-empty body must handle it.
+
+   Two behaviours worth knowing before item 5 uses this:
+   `anthropic.generate()` now counts `cache_control` blocks and refuses a fifth
+   locally (the API's own answer is a hard 400, not a drop), and it logs once per
+   model+site when a request asked to cache and `cache_creation` +
+   `cache_read` both came back 0 — the sub-minimum silent miss §4.3 measured,
+   which is otherwise invisible at full price.
+
+   **Verified live, not just in CI** (`api/test/live/contextSeam.js`, run
+   2026-08-05 — it spends money, so it sits beside `test/live/smoke.js` and
+   outside `npm test`). It drives the seam with the **real** persona seed, the
+   thing item 5 will actually send:
+
+   | model | turn 1 `input` / `cache_write` | turn 2 `input` / `cache_read` |
+   | --- | --- | --- |
+   | `claude-sonnet-5` | 23 / **3,444** | 87 / **3,444** |
+   | `claude-haiku-4-5` | **2,577** / 0 | 2,620 / 0 |
+
+   Three things that no stub could have shown: a multi-turn `messages` array
+   carrying an assistant turn is accepted and answers in character on both
+   models; the breakpoint on the persona prefix really does write once and read
+   back on the next turn (`input_tokens` collapsing to 23 is the same
+   uncached-remainder behaviour §4.4 warns the meter must account for); and
+   **Haiku silently cached nothing**, exactly as §4.3 predicted — HTTP 200, both
+   cache counters 0, full price. The new warning fired on that run, which is the
+   only reason it is visible at all.
+
+   The counts also tighten §4.3's own figures, which were measured on the
+   assembled prefix rather than on what this seam puts on the wire: **3,444
+   new-gen (vs 3,445 published) and 2,577 old-gen for prefix-plus-first-turn (vs
+   2,561 for the prefix alone)**. Close enough to confirm the published numbers
+   rather than correct them, and recorded so the small deltas are not read later
+   as a discrepancy.
+
+   **Review round (2026-08-05), two independent passes.** Verdict from both:
+   MERGE WITH FIXES; nothing Critical or High. The confidence pass reproduced
+   the suite (263/263 branch, 242/242 base), re-derived the persona-seed
+   equivalence independently (same `contentHash` `f2b543ceadc6a3e7` on both
+   trees, so the existing registry entry is re-used rather than re-created),
+   confirmed `DISPATCH_READY` empty on the running staging container, and broke
+   6 of the new assertions deliberately to confirm all 6 fail. It also confirmed
+   **zero affected rows in both environments**: `kb_global_cache` is
+   `cache_name` NULL / `char_count` 0 in staging *and* production, there are
+   **no** `gemini:cache*` Redis keys and no live arena sessions in either, and
+   `arena_sessions` is empty in both databases — so the persisted-`session.model`
+   hazard above has no data behind it yet.
+
+   Four defects worth recording, because each was confirmed by execution rather
+   than argued, and three were invisible to the tests as first written:
+
+   - **The robustness fallback contained the bug it was added to prevent.**
+     `record.turns ? … : record.contents` tests truthiness, and `[]` is truthy —
+     so a record carrying `turns: []` *and* a real `contents` prefix took the
+     turns branch, produced nothing, and sent no persona at all. HTTP 200, an
+     answer, no signal. Fixed to test `.length`.
+   - **The seam had no unknown-option guard**, one layer above the wrapper that
+     has one for exactly this reason — and it *inverts* the spellings
+     (`maxTokens`→`maxOutputTokens`, `abortSignal`→`signal`), so a call site
+     ported in an item 5 PR would lose its output budget or its only wall-clock
+     bound in silence. Now throws, naming both spellings.
+   - **`allowTruncation` was not forwarded**, so running out of output budget
+     truncates on Gemini and throws 502 on Claude with no way to opt out.
+     `arena.js` runs at 400–600 output tokens with a persona told to answer in
+     "two to four sentences" — the flip would have turned a long reply into a
+     dead practice session. Forwarded, and both this and the differing
+     `temperature`/`thinkingConfig` defaults vs `generateForRecord` are now
+     stated in the seam's contract.
+   - **`discard()` orphaned a Gemini cache across a flip.** It resolved the
+     provider from what the task means *today*, so a caller holding a stored
+     `cache_name` got a no-op the moment its task moved to Claude — and then
+     nulled the column, leaving a live `cachedContent` and its registry key with
+     nothing able to name them. `discard` now takes a `provider` override and
+     `globalCache` passes `'gemini'` whenever a pointer exists: a stored Gemini
+     pointer is a Gemini fact.
+
+   And one in the live probe itself, which is the more useful lesson: the first
+   version attached "expected on haiku 4.5" to the *not-cached* branch for every
+   model and exited 0 unconditionally, so a Sonnet regression or a hard error
+   would have printed and passed. Rewritten to carry a per-model expectation and
+   `smoke.js`'s exit-code contract — and **inverting those expectations to prove
+   the failure path then exposed a second defect in it**: asserting on
+   `cache_creation` alone makes the check pass or fail on how recently it was
+   last run, because a re-run inside the 5-minute TTL legitimately *reads* the
+   prefix instead of writing it. It now asserts that caching *engaged* (write or
+   read) and read back on turn 2. A live check that cannot fail is the blind spot
+   §9 item 3 exists for, and this one had to be made to fail before it was worth
+   anything.
 
    **Related, and better done as its own PR (§8 Phase 1's "consolidated retry
    helper"):** the six hand-rolled `withRetry` copies. Their brief is *not*
@@ -1094,9 +1228,10 @@ once tenants actually enable it. And its unit is ~90% LLM (§5.2), so Batch's
    agentic A/B has a same-provider baseline to beat rather than confounding a
    provider change with a technique change.
 3. The wrapper extended with a tool-capable, `pause_turn`-aware path.
-   `anthropic.generate()` is deliberately single-shot and sends no `tools`; this
-   should be a separate `runWithTools()` rather than growing `generate()`, so
-   the cheap path stays cheap to reason about.
+   `anthropic.generate()` takes a multi-turn conversation as of §9 item 4, but
+   it still sends no `tools` and does not handle `pause_turn` — multi-turn is
+   not the agentic loop. This should be a separate `runWithTools()` rather than
+   growing `generate()`, so the cheap path stays cheap to reason about.
 4. At least two weeks of measured watch spend to compare against.
 
 **Then decide on evidence:** A/B agentic vs the Brave + Firecrawl pipeline on

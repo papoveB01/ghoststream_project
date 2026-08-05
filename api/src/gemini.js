@@ -14,6 +14,7 @@ const crypto = require('crypto');
 const { GoogleGenAI } = require('@google/genai');
 const redis = require('./redis');
 const costs = require('./costs');
+const { providerOfModel } = require('./models');
 
 const REGISTRY_PREFIX = 'gemini:cache:';
 const SKIP_PREFIX = 'gemini:cache-skip:';
@@ -49,6 +50,30 @@ function toContents(contents) {
   });
 }
 
+// This module is the GOOGLE client. A model id belonging to another provider
+// reaching it is not a bad request, it is a routing bug, and it has a specific
+// live path: personas.js resolves modelFor('personas') and arena.js feeds that
+// straight into caches.create(), so AI_PROVIDER_PERSONAS=anthropic aims a
+// Claude id at Google's caches API (ADR-0006 §9 item 4). Today only an empty
+// DISPATCH_READY prevents it. Google's own answer to that request is a 404 that
+// mentions neither the provider nor the env var that caused it.
+//
+// Unknown ids pass — see models.providerOfModel for why this blocks rather than
+// allow-lists.
+function assertGeminiModel(model, fn) {
+  const p = providerOfModel(model);
+  if (p && p !== 'gemini') {
+    const err = new Error(
+      `gemini.${fn}: "${model}" is a ${p} model id, not a Gemini one. ` +
+      'A task was routed to another provider while its call site still dispatches ' +
+      'to the Gemini SDK — migrate the call site (ADR-0006 §4.5) or unset its ' +
+      'AI_PROVIDER_* override.'
+    );
+    err.status = 500;
+    throw err;
+  }
+}
+
 function isUncacheableError(err) {
   // Two failure modes we treat as "permanent for the content as-is":
   //   - 400: content below the model's minimum cacheable tokens
@@ -73,6 +98,7 @@ async function getOrCreateCache({
   if (!name || !model) {
     throw new Error('getOrCreateCache: name and model required');
   }
+  assertGeminiModel(model, 'getOrCreateCache');
   const normContents = toContents(contents);
   if (normContents.length === 0) {
     throw new Error('getOrCreateCache: contents required (caches.create rejects empty contents)');
@@ -213,6 +239,7 @@ async function generateForRecord({
 }) {
   if (!record) throw new Error('generateForRecord: record required');
   if (!message) throw new Error('generateForRecord: message required');
+  assertGeminiModel(record.model, 'generateForRecord');
 
   const client = getClient();
   const config = { temperature, maxOutputTokens };

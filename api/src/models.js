@@ -111,6 +111,13 @@ function providerEnvName(task) {
   return `AI_PROVIDER_${String(task).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()}`;
 }
 
+const _warned = new Set();
+function warnOnce(key, message) {
+  if (_warned.has(key)) return;
+  _warned.add(key);
+  console.warn(message);
+}
+
 // Per-task override wins, then the global default, then Gemini. An unknown
 // value falls back rather than throwing: a typo in an env var must not take the
 // api down on boot, and the fallback is the provider we were already on.
@@ -122,7 +129,12 @@ function providerFor(task) {
     return DEFAULT_PROVIDER;
   }
   if (p !== DEFAULT_PROVIDER && !DISPATCH_READY.has(task)) {
-    console.warn(
+    // Once per task+provider. This used to fire once per process for `personas`
+    // because personas.js resolved its model at require time; resolving on read
+    // (ADR-0006 §9 item 4) moved it onto the Arena's per-turn path, where an
+    // operator following the migration runbook — which is precisely who sets
+    // this variable — would get the same line on every request.
+    warnOnce(`dispatch:${task}:${p}`,
       `[models] task "${task}" is configured for ${p} but its call site cannot dispatch yet — ` +
       `staying on ${DEFAULT_PROVIDER}. Remove ${providerEnvName(task)} or migrate the call site first.`
     );
@@ -153,4 +165,27 @@ function modelFor(task) {
   return resolve(task).model;
 }
 
-module.exports = { modelFor, resolve, providerFor, providerEnvName, TIERS, TASKS, DISPATCH_READY };
+// The inverse of resolve(): which provider a MODEL ID belongs to.
+//
+// Exists because a resolved model id can reach the wrong SDK entirely.
+// personas.js resolves modelFor('personas') and arena.js hands the result
+// straight to gemini.caches.create(), so AI_PROVIDER_PERSONAS=anthropic would
+// post a Claude id to Google's caches API (ADR-0006 §9 item 4). gemini.js uses
+// this to refuse that request with a message that names the cause, instead of a
+// 404 from Google that names nothing.
+//
+// null for an id we don't recognise, and that is deliberate: the point is to
+// block a confidently-WRONG id, not to allow-list model names. A model released
+// after this was written, or a custom endpoint id set via GEMINI_*_MODEL, must
+// keep working without an edit here.
+function providerOfModel(model) {
+  const m = String(model || '').toLowerCase();
+  if (m.includes('claude') || m.startsWith('anthropic')) return 'anthropic';
+  if (m.includes('gemini') || m.includes('gemma')) return 'gemini';
+  return null;
+}
+
+module.exports = {
+  modelFor, resolve, providerFor, providerEnvName, providerOfModel,
+  TIERS, TASKS, DISPATCH_READY,
+};

@@ -1,14 +1,22 @@
 // Global Knowledge Cache builder.
 //
 // Concatenates every READY document in the ORG_INTELLIGENCE and BATTLECARDS
-// categories into a single text body, registers it as a Gemini Context Cache
-// under the name "kb:global", and stores both the cache pointer and the
-// assembled text in the kb_global_cache singleton row.
+// categories into a single text body, prepares it as a reusable context prefix
+// under the name "kb:global", and stores both the resulting pointer (if the
+// provider has one) and the assembled text in the kb_global_cache singleton row.
 //
-// The text body is stored alongside the cache pointer because Gemini only
-// accepts ONE cachedContent per generateContent call — so the Arena (which
-// uses its slot for the persona cache) reads `content_text` directly and
-// pastes it inline into the grounding system message.
+// The text body is stored alongside the pointer because Gemini only accepts ONE
+// cachedContent per generateContent call — so the Arena (which uses its slot for
+// the persona cache) reads `content_text` directly and pastes it inline into the
+// grounding system message. Claude allows four cache_control breakpoints, so
+// that constraint is Gemini's alone and lifts when the Arena moves
+// (ADR-0006 §9 item 5); content_text stays the canonical store either way.
+//
+// PROVIDER. This goes through aiContext rather than gemini directly, because
+// "a named cache resource with a TTL" is Gemini's model and not Claude's — on
+// Claude there is nothing to create and `cache_name` stays NULL, which is
+// exactly what the column already holds in both environments today. The task
+// that routes it is `personas`, because the Arena is what consumes this text.
 //
 // Triggered automatically from service.ingest() and service.deleteDocument()
 // whenever a document in those two categories changes, and manually via
@@ -16,11 +24,15 @@
 
 const crypto = require('crypto');
 const db = require('../db');
-const gemini = require('../gemini');
+const aiContext = require('../aiContext');
 const assessment = require('./assessment');
 const { FOUNDERS_TENANT_ID } = require('../users');
 
 const CACHE_NAME = 'kb:global';
+const CACHE_TASK = 'personas';
+// Gemini branch only. This has always been built against the ANALYSIS model
+// rather than the task's own tier; changing which model a cache is created
+// against is a behaviour change and does not belong in a seam PR.
 const CACHE_MODEL = process.env.GEMINI_ANALYSIS_MODEL || 'gemini-2.5-pro';
 const CACHE_TTL_SEC = parseInt(process.env.KB_GLOBAL_CACHE_TTL_SEC || '3600', 10);
 
@@ -123,8 +135,11 @@ async function rebuildGlobalCache({ force = false } = {}) {
   // Empty KB: clear any prior cache + zero the row.
   if (!assembled.text) {
     if (existing.cache_name) {
-      try { await gemini.invalidate(CACHE_NAME); }
-      catch (err) { console.warn('[globalCache] invalidate failed:', err.message); }
+      // provider:'gemini' explicitly — a stored cache_name is a Gemini pointer,
+      // whatever CACHE_TASK resolves to now. Without it a flip turns this into
+      // a no-op that then nulls the column, orphaning a live resource.
+      try { await aiContext.discard({ task: CACHE_TASK, name: CACHE_NAME, provider: 'gemini' }); }
+      catch (err) { console.warn('[globalCache] discard failed:', err.message); }
     }
     await db.query(
       `UPDATE kb_global_cache
@@ -145,26 +160,29 @@ async function rebuildGlobalCache({ force = false } = {}) {
     return getRow();
   }
 
-  // Invalidate any stale Gemini cache for this name before recreating.
+  // Discard any stale cache for this name before recreating. A no-op on a
+  // provider with nothing to discard.
   if (existing.cache_name) {
-    try { await gemini.invalidate(CACHE_NAME); }
-    catch (err) { console.warn('[globalCache] invalidate failed:', err.message); }
+    try { await aiContext.discard({ task: CACHE_TASK, name: CACHE_NAME, provider: 'gemini' }); }
+    catch (err) { console.warn('[globalCache] discard failed:', err.message); }
   }
 
-  // Build the new cache. getOrCreateCache transparently falls back to inline
-  // mode if the content is under the model's min-cacheable threshold; that's
-  // fine — content_text is the canonical store anyway.
+  // Build the new prefix. On Gemini this transparently falls back to inline
+  // mode if the content is under the model's min-cacheable threshold; on Claude
+  // there is no resource to create at all. Either way content_text below is the
+  // canonical store.
   let cacheRecord;
   try {
-    cacheRecord = await gemini.getOrCreateCache({
+    cacheRecord = await aiContext.prepare({
+      task: CACHE_TASK,
       name: CACHE_NAME,
-      model: CACHE_MODEL,
       systemInstruction: SYSTEM_INSTRUCTION,
-      contents: [{ role: 'user', parts: [{ text: assembled.text }] }],
+      turns: [{ role: 'user', text: assembled.text }],
       ttlSec: CACHE_TTL_SEC,
+      geminiModel: CACHE_MODEL,
     });
   } catch (err) {
-    console.error('[globalCache] gemini cache build failed:', err.message);
+    console.error('[globalCache] context prepare failed:', err.message);
     cacheRecord = null;
   }
 
@@ -179,6 +197,9 @@ async function rebuildGlobalCache({ force = false } = {}) {
             refreshed_at = now()
       WHERE id = 1`,
     [
+      // Only Gemini's 'cached' mode has a server-side name to store. 'inline'
+      // and Claude's 'breakpoint' both mean "no resource exists" → NULL, which
+      // is what every row in both environments already holds.
       cacheRecord && cacheRecord.mode === 'cached' ? cacheRecord.cacheName : null,
       newHash,
       assembled.text,
@@ -220,5 +241,6 @@ module.exports = {
   getGlobalText,
   getRow,
   CACHE_NAME,
+  CACHE_TASK,
   GLOBAL_CATEGORIES,
 };
