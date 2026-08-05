@@ -673,4 +673,10 @@ function mergeBattlecard(stored) {
   };
 }
 
-module.exports = { extractCompetitiveAssessment, renderAssessmentText, AXES, AXIS_KEYS, extractBattlecard, mergeBattlecard };
+// ASSESSMENT_SCHEMA / BATTLECARD_SCHEMA are exported for the live-schema smoke
+// check (test/live/) only. The local name is `SCHEMA`; it gets a qualified name
+// on the way out because the registry holds every module's schemas at once.
+module.exports = {
+  extractCompetitiveAssessment, renderAssessmentText, AXES, AXIS_KEYS, extractBattlecard, mergeBattlecard,
+  ASSESSMENT_SCHEMA: SCHEMA, BATTLECARD_SCHEMA,
+};

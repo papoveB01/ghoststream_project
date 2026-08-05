@@ -512,4 +512,9 @@ async function extractProductAnalysis({ text, tenantId = null, productId = null,
   }
 }
 
-module.exports = { extractKeyPoints, extractCompanyAnalysis, extractProductAnalysis, kindFor, stripBoilerplate, tenantContextText };
+// The three schemas are exported for the live-schema smoke check (test/live/)
+// only. The local name of the first is `SCHEMA`.
+module.exports = {
+  extractKeyPoints, extractCompanyAnalysis, extractProductAnalysis, kindFor, stripBoilerplate, tenantContextText,
+  KEYPOINTS_SCHEMA: SCHEMA, COMPANY_ANALYSIS_SCHEMA, PRODUCT_ANALYSIS_SCHEMA,
+};

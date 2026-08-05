@@ -424,4 +424,5 @@ router.get('/:companyId', async (req, res, next) => {
   catch (err) { next(err); }
 });
 
-module.exports = { router, generate, gatherEvidence, listForCompany, getVersion, updateVersion, exportDocxFile, getMode, setMode, PROPOSAL_MODES };
+// PROPOSAL_SCHEMA is exported for the live-schema smoke check (test/live/) only.
+module.exports = { router, generate, gatherEvidence, listForCompany, getVersion, updateVersion, exportDocxFile, getMode, setMode, PROPOSAL_MODES, PROPOSAL_SCHEMA };

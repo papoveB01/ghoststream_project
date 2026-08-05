@@ -153,4 +153,4 @@ function modelFor(task) {
   return resolve(task).model;
 }
 
-module.exports = { modelFor, resolve, providerFor, TIERS, TASKS, DISPATCH_READY };
+module.exports = { modelFor, resolve, providerFor, providerEnvName, TIERS, TASKS, DISPATCH_READY };

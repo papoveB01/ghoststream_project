@@ -167,4 +167,9 @@ module.exports = {
   shouldQuarantine,
   checkOfferingPlausibility,
   QUARANTINE_THRESHOLD,
+  // Exported for the live-schema smoke check (test/live/) only. These two carry
+  // the most risk of any schema in the repo: relevance fails OPEN, so a schema
+  // the provider rejects skips the competitor quarantine silently.
+  DOC_SCHEMA,
+  OFFERING_SCHEMA,
 };

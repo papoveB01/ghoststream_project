@@ -313,4 +313,5 @@ async function buildPreview(text, meta = {}) {
   return out;
 }
 
-module.exports = { buildPreview, buildCompetitorComparison, parseOutline, computeStats };
+// The two schemas are exported for the live-schema smoke check (test/live/) only.
+module.exports = { buildPreview, buildCompetitorComparison, parseOutline, computeStats, SUMMARY_SCHEMA, COMPARISON_SCHEMA };

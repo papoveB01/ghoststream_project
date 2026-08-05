@@ -18,6 +18,17 @@ const gating = require('./gating');
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
+// Draft-email response shape. At module scope, and exported, so the
+// live-schema smoke check (test/live/) can send the real object.
+const DRAFT_EMAIL_SCHEMA = {
+  type: 'object',
+  properties: {
+    subject: { type: 'string', description: 'A concise, specific subject line (no "Re:" unless continuing a thread).' },
+    body: { type: 'string', description: 'The plain-text email body, formatted as a professional email: a greeting on its own line, a blank line, then 2-3 short paragraphs each separated by a blank line, then a sign-off ("Best,\\n<sender name>"). Use real newline characters between paragraphs — never run sentences together.' },
+  },
+  required: ['subject', 'body'],
+};
+
 // Outreach email categories. Each shapes the AI's goal/tone; `engagement: true`
 // pulls the prospect's most recent completed engagement into the context.
 const EMAIL_CATEGORIES = {
@@ -512,14 +523,7 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
     const gemini = require('./gemini');
     const costs = require('./costs');
     const MODEL = require('./models').modelFor('content');
-    const SCHEMA = {
-      type: 'object',
-      properties: {
-        subject: { type: 'string', description: 'A concise, specific subject line (no "Re:" unless continuing a thread).' },
-        body: { type: 'string', description: 'The plain-text email body, formatted as a professional email: a greeting on its own line, a blank line, then 2-3 short paragraphs each separated by a blank line, then a sign-off ("Best,\\n<sender name>"). Use real newline characters between paragraphs — never run sentences together.' },
-      },
-      required: ['subject', 'body'],
-    };
+    const SCHEMA = DRAFT_EMAIL_SCHEMA;
     let draft = {};
     try {
       const ai = gemini.getClient();
@@ -599,4 +603,6 @@ module.exports = {
   findOrCreateStub,
   linkContactsToMission, listForMission,
   router,
+  // Exported for the live-schema smoke check (test/live/) only.
+  DRAFT_EMAIL_SCHEMA,
 };

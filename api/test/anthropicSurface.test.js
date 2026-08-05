@@ -89,8 +89,23 @@ test('the legacy surface still gets structured output — that part is supported
   const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] };
   await anthropic.generate({ model: 'claude-haiku-4-5', prompt: 'x', schema });
   const p = last();
-  assert.deepStrictEqual(p.output_config, { format: { type: 'json_schema', schema } });
+  // Translated on the way out, never passed through: a Gemini-dialect schema
+  // without additionalProperties is a hard 400 on every model. See
+  // src/schemaCompat.js; the translation itself is covered by schemaCompat.test.js.
+  assert.deepStrictEqual(p.output_config, {
+    format: { type: 'json_schema', schema: { ...schema, additionalProperties: false } },
+  });
   assert.strictEqual(p.thinking, undefined);
+});
+
+test('the caller\'s schema object is not mutated by the call', async () => {
+  // generate() is handed a module-level constant that the Gemini path still
+  // sends. If translation mutated it in place, one Anthropic call would silently
+  // rewrite what every subsequent Gemini call site sends.
+  const schema = { type: 'object', properties: { ok: { type: 'boolean', nullable: true } }, required: ['ok'] };
+  const before = JSON.parse(JSON.stringify(schema));
+  await anthropic.generate({ model: 'claude-haiku-4-5', prompt: 'x', schema });
+  assert.deepStrictEqual(schema, before);
 });
 
 test('the modern surface gets both thinking and effort when asked', async () => {

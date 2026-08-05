@@ -1,0 +1,115 @@
+// The registry of every structured-output schema the product sends, and where
+// it comes from. Read by two things:
+//
+//   - test/live/smoke.js, which sends each one to a live provider (costs money,
+//     never runs in `npm test`)
+//   - test/liveSchemaCoverage.test.js, which is free, runs in CI, and fails if
+//     src/ grows a `responseSchema:` this file does not list
+//
+// `schema` is a THUNK on purpose. The coverage guard only reads the metadata,
+// so it never pulls express routers, db pools or the Redis client into a CI
+// process that has no use for them; the live runner calls the thunk and gets
+// the actual object production sends. A copy of the schema here instead of a
+// require would pass the check while the real one 400s in production — which is
+// the entire failure mode being guarded against.
+//
+// `expr` must be the call site's source text verbatim. That is what pairs a
+// registry row to a line in src/, and what makes a renamed or newly-added
+// schema fail the guard instead of slipping past it.
+
+'use strict';
+
+const path = require('node:path');
+const SRC = path.join(__dirname, '..', '..', 'src');
+const load = (rel) => require(path.join(SRC, rel));
+
+// Fixtures for the four schemas that are BUILT per request rather than fixed.
+// Their enums come from tenant data, so the shape the API validates depends on
+// the caller — an empty enum is a different (and, on some validators, invalid)
+// schema from a populated one. These stand in for a small tenant.
+const OUR_IDS = new Set(['prd_alpha', 'prd_beta']);
+const INCUMBENTS = ['Acme Corp', 'Globex'];
+const PEOPLE = [{ id: 'per_1' }, { id: 'per_2' }];
+const PRODUCTS = [{ id: 'prd_alpha' }, { id: 'prd_beta' }];
+
+const ENTRIES = [
+  // ── analysis ──────────────────────────────────────────────────────────────
+  { site: 'analysis.entities',  cluster: 'analysis', task: 'callEntities', file: 'analysis.js', expr: 'ENTITIES_SCHEMA',
+    schema: () => load('analysis.js').ENTITIES_SCHEMA },
+  { site: 'analysis.moments',   cluster: 'analysis', task: 'callAnalysis', file: 'analysis.js', expr: 'MOMENTS_SCHEMA',
+    schema: () => load('analysis.js').MOMENTS_SCHEMA },
+  { site: 'analysis.followups', cluster: 'analysis', task: 'content',      file: 'analysis.js', expr: 'FOLLOWUP_SCHEMA',
+    schema: () => load('analysis.js').FOLLOWUP_SCHEMA },
+
+  // ── proposals ─────────────────────────────────────────────────────────────
+  { site: 'proposals.synthesize', cluster: 'proposals', task: 'proposal', file: 'proposals.js', expr: 'PROPOSAL_SCHEMA',
+    schema: () => load('proposals.js').PROPOSAL_SCHEMA },
+
+  // ── watch ─────────────────────────────────────────────────────────────────
+  { site: 'watch.extract',       cluster: 'watch', task: 'marketWatch', file: 'watch.js', expr: 'DEV_SCHEMA',
+    schema: () => load('watch.js').DEV_SCHEMA },
+  { site: 'watch.trend',         cluster: 'watch', task: 'marketWatch', file: 'watch.js', expr: 'TREND_SCHEMA',
+    schema: () => load('watch.js').TREND_SCHEMA },
+  { site: 'watch.trendDiscover', cluster: 'watch', task: 'marketWatch', file: 'watch.js', expr: 'TRENDS_DISCOVERED_SCHEMA',
+    schema: () => load('watch.js').TRENDS_DISCOVERED_SCHEMA },
+
+  // ── assessment ────────────────────────────────────────────────────────────
+  { site: 'kb.assessment', cluster: 'assessment', task: 'assessment', file: 'knowledge/assessment.js', expr: 'SCHEMA',
+    schema: () => load('knowledge/assessment.js').ASSESSMENT_SCHEMA },
+  { site: 'kb.battlecard', cluster: 'assessment', task: 'assessment', file: 'knowledge/assessment.js', expr: 'BATTLECARD_SCHEMA',
+    schema: () => load('knowledge/assessment.js').BATTLECARD_SCHEMA },
+
+  // ── discovery ─────────────────────────────────────────────────────────────
+  { site: 'discovery.queries',           cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'QUERIES_SCHEMA',
+    schema: () => load('knowledge/discovery.js').QUERIES_SCHEMA },
+  { site: 'discovery.competitorProducts', cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildCompetitorProductsSchema(ourIds)',
+    schema: () => load('knowledge/discovery.js').buildCompetitorProductsSchema(OUR_IDS) },
+  { site: 'discovery.competitors',       cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildCompetitorsSchema(ourIds, incumbentNames)',
+    schema: () => load('knowledge/discovery.js').buildCompetitorsSchema(OUR_IDS, INCUMBENTS) },
+  { site: 'discovery.prospects',         cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildProspectsSchema(ourIds)',
+    schema: () => load('knowledge/discovery.js').buildProspectsSchema(OUR_IDS) },
+
+  // ── relevance (fails OPEN — see the export comment in relevance.js) ────────
+  { site: 'kb.relevanceDoc',      cluster: 'relevance', task: 'relevance', file: 'knowledge/relevance.js', expr: 'DOC_SCHEMA',
+    schema: () => load('knowledge/relevance.js').DOC_SCHEMA },
+  { site: 'kb.relevanceOffering', cluster: 'relevance', task: 'relevance', file: 'knowledge/relevance.js', expr: 'OFFERING_SCHEMA',
+    schema: () => load('knowledge/relevance.js').OFFERING_SCHEMA },
+
+  // ── keypoints ─────────────────────────────────────────────────────────────
+  { site: 'kb.keypoints',       cluster: 'keypoints', task: 'keypoints', file: 'knowledge/keypoints.js', expr: 'SCHEMA',
+    schema: () => load('knowledge/keypoints.js').KEYPOINTS_SCHEMA },
+  { site: 'kb.companyAnalysis', cluster: 'keypoints', task: 'keypoints', file: 'knowledge/keypoints.js', expr: 'COMPANY_ANALYSIS_SCHEMA',
+    schema: () => load('knowledge/keypoints.js').COMPANY_ANALYSIS_SCHEMA },
+  { site: 'kb.productAnalysis', cluster: 'keypoints', task: 'keypoints', file: 'knowledge/keypoints.js', expr: 'PRODUCT_ANALYSIS_SCHEMA',
+    schema: () => load('knowledge/keypoints.js').PRODUCT_ANALYSIS_SCHEMA },
+
+  // ── preview / compare ─────────────────────────────────────────────────────
+  { site: 'kb.preview', cluster: 'preview', task: 'preview', file: 'knowledge/preview.js', expr: 'SUMMARY_SCHEMA',
+    schema: () => load('knowledge/preview.js').SUMMARY_SCHEMA },
+  { site: 'kb.compare', cluster: 'preview', task: 'compare', file: 'knowledge/preview.js', expr: 'COMPARISON_SCHEMA',
+    schema: () => load('knowledge/preview.js').COMPARISON_SCHEMA },
+
+  // ── research ──────────────────────────────────────────────────────────────
+  { site: 'research.analyze', cluster: 'research', task: 'research', file: 'knowledge/research.js', expr: 'ANALYSIS_SCHEMA',
+    schema: () => load('knowledge/research.js').ANALYSIS_SCHEMA },
+
+  // ── foundation ────────────────────────────────────────────────────────────
+  { site: 'foundation.synthesize',  cluster: 'foundation', task: 'content',      file: 'enrichment.js',   expr: 'FOUNDATION_SCHEMA',
+    schema: () => load('enrichment.js').FOUNDATION_SCHEMA },
+  { site: 'foundation.companyBrief', cluster: 'foundation', task: 'companyBrief', file: 'companyBrief.js', expr: 'BRIEF_SCHEMA',
+    schema: () => load('companyBrief.js').BRIEF_SCHEMA },
+
+  // ── arena ─────────────────────────────────────────────────────────────────
+  { site: 'arena.score', cluster: 'arena', task: 'personas', file: 'arenaHistory.js', expr: 'SCORECARD_SCHEMA',
+    schema: () => load('arenaHistory.js').SCORECARD_SCHEMA },
+
+  // ── contacts / companies ──────────────────────────────────────────────────
+  { site: 'companies.productFit', cluster: 'contacts', task: 'content', file: 'companies.js', expr: 'SCHEMA',
+    schema: () => load('companies.js').buildProductFitSchema(PEOPLE, PRODUCTS) },
+  { site: 'contacts.draftEmail',  cluster: 'contacts', task: 'content', file: 'contacts.js',  expr: 'SCHEMA',
+    schema: () => load('contacts.js').DRAFT_EMAIL_SCHEMA },
+];
+
+const CLUSTERS = [...new Set(ENTRIES.map((e) => e.cluster))];
+
+module.exports = { ENTRIES, CLUSTERS };

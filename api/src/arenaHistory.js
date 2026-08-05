@@ -301,4 +301,5 @@ async function getOne(tenantId, id) {
   };
 }
 
-module.exports = { upsertActive, finalize, listForTenant, getOne, scoreSession, DIMENSIONS };
+// SCORECARD_SCHEMA is exported for the live-schema smoke check (test/live/) only.
+module.exports = { upsertActive, finalize, listForTenant, getOne, scoreSession, DIMENSIONS, SCORECARD_SCHEMA };

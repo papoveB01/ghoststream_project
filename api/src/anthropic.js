@@ -26,6 +26,10 @@
 //      'xhigh'/'max' is a 400. Rather than pass that through to a caller who
 //      cannot see it, we reject the combination here with a message that says
 //      what to change.
+//   4. Every `responseSchema` in this repo is written in Gemini's dialect and
+//      is rejected (or worse, silently reinterpreted) by Anthropic's strict
+//      validator. schemaCompat translates it on the way out — see that module
+//      for the two specific incompatibilities and why one of them is silent.
 //
 // Retries and timeouts are the SDK's, configured once here. We do NOT wrap this
 // in another retry helper: the SDK already retries 408/409/429/5xx with
@@ -34,6 +38,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const costs = require('./costs');
+const { toAnthropicSchema } = require('./schemaCompat');
 
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.ANTHROPIC_TIMEOUT_MS || '120000', 10);
 const DEFAULT_MAX_RETRIES = parseInt(process.env.ANTHROPIC_MAX_RETRIES || '2', 10);
@@ -252,7 +257,10 @@ async function generate({
   const resolvedEffort = effortFor(model, effort);
   const outputConfig = {};
   if (resolvedEffort) outputConfig.effort = resolvedEffort;
-  if (schema) outputConfig.format = { type: 'json_schema', schema };
+  // Translated, not passed through: a Gemini-dialect schema is a 400 here, and
+  // the one form that is NOT a 400 (`nullable` on a non-object) is worse — the
+  // validator ignores it and the model can never return null again.
+  if (schema) outputConfig.format = { type: 'json_schema', schema: toAnthropicSchema(schema) };
 
   const params = {
     model,

@@ -756,4 +756,6 @@ router.post('/run', auth.requireRole('owner'), gating.requireFeature(plans.FEATU
   } catch (err) { next(err); }
 });
 
-module.exports = { router, runEntityScheduled, runEntity };
+// The three schemas are exported for the live-schema smoke check (test/live/)
+// only — it must exercise the object production sends, not a copy of it.
+module.exports = { router, runEntityScheduled, runEntity, DEV_SCHEMA, TREND_SCHEMA, TRENDS_DISCOVERED_SCHEMA };

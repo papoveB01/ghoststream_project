@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node src/index.js",
     "migrate": "node db/migrate.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "smoke:schemas": "node test/live/smoke.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
