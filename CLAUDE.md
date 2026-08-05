@@ -43,6 +43,43 @@ these are lazily loaded on purpose, so don't work from the summaries below.
 | `rules/deploy-environments.md` | Deploying, or reasoning about which environment a checkout is. |
 | `rules/conventions.md` | Writing code, commits, PRs, migrations, or ADRs — i.e. essentially always before you commit. |
 
+## How work gets built
+
+The four passes below are not a formality bolted onto finished code — they are
+how the work is produced. Writing the code is one step of five, and **the author
+is never the reviewer of record**:
+
+1. **Decompose before writing.** Size the change against the review that will
+   have to absorb it. If a per-file pass would need more than ~10 spokes, the PR
+   is too big — split it *first*, and make each half independently coherent: its
+   own tests must pass on their own, and it must leave the tree deployable if
+   the other half never lands.
+2. **Implement.** One reviewable concern per PR (`rules/conventions.md`).
+3. **Per-file spokes → 4. cross-integration → 5. confidence verification →
+   verdict** — exactly as in "Reviewing a PR" below, run as part of delivering
+   the work, not deferred to merge day.
+
+Three rules that separate a real review from a ritual:
+
+- **Spokes never edit.** They report; the implementer fixes. A reviewer who
+  fixes what they find stops looking for the next thing.
+- **A fix is a claim until it is re-verified.** Re-run the suite and quote the
+  numbers *after* fixing. If a fix repairs a guard, re-run the bypass that
+  defeated it and confirm it now fails.
+- **Never report your own work as verified.** "I ran the tests" is not pass 3;
+  pass 3 is someone else proving the claims, including against the live
+  dependency the harness cannot reach.
+
+Why this shape: in the 2026-08-05 spend-telemetry PR the author wrote the code,
+ran the suite green, and reported it verified. Three defects survived that and
+were caught only by independent passes — a `[TEXTUAL]` guard the author claimed
+"stops the drift recurring" was defeated twice by ordinary edits (a commented-out
+recorder; a reformat that rebalanced its counts); Gemini cached prompt tokens
+were billed at ~4× their real rate in the same file whose sibling function
+existed specifically to avoid that error; and the obvious fix for the last gap —
+instrumenting embeddings — would have recorded *nothing*, because `embedContent`
+returns no usage block at all, which only a live API probe revealed.
+
 ## Reviewing a PR
 
 Reading a diff top-to-bottom finds the wrong class of defect. The damage lives in how a
@@ -79,9 +116,11 @@ reporting green.
 These are the ones that cause unrecoverable damage, so they apply even if you haven't
 opened the rule file yet:
 
-- **Never merge on a single-pass review.** Per-file spokes → cross-integration →
-  confidence verification → verdict, every time (see "Reviewing a PR" above). Merging to
-  `main` deploys production unattended, so the review *is* the gate.
+- **Never merge on a single-pass review, and never review your own work.**
+  Per-file spokes → cross-integration → confidence verification → verdict, every
+  time (see "How work gets built" and "Reviewing a PR" above). The passes are
+  part of building the change, not a merge-day formality. Merging to `main`
+  deploys production unattended, so the review *is* the gate.
 
 - **Never edit an applied migration** — add a new numbered one.
 - **Never repoint a v1 `STRIPE_PRICE_*` at a v2 price.** Grandfathering depends on v1
