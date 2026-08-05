@@ -153,4 +153,27 @@ function modelFor(task) {
   return resolve(task).model;
 }
 
-module.exports = { modelFor, resolve, providerFor, providerEnvName, TIERS, TASKS, DISPATCH_READY };
+// The inverse of resolve(): which provider a MODEL ID belongs to.
+//
+// Exists because a resolved model id can reach the wrong SDK entirely.
+// personas.js resolves modelFor('personas') and arena.js hands the result
+// straight to gemini.caches.create(), so AI_PROVIDER_PERSONAS=anthropic would
+// post a Claude id to Google's caches API (ADR-0006 §9 item 4). gemini.js uses
+// this to refuse that request with a message that names the cause, instead of a
+// 404 from Google that names nothing.
+//
+// null for an id we don't recognise, and that is deliberate: the point is to
+// block a confidently-WRONG id, not to allow-list model names. A model released
+// after this was written, or a custom endpoint id set via GEMINI_*_MODEL, must
+// keep working without an edit here.
+function providerOfModel(model) {
+  const m = String(model || '').toLowerCase();
+  if (m.includes('claude') || m.startsWith('anthropic')) return 'anthropic';
+  if (m.includes('gemini') || m.includes('gemma')) return 'gemini';
+  return null;
+}
+
+module.exports = {
+  modelFor, resolve, providerFor, providerEnvName, providerOfModel,
+  TIERS, TASKS, DISPATCH_READY,
+};

@@ -1,11 +1,43 @@
-// Persona seeds. The persona character + objection bank goes into `contents`
-// (cached body); `systemInstruction` is short, only the meta-rules.
+// Persona seeds. The persona character + objection bank is the cached body;
+// `systemInstruction` is short, only the meta-rules.
 //
-// `contents` must be substantial enough to clear the model's minimum-cacheable-
-// token threshold (gemini-2.5-pro ≈ 2,048 tokens; gemini-1.5-pro = 32,768).
-// Below that threshold, caches.create returns 400.
+// SHAPE. `turns` is the canonical, provider-neutral body ({role, text} — see
+// aiContext.js). `contents` is a DERIVED view in Gemini's wire shape, kept
+// because arena.js and the /gemini/caches/persona endpoint still speak it. One
+// definition, two views: editing the character in two places is how the cached
+// persona and the inline fallback drift apart.
+//
+// MINIMUM CACHEABLE PREFIX. The old note here claimed the body is "substantial
+// enough to clear the model's minimum" and cited Gemini's numbers
+// (gemini-2.5-pro ≈ 2,048 tokens; gemini-1.5-pro = 32,768), where falling short
+// is a 400 from caches.create. On Claude it is neither the same threshold nor
+// the same failure. Measured 2026-08-05 (ADR-0006 §4.3): this seed's cacheable
+// prefix is 2,561 tokens on the old-generation tokenizer and 3,445 on the new
+// one, against minimums of 512 (Opus 5), 1,024 (Sonnet 5) and 4,096
+// (Haiku 4.5). So on Haiku it does NOT clear the minimum, and the call returns
+// HTTP 200 with cache_creation_input_tokens: 0 — no error, no warning field,
+// just full price on every turn. anthropic.generate() logs that case; do not
+// rely on this comment staying true if the persona tier moves.
 
-const DEFAULT_MODEL = require('./models').modelFor('personas');
+// Resolved on READ, not at require time. index.js requires this module at boot,
+// so a module-level constant froze the model id before any per-task provider
+// override could be observed — and froze it for the process lifetime. The
+// resolved id is also provider-dependent now, which is exactly why it must not
+// be captured once (ADR-0006 §9 item 4).
+function defaultModel() {
+  return require('./models').modelFor('personas');
+}
+
+// The neutral → Gemini mapping, deliberately kept local: personas.js is
+// required at boot by index.js and must not drag the provider clients into that
+// path. aiContext.toGeminiContents is the same three lines and is the one the
+// seam uses; if you change one, change both.
+function toGeminiContents(turns) {
+  return turns.map((t) => ({
+    role: t.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: t.text }],
+  }));
+}
 
 const SKEPTICAL_CFO_CHARACTER = `
 # CHARACTER BRIEF
@@ -128,29 +160,28 @@ When the call is going badly and you want to end it:
 Either way: specific, dry, final. No "let's circle back." No "I'll think on it." You either move or you don't.
 `.trim();
 
+const SKEPTICAL_CFO_TURNS = [
+  { role: 'user', text: SKEPTICAL_CFO_CHARACTER },
+  {
+    role: 'assistant',
+    text:
+      'Understood. I am Sara Chen, CFO of Helix Robotics. I will stay in character ' +
+      'throughout the meeting. I will be polite, sharp, numbers-driven, and impatient ' +
+      'with vague answers. I am ready for the rep to open the call.',
+  },
+];
+
 module.exports = {
   'skeptical-cfo': {
     displayName: 'Skeptical CFO — Sara Chen',
-    model: DEFAULT_MODEL,
+    get model() { return defaultModel(); },
     ttlSec: 3600,
     systemInstruction:
       'You are roleplaying a sales prospect to train an account executive. ' +
       'Stay strictly in the character described in the conversation context. ' +
       'Never break the fourth wall, never explain that you are an AI, never give meta-commentary on the roleplay. ' +
       'Respond as the prospect would respond — terse, sharp, in character.',
-    contents: [
-      { role: 'user', parts: [{ text: SKEPTICAL_CFO_CHARACTER }] },
-      {
-        role: 'model',
-        parts: [
-          {
-            text:
-              'Understood. I am Sara Chen, CFO of Helix Robotics. I will stay in character ' +
-              'throughout the meeting. I will be polite, sharp, numbers-driven, and impatient ' +
-              'with vague answers. I am ready for the rep to open the call.',
-          },
-        ],
-      },
-    ],
+    turns: SKEPTICAL_CFO_TURNS,
+    get contents() { return toGeminiContents(SKEPTICAL_CFO_TURNS); },
   },
 };

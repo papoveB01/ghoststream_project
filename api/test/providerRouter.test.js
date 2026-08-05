@@ -209,7 +209,13 @@ test('generate accepts thinking:false at or below effort high', async () => {
 
 test('generate validates its inputs', async () => {
   await assert.rejects(() => anthropic.generate({ prompt: 'x' }), /model required/);
-  await assert.rejects(() => anthropic.generate({ model: 'm' }), /prompt required/);
+  // `messages` (ADR-0006 §9 item 4) made this an either/or rather than a
+  // required `prompt`; the wrapper still refuses a request with neither.
+  await assert.rejects(() => anthropic.generate({ model: 'm' }), /prompt or messages required/);
+  await assert.rejects(
+    () => anthropic.generate({ model: 'm', prompt: 'x', messages: [{ role: 'user', content: 'y' }] }),
+    /prompt OR messages, not both/
+  );
   await assert.rejects(
     () => anthropic.generate({ model: 'm', prompt: 'x', effort: 'gigantic' }),
     /unknown effort/
