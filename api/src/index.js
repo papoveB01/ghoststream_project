@@ -1600,11 +1600,20 @@ async function boot() {
   try { scheduler.start(); }
   catch (err) { console.error('[boot] scheduler start failed:', err.message); }
 
-  const { TIERS } = require('./models');
+  const { TIERS, providerFor } = require('./models');
+  // Which provider each tier's tasks resolve to right now, so a per-task flip
+  // (ADR-0006 §4.5) is visible in the boot line instead of only in env.
+  const activeTiers = { lite: 'relevance', flash: 'discovery', pro: 'callAnalysis', content: 'content' };
+  const tierLine = Object.entries(activeTiers)
+    .map(([tier, sampleTask]) => {
+      const p = providerFor(sampleTask);
+      return `${tier}=${TIERS[p][tier]}`;
+    })
+    .join(', ');
   app.listen(PORT, () => {
     console.log(
       `ghost-api listening on :${PORT} ` +
-      `(model tiers — lite=${TIERS.lite}, flash=${TIERS.flash}, pro=${TIERS.pro}, content=${TIERS.content}, ` +
+      `(model tiers — ${tierLine}, ` +
       `embedding=${process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004'}, ` +
       `recall=${recall.region}, ` +
       `stream=${stream.isConfigured() ? 'live' : 'mock'})`
