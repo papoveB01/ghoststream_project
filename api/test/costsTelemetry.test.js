@@ -75,9 +75,14 @@ function walkJs(dir, out = []) {
 // a genuinely unrecorded call, and once by reformatting an existing call so the
 // call-regex stopped matching while its stale recorder still did — the counts
 // balanced and the suite went green with live unrecorded spend in the tree.
-function stripComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-}
+//
+// A third defeat, found by review of the live-schema guard that copied this
+// function: the original strip also fired on a `//` inside a string or a regex
+// literal, deleting the rest of the line. `src/ics.js`'s
+// `'-//DealScope//Meeting Invite//EN'` and `src/portfolio.js`'s `/\/\//` are
+// both truncated by it today, so putting a model call on such a line hid it.
+// The stripper now lives in one place, with its own tests.
+const { stripComments } = require('./helpers/stripComments.js');
 
 // Tolerate the formatting a prettier pass or a human would produce: any client
 // variable, a newline before the options object.
@@ -310,6 +315,21 @@ test('Claude 1h cache writes bill at 2x, not the 5m 1.25x', async () => {
     cache_creation_input_tokens: 1e6, output_tokens: 0,
   });
   assert.strictEqual(Number(lastRow().params[P.CENTS]), 600);
+});
+
+test('rollups exclude the smoke check without hiding unlabelled rows', async () => {
+  // The clause that changes what the spend view shows, and the only one in
+  // these queries that was unasserted. Deleting it silently fills the coverage
+  // rollup with synthetic sites; writing it without the NULL guard silently
+  // drops rows recorded through the bare record().
+  for (const fn of [costs.rollupByTenant, costs.rollupBySite]) {
+    await fn({ days: 30 });
+    assert.match(lastSelect.text, /site NOT LIKE 'smoke\.%'/,
+      'the live-schema smoke check is not product usage — its rows must not enter the rollups');
+    assert.match(lastSelect.text, /site IS NULL OR/,
+      "NULL NOT LIKE '...' is NULL, so an unlabelled row would fail the WHERE and disappear from " +
+      'the very view that exists to show what is not being recorded');
+  }
 });
 
 test('rollups surface how many rows could not be priced', async () => {

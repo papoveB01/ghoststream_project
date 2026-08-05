@@ -40,11 +40,18 @@
 //      stops the model guessing (a product id, a KB category) when the right
 //      answer is "none of these".
 //
-// Deep-copies rather than mutating: every caller passes a module-level schema
+// Copies rather than mutating: every caller passes a module-level schema
 // constant shared across requests, and Gemini call sites still send the
 // original. Mutating in place would rewrite the Gemini contract from an
 // Anthropic call site — the exact cross-provider bleed this migration must not
 // have.
+//
+// Precisely: every object node is rebuilt and every array value is sliced, so
+// no container is shared with the input. Array ELEMENTS that are themselves
+// objects and sit outside a subschema position (an object-valued `enum` member,
+// say) are still shared by reference — no schema in this repo has one, and
+// nothing downstream mutates the result, but do not assume the returned tree is
+// safe to edit in place.
 
 // A node is an object schema if it says so, or unions object in, or is a bare
 // `{properties: {...}}` with the type left implicit.
@@ -65,8 +72,23 @@ function unionWithNull(type) {
 // Keys carrying subschemas. Anything else is copied through untouched, so a
 // keyword this module has never heard of still reaches the API rather than
 // being quietly dropped on the way.
-const SUBSCHEMA_KEY = new Set(['items', 'additionalItems', 'contains', 'not', 'if', 'then', 'else']);
-const SUBSCHEMA_MAP = new Set(['properties', 'patternProperties', '$defs', 'definitions']);
+//
+// The lists have to be EXHAUSTIVE, not "the ones we use". A subschema-bearing
+// keyword that falls through to the copy branch is not passed through
+// harmlessly — it is passed through UNTRANSLATED, which means an unsealed
+// object (a 400) and a surviving `nullable` (the silent half) inside it. That
+// is the corruption this module exists to prevent, reintroduced by omission.
+// `additionalProperties` appears here because it takes either a boolean or a
+// schema; convert() returns non-objects untouched, so the boolean form is safe.
+const SUBSCHEMA_KEY = new Set([
+  'items', 'additionalItems', 'contains', 'not', 'if', 'then', 'else',
+  'additionalProperties', 'propertyNames', 'unevaluatedProperties', 'unevaluatedItems',
+  'contentSchema',
+]);
+const SUBSCHEMA_MAP = new Set([
+  'properties', 'patternProperties', '$defs', 'definitions',
+  'dependentSchemas', 'dependencies',
+]);
 const SUBSCHEMA_LIST = new Set(['allOf', 'anyOf', 'oneOf', 'prefixItems']);
 
 function convert(node, path, warnings) {
@@ -80,11 +102,23 @@ function convert(node, path, warnings) {
     else if (SUBSCHEMA_MAP.has(key) && value && typeof value === 'object') {
       out[key] = {};
       for (const [name, sub] of Object.entries(value)) {
-        out[key][name] = convert(sub, `${path}.${name}`, warnings);
+        // `properties` is elided from the path because that is how a reader
+        // refers to a field ($.objection, not $.properties.objection); every
+        // other container is named, so a warning under `$defs.Foo` cannot be
+        // mistaken for one on a property called Foo.
+        const child = key === 'properties' ? `${path}.${name}` : `${path}.${key}.${name}`;
+        out[key][name] = convert(sub, child, warnings);
       }
     } else if (SUBSCHEMA_LIST.has(key) && Array.isArray(value)) {
       out[key] = value.map((sub, i) => convert(sub, `${path}.${key}[${i}]`, warnings));
-    } else out[key] = value;
+    // Arrays are COPIED, not aliased. `enum` and `required` reach this branch,
+    // and several of them are live application state, not schema-only data:
+    // kb.assessment's key enum IS `assessment.js`'s AXIS_KEYS, which that module
+    // also uses for post-parse validation and axis ordering; kb.preview's is
+    // preview.js's KB_CATEGORIES. Sharing them would mean any future
+    // post-processing pass on the Anthropic side rewrites both the Gemini
+    // contract and the app's own validation lists, globally, for every tenant.
+    } else out[key] = Array.isArray(value) ? value.slice() : value;
   }
 
   if (node.nullable === true) {
@@ -109,15 +143,28 @@ function convert(node, path, warnings) {
       out.anyOf = [branch, { type: 'null' }];
     } else {
       const unioned = unionWithNull(out.type);
-      if (unioned === undefined) {
-        // No `type` to fold null into. Dropping nullable here would be the
-        // silent semantic loss this module exists to prevent, so say so — the
-        // schema needs an explicit type before it can be migrated.
-        warnings.push(`${path}: nullable:true with no \`type\` — null is not expressible, field cannot be null`);
-      } else {
+      if (unioned !== undefined) {
         out.type = unioned;
+      } else if (isObjectNode(out)) {
+        // `{properties: {...}, nullable: true}` — no explicit `type`, but the
+        // seal below is about to treat it as an object, so null IS expressible.
+        // Warning here instead would have the module contradict itself about
+        // the same node in the same pass, and drop nullability on the shape a
+        // hand-written sub-schema most often takes.
+        out.type = ['object', 'null'];
+      } else if (Array.isArray(out.anyOf)) {
+        if (!out.anyOf.some((b) => b && b.type === 'null')) out.anyOf = [...out.anyOf, { type: 'null' }];
+      } else {
+        // Genuinely nothing to fold null into. Dropping nullable silently here
+        // would be the exact semantic loss this module exists to prevent.
+        warnings.push(`${path}: nullable:true with no \`type\` — null is not expressible, field cannot be null`);
       }
     }
+  } else if (node.nullable !== undefined && node.nullable) {
+    // Truthy but not literally `true` (`'true'`, `1`). Stripped by the loop
+    // above like any other `nullable`, so without this it vanishes with no
+    // signal at all — silent loss again, just via a typo instead of a gap.
+    warnings.push(`${path}: nullable is ${JSON.stringify(node.nullable)}, not true — treated as absent, field cannot be null`);
   }
 
   // Strict-mode requirement. Only ever ADDS the key: a schema that already

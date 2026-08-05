@@ -25,12 +25,20 @@ const load = (rel) => require(path.join(SRC, rel));
 
 // Fixtures for the four schemas that are BUILT per request rather than fixed.
 // Their enums come from tenant data, so the shape the API validates depends on
-// the caller — an empty enum is a different (and, on some validators, invalid)
-// schema from a populated one. These stand in for a small tenant.
+// the caller — and a tenant with no products on file produces a MATERIALLY
+// DIFFERENT schema, not just a smaller one: discovery.js's `closedSet` drops
+// the `enum` entirely when the list is empty, which changes the node from
+// `anyOf:[{enum,type},{type:'null'}]` to `type:['string','null']`. That is a
+// different validator path, so both are registered (the `.newTenant` rows
+// below) rather than assumed equivalent.
+//
+// `companies.productFit` needs no empty variant: companies.js returns early
+// when the tenant has no products, so the empty shape is unreachable there.
 const OUR_IDS = new Set(['prd_alpha', 'prd_beta']);
 const INCUMBENTS = ['Acme Corp', 'Globex'];
 const PEOPLE = [{ id: 'per_1' }, { id: 'per_2' }];
 const PRODUCTS = [{ id: 'prd_alpha' }, { id: 'prd_beta' }];
+const NO_IDS = new Set();
 
 const ENTRIES = [
   // ── analysis ──────────────────────────────────────────────────────────────
@@ -54,7 +62,7 @@ const ENTRIES = [
     schema: () => load('watch.js').TRENDS_DISCOVERED_SCHEMA },
 
   // ── assessment ────────────────────────────────────────────────────────────
-  { site: 'kb.assessment', cluster: 'assessment', task: 'assessment', file: 'knowledge/assessment.js', expr: 'SCHEMA',
+  { site: 'kb.assessment', cluster: 'assessment', task: 'assessment', file: 'knowledge/assessment.js', expr: 'ASSESSMENT_SCHEMA',
     schema: () => load('knowledge/assessment.js').ASSESSMENT_SCHEMA },
   { site: 'kb.battlecard', cluster: 'assessment', task: 'assessment', file: 'knowledge/assessment.js', expr: 'BATTLECARD_SCHEMA',
     schema: () => load('knowledge/assessment.js').BATTLECARD_SCHEMA },
@@ -68,6 +76,15 @@ const ENTRIES = [
     schema: () => load('knowledge/discovery.js').buildCompetitorsSchema(OUR_IDS, INCUMBENTS) },
   { site: 'discovery.prospects',         cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildProspectsSchema(ourIds)',
     schema: () => load('knowledge/discovery.js').buildProspectsSchema(OUR_IDS) },
+  // The same three builders as a tenant with nothing on file yet — i.e. every
+  // tenant's first discovery run, which is also the first request that would
+  // hit a provider after a flip.
+  { site: 'discovery.competitorProducts.newTenant', cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildCompetitorProductsSchema(ourIds)',
+    schema: () => load('knowledge/discovery.js').buildCompetitorProductsSchema(NO_IDS) },
+  { site: 'discovery.competitors.newTenant',        cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildCompetitorsSchema(ourIds, incumbentNames)',
+    schema: () => load('knowledge/discovery.js').buildCompetitorsSchema(NO_IDS, []) },
+  { site: 'discovery.prospects.newTenant',          cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildProspectsSchema(ourIds)',
+    schema: () => load('knowledge/discovery.js').buildProspectsSchema(NO_IDS) },
 
   // ── relevance (fails OPEN — see the export comment in relevance.js) ────────
   { site: 'kb.relevanceDoc',      cluster: 'relevance', task: 'relevance', file: 'knowledge/relevance.js', expr: 'DOC_SCHEMA',
@@ -76,7 +93,7 @@ const ENTRIES = [
     schema: () => load('knowledge/relevance.js').OFFERING_SCHEMA },
 
   // ── keypoints ─────────────────────────────────────────────────────────────
-  { site: 'kb.keypoints',       cluster: 'keypoints', task: 'keypoints', file: 'knowledge/keypoints.js', expr: 'SCHEMA',
+  { site: 'kb.keypoints',       cluster: 'keypoints', task: 'keypoints', file: 'knowledge/keypoints.js', expr: 'KEYPOINTS_SCHEMA',
     schema: () => load('knowledge/keypoints.js').KEYPOINTS_SCHEMA },
   { site: 'kb.companyAnalysis', cluster: 'keypoints', task: 'keypoints', file: 'knowledge/keypoints.js', expr: 'COMPANY_ANALYSIS_SCHEMA',
     schema: () => load('knowledge/keypoints.js').COMPANY_ANALYSIS_SCHEMA },
@@ -104,9 +121,9 @@ const ENTRIES = [
     schema: () => load('arenaHistory.js').SCORECARD_SCHEMA },
 
   // ── contacts / companies ──────────────────────────────────────────────────
-  { site: 'companies.productFit', cluster: 'contacts', task: 'content', file: 'companies.js', expr: 'SCHEMA',
+  { site: 'companies.productFit', cluster: 'contacts', task: 'content', file: 'companies.js', expr: 'PRODUCT_FIT_SCHEMA',
     schema: () => load('companies.js').buildProductFitSchema(PEOPLE, PRODUCTS) },
-  { site: 'contacts.draftEmail',  cluster: 'contacts', task: 'content', file: 'contacts.js',  expr: 'SCHEMA',
+  { site: 'contacts.draftEmail',  cluster: 'contacts', task: 'content', file: 'contacts.js',  expr: 'DRAFT_EMAIL_SCHEMA',
     schema: () => load('contacts.js').DRAFT_EMAIL_SCHEMA },
 ];
 

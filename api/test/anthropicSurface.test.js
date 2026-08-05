@@ -102,7 +102,17 @@ test('the caller\'s schema object is not mutated by the call', async () => {
   // generate() is handed a module-level constant that the Gemini path still
   // sends. If translation mutated it in place, one Anthropic call would silently
   // rewrite what every subsequent Gemini call site sends.
-  const schema = { type: 'object', properties: { ok: { type: 'boolean', nullable: true } }, required: ['ok'] };
+  // Includes a nullable ENUM deliberately: that is the only branch in
+  // schemaCompat that deletes keys, so a fixture without one passes against a
+  // destructive implementation.
+  const schema = {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean', nullable: true },
+      cat: { type: 'string', enum: ['A', 'B'], nullable: true },
+    },
+    required: ['ok'],
+  };
   const before = JSON.parse(JSON.stringify(schema));
   await anthropic.generate({ model: 'claude-haiku-4-5', prompt: 'x', schema });
   assert.deepStrictEqual(schema, before);

@@ -126,12 +126,66 @@ test('an already-union type is not double-unioned', () => {
   assert.deepStrictEqual(out.type, ['string', 'null']);
 });
 
-test('nullable with no type is reported, not silently dropped', () => {
+test('nullable with genuinely no type is reported, not silently dropped', () => {
   const { warnings } = inspect({ type: 'object', properties: { a: { nullable: true, description: 'x' } } });
   assert.strictEqual(warnings.length, 1);
   assert.match(warnings[0], /\$\.a/);
   assert.match(warnings[0], /cannot be null/,
     'dropping nullable here is exactly the silent semantic loss this module exists to prevent');
+});
+
+test('a nullable node with properties but no type is unioned, not warned about', () => {
+  // The seal step classifies this as an object, so null IS expressible.
+  // Warning instead would have the module contradict itself about one node in
+  // one pass, on the shape a hand-written sub-schema most often takes.
+  const { schema, warnings } = inspect({ properties: { q: { type: 'string' } }, nullable: true });
+  assert.deepStrictEqual(schema.type, ['object', 'null']);
+  assert.strictEqual(schema.additionalProperties, false);
+  assert.deepStrictEqual(warnings, []);
+});
+
+test('a nullable anyOf gains a null branch rather than losing nullability', () => {
+  const { schema, warnings } = inspect({ anyOf: [{ type: 'string' }, { type: 'integer' }], nullable: true });
+  assert.deepStrictEqual(schema.anyOf, [{ type: 'string' }, { type: 'integer' }, { type: 'null' }]);
+  assert.deepStrictEqual(warnings, []);
+});
+
+test('a truthy-but-not-true nullable warns instead of vanishing', () => {
+  for (const v of ['true', 1]) {
+    const { schema, warnings } = inspect({ type: 'string', nullable: v });
+    assert.strictEqual(schema.type, 'string', 'not treated as nullable — only `true` counts');
+    assert.strictEqual(warnings.length, 1, `nullable: ${JSON.stringify(v)} must not disappear in silence`);
+    assert.match(warnings[0], /not true/);
+  }
+});
+
+test('subschema-bearing keywords are translated, not passed through', () => {
+  // The failure this prevents is double: the inner object is unsealed (a hard
+  // 400) AND its `nullable` survives (the silent half), inside a keyword the
+  // converter simply did not list.
+  const { schema } = inspect({
+    type: 'object',
+    properties: { ok: { type: 'string' } },
+    additionalProperties: { type: 'object', nullable: true, properties: { a: { type: 'string', nullable: true } } },
+    propertyNames: { type: 'string' },
+    dependentSchemas: { ok: { type: 'object', properties: { b: { type: 'string', nullable: true } } } },
+  });
+  assert.deepStrictEqual(schema.additionalProperties.type, ['object', 'null']);
+  assert.strictEqual(schema.additionalProperties.additionalProperties, false);
+  assert.deepStrictEqual(schema.additionalProperties.properties.a.type, ['string', 'null']);
+  assert.strictEqual(schema.dependentSchemas.ok.additionalProperties, false);
+  assert.deepStrictEqual(schema.dependentSchemas.ok.properties.b.type, ['string', 'null']);
+});
+
+test('additionalProperties: false is not mistaken for a subschema', () => {
+  const out = toAnthropicSchema({ type: 'object', additionalProperties: false, properties: {} });
+  assert.strictEqual(out.additionalProperties, false);
+});
+
+test('a warning under a named container is distinguishable from a property', () => {
+  const { warnings } = inspect({ $defs: { Foo: { nullable: true, description: 'x' } } });
+  assert.match(warnings[0], /\$\.\$defs\.Foo/,
+    'reported as $.Foo, this is indistinguishable from a property named Foo');
 });
 
 // ── not mutating the caller's constant ──────────────────────────────────────
@@ -141,16 +195,48 @@ test('the input schema is never modified', () => {
   // Gemini path still sends. Mutating it in place would rewrite the Gemini
   // contract from an Anthropic call site, in a way no test on either side
   // would catch.
+  //
+  // The fixture MUST include a nullable enum. That is the only branch in the
+  // module that uses `delete`, and an earlier version of this test — nullable
+  // string only — stayed green against a deliberately destructive
+  // implementation. The real casualty would have been
+  // preview.js SUMMARY_SCHEMA.suggestedCategory: one Anthropic call strips its
+  // enum for the process lifetime, and every still-Gemini tenant then gets an
+  // unconstrained field and invented KB categories.
   const original = {
     type: 'object',
-    properties: { a: { type: 'string', nullable: true } },
-    required: ['a'],
+    properties: {
+      a: { type: 'string', nullable: true },
+      cat: { type: 'string', enum: ['X', 'Y'], nullable: true },
+      rows: { type: 'array', items: { type: 'object', properties: { k: { type: 'string', enum: ['p'], nullable: true } } } },
+    },
+    required: ['a', 'cat'],
   };
   const snapshot = JSON.parse(JSON.stringify(original));
   const out = toAnthropicSchema(original);
-  assert.deepStrictEqual(original, snapshot);
+
+  assert.deepStrictEqual(original, snapshot, 'the input tree must be byte-identical afterwards');
+  assert.strictEqual(original.properties.cat.enum.length, 2, 'the enum array itself must survive');
+  assert.strictEqual(original.properties.cat.type, 'string');
   assert.notStrictEqual(out, original);
   assert.notStrictEqual(out.properties.a, original.properties.a, 'nested nodes must be copies too');
+
+  // Arrays too, not just objects. Several of these enums ARE live application
+  // state elsewhere (assessment.js AXIS_KEYS, preview.js KB_CATEGORIES), so a
+  // shared array is a route from an Anthropic call into the app's own
+  // validation lists.
+  assert.notStrictEqual(out.required, original.required, '`required` must be a copy');
+  assert.notStrictEqual(out.properties.cat.anyOf[0].enum, original.properties.cat.enum,
+    'the enum lifted into the anyOf branch must be a copy');
+});
+
+test('a destructive in-place implementation would fail this suite', () => {
+  // Belt and braces for the test above: prove the fixture actually exercises
+  // the delete path, by asserting the two keys that path removes are the ones
+  // still present on the input.
+  const original = { type: 'string', enum: ['X'], nullable: true };
+  toAnthropicSchema(original);
+  assert.deepStrictEqual(original, { type: 'string', enum: ['X'], nullable: true });
 });
 
 // ── everything else passes through ──────────────────────────────────────────
@@ -194,6 +280,14 @@ test('every registered production schema translates without losing meaning', () 
     const { schema, warnings } = inspect(entry.schema());
     if (warnings.length) problems.push(`${entry.site}: ${warnings.join('; ')}`);
     // The 400 condition, checked structurally so it does not need the network.
+    // The walker visits every keyword the converter recurses into. It used to
+    // visit 7 of 12 — narrower than the thing it checks, so a node the
+    // converter reached could go unverified here. Keep these in step with
+    // SUBSCHEMA_KEY / SUBSCHEMA_MAP / SUBSCHEMA_LIST in schemaCompat.js.
+    const KEY = ['items', 'additionalItems', 'contains', 'not', 'if', 'then', 'else',
+      'additionalProperties', 'propertyNames', 'unevaluatedProperties', 'unevaluatedItems', 'contentSchema'];
+    const MAP = ['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas', 'dependencies'];
+    const LIST = ['allOf', 'anyOf', 'oneOf', 'prefixItems'];
     const unsealed = [];
     (function walk(node, p) {
       if (Array.isArray(node)) return node.forEach((n, i) => walk(n, `${p}[${i}]`));
@@ -204,9 +298,9 @@ test('every registered production schema translates without losing meaning', () 
       if (isObj && node.additionalProperties === undefined) unsealed.push(p);
       if (node.nullable !== undefined) problems.push(`${entry.site}: nullable survived at ${p}`);
       for (const [k, v] of Object.entries(node)) {
-        if (k === 'properties' || k === '$defs') for (const [n, sub] of Object.entries(v)) walk(sub, `${p}.${n}`);
-        else if (k === 'items' || k === 'not') walk(v, `${p}.${k}`);
-        else if (Array.isArray(v) && ['anyOf', 'oneOf', 'allOf'].includes(k)) v.forEach((sub, i) => walk(sub, `${p}.${k}[${i}]`));
+        if (MAP.includes(k) && v && typeof v === 'object') for (const [n, sub] of Object.entries(v)) walk(sub, `${p}.${n}`);
+        else if (KEY.includes(k)) walk(v, `${p}.${k}`);
+        else if (LIST.includes(k) && Array.isArray(v)) v.forEach((sub, i) => walk(sub, `${p}.${k}[${i}]`));
       }
     })(schema, '$');
     if (unsealed.length) problems.push(`${entry.site}: unsealed object at ${unsealed.join(', ')}`);

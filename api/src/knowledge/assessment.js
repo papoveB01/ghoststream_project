@@ -40,7 +40,7 @@ const AXES = [
 ];
 const AXIS_KEYS = AXES.map((a) => a.key);
 
-const SCHEMA = {
+const ASSESSMENT_SCHEMA = {
   type: 'object',
   properties: {
     summary: { type: 'string', description: 'One or two sentences naming the single biggest reason this competitor wins or loses for the buyers WE care about. Honest. No marketing voice.' },
@@ -204,7 +204,7 @@ async function extractCompetitiveAssessment({ text, tenantId = null, title = nul
         temperature: 0.25,
         maxOutputTokens: 2400,
         responseMimeType: 'application/json',
-        responseSchema: SCHEMA,
+        responseSchema: ASSESSMENT_SCHEMA,
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));
@@ -674,9 +674,10 @@ function mergeBattlecard(stored) {
 }
 
 // ASSESSMENT_SCHEMA / BATTLECARD_SCHEMA are exported for the live-schema smoke
-// check (test/live/) only. The local name is `SCHEMA`; it gets a qualified name
-// on the way out because the registry holds every module's schemas at once.
+// check (test/live/) only. The names are qualified rather than a bare `SCHEMA`
+// so that the guard's file::expr key cannot be satisfied by a second, unrelated
+// `responseSchema: SCHEMA` added later in the same file.
 module.exports = {
   extractCompetitiveAssessment, renderAssessmentText, AXES, AXIS_KEYS, extractBattlecard, mergeBattlecard,
-  ASSESSMENT_SCHEMA: SCHEMA, BATTLECARD_SCHEMA,
+  ASSESSMENT_SCHEMA, BATTLECARD_SCHEMA,
 };

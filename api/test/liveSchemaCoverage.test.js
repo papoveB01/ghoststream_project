@@ -20,20 +20,23 @@ const assert = require('node:assert');
 
 const SRC = path.join(__dirname, '..', 'src');
 const { ENTRIES } = require('./live/schemas.js');
+// Shared with costsTelemetry.test.js, and quote/regex-aware — a naive stripper
+// deletes the rest of any line containing `'-//DealScope//…'` or `/\/\//`,
+// taking a call site on that line with it. See test/stripComments.test.js.
+const { stripComments } = require('./helpers/stripComments.js');
+
+// .mjs/.cjs are included even though src/ is CommonJS today: a guard that only
+// looks at .js silently stops covering the first file written in another
+// extension, and nothing about that failure is visible.
+const JS_EXT = /\.(js|mjs|cjs)$/;
 
 function walkJs(dir, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) walkJs(full, out);
-    else if (entry.name.endsWith('.js')) out.push(full);
+    else if (JS_EXT.test(entry.name)) out.push(full);
   }
   return out;
-}
-
-// Same lesson as costsTelemetry.test.js: a commented-out call site must not
-// count, in either direction.
-function stripComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
 // Read the expression after `responseSchema:` up to the value's end. A plain
@@ -53,19 +56,26 @@ function readExpr(src, from) {
   return src.slice(from, i).trim();
 }
 
+// `\s*` before the colon as well as after: `responseSchema : X` is valid JS and
+// was invisible to the first version of this pattern.
+const SITE_RE = /responseSchema\s*:\s*/g;
+
 function callSitesInSource() {
   const found = [];
   for (const file of walkJs(SRC)) {
     const src = stripComments(fs.readFileSync(file, 'utf8'));
     const rel = path.relative(SRC, file).split(path.sep).join('/');
-    for (const m of src.matchAll(/responseSchema:\s*/g)) {
+    for (const m of src.matchAll(SITE_RE)) {
       found.push({ file: rel, expr: readExpr(src, m.index + m[0].length) });
     }
   }
   return found;
 }
 
-const key = (e) => `${e.file}::${e.expr}`;
+// Whitespace-normalised so that reformatting a registered call site across
+// lines — an ordinary prettier or manual edit — does not fail the guard and ask
+// the reader to register a key containing newlines.
+const key = (e) => `${e.file}::${e.expr.replace(/\s+/g, ' ').trim()}`;
 
 test('[TEXTUAL] every responseSchema in src/ is registered for the live smoke check', () => {
   const inSource = callSitesInSource();
@@ -89,6 +99,44 @@ test('[TEXTUAL] the registry has no rows that no longer exist in src/', () => {
     stale, [],
     'a registry row pointing at a schema that no longer exists spends money proving nothing, ' +
     'and pads the coverage count so a genuinely missing row is harder to notice:\n  ' + stale.join('\n  ')
+  );
+});
+
+// The two tests above enumerate SPELLINGS of a call site, so they can only
+// catch the spellings someone thought of. This one is structural: every
+// surviving mention of the token must be one the pattern matched. It is what
+// catches the forms enumeration misses — ES6 shorthand `{ …, responseSchema }`
+// and a deferred `cfg.responseSchema = X` — by construction rather than by
+// guesswork.
+test('[TEXTUAL] no responseSchema mention escapes the call-site pattern', () => {
+  const offenders = [];
+  for (const file of walkJs(SRC)) {
+    const src = stripComments(fs.readFileSync(file, 'utf8'));
+    const mentions = (src.match(/\bresponseSchema\b/g) || []).length;
+    const matched = (src.match(SITE_RE) || []).length;
+    if (mentions !== matched) {
+      offenders.push(`${path.relative(SRC, file).split(path.sep).join('/')} — ${mentions} mention(s), ${matched} matched as a call site`);
+    }
+  }
+  assert.deepStrictEqual(
+    offenders, [],
+    'a mention of responseSchema that is not a `responseSchema: <expr>` call site is either a new\n' +
+    'spelling this guard cannot see (shorthand, a later assignment) or prose that belongs in a\n' +
+    'comment. Either way the coverage count above is no longer trustworthy:\n  ' + offenders.join('\n  ')
+  );
+});
+
+test('no registry expr is a bare generic name', () => {
+  // `file::expr` is the identity of a call site. When expr is a name as generic
+  // as `SCHEMA` — this repo's idiomatic local for "the schema for this call" —
+  // ANY later `responseSchema: SCHEMA` in the same file matches an
+  // already-registered row, and ships uncovered. Two of these existed in the
+  // first version of this PR.
+  const generic = new Set(['SCHEMA', 'schema', 'Schema', 'CONFIG', 'config']);
+  const bad = ENTRIES.filter((e) => generic.has(e.expr));
+  assert.deepStrictEqual(
+    bad.map((e) => `${e.file}::${e.expr}`), [],
+    'rename the local at the call site to a distinct name (e.g. KEYPOINTS_SCHEMA) and update expr'
   );
 });
 

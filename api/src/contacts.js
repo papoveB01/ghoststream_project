@@ -523,14 +523,13 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
     const gemini = require('./gemini');
     const costs = require('./costs');
     const MODEL = require('./models').modelFor('content');
-    const SCHEMA = DRAFT_EMAIL_SCHEMA;
     let draft = {};
     try {
       const ai = gemini.getClient();
       const resp = await ai.models.generateContent({
         model: MODEL,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: { temperature: 0.6, maxOutputTokens: 1200, responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
+        config: { temperature: 0.6, maxOutputTokens: 1200, responseMimeType: 'application/json', responseSchema: DRAFT_EMAIL_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
       });
       costs.recordGemini(req.tenantId, 'contacts.draftEmail', MODEL, resp.usageMetadata);
       draft = JSON.parse(resp.text);

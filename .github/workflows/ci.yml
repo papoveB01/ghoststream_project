@@ -56,7 +56,11 @@ jobs:
         run: npm ci
       - name: Syntax check all source
         working-directory: api
-        run: node -e "const fs=require('fs'),cp=require('child_process');function walk(d){for(const f of fs.readdirSync(d,{withFileTypes:true})){const p=d+'/'+f.name;if(f.isDirectory())walk(p);else if(f.name.endsWith('.js'))cp.execSync('node --check '+JSON.stringify(p));}}walk('src');console.log('syntax ok');"
+        run: node -e "const fs=require('fs'),cp=require('child_process');function walk(d){for(const f of fs.readdirSync(d,{withFileTypes:true})){const p=d+'/'+f.name;if(f.isDirectory())walk(p);else if(f.name.endsWith('.js'))cp.execSync('node --check '+JSON.stringify(p));}}walk('src');walk('test/live');walk('test/helpers');console.log('syntax ok');"
+      # test/live/ is deliberately outside `npm test` (it spends money), so
+      # nothing else in CI ever parses it. Without this line a syntax error in
+      # the pre-cutover schema check is found by the person running it under
+      # time pressure. Free, and it needs no credentials.
       - name: Run tests
         working-directory: api
         env:

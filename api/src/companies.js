@@ -452,7 +452,7 @@ async function productFitForPeople(tenantId, people) {
   const gemini = require('./gemini');
   const costs = require('./costs');
   const models = require('./models');
-  const SCHEMA = buildProductFitSchema(list, products);
+  const PRODUCT_FIT_SCHEMA = buildProductFitSchema(list, products);
   const prompt =
     'For each PERSON below (a role at a prospect company), pick which ONE of OUR PRODUCTS they are most ' +
     'likely the buyer/decision-maker for, judging purely from their title/seniority vs what each product does. ' +
@@ -463,7 +463,7 @@ async function productFitForPeople(tenantId, people) {
   const resp = await ai.models.generateContent({
     model: models.modelFor('content'),
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: { temperature: 0.1, maxOutputTokens: 2000, responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
+    config: { temperature: 0.1, maxOutputTokens: 2000, responseMimeType: 'application/json', responseSchema: PRODUCT_FIT_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
   });
   costs.recordGemini(tenantId, 'companies.productFit', models.modelFor('content'), resp.usageMetadata);
   const byId = new Map(products.map((p) => [p.id, p]));
