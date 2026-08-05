@@ -32,9 +32,23 @@
 //      for the two specific incompatibilities and why one of them is silent.
 //
 // Retries and timeouts are the SDK's, configured once here. We do NOT wrap this
-// in another retry helper: the SDK already retries 408/409/429/5xx with
-// backoff, and stacking the repo's hand-rolled withRetry on top would compound
-// the delay (worst case timeout x (retries+1) x outer attempts).
+// in another retry helper: the SDK already retries 408/409/429/5xx with backoff.
+//
+// CORRECTED 2026-08-05. This comment used to claim the worst case was
+// `timeout × (retries+1) × outer attempts`. That is wrong about the code below
+// it. generate() composes an `AbortSignal.timeout(DEFAULT_TIMEOUT_MS)` and
+// passes it on every call, and the SDK re-links a caller signal onto each
+// attempt's controller — so the deadline bounds the WHOLE retry sequence, not
+// each attempt. Measured against a hanging server at timeout=3s/maxRetries=2:
+// no caller signal → 10.4s; with a 4s caller signal → 4.0s.
+//
+// The real hazard on a cutover is the opposite of stacking, and it is silent:
+// translateError() rewrites messages, so the call sites' Gemini-shaped
+// transient regexes (`RESOURCE_EXHAUSTED`, `\b429\b`) stop matching. A migrated
+// call site therefore LOSES its app-level retry on 429, 500 and every
+// timeout/connection error, and keeps it only on 503/529 — where the SDK is
+// already retrying and the app layer is unwanted. Fix that when the retry
+// helpers are consolidated (ADR-0006 §8 Phase 1), not by re-wrapping here.
 
 const Anthropic = require('@anthropic-ai/sdk');
 const costs = require('./costs');
