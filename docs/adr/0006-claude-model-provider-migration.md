@@ -405,7 +405,9 @@ is **wrong in both directions**. Measured 2026-08-05 with both providers'
 
 | content | new-gen tokenizer | old-gen tokenizer |
 | --- | --- | --- |
-| Real `kb_chunks` scraped prose | **1.70** | 1.11 |
+| `kb_chunks` corpus, all sources | **1.68–1.70** | 1.11 |
+| …of which genuinely web-scraped pages | **1.39–1.61** | — |
+| …of which PDF-extracted prose | **1.70–1.78** | — |
 | Assembled `proposals.synthesize` prompt | **1.71** | 1.09 |
 | Assembled `research.analyze` prompt | **1.68** | 1.08 |
 | Prose-bearing JSON (what our schemas emit) | 1.74–1.88 | — |
@@ -519,10 +521,12 @@ Free tier reproduce cleanly.
 
 > ### ⚠️ SUPERSEDED — the Balanced and Optimized columns below are stale
 >
-> Kept for provenance only. Every cell in those two columns is either corrected
-> by the block further down (tokenizer allowance, §5.2) or is one of the seven
-> that do not reproduce (above). **The ADR-0004 column is still valid.** For a
-> current figure, read the corrected table, not this one.
+> Kept for provenance only. Every cell in those two columns is superseded by
+> the corrected block further down, or is one of the seven that do not
+> reproduce (above), **except** Engagement credit and Free-tier Optimized —
+> those three reproduce and are corrected in the notes under that block.
+> **The ADR-0004 column is still valid.** For any current figure, read the
+> corrected table and its notes, not this one.
 
 > | Revenue line | Price | ADR-0004 | **Balanced** | **Optimized** | Floor |
 > | --- | --- | --- | --- | --- | --- |
@@ -593,26 +597,45 @@ conclusion holds; the magnitude was understated.**
 >   ratio of 1.26 that did not survive re-measurement — the real
 >   `formatTranscript` output is 1.34, and the difference alone flips this line.
 >
->   Measuring the engagement prompt mix per leg is therefore the highest-value
->   work left in §5.2, ahead of the output question — which costs Pro base a
->   further ~830bps but flips no line by itself.
+>   **The research/watch ratio is the same kind of exposure**, and it moves this
+>   same line. The 1.70 keyed to those units is the `kb_chunks` corpus average,
+>   which is dominated by PDF-extracted prose (1.70–1.78); the genuinely
+>   web-scraped pages those units actually ingest measure **1.39–1.61**. At
+>   1.50 Pro base still fails (27.3% A / 20.8% B) but **Pro extra seat clears
+>   scenario B at 35.1%** — so this line's verdict turns on a third unmeasured
+>   input, not two.
 >
-> Rows not corrected here — Research credit, Sub-tenant add-on, Engagement
-> credit — because their published cells are unreliable, not because they are
-> at risk: all three clear the floor under A and B in both columns. Free tier
-> reproduces cleanly and its burn worsens from −$4.40/mo to **−$4.73 (A) /
-> −$5.08 (B)**.
+>   **Both open questions bear on this one line, and neither dominates.** The
+>   output question is what puts it in scenario B at all — at the same 1.32
+>   ratio it clears under A (36.1%) and fails under B (34.4%) — and it costs Pro
+>   base a further ~830bps besides. The prompt-mix measurement is what decides
+>   whether the 1.32 is even right. Resolve both before treating this line's
+>   verdict as settled; measuring the prompt mix is merely the cheaper of the
+>   two, not the more decisive.
+>
+> Rows not shown above, none of them at risk:
+>
+> - **Research credit** and **Sub-tenant add-on** — published cells unreliable
+>   (above), but both clear the floor under A and B in either column.
+> - **Engagement credit** reproduces cleanly and is simply not at risk:
+>   corrected to **41.8% / 40.5%** Balanced and **43.8% / 42.6%** Optimized.
+> - **Free tier** reproduces cleanly; burn worsens from −$4.40/mo to
+>   **−$4.73 (A) / −$5.08 (B)** Balanced, and from −$2.97 to **−$3.09 (A) /
+>   −$3.22 (B)** Optimized — still better than today's −$3.90.
 
 Two further notes:
 
-- **Optimized Free-tier burn is *lower* than today's** (−$2.97 vs −$3.90/mo
-  per account), because Arena and watch — the two 100%/90%-LLM meters — are
-  the biggest beneficiaries of caching and Batch. Free-tier burn scales with
+- **Optimized Free-tier burn is *lower* than today's** (−$3.09 to −$3.22
+  corrected, vs −$3.90/mo per account; −$2.97 before the §5.2 correction),
+  because Arena and watch — the two 100%/90%-LLM meters — are the biggest
+  beneficiaries of caching and Batch. Free-tier burn scales with
   signups and has no card, no cap and no expiry
   (`entitlements.js:20`, `plans.js:132-133`); this ADR improves that exposure.
-- **Enterprise's $1.60/engagement floor no longer clears 35%** at a $1.05–1.09
-  unit COGS. ADR-0004 §4.3 already had it at 34.6%; it is now 31–35%. The
-  deal-calculator floor must rise to **≥$1.75/engagement**. Tracked in §10.
+- **Enterprise's $1.60/engagement floor no longer clears 35%.** At the
+  §5.2-corrected engagement unit of **$1.05–1.12** it is **29.9–34.2%**
+  (ADR-0004 §4.3 already had it at 34.6%; the pre-correction figure was
+  31–35%). The deal-calculator floor must rise to **≥$1.75/engagement**, which
+  still clears at 35.9% on the worst corrected unit. Tracked in §10.
 
 **The v1 grandfathered catalog is not modeled here.** It was already
 underwater at ADR-0004's own numbers (Starter v1 16.9%, Pro v1 −13.8% with
@@ -654,7 +677,9 @@ creating one; `plans.js` has no code path that migrates a v1 tenant to v2.
   and the count was 26, not 23.** The incompatibility is real and worse than
   described (three forms, one of them silent), but it is fixed once in
   `api/src/schemaCompat.js` at the wrapper boundary rather than by 26 hand
-  rewrites, so **no per-task cutover PR touches its schema**. The
+  rewrites, so **no per-task cutover PR touches its schema — except
+  `proposals`, per §4.7**, whose schema exceeds Claude's grammar ceiling and
+  must be reshaped regardless of dialect. The
   behavioural-re-validation concern this bullet raised was the right one and is
   discharged: the `nullable` + `required` anti-hallucination pairing
   (`analysis.js:93-96` — *"the key is always present but may be null, never
@@ -885,9 +910,11 @@ Not in scope for any PR above: embeddings (§4.2), `capture/`, `mcp/`, any
   output figure came from a `max_tokens` cap are already in Claude tokens and
   are fine; lines derived from observed *Gemini* output tokens are understated
   by that unit's ratio. §5.2 does not record which source each line used.
-  §6 scenario B prices the pessimistic reading — it costs Pro base a further
-  ~730bps but flips no line's verdict, which is why the engagement prompt-mix
-  measurement above ranks ahead of it. Answerable by re-deriving §5.2 from the
+  §6 scenario B prices the pessimistic reading: it costs Pro base a further
+  **~830bps**, and it is what puts Pro extra seat below the floor at all —
+  that line clears under A (36.1%) and fails under B (34.4%) at the same
+  engagement ratio. So this question and the prompt-mix one above are jointly,
+  not separately, decisive for that verdict. Answerable by re-deriving §5.2 from the
   prompt builders in code, not from `usage_costs`, which stores counts and
   never prompt text.
 - **Engagement and Arena input-share are assumed, not measured** (0.75 / 0.50
