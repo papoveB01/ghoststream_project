@@ -75,7 +75,7 @@ or map tier-for-tier and hope.
   at **26%** against a 35% floor (~29% as first modelled; corrected downward
   when the tokenizer allowance was re-measured — §5.2).
 - **The same migration with caching, Batch, and deliberate down-tiering lands
-  at **48%** — better than today's modeled 36.5%.** §6.
+  at 48% — better than today's modeled 36.5%.** §6.
 
 That gap — 26% vs 48% on the same vendor and the same features — is the whole
 decision. It is not an optimization to schedule later; it is the thing being
@@ -517,16 +517,23 @@ Optimized ones** — i.e. two different earlier drafts, not one. Treat those fou
 independently of anything below; Pro base, Starter base, Engagement credit and
 Free tier reproduce cleanly.
 
-| Revenue line | Price | ADR-0004 | **Balanced** | **Optimized** | Floor |
-| --- | --- | --- | --- | --- | --- |
-| **Pro base** (250 research, 30 eng, 250 watch, 100 arena) | $149 | 36.5% | **29.2%** ❌ | **48.7%** ✅ | ⚠️ decided here |
-| **Starter base** (75 research, 10 eng, 25 arena) | $49 | 50.1% | **43.1%** ✅ | **53.2%** ✅ | ✅ |
-| Engagement credit | $2.00/cr | 46.5% | **42.0%** ✅ | **44.0%** ✅ | ✅ |
-| Research credit | $0.38/cr | 63.9% | 55.0% ✅ | 62.0% ✅ | ✅ |
-| Pro extra seat (+25 research, +15 eng) | $35 | 44.8% | **37.4%** ✅ | **45.0%** ✅ | ✅ |
-| Starter extra seat (+25 research, +5 eng) | $19 | 53.4% | **45.8%** ✅ | **52.6%** ✅ | ✅ |
-| Sub-tenant add-on | $29 | 68.5% | **63.1%** ✅ | **68.0%** ✅ | ✅ |
-| Free tier (20 research, 10 arena) | $0 | −$3.90/mo | **−$4.40/mo** | **−$2.97/mo** | n/a |
+> ### ⚠️ SUPERSEDED — the Balanced and Optimized columns below are stale
+>
+> Kept for provenance only. Every cell in those two columns is either corrected
+> by the block further down (tokenizer allowance, §5.2) or is one of the seven
+> that do not reproduce (above). **The ADR-0004 column is still valid.** For a
+> current figure, read the corrected table, not this one.
+
+> | Revenue line | Price | ADR-0004 | **Balanced** | **Optimized** | Floor |
+> | --- | --- | --- | --- | --- | --- |
+> | **Pro base** (250 research, 30 eng, 250 watch, 100 arena) | $149 | 36.5% | **29.2%** ❌ | **48.7%** ✅ | ⚠️ decided here |
+> | **Starter base** (75 research, 10 eng, 25 arena) | $49 | 50.1% | **43.1%** ✅ | **53.2%** ✅ | ✅ |
+> | Engagement credit | $2.00/cr | 46.5% | **42.0%** ✅ | **44.0%** ✅ | ✅ |
+> | Research credit | $0.38/cr | 63.9% | 55.0% ✅ | 62.0% ✅ | ✅ |
+> | Pro extra seat (+25 research, +15 eng) | $35 | 44.8% | **37.4%** ✅ | **45.0%** ✅ | ✅ |
+> | Starter extra seat (+25 research, +5 eng) | $19 | 53.4% | **45.8%** ✅ | **52.6%** ✅ | ✅ |
+> | Sub-tenant add-on | $29 | 68.5% | **63.1%** ✅ | **68.0%** ✅ | ✅ |
+> | Free tier (20 research, 10 arena) | $0 | −$3.90/mo | **−$4.40/mo** | **−$2.97/mo** | n/a |
 
 ~~**Pro base is the only line that fails, and it fails only in the Balanced
 column.** … Ship the model map without the cost mechanics and Pro is 580bps
@@ -643,15 +650,17 @@ creating one; `plans.js` has no code path that migrates a v1 tenant to v2.
 
 **Made harder.**
 
-- **All 23 response schemas need editing.** They use `nullable: true` — an
-  OpenAPI-3.0-ism, not JSON Schema — and Claude needs
-  `anyOf: [{type:"x"},{type:"null"}]` plus `additionalProperties: false` on
-  every object (currently missing everywhere). This is not cosmetic: the
-  `nullable` + `required` pairing is a deliberate anti-hallucination guard
+- ~~**All 23 response schemas need editing.**~~ **Resolved 2026-08-05 by §4.6 —
+  and the count was 26, not 23.** The incompatibility is real and worse than
+  described (three forms, one of them silent), but it is fixed once in
+  `api/src/schemaCompat.js` at the wrapper boundary rather than by 26 hand
+  rewrites, so **no per-task cutover PR touches its schema**. The
+  behavioural-re-validation concern this bullet raised was the right one and is
+  discharged: the `nullable` + `required` anti-hallucination pairing
   (`analysis.js:93-96` — *"the key is always present but may be null, never
-  invent one"*), so each rewrite needs behavioural re-validation. If the model
-  starts filling non-null slots, Moment-of-Truth degrades silently and
-  `verifyMoments()` may not catch it.
+  invent one"*) was verified live to survive translation — Gemini returns
+  `null`, translated Claude returns `null`, and untranslated Claude emits a
+  fabricated all-empty record. See §4.6.
 - **`temperature` is gone.** Removed on Opus 5 (400 error), non-default values
   rejected on Sonnet 5; 35 occurrences. Most are determinism settings
   replaceable by low `effort` — but **`arena.js:113` uses
@@ -811,7 +820,7 @@ decomposition exists so that per-file spokes stay tractable.
    thinking/effort are separate axes (claude-opus-4-5 accepts effort, rejects
    adaptive). The wrapper handles this; anything bypassing it must too.
 3. **Live-schema smoke check** (Phase 1). ✅ *Shipped 2026-08-05.*
-   `api/test/live/smoke.js` + a registry of all 26 schemas, run by hand or by
+   `api/test/live/smoke.js` + a registry covering all 26 schemas, run by hand or by
    cron (`docker compose run --rm --no-deps -v "$PWD/api":/app -w /app api
    node test/live/smoke.js`), never in `npm test` — it spends money.
    `api/test/liveSchemaCoverage.test.js` is the free CI half: a
@@ -822,7 +831,10 @@ decomposition exists so that per-file spokes stay tractable.
    It paid for itself immediately — see **§4.6**, which exists entirely because
    of what this check found, and **§4.7**, the one task it says cannot move.
    Current state: **28/29 accepted**, the single rejection being
-   `proposals.synthesize`.
+   `proposals.synthesize`. (26 distinct schemas; 29 registry rows, because the
+   three per-tenant *builder* schemas are each also exercised with empty tenant
+   data — `closedSet` drops the enum when the list is empty, which is a
+   different validator path, not a smaller one.)
 
    Two things it does NOT do, so nobody reads more into a green run than is
    there: it does not validate responses against the schema field by field
