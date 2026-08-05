@@ -46,12 +46,12 @@
 // Anthropic call site — the exact cross-provider bleed this migration must not
 // have.
 //
-// Precisely: every object node is rebuilt and every array value is sliced, so
-// no container is shared with the input. Array ELEMENTS that are themselves
-// objects and sit outside a subschema position (an object-valued `enum` member,
-// say) are still shared by reference — no schema in this repo has one, and
-// nothing downstream mutates the result, but do not assume the returned tree is
-// safe to edit in place.
+// Precisely: no container reachable from the result is shared with the input.
+// Subschema positions are rebuilt by convert(); every other plain object or
+// array value is deep-copied by copyValue(). An earlier version claimed this
+// while only shallow-slicing top-level arrays, which left `examples: [[...]]`
+// and any unknown keyword carrying a nested object aliased — verified by the
+// review, so the guarantee is now implemented rather than asserted.
 
 // A node is an object schema if it says so, or unions object in, or is a bare
 // `{properties: {...}}` with the type left implicit.
@@ -91,6 +91,20 @@ const SUBSCHEMA_MAP = new Set([
 ]);
 const SUBSCHEMA_LIST = new Set(['allOf', 'anyOf', 'oneOf', 'prefixItems']);
 
+// Deep copy for values that are DATA, not subschemas (`enum`, `required`,
+// `examples`, and anything this module does not recognise). Non-plain values
+// (functions, class instances, dates) are passed through as-is: copying them
+// would change what reaches the API, and a schema has none of them.
+function copyValue(value) {
+  if (Array.isArray(value)) return value.map(copyValue);
+  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = copyValue(v);
+    return out;
+  }
+  return value;
+}
+
 function convert(node, path, warnings) {
   if (Array.isArray(node)) return node.map((n, i) => convert(n, `${path}[${i}]`, warnings));
   if (!node || typeof node !== 'object') return node;
@@ -99,7 +113,7 @@ function convert(node, path, warnings) {
   for (const [key, value] of Object.entries(node)) {
     if (key === 'nullable') continue; // handled below
     if (SUBSCHEMA_KEY.has(key)) out[key] = convert(value, `${path}.${key}`, warnings);
-    else if (SUBSCHEMA_MAP.has(key) && value && typeof value === 'object') {
+    else if (SUBSCHEMA_MAP.has(key) && value && typeof value === 'object' && !Array.isArray(value)) {
       out[key] = {};
       for (const [name, sub] of Object.entries(value)) {
         // `properties` is elided from the path because that is how a reader
@@ -109,16 +123,24 @@ function convert(node, path, warnings) {
         const child = key === 'properties' ? `${path}.${name}` : `${path}.${key}.${name}`;
         out[key][name] = convert(sub, child, warnings);
       }
-    } else if (SUBSCHEMA_LIST.has(key) && Array.isArray(value)) {
-      out[key] = value.map((sub, i) => convert(sub, `${path}.${key}[${i}]`, warnings));
-    // Arrays are COPIED, not aliased. `enum` and `required` reach this branch,
-    // and several of them are live application state, not schema-only data:
-    // kb.assessment's key enum IS `assessment.js`'s AXIS_KEYS, which that module
-    // also uses for post-parse validation and axis ordering; kb.preview's is
-    // preview.js's KB_CATEGORIES. Sharing them would mean any future
-    // post-processing pass on the Anthropic side rewrites both the Gemini
-    // contract and the app's own validation lists, globally, for every tenant.
-    } else out[key] = Array.isArray(value) ? value.slice() : value;
+    } else if (SUBSCHEMA_LIST.has(key)) {
+      // The `Array.isArray` guard used to gate this branch, so a malformed
+      // `{anyOf: {...}}` fell through to the copy branch and was passed on
+      // UNTRANSLATED — unsealed, with `nullable` intact. Same corruption the
+      // exhaustive key sets exist to prevent, arriving via a type guard rather
+      // than an omitted keyword. Convert either shape.
+      out[key] = Array.isArray(value)
+        ? value.map((sub, i) => convert(sub, `${path}.${key}[${i}]`, warnings))
+        : convert(value, `${path}.${key}`, warnings);
+    // Everything else is DATA, and it is DEEP-copied, not aliased. `enum` and
+    // `required` reach this branch, and several of those arrays are live
+    // application state rather than schema-only data: kb.assessment's key enum
+    // IS `assessment.js`'s AXIS_KEYS, which that module also uses for
+    // post-parse validation and axis ordering; kb.preview's is preview.js's
+    // KB_CATEGORIES. Sharing them would put any later post-processing on the
+    // Anthropic side one assignment away from rewriting both the Gemini
+    // contract and the app's own validation lists, for every tenant.
+    } else out[key] = copyValue(value);
   }
 
   if (node.nullable === true) {

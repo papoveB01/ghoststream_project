@@ -58,7 +58,14 @@ function readExpr(src, from) {
 
 // `\s*` before the colon as well as after: `responseSchema : X` is valid JS and
 // was invisible to the first version of this pattern.
-const SITE_RE = /responseSchema\s*:\s*/g;
+//
+// `responseJsonSchema` is matched too. @google/genai accepts it as an
+// alternative to `responseSchema`, and `\bresponseSchema\b` does not match
+// inside it — so a call site written that way was invisible to BOTH this
+// pattern and the mention-count guard below, which is the one combination that
+// fails silently in both directions at once.
+const SITE_RE = /response(?:Json)?Schema\s*:\s*/g;
+const MENTION_RE = /\bresponse(?:Json)?Schema\b/g;
 
 function callSitesInSource() {
   const found = [];
@@ -92,6 +99,44 @@ test('[TEXTUAL] every responseSchema in src/ is registered for the live smoke ch
   );
 });
 
+// Set comparison alone proves "every call-site TEXT is registered", not "every
+// call site is registered". A SECOND `responseSchema: buildProspectsSchema(ourIds)`
+// added to discovery.js matches the existing row and ships uncovered — the
+// same class of hole as the bare `SCHEMA` name, just needing a duplicated
+// expression instead of a generic one. Counting closes it: each distinct key
+// must have at least as many non-variant registry rows as source occurrences.
+test('[TEXTUAL] a repeated call-site expression needs its own registry row', () => {
+  const sourceCount = new Map();
+  for (const e of callSitesInSource()) sourceCount.set(key(e), (sourceCount.get(key(e)) || 0) + 1);
+
+  // `variantOf` rows exercise a different SHAPE of an already-counted call site
+  // (a builder with empty tenant data), so they must not pay for a new one.
+  const registryCount = new Map();
+  for (const e of ENTRIES) {
+    if (e.variantOf) continue;
+    registryCount.set(key(e), (registryCount.get(key(e)) || 0) + 1);
+  }
+
+  const short = [];
+  for (const [k, n] of sourceCount) {
+    const have = registryCount.get(k) || 0;
+    if (have < n) short.push(`${k} — ${n} call site(s) in src/, ${have} registry row(s)`);
+  }
+  assert.deepStrictEqual(
+    short, [],
+    'two call sites sharing one registry row means only one of them is ever sent to a provider.\n' +
+    'Give the new one its own row (and, if it is the same call site with different tenant data,\n' +
+    'mark it `variantOf`):\n  ' + short.join('\n  ')
+  );
+});
+
+test('every variantOf points at a real sibling row', () => {
+  const sites = new Set(ENTRIES.map((e) => e.site));
+  const dangling = ENTRIES.filter((e) => e.variantOf && !sites.has(e.variantOf));
+  assert.deepStrictEqual(dangling.map((e) => `${e.site} → ${e.variantOf}`), [],
+    'a variant whose base row is gone is silently excused from the count above');
+});
+
 test('[TEXTUAL] the registry has no rows that no longer exist in src/', () => {
   const inSource = new Set(callSitesInSource().map(key));
   const stale = ENTRIES.map(key).filter((k) => !inSource.has(k));
@@ -112,7 +157,7 @@ test('[TEXTUAL] no responseSchema mention escapes the call-site pattern', () => 
   const offenders = [];
   for (const file of walkJs(SRC)) {
     const src = stripComments(fs.readFileSync(file, 'utf8'));
-    const mentions = (src.match(/\bresponseSchema\b/g) || []).length;
+    const mentions = (src.match(MENTION_RE) || []).length;
     const matched = (src.match(SITE_RE) || []).length;
     if (mentions !== matched) {
       offenders.push(`${path.relative(SRC, file).split(path.sep).join('/')} — ${mentions} mention(s), ${matched} matched as a call site`);

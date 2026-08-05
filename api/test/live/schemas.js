@@ -16,6 +16,12 @@
 // `expr` must be the call site's source text verbatim. That is what pairs a
 // registry row to a line in src/, and what makes a renamed or newly-added
 // schema fail the guard instead of slipping past it.
+//
+// `variantOf` marks a row that exercises a DIFFERENT SHAPE of an
+// already-registered call site (a builder called with empty tenant data, say)
+// rather than a call site of its own. The coverage guard counts non-variant
+// rows against source occurrences one-for-one, so a variant cannot be mistaken
+// for coverage of a second, genuinely new call site.
 
 'use strict';
 
@@ -79,11 +85,11 @@ const ENTRIES = [
   // The same three builders as a tenant with nothing on file yet — i.e. every
   // tenant's first discovery run, which is also the first request that would
   // hit a provider after a flip.
-  { site: 'discovery.competitorProducts.newTenant', cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildCompetitorProductsSchema(ourIds)',
+  { site: 'discovery.competitorProducts.newTenant', variantOf: 'discovery.competitorProducts', cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildCompetitorProductsSchema(ourIds)',
     schema: () => load('knowledge/discovery.js').buildCompetitorProductsSchema(NO_IDS) },
-  { site: 'discovery.competitors.newTenant',        cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildCompetitorsSchema(ourIds, incumbentNames)',
+  { site: 'discovery.competitors.newTenant', variantOf: 'discovery.competitors', cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildCompetitorsSchema(ourIds, incumbentNames)',
     schema: () => load('knowledge/discovery.js').buildCompetitorsSchema(NO_IDS, []) },
-  { site: 'discovery.prospects.newTenant',          cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildProspectsSchema(ourIds)',
+  { site: 'discovery.prospects.newTenant', variantOf: 'discovery.prospects', cluster: 'discovery', task: 'discovery', file: 'knowledge/discovery.js', expr: 'buildProspectsSchema(ourIds)',
     schema: () => load('knowledge/discovery.js').buildProspectsSchema(NO_IDS) },
 
   // ── relevance (fails OPEN — see the export comment in relevance.js) ────────

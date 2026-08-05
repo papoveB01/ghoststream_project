@@ -208,7 +208,13 @@ function selected(opts) {
 // the grammar-size ceiling, counts. Anything ambiguous is an ERROR — the safe
 // direction, since an ERROR still fails the run loudly, just without claiming
 // the schema is at fault.
-const SCHEMA_REJECT_RE = /output_config\.format|responseSchema|compiled grammar|invalid schema|invalid json ?schema|does not match declared type|additionalProperties/i;
+// `response_?schema` covers both spellings: the Anthropic path and our own code
+// say `responseSchema`, but the Gemini API names the field `response_schema` in
+// its 400 body ("Unknown name \"patternProperties\" at
+// 'generation_config.response_schema'"). With only the camelCase form, a REAL
+// Gemini schema rejection classified as an ERROR and exited 4 — "nothing was
+// judged, re-run" — for a run that had in fact judged it and found it invalid.
+const SCHEMA_REJECT_RE = /output_config\.format|response_?schema|compiled grammar|invalid schema|invalid json ?schema|does not match declared type|additionalProperties|unknown name/i;
 
 function classify(err) {
   const msg = String((err && err.message) || err);
