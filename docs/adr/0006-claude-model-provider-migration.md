@@ -244,6 +244,81 @@ every task is confirmed stable — and `embeddings.js` keeps them forever (§4.2
   competitor document would silently skip the quarantine for every tenant. A
   task joins `DISPATCH_READY` in the same PR that migrates its call site.
 
+### 4.6 Every response schema needs translating (added 2026-08-05)
+
+*Established by §9 item 3, the live-schema smoke check, once it existed. None
+of this was visible from a diff, from CI, or from reading either provider's
+docs — the third row below was found by the check on its first run.*
+
+All 26 `responseSchema` objects in `api/src/` are written in Google's
+OpenAPI-3.0 flavour. Anthropic's `output_config.format.json_schema` is standard
+JSON Schema behind a strict validator, and they disagree in three places:
+
+| Gemini dialect | Anthropic | Blast radius if untranslated |
+| --- | --- | --- |
+| `additionalProperties` absent on an object | **400** | **all 26** — every structured task 400s on its first request after a flip |
+| `nullable: true` on an **object** | **400** | `analysis.moments`, `proposals.synthesize` |
+| `nullable: true` on an array or string | **accepted, silently ignored** | the model can never return `null` again |
+| `type: ['x','null']` on a node with an `enum` | **400** | the fix for the row above is itself invalid on an enum; needs `anyOf` |
+
+**The third row is the dangerous one, and it is silent.** `analysis.js`
+documents `objection` and `agreement` as *"null if the prospect raised none —
+never invent one"*; `proposals.js` reads a null `citations` as "this section
+cites nothing". With `nullable` ignored, a required non-nullable object forces
+the model to **fabricate**. Demonstrated with the real `MOMENTS_SCHEMA` against
+a transcript containing no objection:
+
+| request | `objection` |
+| --- | --- |
+| Gemini, schema as shipped | `null` |
+| Claude, translated | `null` |
+| Claude, `nullable` merely dropped | `{"quote":"","category":"","startSeconds":0,"endSeconds":0,"resolved":false}` |
+
+That third row is a fabricated objection with an empty quote, which
+`analysis.js` and everything downstream treat as real. No error, no log line,
+nothing in the UI.
+
+`api/src/schemaCompat.js` translates inside `anthropic.generate()`, so a call
+site migration stays the swap §4.5 promises rather than 26 hand-edited schemas.
+It copies rather than mutating — the same constants are still sent verbatim by
+the Gemini call sites, and several of the `enum` arrays are live application
+state (`kb.assessment`'s IS `assessment.js`'s `AXIS_KEYS`).
+
+**Consequence for §9 item 5:** no per-task cutover PR needs to touch its
+schema. One exception, §4.7.
+
+### 4.7 `proposals.synthesize` cannot move as it stands
+
+The one schema translation cannot save. Live, on `claude-opus-5` and
+`claude-sonnet-5` alike:
+
+```
+400 The compiled grammar is too large, which would cause performance issues.
+```
+
+| `PROPOSAL_SCHEMA` variant | size | null branches | result |
+| --- | --- | --- | --- |
+| as shipped | 5501 b | 17 | **400** |
+| every `description` stripped | 2758 b | 17 | **400** |
+| minus `intelligenceGaps` | — | 16 | **400** |
+| minus `proof` | — | 14 | OK |
+| no `nullable` anywhere | — | 0 | OK |
+
+The limit is **structural, not textual**: it tracks the count of nullable
+(`anyOf`) branches, and prose costs nothing. The schema sits marginally over —
+dropping the single nullable `proof` section clears it on both models.
+
+`proposal` therefore cannot join `DISPATCH_READY` until `PROPOSAL_SCHEMA` is
+reshaped. The cheapest route is making the two nullable leaves inside
+`section()` (`assumptions`, `citations`) non-nullable with an empty array as
+the "nothing" value, which removes 16 of the 17 branches at once — but that
+changes the Gemini path too (`pruneCitations` and the confidence rollup both
+read them), so it belongs in the `proposals` cutover PR, not here.
+
+It is also a standing warning for §9 item 6: on Claude, schema growth is
+bounded by this ceiling; on Gemini it is bounded by nothing. The constraint is
+invisible until a flip, so the smoke check is the only thing that surfaces it.
+
 ## 5. Revised unit-cost model (amends ADR-0004 §3.1–§3.2)
 
 ### 5.1 Vendor rates (retrieved 2026-08-05)
@@ -408,12 +483,17 @@ creating one; `plans.js` has no code path that migrates a v1 tenant to v2.
 
 **Residual risks we accept.**
 
-- **The PR #40 gap (2026-07-30) is unclosed and this migration walks straight
-  into it.** `.github/workflows/ci.yml` runs against Redis only, with no live
-  API call anywhere; `ops/cd-deploy.sh` smoke-tests `/api/health`,
-  `/capture/health` and `/` — **no AI path at all**. A rejected structured
-  output would 502 discovery for every tenant with CD reporting green. §8
-  Phase 1 closes this or the migration does not proceed.
+- **The PR #40 gap (2026-07-30) — closed for structured output as of
+  2026-08-05, still open otherwise.** `.github/workflows/ci.yml` runs against
+  Redis only, with no live API call anywhere; `ops/cd-deploy.sh` smoke-tests
+  `/api/health`, `/capture/health` and `/` — **no AI path at all**. A rejected
+  structured output would 502 discovery for every tenant with CD reporting
+  green. §9 item 3 now covers exactly that case, and the first thing it did was
+  find four rejections nothing else could have (§4.6, §4.7). What remains
+  uncovered: the check is **not** automatic — it is not in CI (it costs money)
+  and not in the CD smoke test, so it protects a cutover only if someone runs
+  it. Wiring it to a cron on staging is the cheapest way to make that
+  unconditional; until then this risk is mitigated, not eliminated.
 - **`embedAll()` has no timeout wrapping** (`embeddings.js`, `CONCURRENCY=4`).
   A hung `embedContent` stalls KB ingestion indefinitely. Out of scope here —
   embeddings aren't moving — but noted because it is the same class of defect
@@ -494,8 +574,26 @@ decomposition exists so that per-file spokes stay tractable.
    both `thinking:{type:'adaptive'}` and `output_config.effort` with 400s**, and
    thinking/effort are separate axes (claude-opus-4-5 accepts effort, rejects
    adaptive). The wrapper handles this; anything bypassing it must too.
-3. **Live-schema smoke check** (Phase 1). New `api/test/live/` or an ops
-   script; not wired into `npm test`.
+3. **Live-schema smoke check** (Phase 1). ✅ *Shipped 2026-08-05.*
+   `api/test/live/smoke.js` + a registry of all 26 schemas, run by hand or by
+   cron (`docker compose run --rm --no-deps -v "$PWD/api":/app -w /app api
+   node test/live/smoke.js`), never in `npm test` — it spends money.
+   `api/test/liveSchemaCoverage.test.js` is the free CI half: a
+   `responseSchema:` in `src/` that no registry row names fails the suite,
+   because a smoke run that reports green over a schema it never tried is the
+   same blind spot phase 0 closed for telemetry.
+
+   It paid for itself immediately — see **§4.6**, which exists entirely because
+   of what this check found, and **§4.7**, the one task it says cannot move.
+   Current state: **28/29 accepted**, the single rejection being
+   `proposals.synthesize`.
+
+   Two things it does NOT do, so nobody reads more into a green run than is
+   there: it does not validate responses against the schema field by field
+   (only that they parse, plus the one silent case in §4.6 — a required
+   nullable field coming back non-null), and it says nothing about answer
+   quality, since the prompts carry no real content. A transient 429/529 is
+   reported as an *error*, never as a rejection; exit codes distinguish the two.
 4. **Caching redesign** (Phase 2). `api/src/gemini.js`,
    `api/src/knowledge/globalCache.js`, `api/test/geminiCacheScan.test.js`
    (likely deleted), `api/test/globalCache.test.js` (must keep passing).
@@ -504,6 +602,12 @@ decomposition exists so that per-file spokes stay tractable.
    `research` + `ocr`; `compare` + `enrichment` + `contacts` + `companies`;
    `brief`; `watch` + scheduler env; `arena` + `arenaHistory` + `personas`
    (depends on 4); `discovery`; `analysis` + `proposals` (last).
+
+   Every group's schemas are already proven acceptable by item 3 — **except
+   `proposals`, which carries the §4.7 reshape and is the reason that group is
+   last.** Run the check for a group before flipping it (`--cluster=`), and
+   again after: the schemas are shared objects, so a change made for Claude is
+   also a change to what Gemini receives.
 6. **Cost mechanics** (Phase 4). Batch wrappers, cache breakpoints,
    `effort` per route. Re-run §6 and amend this ADR with measured numbers.
 7. **Enterprise deal-calculator floor** → ≥$1.75/engagement (§6). Docs only;
