@@ -51,14 +51,39 @@ const TIERS = {
 const PROVIDERS = new Set(Object.keys(TIERS));
 const DEFAULT_PROVIDER = 'gemini';
 
+// Tasks whose CALL SITE can actually dispatch to a non-Gemini provider.
+//
+// Empty on purpose: this phase ships the router and the client, not the call
+// sites. Until a task's call site reads resolve().provider and branches, asking
+// for anthropic would hand a Claude model id to the Gemini SDK — a 404 on every
+// call. For `relevance` that is worse than an outage: it fails OPEN
+// (relevance.js returns null and only warns), so every competitor document
+// would skip the quarantine silently, for every tenant, with nothing in the UI
+// or the logs that looks like a failure.
+//
+// A task joins this set in the same PR that migrates its call site. Until then
+// the router honours the env var by warning and staying put, so an operator who
+// follows the migration runbook early gets a loud no-op instead of a silent
+// corruption.
+const DISPATCH_READY = new Set([]);
+
 // task → { tier, env(legacy per-task override), anthropicEnv, anthropicTier }
 //
 // `anthropicTier` re-tiers a task for Claude only, leaving Gemini untouched.
-// One task needs it today: keypoints is mis-tiered as LITE (ADR-0006 §4.1) —
-// COMPANY_ANALYSIS_SCHEMA asks for differentiator / idealCustomerProfile /
-// pricingPosture, which is judgment, not extraction, and Haiku would regress it
-// visibly. Correcting the Gemini tier at the same time would be a silent
-// quality-and-cost change in a PR that is meant to change nothing.
+// keypoints is mis-tiered as LITE (ADR-0006 §4.1) — COMPANY_ANALYSIS_SCHEMA
+// asks for differentiator / idealCustomerProfile / pricingPosture, which is
+// judgment, not extraction, and Haiku would regress it visibly. Correcting the
+// Gemini tier at the same time would be a silent quality-and-cost change in a
+// PR that is meant to change nothing.
+//
+// ADR-0006 §4.1 names a SECOND correction that is deliberately NOT made here:
+// `assessment` should split, with per-document scoring staying LITE and the
+// BATTLECARD_SCHEMA synthesis (knowledge/assessment.js) moving to FLASH. That
+// needs a new task key AND a change at the battlecard call site, so it belongs
+// with that call site's phase-3 migration rather than in a router-only PR.
+// Until then both assessment call sites share one tier — which is harmless
+// while DISPATCH_READY is empty, and must be fixed before `assessment` is added
+// to it, or battlecards get synthesised by Haiku.
 const TASKS = {
   // LITE — high-volume, structured/extraction
   relevance:    { tier: 'lite',    env: 'GEMINI_RELEVANCE_MODEL',    anthropicEnv: 'ANTHROPIC_RELEVANCE_MODEL' },
@@ -96,6 +121,13 @@ function providerFor(task) {
     console.warn(`[models] unknown provider "${raw}" for task "${task}" — falling back to ${DEFAULT_PROVIDER}`);
     return DEFAULT_PROVIDER;
   }
+  if (p !== DEFAULT_PROVIDER && !DISPATCH_READY.has(task)) {
+    console.warn(
+      `[models] task "${task}" is configured for ${p} but its call site cannot dispatch yet — ` +
+      `staying on ${DEFAULT_PROVIDER}. Remove ${providerEnvName(task)} or migrate the call site first.`
+    );
+    return DEFAULT_PROVIDER;
+  }
   return p;
 }
 
@@ -121,4 +153,4 @@ function modelFor(task) {
   return resolve(task).model;
 }
 
-module.exports = { modelFor, resolve, providerFor, TIERS, TASKS };
+module.exports = { modelFor, resolve, providerFor, TIERS, TASKS, DISPATCH_READY };

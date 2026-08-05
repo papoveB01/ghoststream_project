@@ -55,6 +55,7 @@ FakeAnthropic.AuthenticationError = class extends FakeAPIError {};
 FakeAnthropic.PermissionDeniedError = class extends FakeAPIError {};
 FakeAnthropic.APIConnectionError = class extends FakeAPIError {};
 FakeAnthropic.APIConnectionTimeoutError = class extends FakeAPIError {};
+FakeAnthropic.APIUserAbortError = class extends FakeAPIError {};
 
 const sdkPath = require.resolve('@anthropic-ai/sdk', { paths: [API] });
 require.cache[sdkPath] = { id: sdkPath, filename: sdkPath, loaded: true, exports: FakeAnthropic };
@@ -92,25 +93,32 @@ test('the legacy surface still gets structured output — that part is supported
   assert.strictEqual(p.thinking, undefined);
 });
 
-test('the modern surface gets both thinking and effort', async () => {
-  await anthropic.generate({ model: 'claude-opus-5', prompt: 'x', effort: 'high' });
+test('the modern surface gets both thinking and effort when asked', async () => {
+  await anthropic.generate({ model: 'claude-opus-5', prompt: 'x', effort: 'high', thinking: true });
   const p = last();
   assert.deepStrictEqual(p.thinking, { type: 'adaptive' });
   assert.strictEqual(p.output_config.effort, 'high');
 });
 
 test('sonnet 4.5 is treated as legacy, sonnet 5 is not', async () => {
-  await anthropic.generate({ model: 'claude-sonnet-4-5', prompt: 'x' });
+  await anthropic.generate({ model: 'claude-sonnet-4-5', prompt: 'x', thinking: true });
   assert.strictEqual(last().thinking, undefined);
-  await anthropic.generate({ model: 'claude-sonnet-5', prompt: 'x' });
+  await anthropic.generate({ model: 'claude-sonnet-5', prompt: 'x', thinking: true });
   assert.deepStrictEqual(last().thinking, { type: 'adaptive' });
 });
 
 test('an unrecognised model defaults to the modern surface', async () => {
   // A model released after this code was written should work without an edit;
   // the exception list names the models that predate the 4.6 surface.
-  await anthropic.generate({ model: 'claude-opus-9', prompt: 'x' });
+  await anthropic.generate({ model: 'claude-opus-9', prompt: 'x', thinking: true });
   assert.deepStrictEqual(last().thinking, { type: 'adaptive' });
+});
+
+test('thinking defaults OFF so a mechanical port preserves call-site behaviour', async () => {
+  // Every Gemini call site being replaced sets thinkingBudget: 0. Defaulting on
+  // would flip that AND eat the answer budget, silently shortening output.
+  await anthropic.generate({ model: 'claude-opus-5', prompt: 'x' });
+  assert.deepStrictEqual(last().thinking, { type: 'disabled' });
 });
 
 test('temperature is never sent — it is a 400 on opus 5', async () => {
@@ -163,12 +171,128 @@ test('a refusal throws instead of returning an empty answer', async () => {
   }
 });
 
-test('spend is recorded even for a request whose output is unusable', () => {
-  // recordClaude fires before stop_reason is inspected: a refused or truncated
-  // response still consumed tokens, and the meter is about what we were billed.
-  assert.ok(recorded.length > 0);
-  const [, site, model, usage] = recorded[0];
-  assert.strictEqual(typeof site, 'string');
-  assert.ok(model.startsWith('claude-'));
-  assert.ok(usage && typeof usage.input_tokens === 'number');
+test('thinking:false is sent as the disabled config, spelled exactly', async () => {
+  // The literal matters: 'disable' or 'off' is a 400. Nothing captured this
+  // shape before — providerRouter's thinking:false test unsets the API key, so
+  // it never reaches param construction.
+  await anthropic.generate({ model: 'claude-opus-5', prompt: 'x', thinking: false, effort: 'high' });
+  assert.deepStrictEqual(last().thinking, { type: 'disabled' });
+});
+
+test('effort is clamped down, not rejected, on models without xhigh', async () => {
+  await anthropic.generate({ model: 'claude-opus-4-6', prompt: 'x', effort: 'xhigh' });
+  assert.strictEqual(last().output_config.effort, 'high', 'opus-4-6 400s on xhigh');
+  // thinking:true is required here, not incidental: Opus 5 rejects disabled
+  // thinking above effort 'high', and thinking now defaults off.
+  await anthropic.generate({ model: 'claude-opus-5', prompt: 'x', effort: 'xhigh', thinking: true });
+  assert.strictEqual(last().output_config.effort, 'xhigh', 'opus-5 supports it');
+});
+
+test('the disabled-thinking effort cap is opus-5-only, not global', async () => {
+  // Sonnet 5 accepts disabled thinking at any effort (live-verified). A global
+  // rule would reject it — and now that thinking defaults off, would reject
+  // every xhigh/max request on the default path.
+  await anthropic.generate({ model: 'claude-sonnet-5', prompt: 'x', effort: 'max' });
+  assert.strictEqual(last().output_config.effort, 'max');
+  await assert.rejects(
+    () => anthropic.generate({ model: 'claude-opus-5', prompt: 'x', effort: 'max' }),
+    /effort <= high/
+  );
+});
+
+test('thinking and effort are independent axes', async () => {
+  // claude-opus-4-5 is the case a single boolean cannot express: it accepts
+  // effort and rejects adaptive thinking.
+  await anthropic.generate({ model: 'claude-opus-4-5', prompt: 'x', effort: 'high' });
+  const p = last();
+  assert.strictEqual(p.thinking, undefined, 'opus-4-5 rejects adaptive thinking');
+  assert.strictEqual(p.output_config.effort, 'high', 'but it does support effort');
+});
+
+test('unknown options throw rather than vanishing', async () => {
+  // A mechanical port from a Gemini call site keeps these spellings; silently
+  // dropping abortSignal removes that call site's only time bound.
+  await assert.rejects(
+    () => anthropic.generate({ model: 'claude-opus-5', prompt: 'x', abortSignal: AbortSignal.timeout(1000) }),
+    /unknown option\(s\) abortSignal/
+  );
+  await assert.rejects(
+    () => anthropic.generate({ model: 'claude-opus-5', prompt: 'x', maxOutputTokens: 2048 }),
+    /maxOutputTokens/
+  );
+  await assert.rejects(
+    () => anthropic.generate({ model: 'claude-opus-5', prompt: 'x', temperature: 0.3 }),
+    /unknown option/
+  );
+});
+
+test('a truncated answer throws instead of being returned as complete', async () => {
+  const real = require.cache[sdkPath].exports;
+  const Truncating = function () {
+    this.messages = { create: async () => ({
+      content: [{ type: 'text', text: 'half an ans' }],
+      stop_reason: 'max_tokens', model: 'claude-opus-5',
+      usage: { input_tokens: 5, output_tokens: 2048 },
+    }) };
+  };
+  Object.assign(Truncating, real);
+  require.cache[sdkPath].exports = Truncating;
+  const wrapperPath = require.resolve(path.join(API, 'src', 'anthropic.js'));
+  delete require.cache[wrapperPath];
+  const fresh = require(wrapperPath);
+  try {
+    await assert.rejects(
+      () => fresh.generate({ model: 'claude-opus-5', prompt: 'x', maxTokens: 2048 }),
+      (e) => e.truncated === true && e.status === 502,
+      'a partial answer that looks complete is the most dangerous success there is'
+    );
+    // …unless the caller opts in.
+    const ok = await fresh.generate({ model: 'claude-opus-5', prompt: 'x', maxTokens: 2048, allowTruncation: true });
+    assert.strictEqual(ok.text, 'half an ans');
+    assert.strictEqual(ok.stopReason, 'max_tokens');
+  } finally {
+    require.cache[sdkPath].exports = real;
+    delete require.cache[wrapperPath];
+  }
+});
+
+test('translateError maps each SDK class to the right status', () => {
+  const cases = [
+    ['RateLimitError', 429], ['AuthenticationError', 502], ['PermissionDeniedError', 502],
+    ['APIConnectionTimeoutError', 504], ['APIConnectionError', 502], ['APIUserAbortError', 504],
+  ];
+  for (const [cls, status] of cases) {
+    const e = anthropic.translateError(new FakeAnthropic[cls]('boom'));
+    assert.strictEqual(e.status, status, `${cls} should map to ${status}`);
+  }
+  // A local abort must not be reported as a provider outage.
+  assert.strictEqual(anthropic.translateError(new FakeAnthropic.APIUserAbortError('x')).aborted, true);
+});
+
+test('spend is recorded for the refused request specifically, not just some earlier one', async () => {
+  const before = recorded.length;
+  const real = require.cache[sdkPath].exports;
+  const Refusing = function () {
+    this.messages = { create: async () => ({
+      content: [], stop_reason: 'refusal',
+      stop_details: { category: 'cyber', explanation: 'declined' },
+      model: 'claude-opus-5', usage: { input_tokens: 77, output_tokens: 0 },
+    }) };
+  };
+  Object.assign(Refusing, real);
+  require.cache[sdkPath].exports = Refusing;
+  const wrapperPath = require.resolve(path.join(API, 'src', 'anthropic.js'));
+  delete require.cache[wrapperPath];
+  const fresh = require(wrapperPath);
+  try {
+    await assert.rejects(() => fresh.generate({ model: 'claude-opus-5', prompt: 'x', site: 'test.refusal' }));
+    const added = recorded.slice(before);
+    assert.strictEqual(added.length, 1, 'the refused call still cost tokens and must be recorded');
+    assert.strictEqual(added[0][1], 'test.refusal');
+    assert.strictEqual(added[0][3].input_tokens, 77,
+      'moving recordClaude after the refusal throw would lose this row');
+  } finally {
+    require.cache[sdkPath].exports = real;
+    delete require.cache[wrapperPath];
+  }
 });

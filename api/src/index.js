@@ -1600,20 +1600,24 @@ async function boot() {
   try { scheduler.start(); }
   catch (err) { console.error('[boot] scheduler start failed:', err.message); }
 
-  const { TIERS, providerFor } = require('./models');
-  // Which provider each tier's tasks resolve to right now, so a per-task flip
-  // (ADR-0006 §4.5) is visible in the boot line instead of only in env.
-  const activeTiers = { lite: 'relevance', flash: 'discovery', pro: 'callAnalysis', content: 'content' };
-  const tierLine = Object.entries(activeTiers)
-    .map(([tier, sampleTask]) => {
-      const p = providerFor(sampleTask);
-      return `${tier}=${TIERS[p][tier]}`;
-    })
+  const { TIERS, TASKS, resolve } = require('./models');
+  // Sampling one task per tier would print the wrong thing during a split
+  // migration — the common case — so resolve every task and report the tiers
+  // plus, explicitly, any task not on the default provider. An operator who
+  // flips one task must be able to see it landed; otherwise the tempting next
+  // move is a global AI_PROVIDER, which is the one thing the runbook forbids.
+  const resolved = Object.keys(TASKS).map((t) => ({ task: t, ...resolve(t) }));
+  const tierLine = ['lite', 'flash', 'pro', 'content']
+    .map((tier) => `${tier}=${TIERS.gemini[tier]}`)
     .join(', ');
+  const migrated = resolved.filter((r) => r.provider !== 'gemini');
+  const migratedLine = migrated.length
+    ? `, migrated=[${migrated.map((r) => `${r.task}→${r.provider}:${r.model}`).join(' ')}]`
+    : '';
   app.listen(PORT, () => {
     console.log(
       `ghost-api listening on :${PORT} ` +
-      `(model tiers — ${tierLine}, ` +
+      `(model tiers — ${tierLine}${migratedLine}, ` +
       `embedding=${process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004'}, ` +
       `recall=${recall.region}, ` +
       `stream=${stream.isConfigured() ? 'live' : 'mock'})`

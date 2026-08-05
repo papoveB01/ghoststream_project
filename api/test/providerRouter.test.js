@@ -6,8 +6,14 @@
 // ones an operator would actually set, and (c) an operator typo degrades to the
 // provider we were already on rather than taking the api down on boot.
 //
-// models.js reads process.env at CALL time, not at require time, so each test
-// can set and clear vars without re-requiring the module.
+// Timing note: models.js snapshots the TIER DEFAULTS at require time and reads
+// the provider + per-task override vars at CALL time. So withEnv works for
+// AI_PROVIDER*/`*_MODEL` overrides but would silently do nothing for
+// ANTHROPIC_MODEL_FLASH and friends — don't add a test that assumes otherwise.
+//
+// withEnv is synchronous-only: it restores right after the callback returns, so
+// an async callback would restore mid-flight. Every use below is synchronous
+// except one, which is marked.
 
 'use strict';
 
@@ -50,21 +56,49 @@ test('modelFor still returns a bare model id for the ~20 existing call sites', (
 
 // ── the switch ──────────────────────────────────────────────────────────────
 
-test('a per-task override moves exactly one task', () => {
-  withEnv({ AI_PROVIDER_RELEVANCE: 'anthropic' }, () => {
-    assert.strictEqual(models.resolve('relevance').provider, 'anthropic');
-    assert.strictEqual(models.resolve('relevance').model, 'claude-haiku-4-5');
-    // Its neighbours must not move with it — that is the whole point.
-    assert.strictEqual(models.resolve('discovery').provider, 'gemini');
-    assert.strictEqual(models.resolve('preview').provider, 'gemini');
+// A task can only actually move once its call site can dispatch. Until then the
+// router must refuse to hand a Claude model id to the Gemini SDK — on
+// `relevance` that would fail OPEN and silently skip the competitor quarantine
+// for every tenant.
+function asDispatchReady(task, fn) {
+  models.DISPATCH_READY.add(task);
+  try { return fn(); } finally { models.DISPATCH_READY.delete(task); }
+}
+
+test('a task that cannot dispatch yet stays on gemini and says so', () => {
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (m) => warnings.push(String(m));
+  try {
+    withEnv({ AI_PROVIDER_RELEVANCE: 'anthropic' }, () => {
+      assert.strictEqual(models.resolve('relevance').provider, 'gemini',
+        'no call site reads resolve().provider yet — honouring this would 404 every call');
+      assert.match(models.resolve('relevance').model, /^gemini-/);
+    });
+  } finally { console.warn = realWarn; }
+  assert.ok(warnings.some((w) => w.includes('cannot dispatch yet')),
+    'a silent no-op would leave the operator thinking the flip landed');
+});
+
+test('a per-task override moves exactly one dispatch-ready task', () => {
+  asDispatchReady('relevance', () => {
+    withEnv({ AI_PROVIDER_RELEVANCE: 'anthropic' }, () => {
+      assert.strictEqual(models.resolve('relevance').provider, 'anthropic');
+      assert.strictEqual(models.resolve('relevance').model, 'claude-haiku-4-5');
+      // Its neighbours must not move with it — that is the whole point.
+      assert.strictEqual(models.resolve('discovery').provider, 'gemini');
+      assert.strictEqual(models.resolve('preview').provider, 'gemini');
+    });
   });
 });
 
 test('a per-task override beats the global default in both directions', () => {
-  withEnv({ AI_PROVIDER: 'anthropic', AI_PROVIDER_DISCOVERY: 'gemini' }, () => {
-    assert.strictEqual(models.resolve('research').provider, 'anthropic');
-    assert.strictEqual(models.resolve('discovery').provider, 'gemini',
-      'a task must be able to stay behind, not just move ahead');
+  asDispatchReady('research', () => {
+    withEnv({ AI_PROVIDER: 'anthropic', AI_PROVIDER_DISCOVERY: 'gemini' }, () => {
+      assert.strictEqual(models.resolve('research').provider, 'anthropic');
+      assert.strictEqual(models.resolve('discovery').provider, 'gemini',
+        'a task must be able to stay behind, not just move ahead');
+    });
   });
 });
 
@@ -78,9 +112,11 @@ test('the env var names the router reads are the ones compose passes', () => {
     relevance: 'AI_PROVIDER_RELEVANCE',
   };
   for (const [task, envName] of Object.entries(cases)) {
-    withEnv({ [envName]: 'anthropic' }, () => {
-      assert.strictEqual(models.resolve(task).provider, 'anthropic',
-        `${task} should be switchable via ${envName}`);
+    asDispatchReady(task, () => {
+      withEnv({ [envName]: 'anthropic' }, () => {
+        assert.strictEqual(models.resolve(task).provider, 'anthropic',
+          `${task} should be switchable via ${envName}`);
+      });
     });
   }
 });
@@ -101,6 +137,8 @@ test('an unknown provider falls back to gemini instead of failing boot', () => {
 // ── tiering ─────────────────────────────────────────────────────────────────
 
 test('claude tiers follow ADR-0006 §4.1', () => {
+  for (const k of Object.keys(models.TASKS)) models.DISPATCH_READY.add(k);
+  try {
   withEnv({ AI_PROVIDER: 'anthropic' }, () => {
     assert.strictEqual(models.resolve('callAnalysis').model, 'claude-opus-5', 'pro tier');
     assert.strictEqual(models.resolve('proposal').model, 'claude-opus-5');
@@ -108,6 +146,7 @@ test('claude tiers follow ADR-0006 §4.1', () => {
     assert.strictEqual(models.resolve('content').model, 'claude-sonnet-5', 'content tier');
     assert.strictEqual(models.resolve('relevance').model, 'claude-haiku-4-5', 'lite tier');
   });
+  } finally { models.DISPATCH_READY.clear(); }
 });
 
 test('keypoints is re-tiered for claude only, leaving gemini untouched', () => {
@@ -116,30 +155,30 @@ test('keypoints is re-tiered for claude only, leaving gemini untouched', () => {
   // change in a PR that is meant to change nothing.
   assert.strictEqual(models.resolve('keypoints').model, 'gemini-2.5-flash-lite',
     'the gemini path must be byte-identical to before');
-  withEnv({ AI_PROVIDER: 'anthropic' }, () => {
+  asDispatchReady('keypoints', () => withEnv({ AI_PROVIDER: 'anthropic' }, () => {
     assert.strictEqual(models.resolve('keypoints').model, 'claude-sonnet-5',
       'on claude it takes the flash tier, not lite');
-  });
+  }));
 });
 
 test('a per-task model override wins over the tier, per provider', () => {
   withEnv({ GEMINI_DISCOVERY_MODEL: 'gemini-custom' }, () => {
     assert.strictEqual(models.resolve('discovery').model, 'gemini-custom');
   });
-  withEnv({ AI_PROVIDER: 'anthropic', ANTHROPIC_DISCOVERY_MODEL: 'claude-custom' }, () => {
+  asDispatchReady('discovery', () => withEnv({ AI_PROVIDER: 'anthropic', ANTHROPIC_DISCOVERY_MODEL: 'claude-custom' }, () => {
     assert.strictEqual(models.resolve('discovery').model, 'claude-custom');
-  });
+  }));
   // A Gemini override must not leak into the Claude path.
-  withEnv({ AI_PROVIDER: 'anthropic', GEMINI_DISCOVERY_MODEL: 'gemini-custom' }, () => {
+  asDispatchReady('discovery', () => withEnv({ AI_PROVIDER: 'anthropic', GEMINI_DISCOVERY_MODEL: 'gemini-custom' }, () => {
     assert.strictEqual(models.resolve('discovery').model, 'claude-sonnet-5');
-  });
+  }));
 });
 
 test('an unknown task falls back to the flash tier of its provider', () => {
   assert.strictEqual(models.resolve('nosuchtask').model, 'gemini-2.5-flash');
-  withEnv({ AI_PROVIDER: 'anthropic' }, () => {
+  asDispatchReady('nosuchtask', () => withEnv({ AI_PROVIDER: 'anthropic' }, () => {
     assert.strictEqual(models.resolve('nosuchtask').model, 'claude-sonnet-5');
-  });
+  }));
 });
 
 // ── wrapper guard rails ─────────────────────────────────────────────────────

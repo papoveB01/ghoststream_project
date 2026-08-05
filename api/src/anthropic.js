@@ -43,6 +43,12 @@ const DEFAULT_MAX_RETRIES = parseInt(process.env.ANTHROPIC_MAX_RETRIES || '2', 1
 const STREAM_THRESHOLD_TOKENS = 16000;
 
 const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+// "thinking disabled is only legal at effort <= high" is an OPUS 5 rule, not a
+// general one — Sonnet 5 accepts disabled at any effort (live-verified). Scoping
+// it per-model matters more now that thinking defaults to off: a global rule
+// would reject every xhigh/max request on the default path.
+const THINKING_DISABLED_EFFORT_CAPPED = ['claude-opus-5'];
 const THINKING_DISABLED_MAX_EFFORT = new Set(['low', 'medium', 'high']);
 
 // NOT every Claude model takes the 4.6-and-later request surface, and sending a
@@ -60,15 +66,40 @@ const THINKING_DISABLED_MAX_EFFORT = new Set(['low', 'medium', 'high']);
 //
 // Default is "modern" so a newly released model works without a code change;
 // the exceptions are the models that predate the 4.6 surface.
-const LEGACY_REQUEST_SURFACE = [
-  'claude-haiku-4-5',
-  'claude-sonnet-4-5',
-  'claude-3-',        // every 3.x
+// THINKING AND EFFORT ARE SEPARATE AXES. claude-opus-4-5 is the case that
+// proves it: it accepts `effort` and rejects adaptive thinking, so one boolean
+// has no correct setting for it. Live-probed 2026-08-05:
+//
+//   opus-4-5  + adaptive thinking  → 400 "adaptive thinking is not supported…"
+//   opus-4-5  + effort only        → OK
+//   opus-4-6  + effort 'xhigh'     → 400 "does not support effort level 'xhigh'"
+//
+// All three are reachable today by setting ANTHROPIC_MODEL_PRO — exactly the
+// knob ADR-0006 §4.5 tells an operator to turn.
+const NO_ADAPTIVE_THINKING = [
+  'claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-sonnet-4-0',
+  'claude-opus-4-5', 'claude-opus-4-1', 'claude-opus-4-0', 'claude-3-',
 ];
+const NO_EFFORT = [
+  'claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-sonnet-4-0',
+  'claude-opus-4-1', 'claude-opus-4-0', 'claude-3-',
+];
+// `xhigh` arrived with Opus 4.7; older effort-capable models cap at max/high.
+const NO_XHIGH = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5'];
 
-function isLegacySurface(model) {
+const matches = (model, list) => {
   const m = String(model || '').toLowerCase();
-  return LEGACY_REQUEST_SURFACE.some((prefix) => m.includes(prefix));
+  return list.some((prefix) => m.includes(prefix));
+};
+const supportsAdaptiveThinking = (model) => !matches(model, NO_ADAPTIVE_THINKING);
+const supportsEffort = (model) => !matches(model, NO_EFFORT);
+
+// Clamp rather than 400: an unsupported effort level is a capability gap, not a
+// caller mistake, and downgrading one notch is always safe.
+function effortFor(model, effort) {
+  if (!supportsEffort(model)) return null;
+  if (effort === 'xhigh' && matches(model, NO_XHIGH)) return 'high';
+  return effort;
 }
 
 let _client;
@@ -125,6 +156,14 @@ function translateError(err) {
     const e = new Error('AI provider rejected our credentials.');
     e.status = 502; e.cause = err; return e;
   }
+  // Checked before APIError: a caller-side abort extends APIError, not
+  // APIConnectionError, so the catch-all below would report our own 60s timeout
+  // as "AI provider error" — which is what an on-call engineer would then go
+  // and investigate at the provider.
+  if (err instanceof Anthropic.APIUserAbortError) {
+    const e = new Error('AI request cancelled or timed out locally.');
+    e.status = 504; e.aborted = true; e.cause = err; return e;
+  }
   if (err instanceof Anthropic.APIConnectionTimeoutError) {
     const e = new Error('AI request timed out.');
     e.status = 504; e.cause = err; return e;
@@ -167,16 +206,39 @@ async function generate({
   schema = null,
   maxTokens = 4096,
   effort = 'medium',
-  thinking = true,
+  // Default OFF, deliberately. Every Gemini call site this replaces sets
+  // `thinkingConfig: { thinkingBudget: 0 }` and sizes maxOutputTokens for the
+  // answer alone. Defaulting thinking on would flip that during a mechanical
+  // swap AND eat the answer budget — measured at ~39% of a 700-token budget on
+  // one prompt — producing a shorter answer with no signal. Turning thinking on
+  // is a per-task decision made when that task is migrated, not a side effect
+  // of the swap.
+  thinking = false,
   cacheSystem = false,
+  allowTruncation = false,
   tenantId = null,
   site = 'anthropic.generate',
   signal = null,
+  ...unknown
 }) {
+  // Silently ignoring an unknown key is how `abortSignal` (the Gemini spelling
+  // of `signal`) or `maxOutputTokens` (of `maxTokens`) would vanish during a
+  // mechanical port, taking a call site's only time bound or output budget with
+  // it and leaving nothing to notice.
+  const stray = Object.keys(unknown);
+  if (stray.length) {
+    throw new Error(
+      `anthropic.generate: unknown option(s) ${stray.join(', ')}. ` +
+      'Gemini spellings differ: abortSignal→signal, maxOutputTokens→maxTokens; ' +
+      'temperature is not supported (it is a 400 on Opus 5 and Sonnet 5).'
+    );
+  }
   if (!model) throw new Error('anthropic.generate: model required');
   if (!prompt) throw new Error('anthropic.generate: prompt required');
   if (!EFFORTS.has(effort)) throw new Error(`anthropic.generate: unknown effort "${effort}"`);
-  if (!thinking && !THINKING_DISABLED_MAX_EFFORT.has(effort)) {
+  if (!thinking
+      && matches(model, THINKING_DISABLED_EFFORT_CAPPED)
+      && !THINKING_DISABLED_MAX_EFFORT.has(effort)) {
     // Caught here rather than as a 400 from the API, because the caller cannot
     // see the constraint and the message would not say which knob to move.
     throw new Error(
@@ -185,11 +247,11 @@ async function generate({
     );
   }
 
-  // Legacy-surface models take neither `thinking` nor `effort`; they simply run
-  // without them. Structured output works on both surfaces.
-  const legacy = isLegacySurface(model);
+  // Each capability is gated on its own axis. Structured output works on every
+  // surface, so it is never gated.
+  const resolvedEffort = effortFor(model, effort);
   const outputConfig = {};
-  if (!legacy) outputConfig.effort = effort;
+  if (resolvedEffort) outputConfig.effort = resolvedEffort;
   if (schema) outputConfig.format = { type: 'json_schema', schema };
 
   const params = {
@@ -197,7 +259,13 @@ async function generate({
     max_tokens: maxTokens,
     messages: [{ role: 'user', content: prompt }],
   };
-  if (!legacy) params.thinking = thinking ? { type: 'adaptive' } : { type: 'disabled' };
+  if (supportsAdaptiveThinking(model)) {
+    params.thinking = thinking ? { type: 'adaptive' } : { type: 'disabled' };
+  } else if (thinking) {
+    // Asked for thinking on a model that has no adaptive mode. Silently running
+    // without it would be a quiet quality change, so say so once.
+    console.warn(`[anthropic] ${model} has no adaptive thinking — running without it`);
+  }
   if (Object.keys(outputConfig).length > 0) params.output_config = outputConfig;
   // A cached system prompt has to be a block list — a plain string cannot carry
   // cache_control. Below the model's minimum cacheable prefix this silently
@@ -212,7 +280,13 @@ async function generate({
   // are rejected on Sonnet 5. Steer with the prompt, not with sampling.
 
   const client = getClient();
-  const opts = signal ? { signal } : undefined;
+  // The SDK's `timeout` only bounds the fetch, which for a stream ends when
+  // HEADERS arrive — so the streaming path has no wall-clock bound at all
+  // without an explicit signal. That is precisely the hang scheduler.js
+  // documents for gemini.js, and its withTimeout wrapper can only stop waiting,
+  // not cancel the socket. Compose our own deadline with any caller signal.
+  const deadline = AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
+  const opts = { signal: signal ? AbortSignal.any([signal, deadline]) : deadline };
 
   let message;
   try {
@@ -228,10 +302,27 @@ async function generate({
 
   // Record before inspecting the outcome: a refused or truncated response still
   // consumed tokens, and the point of the meter is what we were billed, not
-  // what we could use.
-  costs.recordClaude(tenantId, site, model, message.usage);
+  // what we could use. Price against the SERVING model — with server-side
+  // fallbacks it can differ from the one we asked for.
+  costs.recordClaude(tenantId, site, message.model || model, message.usage);
 
   if (message.stop_reason === 'refusal') throw refusalError(message);
+
+  // A truncated answer is the most dangerous success there is: the caller gets
+  // a well-formed string that stops mid-sentence. On the brief path that lands
+  // in the database as a finished brief; on a JSON path it surfaces one step
+  // later as a parse error that reads like a model problem rather than a budget
+  // one. Fail loudly unless the caller has said it can cope.
+  if (message.stop_reason === 'max_tokens' && !allowTruncation) {
+    const err = new Error(
+      `Claude hit the ${maxTokens}-token output budget and the answer is incomplete. ` +
+      'Raise maxTokens, or pass allowTruncation to accept a partial answer. ' +
+      'Note the budget covers thinking as well as text.'
+    );
+    err.status = 502;
+    err.truncated = true;
+    throw err;
+  }
 
   return {
     text: textFrom(message),
