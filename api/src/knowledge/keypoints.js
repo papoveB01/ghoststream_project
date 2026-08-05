@@ -78,7 +78,7 @@ function stripBoilerplate(text) {
     .trim();
 }
 
-const SCHEMA = {
+const KEYPOINTS_SCHEMA = {
   type: 'object',
   properties: {
     points: {
@@ -207,7 +207,7 @@ async function extractKeyPoints({ scope, text, tenantId = null, title = null } =
         temperature: 0.3,
         maxOutputTokens: 900,
         responseMimeType: 'application/json',
-        responseSchema: SCHEMA,
+        responseSchema: KEYPOINTS_SCHEMA,
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
@@ -512,4 +512,10 @@ async function extractProductAnalysis({ text, tenantId = null, productId = null,
   }
 }
 
-module.exports = { extractKeyPoints, extractCompanyAnalysis, extractProductAnalysis, kindFor, stripBoilerplate, tenantContextText };
+// The three schemas are exported for the live-schema smoke check (test/live/)
+// only. Qualified rather than a bare `SCHEMA` so the coverage guard's
+// file::expr key stays unique to this call site.
+module.exports = {
+  extractKeyPoints, extractCompanyAnalysis, extractProductAnalysis, kindFor, stripBoilerplate, tenantContextText,
+  KEYPOINTS_SCHEMA, COMPANY_ANALYSIS_SCHEMA, PRODUCT_ANALYSIS_SCHEMA,
+};

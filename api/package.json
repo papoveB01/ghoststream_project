@@ -10,9 +10,11 @@
   "scripts": {
     "start": "node src/index.js",
     "migrate": "node db/migrate.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "smoke:schemas": "node test/live/smoke.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "@aws-sdk/client-s3": "^3.658.0",
     "@aws-sdk/s3-request-presigner": "^3.658.0",
     "@google/genai": "^1.5.0",

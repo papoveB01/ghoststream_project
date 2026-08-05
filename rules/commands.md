@@ -9,7 +9,31 @@ npm test                       # full suite: node --test test/*.test.js
 node --test test/plans.test.js # a single test file
 npm run migrate                # apply pending SQL migrations (also runs automatically on api boot)
 npm start                      # node src/index.js
+npm run smoke:schemas          # live-schema check — SPENDS MONEY, never in CI (see below)
 ```
+
+**The live-schema smoke check** (`api/test/live/smoke.js`, ADR-0006 §9 item 3) sends
+every structured-output schema the product uses to a live provider and reports whether
+it is accepted. CI makes no model call and the CD smoke test touches no AI path, so this
+is the only thing that catches a schema the provider rejects — run it before flipping any
+task to a new provider. It is deliberately outside `npm test`.
+
+From the **repo root**, not `api/`:
+
+```bash
+docker compose run --rm --no-deps -v "$PWD/api":/app -w /app \
+  api node test/live/smoke.js [--provider=both] [--cluster=watch,discovery] [--dry-run]
+```
+
+- `compose run`, not `docker run --env-file .env`. The api service's `DATABASE_*` and
+  `REDIS_PASSWORD` are *derived* in `docker-compose.yml` and do not exist in `.env` under
+  those names — with `--env-file` the check still calls the model but cannot reach
+  Postgres, so its own `usage_costs` rows are silently lost.
+- The volume mount is required: the api image's runtime stage ships only `src/` and
+  `db/`, so `docker compose exec api node test/live/smoke.js` is `MODULE_NOT_FOUND`.
+- Exit codes are distinct — `1` a schema was rejected, `2` bad invocation, `3` accepted
+  but a field lost its ability to be null, `4` errors only (nothing judged, re-run).
+  A transient 429/529 is an **error**, never a rejection.
 
 - **Tests** use Node's built-in runner. Most are pure-logic (no DB); the auth/session ones need **Redis reachable** and env `JWT_SECRET`, `ENCRYPTION_KEY`, `NODE_ENV=test`. There is **no Postgres in CI**, so anything touching `db.query` can't be unit-tested yet — keep new tests DB-free or stub `db`.
 - **CI** (`.github/workflows/ci.yml`) runs on every push on a **self-hosted runner**: `npm ci` → syntax-check all of `src/` → `npm test` → advisory `npm audit`. It's the SOC 2 CC8.1 change gate.

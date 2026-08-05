@@ -744,4 +744,12 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
   }
 }
 
-module.exports = { discoverCompetitorProducts, discoverCompetitors, discoverProspects, generateSearchQueries, buildContext, gatherFromQueries };
+// The schema + the three builders are exported for the live-schema smoke check
+// (test/live/) only. The builders matter more than the constants here: they
+// close over per-tenant enums (our product ids, incumbent names), so the shape
+// the API sees depends on the caller's data — a hand-copied schema in the test
+// would not have that shape.
+module.exports = {
+  discoverCompetitorProducts, discoverCompetitors, discoverProspects, generateSearchQueries, buildContext, gatherFromQueries,
+  QUERIES_SCHEMA, buildCompetitorProductsSchema, buildCompetitorsSchema, buildProspectsSchema,
+};

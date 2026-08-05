@@ -414,6 +414,32 @@ router.post('/:id/find-contacts', gating.requireFeature('discovery'), async (req
   } catch (err) { next(err); }
 });
 
+// Both ids are closed sets known at call time (this tenant's products, the
+// people passed in), so enumerate them in the schema instead of letting the
+// model emit an arbitrary string that gets filtered out after the fact. The
+// `byId.get` / `f.personId` checks below remain as the backstop.
+//
+// At module scope, and exported, so the live-schema smoke check (test/live/)
+// can exercise the real shape — including the per-tenant enums, which is where
+// this schema differs from every other one in the repo.
+const buildProductFitSchema = (people, products) => ({
+  type: 'object',
+  properties: {
+    fits: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          personId: { type: 'string', enum: people.map((p) => String(p.id)), description: 'One of the person ids listed below.' },
+          productId: { type: 'string', enum: products.map((p) => String(p.id)), nullable: true, description: 'One of OUR product ids, or null when no product clearly maps to this role.' },
+        },
+        required: ['personId', 'productId'],
+      },
+    },
+  },
+  required: ['fits'],
+});
+
 // Which of OUR products is each discovered person most likely the buyer for?
 // One structured call per batch; returns { [personId]: { id, name } }.
 async function productFitForPeople(tenantId, people) {
@@ -426,27 +452,7 @@ async function productFitForPeople(tenantId, people) {
   const gemini = require('./gemini');
   const costs = require('./costs');
   const models = require('./models');
-  // Both ids are closed sets known at call time (this tenant's products, the
-  // people passed in), so enumerate them in the schema instead of letting the
-  // model emit an arbitrary string that gets filtered out after the fact. The
-  // `byId.get` / `f.personId` checks below remain as the backstop.
-  const SCHEMA = {
-    type: 'object',
-    properties: {
-      fits: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            personId: { type: 'string', enum: list.map((p) => String(p.id)), description: 'One of the person ids listed below.' },
-            productId: { type: 'string', enum: products.map((p) => String(p.id)), nullable: true, description: 'One of OUR product ids, or null when no product clearly maps to this role.' },
-          },
-          required: ['personId', 'productId'],
-        },
-      },
-    },
-    required: ['fits'],
-  };
+  const PRODUCT_FIT_SCHEMA = buildProductFitSchema(list, products);
   const prompt =
     'For each PERSON below (a role at a prospect company), pick which ONE of OUR PRODUCTS they are most ' +
     'likely the buyer/decision-maker for, judging purely from their title/seniority vs what each product does. ' +
@@ -457,7 +463,7 @@ async function productFitForPeople(tenantId, people) {
   const resp = await ai.models.generateContent({
     model: models.modelFor('content'),
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: { temperature: 0.1, maxOutputTokens: 2000, responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
+    config: { temperature: 0.1, maxOutputTokens: 2000, responseMimeType: 'application/json', responseSchema: PRODUCT_FIT_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
   });
   costs.recordGemini(tenantId, 'companies.productFit', models.modelFor('content'), resp.usageMetadata);
   const byId = new Map(products.map((p) => [p.id, p]));
@@ -613,4 +619,5 @@ router.delete('/:id', auth.requireRole('manager'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-module.exports = { list, get, create, findOrCreate, findByDomain, update, remove, lastMissionTags, router };
+// buildProductFitSchema is exported for the live-schema smoke check (test/live/) only.
+module.exports = { list, get, create, findOrCreate, findByDomain, update, remove, lastMissionTags, router, buildProductFitSchema };

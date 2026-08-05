@@ -528,4 +528,10 @@ module.exports = {
   extractEntities,
   runPipeline,
   formatTranscript,
+  // Exported for the live-schema smoke check (test/live/) only. It must send
+  // the schema production sends — a copy in the test would pass while the real
+  // one 400s.
+  ENTITIES_SCHEMA,
+  MOMENTS_SCHEMA,
+  FOLLOWUP_SCHEMA,
 };

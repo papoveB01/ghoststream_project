@@ -178,6 +178,25 @@ function recordBrave(tenantId, site, queries = 1) {
 const ROLLUP_MAX_DAYS = 365;
 const ROLLUP_ROW_LIMIT = 2000;
 
+// The live-schema smoke check (test/live/smoke.js) records its own calls like
+// any other model call — it IS real spend, so it is written rather than
+// suppressed. But it is not product usage, and until the provider cutover its
+// rows would be the ONLY service='claude' rows in the table: rollupBySite is
+// documented below as the coverage signal ("a site missing from this list is a
+// site nobody is recording"), and 26 synthetic sites would drown it. Excluded
+// from the rollups, kept in the table.
+//
+// Two details in the WHERE clauses below are load-bearing. `site IS NULL OR …`
+// — `NULL NOT LIKE 'smoke.%'` is NULL, not true, so without the guard a row
+// recorded through the bare record() (site defaults to null) would vanish from
+// rollupBySite: the one view whose job is to reveal uninstrumented spend would
+// be hiding it. And these labels are the only ones in the table with three or
+// four dot-separated segments, so they also sit outside the
+// `<area>.<operation>` convention costsTelemetry.test.js enforces over src/ —
+// that guard scans source, not rows, so the two conventions only stay apart
+// because of this filter.
+const SMOKE_SITE_PREFIX = 'smoke.';
+
 function clampDays(days) {
   const n = Number(days);
   // `< 1`, not `<= 0`: Math.floor(0.5) is 0, and '0 days' is a zero-length
@@ -200,6 +219,7 @@ async function rollupByTenant({ days = 30, tenantId = null } = {}) {
             COUNT(*) FILTER (WHERE est_cost_cents IS NULL)::int AS unpriced
        FROM usage_costs
       WHERE created_at >= NOW() - ($1 || ' days')::interval
+        AND (site IS NULL OR site NOT LIKE '${SMOKE_SITE_PREFIX}%')
         ${tenantId ? 'AND tenant_id = $2' : ''}
       GROUP BY tenant_id, service
       ORDER BY cents DESC
@@ -234,6 +254,7 @@ async function rollupBySite({ days = 30, tenantId = null } = {}) {
             MAX(created_at)                           AS last_seen
        FROM usage_costs
       WHERE created_at >= NOW() - ($1 || ' days')::interval
+        AND (site IS NULL OR site NOT LIKE '${SMOKE_SITE_PREFIX}%')
         ${tenantId ? 'AND tenant_id = $2' : ''}
       GROUP BY service, site
       ORDER BY cents DESC

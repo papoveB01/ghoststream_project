@@ -23,7 +23,12 @@ const { TIERS } = require('../models');
 
 // Vision-capable model for transcription. Flash (not flash-lite) by default for
 // OCR fidelity; override with GEMINI_OCR_MODEL.
-const OCR_MODEL = process.env.GEMINI_OCR_MODEL || TIERS.flash;
+//
+// Pinned to the Gemini tier explicitly: OCR is not in the task router, so it
+// does not participate in the per-task provider flip. Moving it to Claude means
+// rewriting this file for document blocks (and re-checking page limits), not
+// changing a tier — see ADR-0006 §7 on vision.
+const OCR_MODEL = process.env.GEMINI_OCR_MODEL || TIERS.gemini.flash;
 
 // Gemini caps a single request payload at ~20MB. Base64 inflates bytes ~33%, so
 // PDFs above this go through the Files API (temp file) instead of inline data.

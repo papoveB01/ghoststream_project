@@ -655,4 +655,5 @@ async function setOpportunityPin(tenantId, companyId, title, pinned) {
   return latest(tenantId, companyId);
 }
 
-module.exports = { start, latest, listForTenant, appendSource, reanalyze, setOpportunityPin };
+// ANALYSIS_SCHEMA is exported for the live-schema smoke check (test/live/) only.
+module.exports = { start, latest, listForTenant, appendSource, reanalyze, setOpportunityPin, ANALYSIS_SCHEMA };

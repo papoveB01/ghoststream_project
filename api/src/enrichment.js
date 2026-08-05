@@ -278,4 +278,5 @@ async function enrichCompany(tenantId, { force = false } = {}) {
   return { ok: true, summary: { ...summary, sources, pagesRead: pages.length, sourceUrls: sourceUrls.slice(0, 8) } };
 }
 
-module.exports = { enrichCompany, synthesize, applyEnrichment, _internals: { slugify, entityId } };
+// FOUNDATION_SCHEMA is exported for the live-schema smoke check (test/live/) only.
+module.exports = { enrichCompany, synthesize, applyEnrichment, FOUNDATION_SCHEMA, _internals: { slugify, entityId } };
