@@ -868,8 +868,54 @@ decomposition exists so that per-file spokes stay tractable.
    quality, since the prompts carry no real content. A transient 429/529 is
    reported as an *error*, never as a rejection; exit codes distinguish the two.
 4. **Caching redesign** (Phase 2). `api/src/gemini.js`,
-   `api/src/knowledge/globalCache.js`, `api/test/geminiCacheScan.test.js`
-   (likely deleted), `api/test/globalCache.test.js` (must keep passing).
+   `api/src/knowledge/globalCache.js`, `api/test/globalCache.test.js` (must
+   keep passing — it regression-tests a real ADR-0001 cross-tenant leak).
+
+   **Scope corrections, established 2026-08-05 before the work started.** This
+   item is larger and differently shaped than the line above suggested, and all
+   six of these were found by review rather than by reading the code:
+
+   - **It is not a cache redesign, it is a provider seam.** `getOrCreateCache()`
+     returns a record that is either `cached` (a named server resource) or
+     `inline`, and `generateForRecord()` dispatches on that — an abstraction
+     that encodes *Gemini's* model. Claude has no equivalent: a breakpoint is a
+     per-request annotation with no registry, no TTL and nothing to invalidate.
+   - **`anthropic.generate()` is SINGLE-TURN** — `messages` is hardcoded to one
+     user turn — so it cannot serve `arena.js` or `arenaHistory.js` at all,
+     cached or not. §9 item 5's arena group depends on this item precisely
+     because of that, and it is a prerequisite, not a detail.
+   - **`personas.js` resolves `modelFor('personas')` at REQUIRE time** and feeds
+     it straight to `gemini.caches.create()` via `arena.js`. Setting
+     `AI_PROVIDER_PERSONAS=anthropic` hands a Claude model id to the Gemini
+     caches API; guarded today only because `DISPATCH_READY` is empty. Move it
+     or document it in this item.
+   - **`api/test/geminiCacheScan.test.js` must NOT be deleted here.** It pins a
+     fix for a real incident (`redis.keys()` blocking the Redis that also holds
+     sessions and login-guard counters, stalling auth platform-wide). §7 already
+     schedules its removal for **Phase 5**, with the `/caches` endpoints.
+   - **The cache layer cannot be removed in this item either.** Seven call sites
+     across six superadmin endpoints in `api/src/index.js` depend on
+     `listCachedRecords` / `invalidate` / `getOrCreateCache` /
+     `generateForRecord`, two of them pinned by `api/test/routeContract.test.js`.
+   - **Existing rows:** `kb_global_cache` holds one row per environment with
+     `cache_name` NULL and `char_count` 0 — the global cache has never been
+     populated in staging or production, so the data-migration risk here is nil.
+     Stated because §"Reviewing a PR" requires it, not because it is a problem.
+
+   Two capability facts this item must design against are in §4.3: Gemini
+   accepts **one** `cachedContent` per call (which is why `globalCache.js`
+   stores `content_text` separately) while Claude allows **four**
+   `cache_control` breakpoints and rejects a fifth with a hard 400; and the
+   minimum cacheable prefix is 512 / 1024 / 4096 by tokenizer generation, which
+   the Arena persona seed sits under on Haiku.
+
+   **Related, and better done as its own PR (§8 Phase 1's "consolidated retry
+   helper"):** the six hand-rolled `withRetry` copies. Their brief is *not*
+   "prevent stacking" — see §7. It is: key off the SDK's typed exceptions rather
+   than message text, restore the 429 coverage a cutover silently drops, stop
+   retrying 503/529 at the app layer, delete the four dead `retryDelay` parsers,
+   and give the deadline headroom over the per-attempt timeout so the SDK's own
+   retries become reachable.
 5. **Per-task cutover PRs** (Phase 3), grouped to keep each reviewable:
    `relevance` + `preview` + `companyBrief`; `keypoints` + `assessment`;
    `research` + `ocr`; `compare` + `enrichment` + `contacts` + `companies`;
