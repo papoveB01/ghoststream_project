@@ -264,9 +264,11 @@ JSON Schema behind a strict validator, and they disagree in three places:
 **The third row is the dangerous one, and it is silent.** `analysis.js`
 documents `objection` and `agreement` as *"null if the prospect raised none —
 never invent one"*; `proposals.js` reads a null `citations` as "this section
-cites nothing". With `nullable` ignored, a required non-nullable object forces
-the model to **fabricate**. Demonstrated with the real `MOMENTS_SCHEMA` against
-a transcript containing no objection:
+cites nothing". With `nullable` ignored, the field is required and cannot be
+null, so the model must emit *something*. Demonstrated with the real
+`MOMENTS_SCHEMA` against a transcript containing no objection (`agreement` came
+back correctly populated in every run, so the null is a real signal and not the
+model declining to answer):
 
 | request | `objection` |
 | --- | --- |
@@ -274,9 +276,14 @@ a transcript containing no objection:
 | Claude, translated | `null` |
 | Claude, `nullable` merely dropped | `{"quote":"","category":"","startSeconds":0,"endSeconds":0,"resolved":false}` |
 
-That third row is a fabricated objection with an empty quote, which
-`analysis.js` and everything downstream treat as real. No error, no log line,
-nothing in the UI.
+That third row is an objection record asserting an objection that never
+happened. **Note the exact signature**, because it is not what you would go
+looking for: the model does not invent a plausible quote, it emits a degenerate
+all-empty sentinel (`quote: ""`, `startSeconds: 0`, `resolved: false`).
+Anyone hunting this in stored data would be searching for fabricated text and
+would find empty strings. It still lands in the database as a real objection;
+`web/admin/admin.js` happens to guard on `.quote` and so does not render it,
+which means the corruption is invisible in the UI as well as in the logs.
 
 `api/src/schemaCompat.js` translates inside `anthropic.generate()`, so a call
 site migration stays the swap §4.5 promises rather than 26 hand-edited schemas.
@@ -304,9 +311,15 @@ The one schema translation cannot save. Live, on `claude-opus-5` and
 | minus `proof` | — | 14 | OK |
 | no `nullable` anywhere | — | 0 | OK |
 
-The limit is **structural, not textual**: it tracks the count of nullable
-(`anyOf`) branches, and prose costs nothing. The schema sits marginally over —
-dropping the single nullable `proof` section clears it on both models.
+The limit is **structural, not textual**, and the table is a clean 2×2 that
+separates the two: halving the byte size at constant branch count leaves the
+rejection unchanged, while holding size roughly constant and zeroing the branch
+count clears it. The schema sits marginally over — dropping the single nullable
+`proof` section is enough, on both models.
+
+**The ceiling for this schema sits between 14 and 17 nullable branches.** That
+is low enough that other schemas may be near it without anyone knowing: nothing
+on the Gemini side bounds this, and only the §9 item 3 check surfaces it.
 
 `proposal` therefore cannot join `DISPATCH_READY` until `PROPOSAL_SCHEMA` is
 reshaped. The cheapest route is making the two nullable leaves inside
