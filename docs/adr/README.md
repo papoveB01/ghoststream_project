@@ -12,6 +12,8 @@ monotonically increasing number.
 | 0002 | [Direct Microsoft Graph integration](./0002-microsoft-graph-direct.md) | Amended |
 | 0003 | [Subscription feature packaging](./0003-subscription-feature-packaging.md) | Accepted |
 | 0004 | [Seat-scaled pricing & cost model](./0004-seat-based-pricing-cost-model.md) | Proposed |
+| 0005 | [Force RLS tenant isolation](./0005-force-rls-tenant-isolation.md) | Proposed |
+| 0006 | [Claude model-provider migration](./0006-claude-model-provider-migration.md) | Proposed |
 
 ## Template
 
