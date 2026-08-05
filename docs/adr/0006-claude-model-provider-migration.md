@@ -225,10 +225,24 @@ naive field-rename under-reports and would make §6 unverifiable.
 
 ### 4.5 The cutover is staged per task behind a provider-aware router
 
-`modelFor(task)` returns a `{provider, model}` pair; a dispatch wrapper
-selects the client. One task flips at a time by env var, Founders/INTERNAL
-tenant first. `GEMINI_API_KEY` and `gemini.js` survive until every task is
-confirmed stable — and `embeddings.js` keeps them forever (§4.2).
+A task resolves to a `{provider, model}` pair; a dispatch wrapper selects the
+client. One task flips at a time by env var (`AI_PROVIDER_<TASK>`),
+Founders/INTERNAL tenant first. `GEMINI_API_KEY` and `gemini.js` survive until
+every task is confirmed stable — and `embeddings.js` keeps them forever (§4.2).
+
+**Amended 2026-08-05 by what phase 1 shipped, on two points:**
+
+- **`resolve(task)`, not `modelFor(task)`.** Changing `modelFor`'s return type
+  would break all ~20 call sites inside a PR that is meant to change no
+  behaviour. `resolve()` is the provider-aware API; `modelFor()` remains a
+  string-returning wrapper and is deleted when the last call site moves.
+- **An env var alone is not sufficient to flip a task.** The router carries a
+  `DISPATCH_READY` set, empty until a call site can actually branch on
+  `resolve().provider`. Setting `AI_PROVIDER_<TASK>=anthropic` before then
+  warns and stays on Gemini. Without that gate the env var would hand a Claude
+  model id to the Gemini SDK — and on `relevance`, which fails *open*, every
+  competitor document would silently skip the quarantine for every tenant. A
+  task joins `DISPATCH_READY` in the same PR that migrates its call site.
 
 ## 5. Revised unit-cost model (amends ADR-0004 §3.1–§3.2)
 
@@ -466,14 +480,20 @@ decomposition exists so that per-file spokes stay tractable.
    ~26 call sites, a read path in `platformAdmin.js`. No migration needed —
    `usage_costs` (`0049`) already has the right shape. *Never edit `0049`;
    if a column is genuinely missing, add a new numbered migration.*
-2. **Client wrapper + provider-aware router + env** (Phase 1).
-   New `api/src/anthropic.js`; `api/src/models.js` (`modelFor` returns
-   `{provider, model}`); `docker-compose.yml`, `.env.example`,
-   `.env.production.example`, `api/package.json`, `platformAdmin.js:184`
-   (`AI: ['GEMINI_API_KEY']` → add `ANTHROPIC_API_KEY`). Note: **12 of the ~20
-   `GEMINI_*_MODEL` overrides in `models.js` are not passed through
-   `docker-compose.yml` today** — a pre-existing gap that must be fixed or
-   per-task routing cannot actually be flipped in production.
+2. **Client wrapper + provider-aware router + env** (Phase 1). ✅ *Shipped
+   2026-08-05 — see the §4.5 amendment for the two deviations.*
+   New `api/src/anthropic.js`; `api/src/models.js` gains `resolve(task)`
+   returning `{provider, model}` (not a changed `modelFor`); the eleven
+   unreachable `GEMINI_*_MODEL` overrides wired through `docker-compose.yml`,
+   plus the fifteen `ANTHROPIC_*_MODEL` equivalents; `.env.example`,
+   `.env.production.example`, `api/package.json`, `platformAdmin.js`
+   (`AI: ['GEMINI_API_KEY']` → add `ANTHROPIC_API_KEY`).
+
+   Two capability facts the live probe established, which any call-site
+   migration must respect: **claude-haiku-4-5 — the whole LITE tier — rejects
+   both `thinking:{type:'adaptive'}` and `output_config.effort` with 400s**, and
+   thinking/effort are separate axes (claude-opus-4-5 accepts effort, rejects
+   adaptive). The wrapper handles this; anything bypassing it must too.
 3. **Live-schema smoke check** (Phase 1). New `api/test/live/` or an ops
    script; not wired into `npm test`.
 4. **Caching redesign** (Phase 2). `api/src/gemini.js`,
@@ -522,7 +542,8 @@ Not in scope for any PR above: embeddings (§4.2), `capture/`, `mcp/`, any
 - **Claude's server-side `web_search_20260209` / `web_fetch_20260209`** could
   replace the hand-rolled Brave + Firecrawl prompt-feeding path in discovery,
   research and watch, with native citations and no 6,000-char truncation.
-  Deliberately out of scope — a separate ADR, after the swap is stable.
+  Deliberately out of scope — a separate ADR, after the swap is stable. The
+  strongest case is Market Watch, written up in §13.
 
 ## 11. Relationship to other ADRs
 
@@ -553,3 +574,83 @@ Not in scope for any PR above: embeddings (§4.2), `capture/`, `mcp/`, any
   `api/src/knowledge/embeddings.js`, `api/db/migrations/0001_kb_tables.sql`,
   `api/db/migrations/0049_pricing_v2.sql`, `usage_costs` rows on `ghost-db`
   and `dsp-db`.
+
+## 13. Deferred: agentic Market Watch on the Batch API
+
+Recorded here rather than acted on, because it depends on three things that do
+not exist yet. It is the single best candidate in the product for both server-
+side tool use *and* the Batch API, and the two reinforce each other rather than
+competing — which was not obvious until it was checked.
+
+**What it would be.** Today `watch.runEntity` calls `buildWatchQueries(name)`
+for fixed query strings, `discovery.gatherFromQueries` runs Brave (5 results per
+query, 14 hits) and Firecrawl-scrapes the top 3, and that text is pasted into a
+single `extractDevelopments` call. The model sees whatever that pipeline
+happened to catch and **cannot follow up on what it finds** — a funding round
+that appears in a search snippet stays a snippet. The agentic version hands the
+model `web_search` + `web_fetch` with a `max_uses` cap and lets it decide what
+to search, what to read, and whether an item is a real development or noise,
+returning the same `DEV_SCHEMA` so dedupe, `watch_findings` and the digest email
+are untouched.
+
+**Verified 2026-08-05, against the live API — these were the open questions:**
+
+- **Batch supports web search.** *"You can include the web search tool in the
+  Messages Batches API."* Batch's unsupported list (`stream`, `speed`, `store`,
+  `cache_hint`, `context_hint`, `max_tokens: 0`, `previous_thread_event_id`,
+  `research_preview_2026_02`) does not touch this.
+- **Search and structured output compose.** This was the real risk: web-search
+  citations are always on, and citations normally 400 against
+  `output_config.format`. Tested directly — `claude-sonnet-5` with
+  `web_search_20260209` **and** a `json_schema` returned `stop_reason:end_turn`,
+  2 searches, and valid schema-conformant JSON. So the existing schema contract
+  survives.
+- **It is slow: 101 seconds for one entity.** That is the argument for Batch
+  rather than an obstacle to it. Synchronously it is unusable inside an hourly
+  tick over a 4-worker pool; asynchronously it costs nothing, because nobody is
+  waiting on a watch scan.
+
+**Why Market Watch and not something else.** Nobody waits on it (hourly cron,
+per-entity cadence of daily/weekly/monthly). Entities are independent, so it is
+a natural fan-out — the shape Batch wants. It is the highest-volume workflow
+once tenants actually enable it. And its unit is ~90% LLM (§5.2), so Batch's
+50% token discount lands almost entirely on real cost.
+
+**The four things that would bite.**
+
+1. **`pause_turn` cannot be resumed inside a batch.** A long search turn pauses
+   and must be continued by sending the assistant message back in a *new*
+   request. In a batch that result comes back paused. Cap `max_uses` (3–5) and
+   treat a paused row as a retry on the next tick, not a failure — and note the
+   existing refund path (`watch.js`, `watchFailure`) must not fire for it.
+2. **Search is not discounted.** Batch halves tokens; `$10 per 1,000 searches`
+   is charged identically either way. At `max_uses: 3` that is ~$0.03 per entity
+   scan in search fees alone, against §5.2's *entire* modelled watch unit of
+   $0.063. It could double the unit cost while tokens halve. **This is the
+   number that decides it**, and nothing can measure it until the meter is live.
+3. **Batch throttles web search per organisation** — "large batches with many
+   searches might take longer to complete." Fanning out across every tenant's
+   entities is exactly the shape that hits that limit.
+4. **`response_inclusion: "excluded"`** (`web_search_20260318`) drops raw search
+   blocks from the response, cutting output tokens for workflows that do not
+   echo search content back. Built for this case; use it.
+
+**Preconditions, in order.** Do not start before all four hold:
+
+1. Phase 0 metering merged and reporting real per-site numbers (§9 item 1).
+2. `marketWatch` migrated to Claude *scripted*, on Batch, and stable — so the
+   agentic A/B has a same-provider baseline to beat rather than confounding a
+   provider change with a technique change.
+3. The wrapper extended with a tool-capable, `pause_turn`-aware path.
+   `anthropic.generate()` is deliberately single-shot and sends no `tools`; this
+   should be a separate `runWithTools()` rather than growing `generate()`, so
+   the cheap path stays cheap to reason about.
+4. At least two weeks of measured watch spend to compare against.
+
+**Then decide on evidence:** A/B agentic vs the Brave + Firecrawl pipeline on
+findings quality *and* cost together, and only adopt if both improve. If it
+wins, `discovery.gatherFromQueries`, the Brave client and the Firecrawl scrape
+path can retire with it — a maintenance argument as well as a quality one.
+
+Its own ADR when the time comes: it changes the cost model, the failure modes
+and the review-queue semantics simultaneously.
