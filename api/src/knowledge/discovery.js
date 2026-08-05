@@ -356,7 +356,10 @@ async function generateSearchQueries({ mode, ctx, products = [], region = '', se
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: { temperature: 0.4, maxOutputTokens: 600, responseMimeType: 'application/json', responseSchema: QUERIES_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
     }));
-    costs.recordGemini(tenantId, 'discovery.queries', MODEL, resp.usageMetadata);
+    // Split by mode: query-gen runs up to twice per competitor discovery and
+    // once per prospect discovery, so one shared label makes neither run type's
+    // per-unit cost computable from the rollup.
+    costs.recordGemini(tenantId, mode === 'prospect' ? 'discovery.queriesProspect' : 'discovery.queriesCompetitor', MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     const qs = Array.isArray(parsed.queries) ? parsed.queries : [];
     return [...new Set(qs.map((q) => String(q || '').replace(/\s+/g, ' ').trim()).filter((q) => q.length > 4))].slice(0, 8);

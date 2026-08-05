@@ -314,7 +314,6 @@ async function syncUrl({ tenantId = null, url, category, title, dryRun = false, 
     // both with one card. Lazy-require to dodge the service↔web cycle.
     const preview = require('./preview');
     const card = await preview.buildPreview(text, {
-      tenantId,
       title: resolvedTitle,
       sourceUrl,
       effectiveDate,

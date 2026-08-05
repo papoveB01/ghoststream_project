@@ -207,6 +207,11 @@ router.get('/spend', async (req, res, next) => {
   try {
     const days = req.query.days;
     const tenantId = req.query.tenant || null;
+    // tenant_id is a uuid column — a malformed value raises 22P02 in Postgres,
+    // which the global handler renders as a 500 with the raw driver message.
+    if (tenantId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(tenantId))) {
+      return res.status(400).json({ error: 'invalid tenant id' });
+    }
     const [byTenant, bySite] = await Promise.all([
       costs.rollupByTenant({ days, tenantId }),
       costs.rollupBySite({ days, tenantId }),

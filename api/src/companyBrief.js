@@ -57,7 +57,7 @@ async function generateBrief(markdown, meta, tenantId = null) {
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
-    costs.recordGemini(tenantId, 'onboarding.companyBrief', BRIEF_MODEL, resp.usageMetadata);
+    costs.recordGemini(tenantId, 'foundation.companyBrief', BRIEF_MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     const productCount = Array.isArray(parsed.keyProducts) ? parsed.keyProducts.length : 0;
     const vpCount = Number.isFinite(parsed.valuePropCount) ? parsed.valuePropCount : 0;
