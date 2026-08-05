@@ -13,6 +13,7 @@
 const crypto = require('crypto');
 const { GoogleGenAI } = require('@google/genai');
 const redis = require('./redis');
+const costs = require('./costs');
 
 const REGISTRY_PREFIX = 'gemini:cache:';
 const SKIP_PREFIX = 'gemini:cache-skip:';
@@ -207,6 +208,8 @@ async function generateForRecord({
   message,
   temperature = 0.8,
   maxOutputTokens = 1024,
+  tenantId = null,
+  site = 'gemini.forRecord',
 }) {
   if (!record) throw new Error('generateForRecord: record required');
   if (!message) throw new Error('generateForRecord: message required');
@@ -232,6 +235,7 @@ async function generateForRecord({
     contents,
     config,
   });
+  costs.recordGemini(tenantId, site, record.model, response.usageMetadata);
 
   return {
     text: response.text,

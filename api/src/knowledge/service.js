@@ -261,7 +261,7 @@ async function ingest({
   }
 
   // 1. Parse
-  const parsed = await parsers.parseFile(file);
+  const parsed = await parsers.parseFile(file, { tenantId });
   if (!parsed.text || parsed.text.length < 10) {
     const err = new Error('extracted text too short — file may be image-only or unreadable');
     err.status = 400; throw err;
@@ -348,7 +348,7 @@ async function ingest({
     });
     if (scope === 'COMPETITOR' && competitorName) {
       const verdict = await relevance.checkDocRelevance({
-        text: parsed.text, title, competitorName, competitorProductName,
+        text: parsed.text, title, competitorName, competitorProductName, tenantId,
       });
       if (relevance.shouldQuarantine(verdict)) {
         relevanceVerified = false;

@@ -510,6 +510,7 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
       `===CONTEXT===\n${ctxBlock}`;
 
     const gemini = require('./gemini');
+    const costs = require('./costs');
     const MODEL = require('./models').modelFor('content');
     const SCHEMA = {
       type: 'object',
@@ -527,6 +528,7 @@ router.post('/:id/draft-email', gating.requireFeature('engagements'), async (req
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: { temperature: 0.6, maxOutputTokens: 1200, responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
       });
+      costs.recordGemini(req.tenantId, 'contacts.draftEmail', MODEL, resp.usageMetadata);
       draft = JSON.parse(resp.text);
     } catch (e) {
       console.warn('[draft-email] generation failed:', (e && e.message) || e);

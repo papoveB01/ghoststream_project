@@ -19,6 +19,7 @@
 //     of substance remains, the model returns few or no points (no padding).
 
 const gemini = require('../gemini');
+const costs = require('../costs');
 const db = require('../db');
 
 const MODEL = require('../models').modelFor('keypoints');
@@ -210,6 +211,7 @@ async function extractKeyPoints({ scope, text, tenantId = null, title = null } =
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
+    costs.recordGemini(tenantId, 'kb.keypoints', MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     const points = (Array.isArray(parsed.points) ? parsed.points : [])
       .map((p) => String(p || '').replace(/^[-*•\s]+/, '').trim())
@@ -350,6 +352,7 @@ async function extractCompanyAnalysis({ text, tenantId = null, title = null } = 
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
+    costs.recordGemini(tenantId, 'kb.companyAnalysis', MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     // Light defensive normalisation — drop empty strings, cap arrays.
     return {
@@ -488,6 +491,7 @@ async function extractProductAnalysis({ text, tenantId = null, productId = null,
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
+    costs.recordGemini(tenantId, 'kb.productAnalysis', MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     return {
       executiveSummary:  String(parsed.executiveSummary || '').trim() || null,

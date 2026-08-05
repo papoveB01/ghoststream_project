@@ -152,6 +152,7 @@ app.post('/gemini/roleplay/:slug', auth.authMiddleware, async (req, res, next) =
     const result = await gemini.generateForRecord({
       record: cacheRecord, message,
       temperature: 0.85, maxOutputTokens: 600,
+      tenantId: req.tenantId, site: 'gemini.roleplayProbe',
     });
     res.json({
       persona: req.params.slug,

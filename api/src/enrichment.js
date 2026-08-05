@@ -19,6 +19,7 @@ const db = require('./db');
 const web = require('./knowledge/web');
 const apollo = require('./knowledge/apollo');
 const gemini = require('./gemini');
+const costs = require('./costs');
 const MODEL = require('./models').modelFor('content');
 
 const PAGE_CAP = 6000;          // chars of markdown kept per scraped page
@@ -115,7 +116,7 @@ async function gatherNews(name) {
 }
 
 // ─────────────────────────────────────────────────────────────── synthesize
-async function synthesize(name, corpus, existingProducts = []) {
+async function synthesize(name, corpus, existingProducts = [], tenantId = null) {
   if (!corpus || corpus.length < 80) return null;
   const existingBlock = existingProducts.length
     ? '\n\n===OUR EXISTING PRODUCTS (reuse these EXACT names where a found offering is the same thing, so we ' +
@@ -145,6 +146,7 @@ async function synthesize(name, corpus, existingProducts = []) {
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
+    costs.recordGemini(tenantId, 'foundation.synthesize', MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     return {
       positioning: String(parsed.positioning || '').trim(),
@@ -269,7 +271,7 @@ async function enrichCompany(tenantId, { force = false } = {}) {
   const existingProducts = (await db.query(
     `SELECT name FROM products WHERE tenant_id = $1 ORDER BY lower(name)`, [tenantId]
   )).rows.map((r) => r.name);
-  const synth = await synthesize(t.name, corpus, existingProducts);
+  const synth = await synthesize(t.name, corpus, existingProducts, tenantId);
   if (!synth) { const e = new Error('could not read enough about your company to enrich right now — try again'); e.status = 502; throw e; }
 
   const summary = await applyEnrichment(tenantId, synth, { force });

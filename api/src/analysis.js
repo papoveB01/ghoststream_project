@@ -14,6 +14,7 @@
 //                 consolidated report) from the structured moments.
 
 const gemini = require('./gemini');
+const costs = require('./costs');
 const semantics = require('./semantics');
 const retrieval = require('./knowledge/retrieval');
 
@@ -42,7 +43,7 @@ const ENTITIES_SCHEMA = {
   required: ['entities'],
 };
 
-async function extractEntities(transcript) {
+async function extractEntities(transcript, tenantId = null) {
   const formatted = formatTranscript(transcript);
   const ai = gemini.getClient();
   const response = await ai.models.generateContent({
@@ -68,6 +69,7 @@ async function extractEntities(transcript) {
       thinkingConfig: { thinkingBudget: 0 },
     },
   });
+  costs.recordGemini(tenantId, 'analysis.entities', ENTITY_MODEL, response.usageMetadata);
 
   let parsed;
   try { parsed = JSON.parse(response.text); }
@@ -222,7 +224,7 @@ function verifyMoments(moments, { transcript, transcriptText, groundedKnowledge 
   return moments;
 }
 
-async function findMoments(transcript, { groundedKnowledge, preCallBrief } = {}) {
+async function findMoments(transcript, { groundedKnowledge, preCallBrief, tenantId = null } = {}) {
   const formatted = formatTranscript(transcript);
   const ai = gemini.getClient();
 
@@ -305,6 +307,7 @@ async function findMoments(transcript, { groundedKnowledge, preCallBrief } = {})
       thinkingConfig: { thinkingBudget: 0 },
     },
   });
+  costs.recordGemini(tenantId, 'analysis.moments', ANALYSIS_MODEL, response.usageMetadata);
 
   let parsed;
   try {
@@ -349,7 +352,7 @@ const FOLLOWUP_SCHEMA = {
   required: ['email', 'report'],
 };
 
-async function draftFollowups({ transcript, moments }) {
+async function draftFollowups({ transcript, moments, tenantId = null }) {
   const ai = gemini.getClient();
   const response = await ai.models.generateContent({
     model: CONTENT_MODEL,
@@ -385,6 +388,7 @@ async function draftFollowups({ transcript, moments }) {
       thinkingConfig: { thinkingBudget: 0 },
     },
   });
+  costs.recordGemini(tenantId, 'analysis.followups', CONTENT_MODEL, response.usageMetadata);
 
   let parsed;
   try {
@@ -426,7 +430,7 @@ async function runPipeline(transcript, {
 
   const kbReady = await retrieval.hasReadyDocuments(tenantId);
   if (kbReady) {
-    entities = await extractEntities(transcript);
+    entities = await extractEntities(transcript, tenantId);
     if (entities.entities.length > 0) {
       // One retrieval query, joining all entities — pgvector ranks chunks by
       // semantic relevance, so a comma-separated string works fine.
@@ -465,8 +469,8 @@ async function runPipeline(transcript, {
     }
   }
 
-  const stage1 = await findMoments(transcript, { groundedKnowledge, preCallBrief });
-  const stage2 = await draftFollowups({ transcript, moments: stage1.moments });
+  const stage1 = await findMoments(transcript, { groundedKnowledge, preCallBrief, tenantId });
+  const stage2 = await draftFollowups({ transcript, moments: stage1.moments, tenantId });
 
   return {
     moments: stage1.moments,

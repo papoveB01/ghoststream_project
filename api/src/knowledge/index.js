@@ -100,11 +100,12 @@ router.post('/upload', uploadMiddleware, async (req, res, next) => {
 router.post('/preview', uploadMiddleware, async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'file required (multipart field "file")' });
-    const parsed = await parsers.parseFile(req.file);
+    const parsed = await parsers.parseFile(req.file, { tenantId: req.tenantId });
     if (!parsed.text || parsed.text.length < 10) {
       return res.status(422).json({ error: 'extracted text too short — file may be image-only or unreadable' });
     }
     const card = await preview.buildPreview(parsed.text, {
+      tenantId: req.tenantId,
       title: (req.body.title && req.body.title.trim()) || req.file.originalname,
       sourceType: parsed.sourceType,
       streamType: 'FILE',

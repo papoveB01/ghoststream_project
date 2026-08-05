@@ -258,6 +258,7 @@ router.post('/discover', gating.requireFeature('discovery'), gating.requireCapac
     const byDomain = new Map(tracked.filter((r) => r.domain).map((r) => [String(r.domain).toLowerCase().replace(/^www\./, ''), r]));
 
     const result = await discovery.discoverProspects({
+      tenantId: req.tenantId,
       companyName: tenant.name, ourProducts,
       positioning: prof.positioning || '',
       objectives: prof.objectives || '',
@@ -423,6 +424,7 @@ async function productFitForPeople(tenantId, people) {
   )).rows;
   if (!products.length) return {};
   const gemini = require('./gemini');
+  const costs = require('./costs');
   const models = require('./models');
   // Both ids are closed sets known at call time (this tenant's products, the
   // people passed in), so enumerate them in the schema instead of letting the
@@ -457,6 +459,7 @@ async function productFitForPeople(tenantId, people) {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: { temperature: 0.1, maxOutputTokens: 2000, responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
   });
+  costs.recordGemini(tenantId, 'companies.productFit', models.modelFor('content'), resp.usageMetadata);
   const byId = new Map(products.map((p) => [p.id, p]));
   const out = {};
   for (const f of (JSON.parse(resp.text).fits || [])) {
