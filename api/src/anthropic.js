@@ -32,23 +32,36 @@
 //      for the two specific incompatibilities and why one of them is silent.
 //
 // Retries and timeouts are the SDK's, configured once here. We do NOT wrap this
-// in another retry helper: the SDK already retries 408/409/429/5xx with backoff.
+// in another retry helper. Three things about that, all measured 2026-08-05 —
+// keep this in step with ADR-0006 §7, which carries the same findings.
 //
-// CORRECTED 2026-08-05. This comment used to claim the worst case was
-// `timeout × (retries+1) × outer attempts`. That is wrong about the code below
-// it. generate() composes an `AbortSignal.timeout(DEFAULT_TIMEOUT_MS)` and
-// passes it on every call, and the SDK re-links a caller signal onto each
-// attempt's controller — so the deadline bounds the WHOLE retry sequence, not
-// each attempt. Measured against a hanging server at timeout=3s/maxRetries=2:
-// no caller signal → 10.4s; with a 4s caller signal → 4.0s.
+//   1. THE SDK'S RETRIES ARE MOSTLY UNREACHABLE FROM HERE, which undercuts the
+//      "the SDK already retries so we needn't" premise. DEFAULT_TIMEOUT_MS is
+//      used BOTH as the SDK's per-attempt `timeout` and as the deadline signal
+//      composed below, so on a hang the first attempt consumes the whole budget
+//      and the retry never fires. Against a hanging server at timeout=3s,
+//      maxRetries=2: bare SDK 10.5s / 3 attempts; with signal == timeout, 3.0s
+//      / 1 attempt. Give the deadline headroom over the per-attempt timeout if
+//      you want SDK retries on slow failures; today they only help fast ones.
+//   2. A caller signal bounds the WHOLE sequence, not each attempt — the SDK
+//      re-links it onto every attempt's controller and checks it before
+//      deciding to retry. So `timeout × (max_retries + 1)` is the right worst
+//      case for a BARE SDK call, but not through generate(). What is still
+//      live is the OUTER multiplication: each withRetry iteration calls
+//      generate() afresh, minting a new deadline — worst case
+//      ANTHROPIC_TIMEOUT_MS × outer attempts ≈ 366s at the 120s default.
+//   3. STACKING SURVIVES EXACTLY WHERE IT IS LEAST WANTED, and 429 coverage is
+//      silently lost. translateError() rewrites messages, so the call sites'
+//      Gemini-shaped regexes see: 429 → no match (was 6/6 on the raw error),
+//      timeouts/connection → no match, 503/529 → still 6/6, via the word
+//      "Overloaded" in the preserved provider detail. Net effect of a cutover:
+//      no app-level retry on the transient these helpers were written for, and
+//      up to 9 attempts on the statuses Anthropic uses for overload. (500 is
+//      NOT lost — the Gemini-shaped regexes never matched a 500 either.)
 //
-// The real hazard on a cutover is the opposite of stacking, and it is silent:
-// translateError() rewrites messages, so the call sites' Gemini-shaped
-// transient regexes (`RESOURCE_EXHAUSTED`, `\b429\b`) stop matching. A migrated
-// call site therefore LOSES its app-level retry on 429, 500 and every
-// timeout/connection error, and keeps it only on 503/529 — where the SDK is
-// already retrying and the app layer is unwanted. Fix that when the retry
-// helpers are consolidated (ADR-0006 §8 Phase 1), not by re-wrapping here.
+// Fix all three when the retry helpers are consolidated (ADR-0006 §8 Phase 1),
+// keying off the SDK's typed exceptions rather than message text. Not by
+// re-wrapping here.
 
 const Anthropic = require('@anthropic-ai/sdk');
 const costs = require('./costs');

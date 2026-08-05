@@ -72,11 +72,12 @@ turns on one variable we control: whether we adopt Claude's cost mechanics
 or map tier-for-tier and hope.
 
 - **Tier-for-tier mapping breaches the ADR-0004 §4.2 floor.** Pro base lands
-  at ~29% against a 35% floor.
+  at **26%** against a 35% floor (~29% as first modelled; corrected downward
+  when the tokenizer allowance was re-measured — §5.2).
 - **The same migration with caching, Batch, and deliberate down-tiering lands
-  at ~49% — better than today's modeled 36.5%.** §6.
+  at **48%** — better than today's modeled 36.5%.** §6.
 
-That gap — 29% vs 49% on the same vendor and the same features — is the whole
+That gap — 26% vs 48% on the same vendor and the same features — is the whole
 decision. It is not an optimization to schedule later; it is the thing being
 decided.
 
@@ -236,16 +237,18 @@ Two consequences for §9 item 4:
 - **Exceeding four `cache_control` blocks is a hard 400** (`"A maximum of 4
   blocks with cache_control may be provided. Found 5."`), not a silent drop —
   breakpoint budgeting is a validation constraint, not a best-effort one.
-- **The Arena persona seed is 2,723 tokens on Haiku's tokenizer** and 3,783 on
-  the Opus-5/Sonnet-5 one — above Opus's 512 and Sonnet's 1024, but *below*
-  Haiku's 4096. So `personas.js`'s comment that the seed "is substantial enough
+- **The Arena persona seed's cacheable prefix is 2,561 tokens on the old-gen
+  tokenizer** and 3,445 on the new-gen one — above Opus's 512 and Sonnet's
+  1024, but *below* Haiku's 4096. So `personas.js`'s comment that the seed "is substantial enough
   to clear the model's minimum-cacheable" threshold becomes false the moment the
   persona task resolves to Haiku, and it fails silently.
 
-  Measure the **cacheable prefix** — `systemInstruction` + `contents`, which is
-  what `getOrCreateCache` sends — not `contents` alone (3,350 / 2,495) and not
-  `personas.js` the source file. The three differ by enough to move a threshold
-  verdict, and two of the three are the wrong thing to measure.
+  Measure the **cacheable prefix** — `systemInstruction` plus the `contents`
+  parts' text, which is what `getOrCreateCache` sends. Not `personas.js` the
+  source file, and not `JSON.stringify(contents)`: the JSON envelope adds ~340
+  tokens of braces, quotes and keys that never reach the API. A first version of
+  this line published 3,783 / 2,723 from exactly that mistake. `contents` alone
+  is 3,350 / 2,495, which is close but excludes the system block.
 
 ### 4.4 Instrumentation is a prerequisite, gating the first task cutover
 
@@ -400,29 +403,40 @@ The allowance in force for the table below is **+30% on input counts**, and it
 is **wrong in both directions**. Measured 2026-08-05 with both providers'
 `count_tokens` on identical text:
 
-| content | Opus 5 / Sonnet 5 | Haiku 4.5 |
+| content | new-gen tokenizer | old-gen tokenizer |
 | --- | --- | --- |
-| Scraped web-findings prose | **1.59** | 1.11 |
-| Assembled `research.analyze` prompt | **1.66** | 1.08 |
+| Real `kb_chunks` scraped prose | **1.70** | 1.11 |
 | Assembled `proposals.synthesize` prompt | **1.71** | 1.09 |
-| Call transcript | **1.26** | 0.95 |
+| Assembled `research.analyze` prompt | **1.68** | 1.08 |
+| Prose-bearing JSON (what our schemas emit) | 1.74–1.88 | — |
+| Call transcript, `formatTranscript` shape | **1.34** | 0.96 |
 | Source code / markdown | 1.35–1.50 | 1.03–1.11 |
-| Structured JSON | 1.10 | 0.85 |
+| Dense numeric JSON | 1.00 | 0.77–0.85 |
+
+**"New-gen" and "old-gen" do not track tier or release order.** Measured
+byte-identical counts within each group: `claude-opus-5`, `claude-sonnet-5` and
+`claude-opus-4-8` share the new tokenizer; `claude-sonnet-4-6` and
+`claude-haiku-4-5` share the old one. So `ANTHROPIC_MODEL_FLASH`
+`claude-sonnet-5` → `claude-sonnet-4-6` — a knob §4.5 explicitly tells an
+operator to turn — cuts input tokens ~35% and moves a whole tier across
+generations. Everything below assumes the new-gen tokenizer for
+flash/pro/content and the old one for lite.
 
 > **Amended 2026-08-05.** A single blanket multiplier cannot be right, for two
 > independent reasons, and the first invalidates the way this allowance was
 > applied at all:
 >
-> - **There are two tokenizer generations.** Opus 5 and Sonnet 5 return
->   *identical* counts. **Haiku 4.5 is a different, near-parity tokenizer** —
->   0.95–1.11 against Gemini, i.e. essentially no allowance is due. §4.1 puts
->   five tasks on Haiku (`relevance`, `callEntities`, `preview`,
->   `companyBrief`, doc-level `assessment`), so the entire `lite` tier was
->   **over**-allowanced by ~30%.
-> - **The ratio is content-dependent, over a 1.26–1.71 range** on the same
->   tokenizer. Prose-borne prompts (discovery, research, watch — scraped
->   findings) sit near 1.60; transcript-borne ones (the engagement path) near
->   1.26. That spread is wider than the correction itself.
+> - **There are two tokenizer generations**, and models within a generation
+>   return byte-identical counts. The old-gen one is at or below parity with
+>   Gemini (0.77–1.11), so **no allowance is due on it at all**. §4.1 puts five
+>   tasks on Haiku 4.5 (`relevance`, `callEntities`, `preview`, `companyBrief`,
+>   doc-level `assessment`), so the entire `lite` tier was **over**-allowanced
+>   by ~30%.
+> - **The ratio is content-dependent across the full 1.00–1.88 range** on one
+>   tokenizer — see the table. Prose-borne prompts (discovery, research, watch)
+>   sit near 1.70; transcript-borne ones (the engagement path) near 1.34. That
+>   spread is far wider than the correction itself, which is why §6 is computed
+>   per unit and why no single number belongs in this table.
 >
 > A first attempt at this correction published a single 1.45 and was wrong: its
 > samples were source files and markdown, **not prompt text**, which is the only
@@ -484,17 +498,22 @@ Pro base = 250×$0.17 + 30×$1.09 + 250×$0.063 + 100×$0.10 + (149×0.029 + 0.3
 The whole **ADR-0004 column reproduces on all eight rows**, which validates the
 method. In the Balanced/Optimized columns **four of eight rows do not**:
 
-| row | column | recomputed | published |
-| --- | --- | --- | --- |
-| Research credit | Balanced | 50.8% | 55.0% |
-| Pro extra seat | Optimized | 41.9% | 45.0% |
-| Starter extra seat | Balanced | 44.5% | 45.8% |
-| Sub-tenant add-on | Balanced | 62.6% | 63.1% |
+| row | Balanced | Optimized |
+| --- | --- | --- |
+| Research credit | 50.8% vs 55.0% | 61.0% vs 62.0% |
+| Pro extra seat | reproduces | 41.9% vs 45.0% |
+| Starter extra seat | 44.5% vs 45.8% | 50.7% vs 52.6% |
+| Sub-tenant add-on | 62.6% vs 63.1% | 66.7% vs 68.0% |
 
-Research credit's published 55.0% is `(0.38 − 0.17)/0.38` — **it omits Stripe**,
-inconsistent with its own ADR-0004 cell. The extra-seat and sub-tenant cells
-solve backwards to an engagement unit of **$1.04–1.06, not §5.2's $1.09**, i.e.
-they are stale from an earlier draft. Treat those four as unreliable
+**Seven cells across four rows**, not four cells — a reader checking Starter
+extra seat Optimized or Sub-tenant Optimized will find them wrong too.
+
+Research credit's published 55.0% omits Stripe, inconsistent with its own
+ADR-0004 cell, which does include it at $0.01702/credit from the 50-for-$19
+pack. (The Stripe-free identity gives 55.3%, so 55.0% additionally implies a
+research unit of $0.171, not $0.17.) The other rows solve backwards to a stale
+engagement unit — **$1.04–1.06 in the Balanced cells and ~$0.97 in the
+Optimized ones** — i.e. two different earlier drafts, not one. Treat those four as unreliable
 independently of anything below; Pro base, Starter base, Engagement credit and
 Free tier reproduce cleanly.
 
@@ -515,18 +534,20 @@ underwater.~~ **Superseded 2026-08-05 — see the corrected table below. The
 conclusion holds; the magnitude was understated.**
 
 > **Corrected for §5.2's tokenizer finding.** Per-unit input ratios keyed to
-> each unit's dominant content, on the Opus-5/Sonnet-5 tokenizer: research
-> **1.60** and watch **1.60** (scraped prose), engagement **1.25** (call
-> transcript, with Stage-0's Haiku leg at parity), arena **1.37** (mixed).
-> Each replaces the blanket 1.30 that is baked into the table above.
+> each unit's dominant content, on the new-gen tokenizer: research **1.70** and
+> watch **1.70** (scraped prose), engagement **1.32** (`formatTranscript`
+> output at 1.34, blended with Stage-0's old-gen leg at parity), arena **1.37**.
+> Each replaces the blanket 1.30 baked into the table above.
 >
-> | Revenue line | published | **A: input** | **B: A + output** | published | **A** | **B** |
+> | Revenue line | *Bal.* pub | **Bal. A** | **Bal. B** | *Opt.* pub | **Opt. A** | **Opt. B** |
 > | --- | --- | --- | --- | --- | --- | --- |
-> | | *Bal.* | *Bal.* | *Bal.* | *Opt.* | *Opt.* | *Opt.* |
-> | **Pro base** | 29.2% ❌ | **26.8%** ❌ | **19.5%** ❌ | 48.7% ✅ | **48.1%** ✅ | **46.1%** ✅ |
-> | Starter base | 43.1% ✅ | **41.5%** ✅ | **39.0%** ✅ | 53.2% ✅ | **52.7%** ✅ | **51.6%** ✅ |
-> | Pro extra seat | 37.4% ✅ | **37.0%** ✅ | **35.6%** ✅ | 45.0% ✅ | **42.0%** ✅ | **41.0%** ✅ |
-> | Starter extra seat | 45.8% ✅ | **43.3%** ✅ | **41.7%** ✅ | 52.6% ✅ | **50.4%** ✅ | **49.5%** ✅ |
+> | **Pro base** | 29.2% ❌ | **25.7%** ❌ | **17.4%** ❌ | 48.7% ✅ | **47.6%** ✅ | **45.3%** ✅ |
+> | Starter base | 43.1% ✅ | **40.6%** ✅ | **37.8%** ✅ | 53.2% ✅ | **52.3%** ✅ | **51.0%** ✅ |
+> | **Pro extra seat** | 37.4% ✅ | **36.1%** ✅ | **34.4%** ❌ | 45.0% ⚠ | **41.3%** ✅ | **40.1%** ✅ |
+> | Starter extra seat | 45.8% ⚠ | **42.4%** ✅ | **40.5%** ✅ | 52.6% ⚠ | **49.8%** ✅ | **48.8%** ✅ |
+>
+> ⚠ = the published cell does not reproduce (see above the table); the
+> corrected columns are computed from §5.2's units regardless.
 >
 > **A** corrects input-derived cost only. **B** additionally assumes output
 > counts were Gemini-derived and carry the same ratio (§5.2's open question).
@@ -534,29 +555,46 @@ conclusion holds; the magnitude was understated.**
 > for research (0.80, n=1) and watch (0.24, n=4) from `usage_costs`, and
 > **assumed** for engagement (0.75) and arena (0.50).
 >
-> What this changes, and what it does not:
+> Three findings, in descending order of how much confidence they deserve:
 >
-> - **Pro base's Balanced shortfall widens from 580bps to ~820bps (A) or
->   ~1550bps (B).** The decision is unchanged and strengthened: §4.3's cost
->   mechanics are load-bearing, not polish.
-> - **Optimized clears the floor on every line under every scenario** — 46.1%
->   at the worst. Recomputed rather than asserted; an earlier draft waved this
+> - **Robust: Pro base's Balanced shortfall widens from 580bps to ~930bps (A)
+>   or ~1760bps (B).** It fails under every combination of the inputs above.
+>   The decision is unchanged and strengthened — §4.3's cost mechanics are
+>   load-bearing, not polish.
+> - **Robust: Optimized clears the floor on every line under every scenario**,
+>   40.1% at the worst. Recomputed, not asserted; an earlier draft waved this
 >   away with "cache reads bill at 0.1× so the correction is absorbed", which is
->   the wrong mechanism (a rate multiplier does not cancel a count multiplier —
->   the *relative* uplift is identical in both columns; Optimized moves less
->   only because its input-cost base is smaller in dollars).
-> - **No second line fails**, and the near miss is instructive. Pro extra seat
->   is engagement-heavy (15 eng vs 25 research), so its verdict swings on the
->   engagement ratio alone: at the transcript-measured 1.25 it holds at 37.0%/
->   35.6%; applying the prose ratio of 1.65 instead drops it to **33.5%, below
->   the floor, under scenario A**. It is the one line whose pass/fail depends on
->   a number §5.2 has not properly measured, which makes the engagement prompt
->   mix the highest-value thing left to measure — ahead of the output question.
+>   the wrong mechanism — a rate multiplier does not cancel a count multiplier.
+>   The *relative* uplift is identical in both columns; Optimized moves less
+>   only because its input-cost base is smaller in dollars.
+> - **NOT ROBUST, and left open: Pro extra seat.** It is engagement-heavy
+>   (15 eng vs 25 research), so it turns on two numbers nobody has measured, and
+>   it crosses the floor within the plausible range of each:
 >
-> Four published rows are unreliable for the separate reason given above the
-> table; Research credit, Sub-tenant add-on and Free tier are therefore not
-> corrected here. For the record, Free-tier burn worsens from −$4.40/mo to
-> about −$4.6 (A) / −$4.9 (B).
+>   | gate | Bal-B crosses the floor | today's input |
+>   | --- | --- | --- |
+>   | engagement input ratio | above **1.27** | **measured 1.32** → 34.4%, fails |
+>   | engagement input share | below **0.90** | **assumed 0.75** → fails |
+>
+>   **On today's best measurement this line fails scenario B, at 34.4%** — a
+>   second failing line, which changes the decision's shape rather than its size.
+>   Both gates sit inside the error bars: the ratio needs the real engagement
+>   prompt mix (the pre-call brief leg is dossier prose at ~1.70, not transcript,
+>   and is ~16% of that unit's LLM spend), and the share has never been measured
+>   at all. Recorded as unresolved rather than as a verdict because an earlier
+>   draft of this amendment asserted the *opposite* conclusion on a transcript
+>   ratio of 1.26 that did not survive re-measurement — the real
+>   `formatTranscript` output is 1.34, and the difference alone flips this line.
+>
+>   Measuring the engagement prompt mix per leg is therefore the highest-value
+>   work left in §5.2, ahead of the output question — which costs Pro base a
+>   further ~830bps but flips no line by itself.
+>
+> Rows not corrected here — Research credit, Sub-tenant add-on, Engagement
+> credit — because their published cells are unreliable, not because they are
+> at risk: all three clear the floor under A and B in both columns. Free tier
+> reproduces cleanly and its burn worsens from −$4.40/mo to **−$4.73 (A) /
+> −$5.08 (B)**.
 
 Two further notes:
 
@@ -817,14 +855,17 @@ Not in scope for any PR above: embeddings (§4.2), `capture/`, `mcp/`, any
 
 ## 10. Open questions / follow-ups
 
-- **Measure the engagement path's real prompt mix** (raised 2026-08-05 — the
-  highest-value measurement left, ahead of the output question below). Pro
-  extra seat is the only line whose pass/fail swings on a single unmeasured
-  number: at the transcript ratio of 1.25 it holds at 37.0%, at the prose ratio
-  of 1.65 it drops to **33.5%, below the floor, under scenario A alone**. The
-  engagement prompt is transcript-dominated in principle, but "in principle" is
-  what the +30% allowance was too. Assemble the real Stage-0/1/2 and brief
-  prompts and count them per tier.
+- **Measure the engagement path's real prompt mix, per leg** (raised
+  2026-08-05 — the highest-value measurement left, ahead of the output question
+  below). **Pro extra seat currently fails scenario B at 34.4%** on the measured
+  transcript ratio of 1.32, and its verdict is gated on two numbers §5.2 never
+  measured: that ratio (it clears the floor only below 1.27) and the engagement
+  input share (it clears only above 0.90, against an assumed 0.75). §5.2's own
+  build-up splits engagement into four legs across three tiers, and at least one
+  — the pre-call brief — is dossier prose at ~1.70, not transcript. Treating the
+  unit as uniformly transcript-borne is the same "in principle" reasoning that
+  produced the +30% allowance. Assemble the real Stage-0/1/2 and brief prompts
+  and count them per tier.
 - **Were output token counts under-allowanced too?** (Raised 2026-08-05 with
   the §5.2 tokenizer correction.) A denser
   tokenizer inflates generated tokens for the same answer text exactly as it
