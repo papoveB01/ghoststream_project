@@ -22,28 +22,19 @@ const exportDocx = require('./exportDocx');
 const gating = require('./gating');
 
 const MODEL = require('./models').modelFor('proposal');
+
+// Shared retry helper (ADR-0006 §7). Bound here with this module's label so
+// every call site below is unchanged; the classification that used to live in
+// a local copy of this function now happens once, in aiRetry.classify().
+const aiRetry = require('./aiRetry');
+const withRetry = (fn, tries = 3) => aiRetry.withRetry(fn, { tries, label: 'proposals' });
+
 const EVIDENCE_TEXT_CAP = parseInt(process.env.PROPOSAL_EVIDENCE_TEXT_CAP || '1800', 10);
 const MAX_CALLS         = parseInt(process.env.PROPOSAL_MAX_CALLS || '8', 10);
 const MAX_PROSPECT_DOCS = parseInt(process.env.PROPOSAL_MAX_PROSPECT_DOCS || '8', 10);
 const MAX_COMPETITOR_DOCS = parseInt(process.env.PROPOSAL_MAX_COMPETITOR_DOCS || '6', 10);
 
 // ── Retry on transient Gemini errors (same policy as knowledge/research.js) ──
-async function withRetry(fn, tries = 3) {
-  let lastErr;
-  for (let i = 0; i < tries; i++) {
-    try { return await fn(); }
-    catch (err) {
-      lastErr = err;
-      const msg = String((err && err.message) || err);
-      const is429 = /\b429\b|RESOURCE_EXHAUSTED/i.test(msg);
-      const isDailyQuota = /per[_\s-]?day|PerDay|free_tier_requests/i.test(msg);
-      const transient = /\b(503|UNAVAILABLE|overloaded)\b|high demand|deadline[ _]?exceeded/i.test(msg) || (is429 && !isDailyQuota);
-      if (!transient || i === tries - 1) throw err;
-      await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
-    }
-  }
-  throw lastErr;
-}
 
 // ── Evidence gathering — the 4 intelligence layers, as a numbered list ──────
 // Returns { profileText, evidence: [{n,type,label,text}], byLayer }.

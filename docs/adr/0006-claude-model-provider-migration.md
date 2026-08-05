@@ -1050,6 +1050,51 @@ decomposition exists so that per-file spokes stay tractable.
    retrying 503/529 at the app layer, delete the four dead `retryDelay` parsers,
    and give the deadline headroom over the per-attempt timeout so the SDK's own
    retries become reachable.
+
+   ✅ *Shipped 2026-08-05 as `api/src/aiRetry.js`.* **Three of those five points
+   needed qualifying, all for the same reason: §7 describes the world AFTER the
+   cutover, but the helper ships while every task still resolves to Gemini.
+   Taken literally, each would have been a live regression on the only provider
+   currently serving traffic.**
+
+   - **"Key off typed exceptions" — there are none on the Gemini side.** The
+     `@google/genai` SDK puts the upstream JSON straight into `err.message`,
+     which is *why* all six copies grew a regex and why `brief.js`'s
+     `translateGeminiError` has to `JSON.parse` a substring to find the status.
+     So the helper cannot be uniform. What it does instead is classify once:
+     message-scraping survives, but only inside `classify()`'s Gemini branch.
+   - **"Stop retrying 503/529 at the app layer" — right for Anthropic, wrong for
+     Gemini.** Anthropic's SDK retries them, so stacking reaches 9 attempts;
+     Gemini's does not retry at all, so removing it would drop 503 handling from
+     every path running today. Resolved with a `sdkRetried` stamp that
+     `anthropic.translateError` puts on every error leaving the wrapper: the
+     client that already retried says so, and only then does the app layer stand
+     down.
+   - **"Delete the `retryDelay` parsers" — dead on Anthropic, live on Gemini**,
+     which suggests a delay in the error body and gives that path its only
+     backoff signal. Kept for Gemini, never consulted for Anthropic.
+
+   Only the 429 point needed no qualification, and it is the one that matters
+   most: the translated message contains neither `429` nor `RESOURCE_EXHAUSTED`,
+   so every copy had silently stopped matching the transient they were all
+   written for. `classify()` reads `err.status`.
+
+   **The deadline fix took the opposite option to the one §7 floats.** Rather
+   than giving the deadline headroom *above* the per-attempt timeout — which buys
+   reachable retries by widening the worst case to ~360s — `ANTHROPIC_TIMEOUT_MS`
+   is now the whole-call budget and the SDK's per-attempt timeout is a *slice* of
+   it (`/(maxRetries+1)`). Retries become reachable inside an unchanged outer
+   bound. `scheduler.js`'s `withTimeout` guard exists because a long AI call is
+   how a tenant-wide outage started; widening the bound to fix a retry would
+   trade one for the other.
+
+   **One behaviour change on a live path, stated because it is not a no-op:**
+   five copies were byte-identical, but `watch.js`'s was looser — `429` and
+   `deadline` without word boundaries. Consolidating tightens both, so the hourly
+   tick stops retrying a `4290` error code and the word "deadline" in prose. Safe
+   direction, but it is a change. Its tighter 8s backoff cap (vs the others' 30s)
+   is passed through rather than harmonised away — a 30s sleep per entity would
+   stall a fan-out scan.
 5. **Per-task cutover PRs** (Phase 3), grouped to keep each reviewable:
    `relevance` + `preview` + `companyBrief`; `keypoints` + `assessment`;
    `research` + `ocr`; `compare` + `enrichment` + `contacts` + `companies`;
