@@ -18,6 +18,7 @@
 // THIS matchup.
 
 const gemini = require('../gemini');
+const costs = require('../costs');
 const keypoints = require('./keypoints');
 const db = require('../db');
 
@@ -207,6 +208,7 @@ async function extractCompetitiveAssessment({ text, tenantId = null, title = nul
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));
+    costs.recordGemini(tenantId, 'kb.assessment', MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     return normalize(parsed);
   } catch (err) {
@@ -597,6 +599,7 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
+    costs.recordGemini(tenantId, 'kb.battlecard', MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
 
     // If we have no per-doc aggregate (all axes weight=0), use Gemini's

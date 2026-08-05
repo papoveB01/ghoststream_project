@@ -10,6 +10,7 @@
 // + withRetry + fail-open conventions in relevance.js / assessment.js.
 
 const gemini = require('../gemini');
+const costs = require('../costs');
 const web = require('./web');
 
 const MODEL = require('../models').modelFor('discovery');
@@ -197,7 +198,7 @@ async function gatherFindings(competitorName, domain) {
 
 // Discover the competitor's products and map each to one of ours.
 // Returns { products: [...] } (possibly empty) or null on hard failure.
-async function discoverCompetitorProducts({ competitorName, competitorDomain = '', ourProducts = [] } = {}) {
+async function discoverCompetitorProducts({ competitorName, competitorDomain = '', ourProducts = [], tenantId = null } = {}) {
   const name = String(competitorName || '').trim();
   if (!name) return null;
   const domain = String(competitorDomain || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase() || null;
@@ -236,6 +237,7 @@ async function discoverCompetitorProducts({ competitorName, competitorDomain = '
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));
+    costs.recordGemini(tenantId, 'discovery.competitorProducts', MODEL, resp.usageMetadata);
     const raw = parseItemsLoose(resp.text, 'products');
     if (raw === null) return null; // no usable model output → caller 502s (no charge)
     const products = raw
@@ -335,7 +337,7 @@ const QUERIES_SCHEMA = {
 // finds the tenant's BUYERS (per the ICP); mode='competitor' finds rival vendors
 // offering a similar solution to the SAME buyers. Returns [] on failure so
 // callers fall back to their hardcoded query builders (no hard dependency).
-async function generateSearchQueries({ mode, ctx, products = [], region = '', segment = '' }) {
+async function generateSearchQueries({ mode, ctx, products = [], region = '', segment = '', tenantId = null }) {
   try {
     const portfolio = (products || []).map((p) => `- ${p.name}${p.description ? ': ' + p.description : ''}`).join('\n') || '(none)';
     const regionLine = region && !/global|any|worldwide/i.test(region) ? `Region focus: ${region}.` : 'No region restriction.';
@@ -354,6 +356,10 @@ async function generateSearchQueries({ mode, ctx, products = [], region = '', se
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: { temperature: 0.4, maxOutputTokens: 600, responseMimeType: 'application/json', responseSchema: QUERIES_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
     }));
+    // Split by mode: query-gen runs up to twice per competitor discovery and
+    // once per prospect discovery, so one shared label makes neither run type's
+    // per-unit cost computable from the rollup.
+    costs.recordGemini(tenantId, mode === 'prospect' ? 'discovery.queriesProspect' : 'discovery.queriesCompetitor', MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     const qs = Array.isArray(parsed.queries) ? parsed.queries : [];
     return [...new Set(qs.map((q) => String(q || '').replace(/\s+/g, ' ').trim()).filter((q) => q.length > 4))].slice(0, 8);
@@ -366,7 +372,7 @@ async function generateSearchQueries({ mode, ctx, products = [], region = '', se
 // Find companies that compete with OUR company, optionally focused on a region.
 // Returns { competitors: [...] } (possibly empty) or null on hard failure.
 // Read-only research: no ingest, no storage (the rep adds the relevant ones).
-async function discoverCompetitors({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', buyerMarket = '', prospects = [], excludeNames = [], focusProspect = null, focusProduct = null } = {}) {
+async function discoverCompetitors({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', buyerMarket = '', prospects = [], excludeNames = [], focusProspect = null, focusProduct = null, tenantId = null } = {}) {
   const name = String(companyName || '').trim();
   if (!name) return null;
   // Our existing prospects → let the model flag competitors already entrenched at
@@ -418,8 +424,8 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
     ].filter(Boolean))].slice(0, 10);
   } else {
     const [genGlobal, genRegion] = await Promise.all([
-      generateSearchQueries({ mode: 'competitor', ctx, products: searchProducts, region: '' }),
-      regionIsGlobal ? Promise.resolve([]) : generateSearchQueries({ mode: 'competitor', ctx, products: searchProducts, region: regionLabel }),
+      generateSearchQueries({ mode: 'competitor', ctx, products: searchProducts, region: '', tenantId }),
+      regionIsGlobal ? Promise.resolve([]) : generateSearchQueries({ mode: 'competitor', ctx, products: searchProducts, region: regionLabel, tenantId }),
     ]);
     const baseQueries = [
       `${name} competitors${regionTerm ? ' ' + regionTerm : ''}`,
@@ -511,6 +517,7 @@ async function discoverCompetitors({ companyName, ourProducts = [], positioning 
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));
+    costs.recordGemini(tenantId, 'discovery.competitors', MODEL, resp.usageMetadata);
     const raw = parseItemsLoose(resp.text, 'competitors');
     if (raw === null) return null; // no usable model output → caller 502s (no charge)
     const ownName = name.toLowerCase();
@@ -584,7 +591,7 @@ const buildProspectsSchema = (ourIds) => ({
 
 // Find potential customers for OUR company, scoped by region + industry, ranked
 // by priority. Returns { prospects: [...] } (possibly empty) or null on failure.
-async function discoverProspects({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', industry = '', limit, excludeNames = [] } = {}) {
+async function discoverProspects({ companyName, ourProducts = [], positioning = '', objectives = '', idealCustomerProfile = '', region = '', industry = '', limit, excludeNames = [], tenantId = null } = {}) {
   const name = String(companyName || '').trim();
   if (!name) return null;
   // How many prospects this turn returns — clamped to [1, PROSPECT_HARD_MAX].
@@ -618,7 +625,7 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
   // Primary: LLM-generated queries that target OUR BUYERS (per the ICP) — adapts
   // to the actual business (local venues vs enterprise) instead of a fixed list.
   // Fallback (generation failed): the legacy industry+buying-signal net.
-  let queriesClean = await generateSearchQueries({ mode: 'prospect', ctx, products: ourProducts, region: regionLabel, segment: indTerm });
+  let queriesClean = await generateSearchQueries({ mode: 'prospect', ctx, products: ourProducts, region: regionLabel, segment: indTerm, tenantId });
   if (!queriesClean.length) {
     const base = [indTerm, regionTerm].filter(Boolean).join(' ').trim();
     const SIGNALS = [
@@ -698,6 +705,7 @@ async function discoverProspects({ companyName, ourProducts = [], positioning = 
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));
+    costs.recordGemini(tenantId, 'discovery.prospects', MODEL, resp.usageMetadata);
     const raw = parseItemsLoose(resp.text, 'prospects');
     if (raw === null) return null; // no usable model output → caller 502s (no charge)
     const ownName = name.toLowerCase();

@@ -9,6 +9,7 @@
 
 const chunker = require('./chunker');
 const gemini = require('../gemini');
+const costs = require('../costs');
 const db = require('../db');
 
 const SUMMARY_MODEL = require('../models').modelFor('preview');
@@ -117,6 +118,7 @@ async function summarize(text, meta) {
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
+    costs.recordGemini((meta && meta.tenantId) || null, 'kb.preview', SUMMARY_MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     return {
       documentType: parsed.documentType || ((meta && meta.sourceType) || 'document'),
@@ -236,6 +238,7 @@ async function buildCompetitorComparison(tenantId, competitorText, competitorNam
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
+    costs.recordGemini(tenantId, 'kb.compare', COMPARE_MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     const dimensions = (Array.isArray(parsed.dimensions) ? parsed.dimensions : []).map((d) => ({
       dimension: d.dimension || '',

@@ -66,7 +66,9 @@ function buildPdfResult(rawText, { pageCount, pdfInfo, ocr: didOcr } = {}) {
   };
 }
 
-async function parsePdf(buffer) {
+// `tenantId` is carried only so the OCR fallback's model spend can be attributed
+// to a tenant (ADR-0006 phase 0) — parsing itself is tenant-agnostic.
+async function parsePdf(buffer, tenantId = null) {
   const data = await pdfParse(buffer);
   const result = buildPdfResult(data.text || '', {
     pageCount: data.numpages,
@@ -77,7 +79,7 @@ async function parsePdf(buffer) {
   // Fall back to Gemini OCR (best-effort; returns null on any failure, in which
   // case we keep the short result and let the caller raise the usual error).
   if (result.text.length < OCR_TRIGGER_CHARS) {
-    const ocrText = await ocr.ocrPdf(buffer, { mimeType: 'application/pdf' });
+    const ocrText = await ocr.ocrPdf(buffer, { mimeType: 'application/pdf', tenantId });
     if (ocrText) {
       return buildPdfResult(ocrText, {
         pageCount: data.numpages,
@@ -109,7 +111,7 @@ function parseText(buffer) {
 }
 
 // `file` = { buffer, mimetype, originalname }
-async function parseFile(file) {
+async function parseFile(file, { tenantId = null } = {}) {
   const sourceType = inferSourceType({
     mimetype: file.mimetype,
     filename: file.originalname,
@@ -121,7 +123,7 @@ async function parseFile(file) {
   }
 
   switch (sourceType) {
-    case 'pdf':      return { sourceType, ...(await parsePdf(file.buffer)) };
+    case 'pdf':      return { sourceType, ...(await parsePdf(file.buffer, tenantId)) };
     case 'markdown': return { sourceType, ...parseMarkdown(file.buffer) };
     case 'text':     return { sourceType, ...parseText(file.buffer) };
     default:         throw new Error('unreachable');

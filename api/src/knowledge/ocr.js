@@ -18,6 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const gemini = require('../gemini');
+const costs = require('../costs');
 const { TIERS } = require('../models');
 
 // Vision-capable model for transcription. Flash (not flash-lite) by default for
@@ -54,25 +55,28 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function generateFromParts(client, parts) {
+async function generateFromParts(client, parts, tenantId = null) {
   const resp = await client.models.generateContent({
     model: OCR_MODEL,
     contents: [{ role: 'user', parts }],
     config: { temperature: 0, maxOutputTokens: OCR_MAX_OUTPUT_TOKENS },
   });
+  // Worth attributing per tenant despite the plumbing it costs: a scanned page
+  // bills as image tokens, so one large PDF can outweigh a day of text calls.
+  costs.recordGemini(tenantId, 'kb.ocr', OCR_MODEL, resp.usageMetadata);
   return stripPreamble(resp.text || '').trim();
 }
 
-async function ocrInline(client, buffer, mimeType) {
+async function ocrInline(client, buffer, mimeType, tenantId = null) {
   return generateFromParts(client, [
     { inlineData: { mimeType, data: buffer.toString('base64') } },
     { text: OCR_PROMPT },
-  ]);
+  ], tenantId);
 }
 
 // For files too large to inline: upload via the Files API, wait until ACTIVE,
 // reference it, then clean up both the temp file and the remote file.
-async function ocrViaFilesApi(client, buffer, mimeType) {
+async function ocrViaFilesApi(client, buffer, mimeType, tenantId = null) {
   const tmpPath = path.join(
     os.tmpdir(),
     `kb-ocr-${crypto.randomBytes(8).toString('hex')}.pdf`
@@ -97,7 +101,7 @@ async function ocrViaFilesApi(client, buffer, mimeType) {
     return await generateFromParts(client, [
       { fileData: { mimeType, fileUri: uploaded.uri } },
       { text: OCR_PROMPT },
-    ]);
+    ], tenantId);
   } finally {
     try { fs.unlinkSync(tmpPath); } catch { /* temp file may not exist */ }
     if (uploaded && uploaded.name) {
@@ -108,7 +112,7 @@ async function ocrViaFilesApi(client, buffer, mimeType) {
 }
 
 // Returns extracted text (form-feed-separated pages) or null on any failure.
-async function ocrPdf(buffer, { mimeType = 'application/pdf' } = {}) {
+async function ocrPdf(buffer, { mimeType = 'application/pdf', tenantId = null } = {}) {
   if (!process.env.GEMINI_API_KEY) {
     console.warn('[kb-ocr] GEMINI_API_KEY not set — skipping OCR fallback');
     return null;
@@ -121,8 +125,8 @@ async function ocrPdf(buffer, { mimeType = 'application/pdf' } = {}) {
 
   try {
     const text = buffer.length > INLINE_MAX_BYTES
-      ? await ocrViaFilesApi(client, buffer, mimeType)
-      : await ocrInline(client, buffer, mimeType);
+      ? await ocrViaFilesApi(client, buffer, mimeType, tenantId)
+      : await ocrInline(client, buffer, mimeType, tenantId);
     return text && text.length > 0 ? text : null;
   } catch (err) {
     console.warn('[kb-ocr] OCR fallback failed:', err.message);

@@ -29,10 +29,26 @@ const CLAUDE_RATES_PER_MTOK_CENTS = {
   'claude-haiku-4-5': { in: 100, out: 500 },
 };
 // Cache pricing is a multiple of the model's own input rate, not a separate
-// table: a write costs 1.25× (5-minute TTL) and a read 0.1×. Keeping it as a
-// multiplier means a repricing only touches the table above.
-const CLAUDE_CACHE_WRITE_MULT = 1.25;
+// table, so a repricing only touches the table above. Writes cost 1.25× at the
+// 5-minute TTL and 2× at the 1-hour TTL; reads cost 0.1× either way.
+//
+// `cache_creation_input_tokens` is the SUM across both TTLs, so it cannot be
+// priced correctly on its own. Anthropic exposes a per-TTL split; when it is
+// present we use it, and otherwise we fall back to the 1h rate rather than the
+// 5m one. That is deliberate: ADR-0006 §4.3 puts caching on the long-lived
+// prefixes (the call transcript across three analysis stages, tenant context,
+// the global KB body) where 1h is the obvious TTL, so guessing 5m would
+// under-report the exact spend this table exists to make visible. Over-report
+// is the safe direction against a margin floor.
+const CLAUDE_CACHE_WRITE_5M_MULT = 1.25;
+const CLAUDE_CACHE_WRITE_1H_MULT = 2;
 const CLAUDE_CACHE_READ_MULT = 0.1;
+
+// Gemini prices cached prompt tokens at ~0.25× the input rate. `promptTokenCount`
+// is the TOTAL prompt including the cached prefix — unlike Claude, where
+// `input_tokens` excludes it — so the cached portion must be subtracted before
+// billing the remainder at full rate.
+const GEMINI_CACHE_READ_MULT = 0.25;
 
 const APOLLO_CREDIT_CENTS = 2;     // on-plan rate (~$0.02); overage is 10× — the gap is the point of watching
 const RECALL_HOUR_CENTS = 65;      // $0.50 recording + $0.15 transcription
@@ -76,13 +92,22 @@ function record({ tenantId = null, service, site = null, units = 1, unitKind = n
 function recordGemini(tenantId, site, model, usage) {
   if (!usage) return Promise.resolve();
   const tin = usage.promptTokenCount || 0;
+  const cached = usage.cachedContentTokenCount || 0;
+  // The whole point of gemini.js is to serve most of the prompt from a
+  // cachedContent resource at a quarter of the input rate. Billing the cached
+  // prefix at full rate reports the Arena and global-KB paths at up to 4× their
+  // real cost and shows the caching layer as worthless — and it is the exact
+  // error recordClaude() below is written to avoid, so the two must agree.
+  const fresh = Math.max(0, tin - cached);
   const tout = (usage.candidatesTokenCount || 0) + (usage.thoughtsTokenCount || 0);
   const rate = geminiRateFor(model);
-  const cents = rate ? (tin * rate.in + tout * rate.out) / 1e6 : null;
+  const cents = rate
+    ? (fresh * rate.in + cached * rate.in * GEMINI_CACHE_READ_MULT + tout * rate.out) / 1e6
+    : null;
   return record({
     tenantId, service: 'gemini', site, units: tin + tout, unitKind: 'tokens',
     estCostCents: cents != null ? Math.round(cents * 1000) / 1000 : null,
-    meta: { model, tokensIn: tin, tokensOut: tout, cached: usage.cachedContentTokenCount || 0 },
+    meta: { model, tokensIn: tin, tokensOut: tout, cached },
   });
 }
 
@@ -98,13 +123,21 @@ function recordGemini(tenantId, site, model, usage) {
 function recordClaude(tenantId, site, model, usage) {
   if (!usage) return Promise.resolve();
   const fresh = usage.input_tokens || 0;
-  const cacheWrite = usage.cache_creation_input_tokens || 0;
   const cacheRead = usage.cache_read_input_tokens || 0;
   const tout = usage.output_tokens || 0;  // thinking tokens bill as output and are already counted here
+  // Per-TTL split when the response carries it, else the aggregate at the 1h
+  // rate — see the constants above for why the fallback is 1h and not 5m.
+  const split = usage.cache_creation || null;
+  const write5m = split ? (split.ephemeral_5m_input_tokens || 0) : 0;
+  const write1h = split
+    ? (split.ephemeral_1h_input_tokens || 0)
+    : (usage.cache_creation_input_tokens || 0);
+  const cacheWrite = write5m + write1h;
   const rate = claudeRateFor(model);
   const cents = rate
     ? (fresh * rate.in
-       + cacheWrite * rate.in * CLAUDE_CACHE_WRITE_MULT
+       + write5m * rate.in * CLAUDE_CACHE_WRITE_5M_MULT
+       + write1h * rate.in * CLAUDE_CACHE_WRITE_1H_MULT
        + cacheRead * rate.in * CLAUDE_CACHE_READ_MULT
        + tout * rate.out) / 1e6
     : null;
@@ -147,7 +180,9 @@ const ROLLUP_ROW_LIMIT = 2000;
 
 function clampDays(days) {
   const n = Number(days);
-  if (!Number.isFinite(n) || n <= 0) return 30;
+  // `< 1`, not `<= 0`: Math.floor(0.5) is 0, and '0 days' is a zero-length
+  // window that returns nothing while looking like a successful query.
+  if (!Number.isFinite(n) || n < 1) return 30;
   return Math.min(Math.floor(n), ROLLUP_MAX_DAYS);
 }
 
@@ -159,14 +194,15 @@ async function rollupByTenant({ days = 30, tenantId = null } = {}) {
   if (tenantId) params.push(tenantId);
   const r = await db.query(
     `SELECT tenant_id, service,
-            COUNT(*)::int                         AS calls,
-            COALESCE(SUM(units), 0)::bigint       AS units,
-            COALESCE(SUM(est_cost_cents), 0)::numeric AS cents
+            COUNT(*)::int                             AS calls,
+            COALESCE(SUM(units), 0)::bigint           AS units,
+            COALESCE(SUM(est_cost_cents), 0)::numeric AS cents,
+            COUNT(*) FILTER (WHERE est_cost_cents IS NULL)::int AS unpriced
        FROM usage_costs
       WHERE created_at >= NOW() - ($1 || ' days')::interval
         ${tenantId ? 'AND tenant_id = $2' : ''}
       GROUP BY tenant_id, service
-      ORDER BY cents DESC NULLS LAST
+      ORDER BY cents DESC
       LIMIT ${ROLLUP_ROW_LIMIT}`,
     params
   );
@@ -176,6 +212,7 @@ async function rollupByTenant({ days = 30, tenantId = null } = {}) {
     calls: row.calls,
     units: Number(row.units),
     cents: Number(row.cents),
+    unpriced: row.unpriced,
   }));
 }
 
@@ -189,15 +226,17 @@ async function rollupBySite({ days = 30, tenantId = null } = {}) {
   if (tenantId) params.push(tenantId);
   const r = await db.query(
     `SELECT service, site,
-            COUNT(*)::int                         AS calls,
-            COALESCE(SUM(units), 0)::bigint       AS units,
+            COUNT(*)::int                             AS calls,
+            COALESCE(SUM(units), 0)::bigint           AS units,
             COALESCE(SUM(est_cost_cents), 0)::numeric AS cents,
-            MAX(created_at)                       AS last_seen
+            COUNT(*) FILTER (WHERE est_cost_cents IS NULL)::int AS unpriced,
+            MIN(created_at)                           AS first_seen,
+            MAX(created_at)                           AS last_seen
        FROM usage_costs
       WHERE created_at >= NOW() - ($1 || ' days')::interval
         ${tenantId ? 'AND tenant_id = $2' : ''}
       GROUP BY service, site
-      ORDER BY cents DESC NULLS LAST
+      ORDER BY cents DESC
       LIMIT ${ROLLUP_ROW_LIMIT}`,
     params
   );
@@ -207,6 +246,8 @@ async function rollupBySite({ days = 30, tenantId = null } = {}) {
     calls: row.calls,
     units: Number(row.units),
     cents: Number(row.cents),
+    unpriced: row.unpriced,
+    firstSeen: row.first_seen,
     lastSeen: row.last_seen,
   }));
 }

@@ -13,6 +13,7 @@
 const express = require('express');
 const db = require('./db');
 const gemini = require('./gemini');
+const costs = require('./costs');
 const semantics = require('./semantics');
 const store = require('./store');
 const keypoints = require('./knowledge/keypoints');
@@ -197,7 +198,7 @@ function pruneCitations(content, evidence) {
   return content;
 }
 
-async function synthesize(companyName, profileText, evidence) {
+async function synthesize(companyName, profileText, evidence, tenantId = null) {
   const ai = gemini.getClient();
   const evidenceBlock = evidence.length
     ? evidence.map((e) => `[${e.n}] (${e.type}) ${e.label}\n${e.text}`).join('\n\n')
@@ -213,6 +214,7 @@ async function synthesize(companyName, profileText, evidence) {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: { temperature: 0.4, maxOutputTokens: 3000, responseMimeType: 'application/json', responseSchema: PROPOSAL_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
   }));
+  costs.recordGemini(tenantId, 'proposals.synthesize', MODEL, resp.usageMetadata);
   // Fail with the offending output rather than a bare 500 — the route refunds
   // the usage unit on any throw, and PROPOSAL_SCHEMA means a parse failure is a
   // real anomaly worth seeing in the logs, not routine model chatter.
@@ -273,7 +275,7 @@ async function generate(tenantId, companyId, userId) {
     }
   }
 
-  const { content, usage } = await synthesize(c.rows[0].name, profileText, evidence);
+  const { content, usage } = await synthesize(c.rows[0].name, profileText, evidence, tenantId);
   const coverage = computeCoverage(content, byLayer);
 
   const ins = await db.query(

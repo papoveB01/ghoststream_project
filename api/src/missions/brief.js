@@ -20,6 +20,7 @@
 
 const db = require('../db');
 const gemini = require('../gemini');
+const costs = require('../costs');
 const retrieval = require('../knowledge/retrieval');
 const web = require('../knowledge/web');
 const service = require('./service');
@@ -282,6 +283,7 @@ async function generate(missionId, tenantId) {
         abortSignal: AbortSignal.timeout(BRIEF_GEN_TIMEOUT_MS),
       },
     });
+    costs.recordGemini(tenantId, 'brief.generate', BRIEF_MODEL, response.usageMetadata);
   } catch (raw) {
     const clean = translateGeminiError(raw);
     // Mark the mission so the brief column shows the friendly reason on the

@@ -9,6 +9,7 @@
 //     sessions; when sessions get long, swap to thread-based stateful API.
 
 const gemini = require('./gemini');
+const costs = require('./costs');
 const personas = require('./personas');
 const store = require('./store');
 const globalCache = require('./knowledge/globalCache');
@@ -111,7 +112,7 @@ function turnsToContents(turns, includePersonaInline, personaSeed) {
   return contents;
 }
 
-async function callGemini({ cacheRecord, turns, newRepMessage, temperature = 0.85, maxOutputTokens = 600 }) {
+async function callGemini({ cacheRecord, turns, newRepMessage, temperature = 0.85, maxOutputTokens = 600, tenantId = null, site = 'arena.turn' }) {
   const personaSeed = personas[DEFAULT_PERSONA];
   const includePersonaInline = cacheRecord.mode === 'inline';
 
@@ -133,6 +134,7 @@ async function callGemini({ cacheRecord, turns, newRepMessage, temperature = 0.8
     contents,
     config,
   });
+  costs.recordGemini(tenantId, site, cacheRecord.model, response.usageMetadata);
 
   return {
     text: response.text,
@@ -196,6 +198,8 @@ async function startSession({ portalId, persona = DEFAULT_PERSONA, repUserId = n
     newRepMessage: null,
     temperature: 0.9,
     maxOutputTokens: 400,
+    tenantId,
+    site: 'arena.opener',
   });
 
   const turns = [
@@ -253,6 +257,7 @@ async function takeTurn({ sessionId, message }) {
     newRepMessage: message,
     temperature: 0.85,
     maxOutputTokens: 500,
+    tenantId: session.tenantId,
   });
 
   const updated = await store.appendSessionTurns(sessionId, [

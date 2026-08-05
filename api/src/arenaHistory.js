@@ -14,6 +14,7 @@
 
 const db = require('./db');
 const gemini = require('./gemini');
+const costs = require('./costs');
 const { modelFor } = require('./models');
 
 // Fixed coaching rubric. Dimension maxes sum to 100 = the overall score.
@@ -141,6 +142,7 @@ async function scoreSession(session) {
       thinkingConfig: { thinkingBudget: 0 },
     },
   });
+  costs.recordGemini(session.tenantId, 'arena.score', model, response.usageMetadata);
 
   // The schema guarantees the shape, so an unparseable response means something
   // genuinely went wrong. Throw rather than fall back to `{}` — finalize()

@@ -9,6 +9,7 @@
 // the (now removed) signup preview and the in-app bootstrap.
 
 const gemini = require('./gemini');
+const costs = require('./costs');
 const web = require('./knowledge/web');
 
 const BRIEF_MODEL = require('./models').modelFor('companyBrief');
@@ -34,7 +35,7 @@ const BRIEF_PROMPT =
 
 // Generate the brief from scraped markdown. Falls back to a minimal brief built
 // from the page metadata if Gemini is unavailable or errors.
-async function generateBrief(markdown, meta) {
+async function generateBrief(markdown, meta, tenantId = null) {
   const fallback = () => ({
     missionStatement: (meta && (meta.description || meta.title)) || 'We indexed your homepage.',
     keyProducts: [],
@@ -56,6 +57,7 @@ async function generateBrief(markdown, meta) {
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
+    costs.recordGemini(tenantId, 'foundation.companyBrief', BRIEF_MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     const productCount = Array.isArray(parsed.keyProducts) ? parsed.keyProducts.length : 0;
     const vpCount = Number.isFinite(parsed.valuePropCount) ? parsed.valuePropCount : 0;
@@ -72,7 +74,7 @@ async function generateBrief(markdown, meta) {
 // Scrape `website` and return its markdown + page metadata + a confirm-able brief.
 // Never throws — returns { ok:false, error } when scraping isn't possible so the
 // caller can degrade to manual entry.
-async function scrapeAndBrief(website) {
+async function scrapeAndBrief(website, tenantId = null) {
   if (!web.isConfigured()) {
     return { ok: false, error: 'website research is temporarily unavailable — you can add details manually.' };
   }
@@ -88,7 +90,7 @@ async function scrapeAndBrief(website) {
     return { ok: false, error: "we couldn't read your website (it may block crawlers or be JS-only) — you can add details manually." };
   }
   const meta = data.metadata || {};
-  const brief = await generateBrief(markdown, meta);
+  const brief = await generateBrief(markdown, meta, tenantId);
   return {
     ok: true,
     markdown,

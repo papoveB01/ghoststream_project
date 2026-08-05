@@ -382,7 +382,7 @@ router.post('/company-bootstrap/pull', async (req, res, next) => {
     if (!t.domain) return res.json({ ok: false, error: 'No company website on file — add intel manually below.' });
 
     const website = `https://${t.domain}`;
-    const r = await companyBrief.scrapeAndBrief(website);
+    const r = await companyBrief.scrapeAndBrief(website, req.tenantId);
     if (!r.ok) return res.json({ ok: false, error: r.error });
 
     await redis.set(bootstrapKey(req.tenantId), JSON.stringify({
@@ -760,7 +760,7 @@ router.post('/competitors/:id/offerings', async (req, res, next) => {
     // Non-blocking sanity check: warn (don't block) if the competitor probably
     // doesn't sell a product by this name — catches invented/foreign products.
     let warning = null;
-    const verdict = await relevance.checkOfferingPlausibility({ competitorName: comp.rows[0].name, productName: name });
+    const verdict = await relevance.checkOfferingPlausibility({ competitorName: comp.rows[0].name, productName: name, tenantId: req.tenantId });
     if (verdict && verdict.plausible === false) {
       warning = verdict.reason || `${comp.rows[0].name} may not sell a product called "${name}".`;
     }
@@ -986,7 +986,7 @@ router.post('/competitors/:id/discover-products', async (req, res, next) => {
       if (m) competitorDomain = m[0];
     }
 
-    const result = await discovery.discoverCompetitorProducts({ competitorName: c.rows[0].name, competitorDomain, ourProducts });
+    const result = await discovery.discoverCompetitorProducts({ competitorName: c.rows[0].name, competitorDomain, ourProducts, tenantId: req.tenantId });
     if (!result) return res.status(502).json({ error: 'discovery could not analyze this competitor right now — try again' });
     res.json({ products: result.products, ourProducts: ourProducts.map((p) => ({ id: p.id, name: p.name })) });
   } catch (err) { next(err); }
@@ -1037,6 +1037,7 @@ router.post('/competitors/discover', gating.requireFeature('competitor_research'
     }
     const trackedNames = (await db.query(`SELECT name FROM competitors WHERE tenant_id = $1`, [req.tenantId])).rows.map((r) => r.name);
     const result = await discovery.discoverCompetitors({
+      tenantId: req.tenantId,
       companyName: tenant.name,
       ourProducts,
       positioning: prof.positioning || '',

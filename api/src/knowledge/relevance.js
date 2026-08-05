@@ -16,6 +16,7 @@
 // Mirrors the structured-output + retry conventions in assessment.js.
 
 const gemini = require('../gemini');
+const costs = require('../costs');
 
 const MODEL = require('../models').modelFor('relevance');
 
@@ -71,7 +72,7 @@ async function withRetry(fn, tries = 3) {
 
 // Is this document actually about the competitor (and named product, if any)?
 // Returns { isOnTopic, confidence, reason } or null on any failure (fail-open).
-async function checkDocRelevance({ text, title = null, competitorName = null, competitorProductName = null } = {}) {
+async function checkDocRelevance({ text, title = null, competitorName = null, competitorProductName = null, tenantId = null } = {}) {
   const body = String(text || '').trim();
   if (!body || body.length < 40 || !competitorName) return null;
   const claim = competitorProductName
@@ -102,6 +103,7 @@ async function checkDocRelevance({ text, title = null, competitorName = null, co
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));
+    costs.recordGemini(tenantId, 'kb.relevanceDoc', MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     const confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
     return {
@@ -124,7 +126,7 @@ function shouldQuarantine(verdict) {
 // Does this competitor plausibly sell a product by this name? Used as a
 // non-blocking warning when a rep adds a "Their product". Returns
 // { plausible, reason } or null on failure (treat as plausible → no warning).
-async function checkOfferingPlausibility({ competitorName = null, productName = null } = {}) {
+async function checkOfferingPlausibility({ competitorName = null, productName = null, tenantId = null } = {}) {
   const comp = String(competitorName || '').trim();
   const prod = String(productName || '').trim();
   if (!comp || !prod) return null;
@@ -148,6 +150,7 @@ async function checkOfferingPlausibility({ competitorName = null, productName = 
         thinkingConfig: { thinkingBudget: 0 },
       },
     }));
+    costs.recordGemini(tenantId, 'kb.relevanceOffering', MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
     return {
       plausible: parsed.plausible !== false,
