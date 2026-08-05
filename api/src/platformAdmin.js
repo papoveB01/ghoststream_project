@@ -16,6 +16,7 @@ const entitlements = require('./entitlements');
 const tenants = require('./tenants');
 const sessions = require('./sessions');
 const erasure = require('./erasure');
+const costs = require('./costs');
 
 const router = express.Router();
 
@@ -193,6 +194,35 @@ router.get('/secrets', async (_req, res, next) => {
       groups[g] = names.map((name) => ({ name, configured: Boolean(process.env[name]) }));
     }
     res.json({ groups, flags: { RLS_ENFORCE: String(process.env.RLS_ENFORCE || 'off') } });
+  } catch (err) { next(err); }
+});
+
+// ---- vendor spend (ADR-0006 phase 0) ---------------------------------------
+// The read path usage_costs never had. Two views because they answer different
+// questions: byTenant is "what does serving this account cost us", bySite is
+// "which call sites are we actually able to see" — a site absent from that list
+// is uninstrumented, not free, and that distinction is the whole point of this
+// endpoint existing before any provider change.
+router.get('/spend', async (req, res, next) => {
+  try {
+    const days = req.query.days;
+    const tenantId = req.query.tenant || null;
+    const [byTenant, bySite] = await Promise.all([
+      costs.rollupByTenant({ days, tenantId }),
+      costs.rollupBySite({ days, tenantId }),
+    ]);
+    // Names for the ids, so the console isn't a wall of UUIDs. Bounded by the
+    // rollup's own LIMIT, and skipped entirely when nothing came back.
+    const ids = [...new Set(byTenant.map((r) => r.tenantId).filter(Boolean))];
+    const names = ids.length
+      ? (await db.query('SELECT id, name FROM tenants WHERE id = ANY($1)', [ids])).rows
+      : [];
+    const nameById = new Map(names.map((r) => [r.id, r.name]));
+    res.json({
+      days: Number(days) > 0 ? Math.min(Math.floor(Number(days)), 365) : 30,
+      byTenant: byTenant.map((r) => ({ ...r, tenantName: nameById.get(r.tenantId) || null })),
+      bySite,
+    });
   } catch (err) { next(err); }
 });
 
