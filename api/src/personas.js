@@ -160,16 +160,20 @@ When the call is going badly and you want to end it:
 Either way: specific, dry, final. No "let's circle back." No "I'll think on it." You either move or you don't.
 `.trim();
 
-const SKEPTICAL_CFO_TURNS = [
-  { role: 'user', text: SKEPTICAL_CFO_CHARACTER },
-  {
+// Frozen because `turns` is handed out BY REFERENCE (unlike `contents`, which
+// is regenerated per read). One consumer mutating an entry would poison every
+// Arena session for the life of the process, and the persona body is the last
+// place anyone would look for it.
+const SKEPTICAL_CFO_TURNS = Object.freeze([
+  Object.freeze({ role: 'user', text: SKEPTICAL_CFO_CHARACTER }),
+  Object.freeze({
     role: 'assistant',
     text:
       'Understood. I am Sara Chen, CFO of Helix Robotics. I will stay in character ' +
       'throughout the meeting. I will be polite, sharp, numbers-driven, and impatient ' +
       'with vague answers. I am ready for the rep to open the call.',
-  },
-];
+  }),
+]);
 
 module.exports = {
   'skeptical-cfo': {

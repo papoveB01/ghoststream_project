@@ -23,12 +23,14 @@
 //
 // WHAT THIS DOES NOT DO, deliberately:
 //
-//   - It does not replace gemini.js's cache layer. Seven call sites across six
+//   - It does not replace gemini.js's cache layer. Eight call sites across seven
 //     superadmin endpoints in index.js use listCachedRecords / invalidate /
-//     getOrCreateCache / generateForRecord directly, two of them pinned by
-//     routeContract.test.js, and geminiCacheScan.test.js pins a fix for a real
-//     incident (redis.keys() blocking the Redis that also holds sessions). The
-//     layer goes in Phase 5 with the /caches endpoints, not here.
+//     getOrCreateCache / generateForRecord directly — the two easy to miss are
+//     GET /admin/overview and GET /admin/caches, which sit outside the
+//     /gemini/* block — and two of them are pinned by routeContract.test.js,
+//     while geminiCacheScan.test.js pins a fix for a real incident
+//     (redis.keys() blocking the Redis that also holds sessions). The layer
+//     goes in Phase 5 with the /caches endpoints, not here.
 //   - It does not flip any task. DISPATCH_READY is still empty, so
 //     models.resolve() returns provider 'gemini' for everything and the
 //     anthropic branch below is unreachable in production. It is reached by
@@ -137,11 +139,19 @@ async function prepare({
 // the next request whose prefix still matches. Returning false there is honest
 // — nothing was invalidated because nothing existed — and callers must not read
 // it as a failure.
-async function discard({ task, name }) {
-  if (!task) throw new Error('aiContext.discard: task required');
+//
+// `provider` overrides what the task resolves to TODAY, and a caller holding a
+// stored pointer must pass it. Resolving from the task alone orphans the
+// resource across a flip: a caller with a saved `cache_name` (which only the
+// Gemini branch ever writes) would get a no-op the moment its task moved to
+// Claude, then overwrite that pointer with NULL — leaving a live cachedContent
+// and its registry key with nothing left that can name them. A stored Gemini
+// pointer is a Gemini fact, whatever the task is doing now.
+async function discard({ task, name, provider = null }) {
+  if (!task && !provider) throw new Error('aiContext.discard: task or provider required');
   if (!name) throw new Error('aiContext.discard: name required');
-  const { provider } = models.resolve(task);
-  if (provider === 'anthropic') return false;
+  const p = provider || models.resolve(task).provider;
+  if (p === 'anthropic') return false;
   return gemini.invalidate(name);
 }
 
@@ -159,14 +169,55 @@ async function discard({ task, name }) {
 //                     model got blander.
 //   effort / thinking ANTHROPIC ONLY. The Gemini branch keeps thinkingBudget: 0,
 //                     which is what every call site being replaced sends.
+//   allowTruncation   ANTHROPIC ONLY, and it matters — see below.
+//
+// TWO DELIBERATE ASYMMETRIES A CUTOVER MUST DECIDE ABOUT, because neither is
+// visible in a diff:
+//
+//   1. RUNNING OUT OF OUTPUT BUDGET. Gemini returns the partial text with
+//      `finishReason: 'MAX_TOKENS'` and the caller decides. Claude THROWS a 502
+//      unless `allowTruncation` is set (anthropic.js documents why: a
+//      well-formed string that stops mid-sentence is the most dangerous
+//      success there is). So the same over-long answer renders truncated today
+//      and becomes a hard failure after a flip. `arena.js` runs at 400–600
+//      output tokens with a persona told to give "two to four sentences" — it
+//      is the call site most likely to meet this. Pass `allowTruncation: true`
+//      to keep today's behaviour, or raise the budget; do it knowingly.
+//   2. DEFAULTS DIFFER FROM `gemini.generateForRecord`, which this replaces:
+//      that one defaults `temperature: 0.8` and sends NO `thinkingConfig`.
+//      Here temperature is unset unless you pass it, and `thinkingBudget: 0` is
+//      always sent. Mechanically porting `/gemini/roleplay/:slug` would change
+//      sampling and thinking with nothing in the diff to show it. (`arena.js`
+//      passes both explicitly, so its own port is unaffected.)
 //
 // Returns { provider, text, usage, mode, finishReason }. `usage` is the
 // provider's own shape — costs.record{Gemini,Claude} already understand the
 // difference, and flattening it here would lose the cache split that ADR-0006
 // §4.4 needs to verify the margin model.
+const GENERATE_OPTS = new Set([
+  'record', 'turns', 'message', 'maxOutputTokens', 'temperature', 'effort',
+  'thinking', 'allowTruncation', 'tenantId', 'site', 'signal',
+]);
+
 async function generate(opts) {
   const { record, turns = [], message = null } = opts || {};
   if (!record) throw new Error('aiContext.generate: record required');
+
+  // The same guard anthropic.generate() carries, for the same reason and one
+  // layer up — silently ignoring an unknown key is how an option vanishes
+  // during a mechanical port. It matters MORE here, because this seam inverts
+  // the spellings again: a call site moved off anthropic.generate() brings
+  // `maxTokens`, one moved off a Gemini config brings `abortSignal`, and both
+  // would be dropped without a trace, taking that call site's output budget or
+  // its only time bound with them.
+  const stray = Object.keys(opts).filter((k) => !GENERATE_OPTS.has(k));
+  if (stray.length) {
+    throw new Error(
+      `aiContext.generate: unknown option(s) ${stray.join(', ')}. ` +
+      'This seam uses the Gemini spellings: maxTokens→maxOutputTokens, signal (not abortSignal).'
+    );
+  }
+
   assertTurns(turns, 'generate turns');
   if (turns.length === 0 && !message) {
     throw new Error('aiContext.generate: turns or message required');
@@ -185,8 +236,15 @@ async function generateGemini({
   // prefix in Gemini's shape, which getOrCreateCache puts on every inline
   // record, so a record that reached here without `turns` (round-tripped
   // through storage, hand-built by a caller) still grounds correctly.
+  //
+  // Test `.length`, not truthiness: `[]` is truthy, so `turns: []` on a record
+  // that DOES carry `contents` would take the turns branch, produce nothing, and
+  // drop the prefix — which is the exact failure this fallback exists to
+  // prevent, dressed as the fix for it.
   const inlinePrefix = record.mode === 'inline'
-    ? (record.turns ? toGeminiContents(record.turns) : (record.contents || []))
+    ? (Array.isArray(record.turns) && record.turns.length
+      ? toGeminiContents(record.turns)
+      : (record.contents || []))
     : [];
 
   const contents = [
@@ -217,14 +275,15 @@ async function generateGemini({
   };
 }
 
-// Per site, not per process: a single flag would let the first call site to
-// warn silence every other one, which is the failure this warning exists to
-// prevent.
+// Per site, not per process: a single flag would let the first call site to warn
+// silence every other one, which is the failure this warning exists to prevent.
+// The guarantee only holds for callers that actually pass `site` — everything
+// left on the default shares one key.
 const _temperatureWarned = new Set();
 
 async function generateAnthropic({
   record, turns = [], message = null, maxOutputTokens = 1024,
-  temperature = null, effort = 'medium', thinking = false,
+  temperature = null, effort = 'medium', thinking = false, allowTruncation = false,
   tenantId = null, site = 'aiContext.generate', signal = null,
 }) {
   if (temperature != null && !_temperatureWarned.has(site)) {
@@ -261,6 +320,7 @@ async function generateAnthropic({
     maxTokens: maxOutputTokens,
     effort,
     thinking,
+    allowTruncation,
     tenantId,
     site,
     signal,

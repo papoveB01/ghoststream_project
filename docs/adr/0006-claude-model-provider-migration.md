@@ -989,6 +989,60 @@ decomposition exists so that per-file spokes stay tractable.
    rather than correct them, and recorded so the small deltas are not read later
    as a discrepancy.
 
+   **Review round (2026-08-05), two independent passes.** Verdict from both:
+   MERGE WITH FIXES; nothing Critical or High. The confidence pass reproduced
+   the suite (263/263 branch, 242/242 base), re-derived the persona-seed
+   equivalence independently (same `contentHash` `f2b543ceadc6a3e7` on both
+   trees, so the existing registry entry is re-used rather than re-created),
+   confirmed `DISPATCH_READY` empty on the running staging container, and broke
+   6 of the new assertions deliberately to confirm all 6 fail. It also confirmed
+   **zero affected rows in both environments**: `kb_global_cache` is
+   `cache_name` NULL / `char_count` 0 in staging *and* production, there are
+   **no** `gemini:cache*` Redis keys and no live arena sessions in either, and
+   `arena_sessions` is empty in both databases — so the persisted-`session.model`
+   hazard above has no data behind it yet.
+
+   Four defects worth recording, because each was confirmed by execution rather
+   than argued, and three were invisible to the tests as first written:
+
+   - **The robustness fallback contained the bug it was added to prevent.**
+     `record.turns ? … : record.contents` tests truthiness, and `[]` is truthy —
+     so a record carrying `turns: []` *and* a real `contents` prefix took the
+     turns branch, produced nothing, and sent no persona at all. HTTP 200, an
+     answer, no signal. Fixed to test `.length`.
+   - **The seam had no unknown-option guard**, one layer above the wrapper that
+     has one for exactly this reason — and it *inverts* the spellings
+     (`maxTokens`→`maxOutputTokens`, `abortSignal`→`signal`), so a call site
+     ported in an item 5 PR would lose its output budget or its only wall-clock
+     bound in silence. Now throws, naming both spellings.
+   - **`allowTruncation` was not forwarded**, so running out of output budget
+     truncates on Gemini and throws 502 on Claude with no way to opt out.
+     `arena.js` runs at 400–600 output tokens with a persona told to answer in
+     "two to four sentences" — the flip would have turned a long reply into a
+     dead practice session. Forwarded, and both this and the differing
+     `temperature`/`thinkingConfig` defaults vs `generateForRecord` are now
+     stated in the seam's contract.
+   - **`discard()` orphaned a Gemini cache across a flip.** It resolved the
+     provider from what the task means *today*, so a caller holding a stored
+     `cache_name` got a no-op the moment its task moved to Claude — and then
+     nulled the column, leaving a live `cachedContent` and its registry key with
+     nothing able to name them. `discard` now takes a `provider` override and
+     `globalCache` passes `'gemini'` whenever a pointer exists: a stored Gemini
+     pointer is a Gemini fact.
+
+   And one in the live probe itself, which is the more useful lesson: the first
+   version attached "expected on haiku 4.5" to the *not-cached* branch for every
+   model and exited 0 unconditionally, so a Sonnet regression or a hard error
+   would have printed and passed. Rewritten to carry a per-model expectation and
+   `smoke.js`'s exit-code contract — and **inverting those expectations to prove
+   the failure path then exposed a second defect in it**: asserting on
+   `cache_creation` alone makes the check pass or fail on how recently it was
+   last run, because a re-run inside the 5-minute TTL legitimately *reads* the
+   prefix instead of writing it. It now asserts that caching *engaged* (write or
+   read) and read back on turn 2. A live check that cannot fail is the blind spot
+   §9 item 3 exists for, and this one had to be made to fail before it was worth
+   anything.
+
    **Related, and better done as its own PR (§8 Phase 1's "consolidated retry
    helper"):** the six hand-rolled `withRetry` copies. Their brief is *not*
    "prevent stacking" — see §7. It is: key off the SDK's typed exceptions rather

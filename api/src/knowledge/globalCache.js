@@ -135,7 +135,10 @@ async function rebuildGlobalCache({ force = false } = {}) {
   // Empty KB: clear any prior cache + zero the row.
   if (!assembled.text) {
     if (existing.cache_name) {
-      try { await aiContext.discard({ task: CACHE_TASK, name: CACHE_NAME }); }
+      // provider:'gemini' explicitly — a stored cache_name is a Gemini pointer,
+      // whatever CACHE_TASK resolves to now. Without it a flip turns this into
+      // a no-op that then nulls the column, orphaning a live resource.
+      try { await aiContext.discard({ task: CACHE_TASK, name: CACHE_NAME, provider: 'gemini' }); }
       catch (err) { console.warn('[globalCache] discard failed:', err.message); }
     }
     await db.query(
@@ -160,7 +163,7 @@ async function rebuildGlobalCache({ force = false } = {}) {
   // Discard any stale cache for this name before recreating. A no-op on a
   // provider with nothing to discard.
   if (existing.cache_name) {
-    try { await aiContext.discard({ task: CACHE_TASK, name: CACHE_NAME }); }
+    try { await aiContext.discard({ task: CACHE_TASK, name: CACHE_NAME, provider: 'gemini' }); }
     catch (err) { console.warn('[globalCache] discard failed:', err.message); }
   }
 

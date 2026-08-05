@@ -119,6 +119,12 @@ app.post('/gemini/caches', auth.authMiddleware, auth.requireSuperadmin, async (r
   try {
     const { name, model, systemInstruction, contents, ttlSec } = req.body || {};
     if (!name || !systemInstruction) return res.status(400).json({ error: 'name and systemInstruction required' });
+    // `model` comes straight off the request body, so a wrong-provider id here
+    // is a bad request, not the routing bug gemini.js's guard assumes — that
+    // one throws a 500, which would be the wrong story for an operator.
+    if (require('./models').providerOfModel(model) === 'anthropic') {
+      return res.status(400).json({ error: 'model must be a Gemini model id — this is the Gemini caches API', model });
+    }
     const record = await gemini.getOrCreateCache({
       name,
       model: model || process.env.GEMINI_MODEL || 'gemini-2.5-flash',

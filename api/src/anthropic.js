@@ -1,6 +1,10 @@
 // Anthropic client wrapper — the Claude half of the ADR-0006 provider migration.
 //
-// NOTHING CALLS THIS YET. It lands ahead of the cutover so that when a task is
+// REACHABLE, BUT NOT YET ON ANY PRODUCTION PATH. aiContext.js calls generate()
+// and is required at boot (index.js → knowledge/globalCache → aiContext), so
+// this module and the SDK now load with the process — but every task still
+// resolves to Gemini while models.DISPATCH_READY is empty, so nothing here runs
+// against a real request. It landed ahead of the cutover so that when a task is
 // flipped (ADR-0006 §4.5, one env var at a time) the only change is the router
 // entry, not a new integration written under time pressure.
 //
@@ -21,7 +25,7 @@
 // handle `pause_turn`; that belongs in a separate runWithTools() (ADR-0006
 // §13), so the cheap path stays cheap to reason about.
 //
-// Three Claude behaviours this wrapper exists to absorb, because getting any of
+// Four Claude behaviours this wrapper exists to absorb, because getting any of
 // them wrong is a production incident rather than a bad number:
 //
 //   1. A refusal is HTTP 200. Safety classifiers can decline a request and the
@@ -237,7 +241,8 @@ function countBreakpoints(params) {
 // (measured 2026-08-05; the minimums are 512 / 1,024 / 4,096 tokens and do NOT
 // track tier order — Haiku 4.5's is the largest). So a request that asked to
 // cache and cached nothing is invisible unless something says so. Once per
-// model+site, because these run in loops.
+// model+site, because these run in loops — so callers that leave `site` on the
+// default share one key and can silence each other.
 const _cacheMissWarned = new Set();
 function warnIfNothingCached(model, site, usage) {
   const u = usage || {};

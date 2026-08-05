@@ -342,6 +342,97 @@ test('an unsupported-parameter regression would fail loudly, not vanish', async 
   assert.strictEqual(sent.max_tokens, 500, 'maxOutputTokens → max_tokens');
 });
 
+test('an inline record with EMPTY turns falls back to its contents, not to nothing', async () => {
+  // `[]` is truthy, so a truthiness test here would take the turns branch,
+  // produce [], and drop the persona — the exact failure the fallback exists to
+  // prevent, wearing the costume of the fix for it. Found by review, not by CI.
+  reset();
+  const record = {
+    provider: 'gemini', mode: 'inline', model: 'gemini-2.5-flash',
+    systemInstruction: 'meta', turns: [],
+    contents: aiContext.toGeminiContents(PREFIX),
+  };
+  await aiContext.generate({ record, message: 'hello' });
+  const sent = sentGemini[sentGemini.length - 1];
+  assert.strictEqual(sent.contents.length, 3);
+  assert.strictEqual(sent.contents[0].parts[0].text, 'You are Sara Chen, CFO.',
+    'an empty turns array must not be read as "this record has a prefix, and it is nothing"');
+});
+
+test('an unknown option throws instead of being dropped in silence', async () => {
+  // The seam INVERTS the spellings relative to anthropic.generate, so a call
+  // site ported from there brings `maxTokens` and one ported from a Gemini
+  // config brings `abortSignal`. Dropping either silently costs that call site
+  // its output budget or its only wall-clock bound, and nothing would notice.
+  const record = await aiContext.prepare({ task: 'personas', name: 'x', turns: PREFIX });
+  await assert.rejects(
+    () => aiContext.generate({ record, message: 'x', maxTokens: 4000 }),
+    /unknown option\(s\) maxTokens/
+  );
+  await assert.rejects(
+    () => aiContext.generate({ record, message: 'x', abortSignal: AbortSignal.timeout(1000) }),
+    /abortSignal/
+  );
+});
+
+test('allowTruncation reaches the Claude branch, where a full budget throws', async () => {
+  // Gemini returns partial text with finishReason MAX_TOKENS; Claude throws a
+  // 502 unless told otherwise. arena.js runs at 400–600 output tokens with a
+  // persona told to answer in "two to four sentences", so the flip turns a
+  // truncated reply into a dead practice session unless this is forwarded.
+  reset();
+  const real = require.cache[sdkPath].exports;
+  const Truncating = function () {
+    this.messages = { create: async () => ({
+      content: [{ type: 'text', text: 'half an ans' }], stop_reason: 'max_tokens',
+      model: 'claude-sonnet-5', usage: { input_tokens: 5, output_tokens: 600 },
+    }) };
+  };
+  Object.assign(Truncating, real);
+  require.cache[sdkPath].exports = Truncating;
+  const wrapperPath = require.resolve(path.join(SRC, 'anthropic.js'));
+  const seamPath = require.resolve(path.join(SRC, 'aiContext.js'));
+  delete require.cache[wrapperPath];
+  delete require.cache[seamPath];
+  const freshSeam = require(seamPath);
+  try {
+    await asAnthropic('personas', async () => {
+      const record = await freshSeam.prepare({ task: 'personas', name: 'x', turns: PREFIX });
+      await assert.rejects(
+        () => freshSeam.generate({ record, message: 'x', maxOutputTokens: 600 }),
+        (e) => e.truncated === true
+      );
+      const ok = await freshSeam.generate({
+        record, message: 'x', maxOutputTokens: 600, allowTruncation: true,
+      });
+      assert.strictEqual(ok.text, 'half an ans', 'the opt-in must actually reach the wrapper');
+    });
+  } finally {
+    require.cache[sdkPath].exports = real;
+    delete require.cache[wrapperPath];
+    delete require.cache[seamPath];
+  }
+});
+
+test('one prepared record can be generated from twice without accumulating breakpoints', async () => {
+  // arena.js re-prepares per turn, but a future refactor memoizing the prefix on
+  // the record would double the breakpoint each call and eventually 400 at five.
+  reset();
+  await asAnthropic('personas', async () => {
+    const record = await aiContext.prepare({ task: 'personas', name: 'x', turns: PREFIX });
+    await aiContext.generate({ record, message: 'turn one' });
+    await aiContext.generate({ record, message: 'turn two' });
+  });
+  for (const sent of sentClaude) {
+    const marks = sent.messages
+      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+      .filter((b) => b.cache_control);
+    assert.strictEqual(marks.length, 1, 'one breakpoint per call, every call');
+  }
+  // …and the record's own neutral turns are untouched, still plain strings.
+  assert.deepStrictEqual(PREFIX.map((t) => typeof t.text), ['string', 'string']);
+});
+
 // ── discard ─────────────────────────────────────────────────────────────────
 
 test('discard deletes on Gemini and is an honest no-op on Claude', async () => {
@@ -356,6 +447,19 @@ test('discard deletes on Gemini and is an honest no-op on Claude', async () => {
   await asAnthropic('personas', async () => {
     assert.strictEqual(await aiContext.discard({ task: 'personas', name: 'kb:global' }), false,
       'nothing was invalidated because nothing exists — a breakpoint has no server resource');
+
+    // …but a caller holding a STORED Gemini pointer must still be able to
+    // delete it after its task has flipped. Resolving from the task alone would
+    // no-op here, and globalCache then nulls cache_name — orphaning a live
+    // cachedContent with nothing left that can name it.
+    const invalidated = [];
+    const realInvalidate = gemini.invalidate;
+    gemini.invalidate = async (n) => { invalidated.push(n); return true; };
+    try {
+      assert.strictEqual(
+        await aiContext.discard({ task: 'personas', name: 'kb:global', provider: 'gemini' }), true);
+      assert.deepStrictEqual(invalidated, ['kb:global']);
+    } finally { gemini.invalidate = realInvalidate; }
   });
 });
 
