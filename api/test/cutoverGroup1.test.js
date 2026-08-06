@@ -22,6 +22,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
 const assert = require('node:assert');
+// Quote/regex-aware, and shared with the two [TEXTUAL] guards — a naive `//`
+// strip would truncate any line of admin.js containing a URL literal.
+const { stripComments } = require('./helpers/stripComments.js');
 
 const SRC = path.join(__dirname, '..', 'src');
 
@@ -142,6 +145,33 @@ test('companyBrief and preview use ONE sentinel for "no model answered"', async 
   });
 });
 
+test('the two fallback paths name the provider, like relevance next door', async () => {
+  // relevance.js got provider attribution in the same commit these two did not,
+  // so one of three fail-open paths was triagable and two were not. Also pins
+  // that companyBrief's line stopped saying "metadata fallback": 'metadata' was
+  // the sentinel this migration DELETED, and a log line is where a deleted
+  // vocabulary survives longest.
+  for (const [label, run] of [
+    ['preview', () => preview.buildPreview('y'.repeat(300), { tenantId: 't1' })],
+    ['companyBrief', () => companyBrief.generateBrief('md', { title: 'Acme' }, 't1')],
+  ]) {
+    for (const [stamped, expected] of [['anthropic', 'anthropic'], [null, 'unknown']]) {
+      const warnings = [];
+      const realWarn = console.warn;
+      console.warn = (...a) => warnings.push(a.map(String).join(' '));
+      try {
+        const err = new Error('down');
+        if (stamped) err.provider = stamped;
+        await withSeam(async () => { throw err; }, run);
+      } finally { console.warn = realWarn; }
+      assert.ok(warnings.some((w) => new RegExp(`failed on ${expected}`).test(w)),
+        `${label} (provider=${stamped}) must log "failed on ${expected}": ${warnings.join(' | ')}`);
+      assert.ok(!warnings.some((w) => /metadata fallback/.test(w)),
+        `${label} must not name the deleted 'metadata' sentinel`);
+    }
+  }
+});
+
 test('preview reports the provider that answered, never a hardcoded vendor', async () => {
   await withSeam(ok({ documentType: 'doc', summary: 's', keyTopics: [], suggestedCategory: null }), async (calls) => {
     const card = await preview.buildPreview('y'.repeat(300), { tenantId: 't1', sourceType: 'pdf' });
@@ -166,6 +196,35 @@ test('the fallback path stays distinguishable from a model answer', async () => 
   });
 });
 
+// web/admin/admin.js, found by walking up for a directory that holds BOTH api/
+// and web/ — never a fixed `../..`.
+//
+// rules/commands.md documents running the suite from `api/` with only that
+// directory mounted (`docker run -v "$PWD":/app -w /app`), where `../../web`
+// does not exist and readFileSync throws ENOENT. A guard that dies on the
+// project's own documented workflow gets deleted or skipped, and then it is
+// guarding nothing. It must still never SKIP, though — a guard that quietly
+// finds nothing to check is the exact failure mode this whole test exists to
+// close — so a genuinely absent web/ is an explicit failure naming the mount.
+function readAdminJs() {
+  let dir = __dirname;
+  for (let i = 0; i < 8; i++) {
+    if (fs.existsSync(path.join(dir, 'api')) && fs.existsSync(path.join(dir, 'web'))) {
+      return fs.readFileSync(path.join(dir, 'web', 'admin', 'admin.js'), 'utf8');
+    }
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  assert.fail(
+    'could not find a directory containing both api/ and web/ above ' + __dirname + '.\n' +
+    'This guard reads web/admin/admin.js, so the REPO ROOT must be mounted, not just api/ — ' +
+    'run it as:\n  docker compose run --rm --no-deps -v "$PWD":/repo -w /repo/api api npm test\n' +
+    'Do not skip this test to make it pass: it is the only thing keeping the "AI summary" ' +
+    'badge working across a summarySource provider flip.'
+  );
+}
+
 // Lift the badge expression out of admin.js so it can be RUN rather than
 // spell-checked. The previous version of this guard matched the source text for
 // `summarySource === '…'`, which pinned exactly one spelling: mutating the real
@@ -173,12 +232,34 @@ test('the fallback path stays distinguishable from a model answer', async () => 
 // `['gemini'].includes(…)`, `startsWith('gem')`, and deleting the badge outright.
 // There is no eslint or prettier in this repo, so the double-quote rewrite is an
 // ordinary edit, not a contrived one. Behaviour is the thing worth pinning.
-function badgeExpression(admin) {
+//
+// SLICED TO renderPreviewCard's BODY FIRST, because the whole-file version had
+// three silent passes of its own in a 13k-line file:
+//
+//   1. a SECOND `const aiTag =` anywhere earlier in the file — admin.js is one
+//      IIFE, so a same-named local in another render function is legal — made
+//      the extractor take the first match and then test a decoy while the real
+//      badge went unchecked;
+//   2. deleting `${aiTag}` from the div while any comment still mentioned it
+//      satisfied the whole-file interpolation match;
+//   3. that same whole-file match was satisfied by an `${aiTag}` inside a
+//      DIFFERENT card, so gating the real interpolation on a provider still
+//      passed.
+//
+// Bounded by the next top-level `function ` at the same indent, which is how
+// every sibling in this file's IIFE is written.
+function previewCardBody(admin) {
+  const start = admin.indexOf('function renderPreviewCard(');
+  if (start === -1) return null;
+  const rest = admin.slice(start + 1);
+  const end = rest.search(/\n {2}function \w/);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+function badgeExpression(body) {
   // Anchored on the assignment and terminated by the statement's semicolon. A
-  // rename or a deletion returns null and fails the test below — a guard that
-  // quietly finds nothing left to check is the failure mode being fixed here,
-  // so this must never degrade to "no offenders found".
-  const m = admin.match(/const\s+aiTag\s*=\s*([\s\S]*?);\s*\n/);
+  // rename or a deletion returns null and fails the test below.
+  const m = body.match(/const\s+aiTag\s*=\s*([\s\S]*?);\s*\n/);
   return m ? m[1] : null;
 }
 
@@ -188,16 +269,30 @@ test('[BEHAVIOURAL] the admin badge gates on "a model answered", not on a vendor
   // to a vendor name would blank the "AI summary" badge for every tenant the
   // moment the api started answering with the other one — silently, since a
   // missing badge looks like a document that simply had no summary.
-  const admin = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'admin', 'admin.js'), 'utf8');
-  const expr = badgeExpression(admin);
+  const admin = readAdminJs();
+  const body = previewCardBody(admin);
+  assert.ok(body,
+    'no `function renderPreviewCard(` in admin.js — the preview card was renamed or removed, ' +
+    'and this guard can no longer find the badge it exists to protect.');
+
+  // Exactly one, inside the slice. Two would mean the extractor below is free
+  // to test a decoy; zero means the badge is gone.
+  const declarations = (body.match(/const\s+aiTag\s*=/g) || []).length;
+  assert.strictEqual(declarations, 1,
+    `renderPreviewCard declares aiTag ${declarations} times — this guard reads the first, ` +
+    'so any other declaration lets the real badge go unchecked');
+
+  const expr = badgeExpression(body);
   assert.ok(expr,
-    'no `const aiTag = …` in admin.js — the "AI summary" badge was renamed or removed. ' +
+    'no `const aiTag = …` in renderPreviewCard — the "AI summary" badge was renamed or removed. ' +
     'Deleting it is not a way to satisfy this guard: summarySource exists to tell a model ' +
     'answer from the fallback, and the badge is the only place a user sees the difference.');
   assert.match(expr, /kb-preview-ai-tag/,
     'the badge expression no longer emits the kb-preview-ai-tag span, so nothing renders');
-  assert.match(admin, /\$\{aiTag\}/,
-    'the badge is computed but never interpolated into the preview card');
+  // In the SAME slice, and with comments stripped: an `${aiTag}` in another
+  // card, or one left behind in a comment, is not this card rendering the badge.
+  assert.match(stripComments(body).replace(expr, ''), /\$\{aiTag\}/,
+    'the badge is computed inside renderPreviewCard but never interpolated into its own output');
 
   // Executing the real expression is what makes the spelling irrelevant.
   const badge = new Function('p', `return (${expr});`);

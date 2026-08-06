@@ -11,20 +11,30 @@
 // retryDelay parser) was invisible precisely because it lived in one line of
 // one module nobody diffed against the other five.
 //
-// THIS MODULE FLIPS NOTHING. models.resolve() returns 'gemini' for every task
-// while DISPATCH_READY is empty, so the anthropic branch below is reached only
-// by tests until a cutover PR adds a task to that set.
+// THIS MODULE CAN NOW MOVE REAL TRAFFIC. relevance, preview and companyBrief
+// are in models.DISPATCH_READY (ADR-0006 §9 item 5), so the anthropic branch
+// below is one `AI_PROVIDER_RELEVANCE=anthropic` away from serving every
+// competitor-document ingest. Membership is eligibility, not activation — the
+// default is still Gemini for every task — but "reached only by tests" stopped
+// being true when group 1 landed.
 //
 // WHAT THE TWO PROVIDERS DO NOT SHARE, and how that is resolved here:
 //
-//   temperature   Gemini takes it. Claude does not — it is a hard 400 on Opus 5
-//                 and Sonnet 5, and there is no substitute on the LITE tier
-//                 (claude-haiku-4-5 rejects `effort` too). Passed through on
-//                 Gemini, dropped on Claude with a one-time warning naming the
-//                 task, because a determinism setting silently disappearing is
-//                 the kind of change that shows up as "the model got flakier"
-//                 three weeks later. ADR-0006 §7 calls this an unmitigated
-//                 capability loss; this is where it first bites.
+//   temperature   Both take it, on the models that take it. It is forwarded to
+//                 BOTH branches; anthropic.generate decides per model, because
+//                 the model id is what the answer depends on and that file owns
+//                 the other per-model capability lists (NO_EFFORT,
+//                 NO_ADAPTIVE_THINKING). Live-probed 2026-08-06:
+//                 claude-haiku-4-5 — the LITE tier serving all three group-1
+//                 tasks — returns 200 with temperature 0.1, while Opus 5 /
+//                 Sonnet 5 / Opus 4.8 / Opus 4.7 / Fable 5 return 400. The seam
+//                 dropping it unconditionally was therefore a real determinism
+//                 loss on exactly the tier being migrated, on a judge whose
+//                 confidence is thresholded at 0.4.
+//   effort        Claude only. Validated here against anthropic.js's own set so
+//                 a bad value fails at the seam on either provider rather than
+//                 passing silently on Gemini and 400ing after the flip — see
+//                 the parameter block below for the thinking interlock.
 //   thinking      Gemini: thinkingConfig.thinkingBudget = 0. Claude: thinking
 //                 false. Both default OFF here, matching every call site being
 //                 migrated, so a swap does not silently start paying for
@@ -69,12 +79,20 @@ function warnOnce(key, message) {
 //   - a message containing 503 / UNAVAILABLE / overloaded came back transient
 //     and bought three attempts at a deterministic failure. That is the exact
 //     leak the Anthropic stamp exists to close, reopened one layer up.
+// Guarded, not unconditional. An error that ALREADY carries a provider was
+// stamped by the module that raised it — anthropic.js sets `sdkRetried: true`
+// on the statuses its client really did retry (429/5xx/connection), and
+// classify() reads that to stop the app layer stacking a second set of attempts
+// on top. Overwriting it here would reset that true to false and reinstate the
+// 9-upstream-requests-for-one-call stacking aiRetry.js exists to remove. Only
+// unattributed errors get this module's stamp.
 function stamp(err, provider) {
+  if (err.provider) return err;
   err.provider = provider;
   // Truthful, and READ: classify() only lets the app layer stand down when the
-  // client already retried. Nothing raised here went through an SDK retry loop
-  // — the parse happens after the response arrived, the validation before the
-  // request was built.
+  // client already retried. Nothing this module raises itself went through an
+  // SDK retry loop — the parse happens after the response arrived, the
+  // validation before the request was built.
   err.sdkRetried = false;
   return err;
 }
@@ -83,17 +101,44 @@ function stamp(err, provider) {
 // V8's SyntaxError message QUOTES THE FIRST TEN CHARACTERS of the input, so an
 // unstamped Claude answer opening "overloaded…" — measured, not hypothetical —
 // arrives at classify() as `Unexpected token 'o', "overloaded"...`, matches
-// Gemini's transient regex and is retried three times. Gemini's own
-// classification is
-// unchanged (its branch scrapes either way, and a regenerate can genuinely fix
-// malformed JSON there); what changes on that side is only that the log line
-// names the right provider.
+// Gemini's transient regex and is retried three times.
+//
+// GEMINI'S CLASSIFICATION IS UNCHANGED BY THE STAMP (its branch scrapes either
+// way) BUT ITS COST IS NOT, and the earlier version of this comment claimed
+// otherwise. relevance.js now runs the parse INSIDE withRetry, so a Gemini
+// answer whose first ten characters match GEMINI_TRANSIENT_RE — V8 quotes
+// exactly ten, so `overloaded…` matches and `The model is overloaded.` does not
+// — costs three metered generations instead of one. That is the price of
+// keeping a regenerate able to fix malformed JSON on the provider that serves
+// every task today; it is a trade, not a no-op.
+//
+// A VALID-JSON NON-OBJECT IS REJECTED HERE, not passed through. `[]`, `5`,
+// `"hi"` and `true` all parse, and every schema in this repo describes an
+// object — so a non-object answer reaching a caller reads as a fully-populated
+// verdict with every field undefined. On relevance that is not a crash but an
+// inversion: `parsed.isOnTopic === true` is false and `Number(undefined) || 0`
+// is 0, so checkDocRelevance returns { isOnTopic: false, confidence: 0 } and
+// QUARANTINES A LEGITIMATE DOCUMENT with no log line at all. `null` was worse
+// still — an unstamped TypeError, logged as `failed on unknown`, sending triage
+// after a missing stamp that was never missing.
 function parseAnswer(text, provider) {
+  let parsed;
   try {
-    return JSON.parse(text);
+    parsed = JSON.parse(text);
   } catch (err) {
     throw stamp(err, provider);
   }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw stamp(
+      new Error(
+        `aiCall: ${provider} returned valid JSON that is not an object ` +
+        `(${Array.isArray(parsed) ? 'array' : typeof parsed}) — every schema in this repo ` +
+        'describes an object, so this cannot be read as a verdict.'
+      ),
+      provider
+    );
+  }
+  return parsed;
 }
 
 // The seam's own pre-dispatch throws. `provider` is 'aiCall' rather than a
@@ -118,7 +163,25 @@ function seamError(msg) {
 //               for Gemini so the coverage guard keeps seeing it — see header
 //   maxTokens   output budget. On Claude this covers thinking too, but thinking
 //               is off, so the sizing a Gemini call site already had still holds
-//   temperature Gemini only — see the header
+//   temperature forwarded to both providers; the Claude wrapper drops it on the
+//               models that 400 on it. See the header
+//   effort      CLAUDE ONLY, and silently ignored on Gemini — validated here
+//               anyway. THE INTERLOCK: this seam defaults `thinking: false`,
+//               and anthropic.generate rejects thinking:false above effort
+//               'high' on claude-opus-5. So a future PRO cutover written as
+//               `effort: 'xhigh'` works perfectly on Gemini (ignored) and
+//               throws on EVERY Claude call the moment the env var flips.
+//               Validating the vocabulary here at least makes a typo fail the
+//               same way on both providers; the thinking interlock is
+//               anthropic.js's to enforce, and it does
+//   signal      abort semantics DIFFER BY BRANCH, verified in @google/genai:
+//               Claude rejects an already-aborted signal immediately, Google
+//               IGNORES it and sends the request anyway. And Google's own
+//               docstring says aborting does not cancel server-side work and
+//               you are still billed for it — while costs.recordGemini below
+//               sits AFTER the await, so an aborted Gemini call spends money
+//               this meter never sees. missions/brief.js already passes an
+//               abortSignal, so this is live, not hypothetical
 //   site        the cost-telemetry label, e.g. 'kb.relevanceDoc'
 //
 // Returns { text, parsed, usage, model, provider }. `parsed` is the JSON.parse
@@ -140,7 +203,7 @@ async function generateStructured({
   site = null,
   signal = null,
   ...unknown
-}) {
+} = {}) {   // `= {}` so a bare generateStructured() throws the stamped "task required" below, not an unstamped destructuring TypeError
   // Same reasoning as anthropic.generate's guard: a silently-ignored key is how
   // maxOutputTokens or abortSignal vanishes in a mechanical port, taking a call
   // site's output budget or its only wall-clock bound with it.
@@ -153,23 +216,30 @@ async function generateStructured({
   }
   if (!task) throw seamError('aiCall.generateStructured: task required');
   if (!prompt) throw seamError('aiCall.generateStructured: prompt required');
+  // Rejected at the seam rather than at the wrapper, because the wrapper is
+  // only reached on the Claude branch: an unknown effort on a Gemini-serving
+  // task would otherwise be a silent no-op right up until the flip, which is
+  // the worst possible moment to discover a typo.
+  if (!anthropic.EFFORTS.has(effort)) {
+    throw seamError(
+      `aiCall.generateStructured: unknown effort "${effort}" for task "${task}" — ` +
+      `one of ${[...anthropic.EFFORTS].join(', ')}. Gemini ignores this parameter, so an ` +
+      'invalid value would sit unnoticed until the task is flipped to Claude.'
+    );
+  }
 
   const { provider, model } = models.resolve(task);
   const label = site || `ai.${task}`;
 
   if (provider === 'anthropic') {
-    if (temperature != null) {
-      warnOnce(`temp:${task}`,
-        `[aiCall] task "${task}" sets temperature ${temperature}, which Claude does not accept — ` +
-        'dropping it. There is no substitute on the LITE tier (claude-haiku-4-5 rejects `effort`), ' +
-        'so determinism has to come from the prompt (ADR-0006 §7).'
-      );
-    }
     // Cost is recorded inside generate(), against the SERVING model — with
     // server-side fallbacks that can differ from the one we asked for.
+    // temperature goes THROUGH: the wrapper drops it per model (NO_TEMPERATURE
+    // there), which keeps it on claude-haiku-4-5 — the tier every group-1 task
+    // resolves to, and the one that accepts it.
     const r = await anthropic.generate({
       model, prompt, system, schema: responseSchema, maxTokens, effort, thinking,
-      allowTruncation, tenantId, site: label, signal,
+      temperature, allowTruncation, tenantId, site: label, signal,
     });
     return {
       text: r.text,
@@ -180,7 +250,29 @@ async function generateStructured({
     };
   }
 
-  const ai = gemini.getClient();
+  // `effort` has no Gemini equivalent and is dropped here. Said once per task,
+  // because a capability disappearing quietly is the same class of bug the
+  // temperature drop was — and a task tuned to 'max' on Claude that is rolled
+  // back to Gemini would otherwise regress in silence.
+  if (effort !== 'medium') {
+    warnOnce(`effort:${task}`,
+      `[aiCall] task "${task}" asks for effort "${effort}", which Gemini has no equivalent for — ` +
+      'ignoring it. It takes effect only when this task resolves to anthropic.'
+    );
+  }
+
+  // getClient() throws "GEMINI_API_KEY is not set" with no stamp of its own, so
+  // it reached classify() as an unattributed error and was routed by scraping
+  // its message — falsifying this file's own "every error is attributable"
+  // invariant. Reachable today, not hypothetical: providerFor() only key-checks
+  // NON-DEFAULT providers, so a process missing GEMINI_API_KEY resolves happily
+  // to gemini and fails here.
+  let ai;
+  try {
+    ai = gemini.getClient();
+  } catch (err) {
+    throw stamp(err, provider);
+  }
   const config = {
     maxOutputTokens: maxTokens,
     thinkingConfig: { thinkingBudget: thinking ? -1 : 0 },
@@ -208,4 +300,10 @@ async function generateStructured({
   };
 }
 
-module.exports = { generateStructured };
+// stamp is exported for tests, for the same reason anthropic.js exports
+// refusalError: nothing that reaches generateStructured's callers exercises the
+// already-stamped branch today (an error from anthropic.generate propagates
+// without passing through here), so the guard that keeps a future wrapper from
+// resetting `sdkRetried: true` would otherwise be untestable — and therefore
+// silently removable.
+module.exports = { generateStructured, stamp };

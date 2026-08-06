@@ -376,10 +376,19 @@ test('unknown options throw rather than vanishing', async () => {
     () => anthropic.generate({ model: 'claude-opus-5', prompt: 'x', maxOutputTokens: 2048 }),
     /maxOutputTokens/
   );
-  await assert.rejects(
+  // `temperature` is NOT an unknown option any more, and that reversal is the
+  // point. It was rejected wholesale on the belief that Claude never takes it;
+  // live probe 2026-08-06 says otherwise — claude-haiku-4-5 (our entire LITE
+  // tier) returns 200 with temperature 0.1, while claude-opus-5 and every other
+  // 4.7-generation model returns 400. So the wrapper accepts the option and
+  // decides per model. See NO_TEMPERATURE in anthropic.js.
+  await assert.doesNotReject(
     () => anthropic.generate({ model: 'claude-opus-5', prompt: 'x', temperature: 0.3 }),
-    /unknown option/
+    'temperature is a supported option now — dropped, not rejected, on models that 400 on it'
   );
+  assert.strictEqual(last().temperature, undefined, 'and dropped for opus-5 specifically');
+  await anthropic.generate({ model: 'claude-haiku-4-5', prompt: 'x', temperature: 0.3 });
+  assert.strictEqual(last().temperature, 0.3, 'but kept on the tier that accepts it');
 });
 
 test('a truncated answer throws instead of being returned as complete', async () => {

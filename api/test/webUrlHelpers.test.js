@@ -91,6 +91,34 @@ const APP_FILES = [
   path.join(__dirname, '..', '..', 'web', 'arena', 'arena.js'),
 ];
 
+// ---- the KB preview card's source link -----------------------------------
+//
+// Regression pin for one specific sink, fixed 2026-08-06. renderPreviewCard
+// built `href="${escapeHtml(p.sourceUrl)}"`, and p.sourceUrl is not validated
+// anywhere: api/src/knowledge/web.js takes it from Firecrawl's scrape metadata
+// (`meta.sourceURL || meta.url || url`) and never runs it through new URL().
+// escapeHtml does not touch ':', so a `javascript:` value reaches the DOM
+// intact — the failure mode this whole file exists to document, in the render
+// path the ADR-0006 §9 item 5 cutover touches.
+//
+// Narrow on purpose. admin.js still has NINE other `href="${escapeHtml(…)}"`
+// sinks (integration docsUrl, doc.source_url, competitor sourceUrl, research
+// citations, watch sourceUrl); they are the same class and predate this change,
+// and widening this into a blanket guard would be a security sweep wearing a
+// cutover PR's clothes. Tracked separately — do not delete this note when the
+// sweep lands, replace it with the blanket assertion.
+test('the KB preview card builds its source href with safeHref, not escapeHtml', () => {
+  const admin = fs.readFileSync(APP_FILES[0], 'utf8');
+  const line = admin.split('\n').find((l) => l.includes('class="kb-preview-src"><a href='));
+  assert.ok(line, 'the kb-preview-src link was renamed or removed — re-point this guard at it');
+  assert.match(line, /href="\$\{safeHref\(/,
+    'p.sourceUrl comes from Firecrawl scrape metadata and is never URL-validated; ' +
+    'escapeHtml leaves `javascript:` completely intact');
+  assert.match(line, />\$\{escapeHtml\(p\.sourceUrl\)\}/,
+    'the visible link text must still be HTML-escaped — safeHref belongs on the href only, ' +
+    'since it collapses an unsafe URL to "#" and would hide what the document actually claims');
+});
+
 for (const file of APP_FILES) {
   const rel = path.relative(path.join(__dirname, '..', '..'), file);
   test(`${rel} delegates escaping/URL-safety to DSText instead of reimplementing it`, () => {

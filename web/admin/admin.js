@@ -9806,7 +9806,14 @@
     if (!p || typeof p !== 'object') return '<div>No preview available.</div>';
     const st = p.stats || {};
     const src = p.sourceUrl
-      ? `<div class="kb-preview-src"><a href="${escapeHtml(p.sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(p.sourceUrl)} ↗</a></div>`
+      // safeHref on the href, escapeHtml on the visible text. p.sourceUrl is
+      // NOT tenant input but it is not validated either: knowledge/web.js takes
+      // it from Firecrawl's scrape metadata (`meta.sourceURL || meta.url ||
+      // url`) and never runs it through new URL(). escapeHtml does not touch
+      // ':', so a `javascript:` value survives HTML escaping completely intact
+      // — the exact sink shape web/shared/url.js documents, and the same one
+      // the sibling card at companyIntelCard() already guards.
+      ? `<div class="kb-preview-src"><a href="${safeHref(p.sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(p.sourceUrl)} ↗</a></div>`
       : (p.originalFilename ? `<div class="kb-preview-src kb-subtle">${escapeHtml(p.originalFilename)}</div>` : '');
     const badges = [
       p.documentType ? `<span class="kb-preview-badge doctype">${escapeHtml(p.documentType)}</span>` : '',

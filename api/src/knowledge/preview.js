@@ -150,7 +150,12 @@ async function summarize(text, meta) {
       source: provider,
     };
   } catch (err) {
-    console.warn('[preview] summary generation failed, using fallback:', err.message);
+    // Name the provider, the same way relevance.js does — two providers serve
+    // this path now, and a line that names neither cannot be triaged. 'unknown'
+    // rather than a guess: an unattributed failure must read as unattributed,
+    // and `failed on unknown` is a greppable missing stamp to go and add.
+    const provider = (err && err.provider) || 'unknown';
+    console.warn(`[preview] summary generation failed on ${provider}, using fallback:`, err.message);
     return fallback();
   }
 }

@@ -34,6 +34,16 @@ const aiCall = require('../aiCall');
 const aiRetry = require('../aiRetry');
 const withRetry = aiRetry.forLabel('relevance');
 
+// THE PARSE IS INSIDE withRetry, AND THAT IS A PRICED CHOICE, not a refactor
+// artefact. Before the seam, JSON.parse ran here, outside the retry loop; now
+// aiCall does it and a parse failure is a retryable-looking error inside the
+// loop. Measured: a Gemini answer whose FIRST TEN CHARACTERS match
+// GEMINI_TRANSIENT_RE — V8 quotes exactly ten, so `overloaded…` matches while
+// `The model is overloaded.` does not — costs 3 metered generations instead of
+// 1. Kept, because on Gemini a regenerate can genuinely fix malformed JSON and
+// that is every task today; the Claude side pays nothing, because aiCall stamps
+// its parse errors and classify() never scrapes a stamped one.
+
 // Doc body slice fed to the topicality judge. Smaller than the scoreboard cap —
 // a few thousand chars is plenty to tell what a doc is about.
 const INPUT_CAP = parseInt(process.env.KB_RELEVANCE_INPUT_CAP || '8000', 10);

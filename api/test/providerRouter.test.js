@@ -24,9 +24,19 @@ const assert = require('node:assert');
 const SRC = path.join(__dirname, '..', 'src');
 const models = require(path.join(SRC, 'models.js'));
 
+// ANTHROPIC_API_KEY defaults to a placeholder, and a caller that names it wins.
+//
+// The router fails CLOSED on an unconfigured provider (models.js), so every
+// "this task moves to anthropic" assertion below silently became "it stayed on
+// gemini" wherever no key is present. The dev container has one via compose
+// `env_file`; CI does not — ci.yml sets only REDIS_HOST / JWT_SECRET /
+// ENCRYPTION_KEY / NODE_ENV — which is precisely the local-green / CI-red split
+// this file produced. Spreading `vars` LAST is what keeps the two tests that
+// pass `ANTHROPIC_API_KEY: undefined` deliberately (the missing-key wrapper
+// error, and isConfigured) doing exactly what they say.
 function withEnv(vars, fn) {
   const saved = {};
-  for (const [k, v] of Object.entries(vars)) {
+  for (const [k, v] of Object.entries({ ANTHROPIC_API_KEY: 'sk-ant-test', ...vars })) {
     saved[k] = process.env[k];
     if (v === undefined) delete process.env[k]; else process.env[k] = v;
   }
@@ -60,9 +70,20 @@ test('modelFor still returns a bare model id for the ~20 existing call sites', (
 // router must refuse to hand a Claude model id to the Gemini SDK — on
 // `relevance` that would fail OPEN and silently skip the competitor quarantine
 // for every tenant.
+// Also carries the key, for the same fail-closed reason as withEnv: a future
+// test that makes a task dispatch-ready without going through withEnv would
+// otherwise assert Gemini behaviour while claiming to test Claude's. An inner
+// withEnv that names ANTHROPIC_API_KEY still wins, and restores to this value.
 function asDispatchReady(task, fn) {
+  const savedKey = process.env.ANTHROPIC_API_KEY;
+  const wasReady = models.DISPATCH_READY.has(task);
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
   models.DISPATCH_READY.add(task);
-  try { return fn(); } finally { models.DISPATCH_READY.delete(task); }
+  try { return fn(); } finally {
+    if (!wasReady) models.DISPATCH_READY.delete(task);
+    if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = savedKey;
+  }
 }
 
 test('a task that cannot dispatch yet stays on gemini and says so', () => {
@@ -128,22 +149,36 @@ test('the env var names the router reads are the ones compose passes', () => {
   }
 });
 
-test('an unknown provider falls back to gemini instead of failing boot', () => {
+test('an unknown provider falls back to gemini instead of failing boot, and warns ONCE', () => {
   const warnings = [];
   const realWarn = console.warn;
   console.warn = (m) => warnings.push(String(m));
   try {
     withEnv({ AI_PROVIDER: 'antropic' }, () => {   // deliberate typo
-      assert.strictEqual(models.resolve('discovery').provider, 'gemini');
+      // Twenty resolves, because that is what this path now looks like. Before
+      // ADR-0006 §9 item 4 these three tasks resolved their model ONCE at
+      // require time, so a raw console.warn printed one line per process;
+      // resolving per call put it on the hot path, and `relevance` alone runs
+      // twice per ingested document. A typo'd env var must not become a log
+      // flood — the two branches below it in models.js already use warnOnce for
+      // exactly this reason, and this one had been left behind.
+      for (let i = 0; i < 20; i++) assert.strictEqual(models.resolve('discovery').provider, 'gemini');
     });
   } finally { console.warn = realWarn; }
-  assert.ok(warnings.some((w) => w.includes('antropic')),
-    'a silent fallback would hide the typo — it must warn');
+  const typos = warnings.filter((w) => w.includes('antropic'));
+  assert.strictEqual(typos.length, 1,
+    `a silent fallback hides the typo, and one line per call buries it — got ${typos.length} lines`);
 });
 
 // ── tiering ─────────────────────────────────────────────────────────────────
 
 test('claude tiers follow ADR-0006 §4.1', () => {
+  // Snapshot and restore, never clear(). DISPATCH_READY is a LIVE EXPORTED SET
+  // — clear() wiped relevance/preview/companyBrief out of the module for every
+  // test that ran after this one in the same process, so the group-1 defaults
+  // test below would have been asserting an empty set's behaviour. It passed
+  // only because it happens to run earlier.
+  const snapshot = [...models.DISPATCH_READY];
   for (const k of Object.keys(models.TASKS)) models.DISPATCH_READY.add(k);
   try {
   withEnv({ AI_PROVIDER: 'anthropic' }, () => {
@@ -153,7 +188,39 @@ test('claude tiers follow ADR-0006 §4.1', () => {
     assert.strictEqual(models.resolve('content').model, 'claude-sonnet-5', 'content tier');
     assert.strictEqual(models.resolve('relevance').model, 'claude-haiku-4-5', 'lite tier');
   });
-  } finally { models.DISPATCH_READY.clear(); }
+  } finally {
+    models.DISPATCH_READY.clear();
+    for (const k of snapshot) models.DISPATCH_READY.add(k);
+  }
+});
+
+test('group 1 survives the only test that rewrites the whole set', () => {
+  // Placed immediately after that test on purpose: it is the tripwire for a
+  // helper that mutates the exported Set without restoring it. `clear()` in the
+  // tiering test above used to make this fail.
+  assert.deepStrictEqual([...models.DISPATCH_READY].sort(),
+    ['companyBrief', 'preview', 'relevance']);
+});
+
+test('the fail-closed fallback escalates when the fallback provider is unconfigured too', () => {
+  // isProviderConfigured('gemini') was defined and never called. With an
+  // Anthropic key and no Gemini key the router "stayed on gemini" into a client
+  // that throws on every call — and assessment.js / keypoints.js swallow that
+  // into null, which is the same silent fail-open the guard exists to prevent.
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (m) => warnings.push(String(m));
+  try {
+    // `personas` rather than a task another test touches: warnOnce is keyed on
+    // task+provider, so reusing one would let an earlier warning swallow this
+    // one and the assertion would pass or fail on test ORDER.
+    withEnv({ GEMINI_API_KEY: undefined, ANTHROPIC_API_KEY: undefined, AI_PROVIDER_PERSONAS: 'anthropic' }, () => {
+      assert.strictEqual(models.resolve('personas').provider, 'gemini',
+        'still fails closed — the escalation is about the message, not the routing');
+    });
+  } finally { console.warn = realWarn; }
+  assert.ok(warnings.some((w) => /GEMINI_API_KEY IS NOT SET EITHER/.test(w)),
+    '"staying on gemini" is a lie when gemini cannot run either — say so');
 });
 
 test('keypoints is re-tiered for claude only, leaving gemini untouched', () => {

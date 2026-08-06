@@ -173,9 +173,26 @@ test('the forwarder exemption list stays exactly what it claims to be', () => {
       `${rel} no longer mentions responseSchema — drop it from the exemption list`);
     // A forwarder relays; it must not carry a schema literal of its own, or the
     // exemption would be hiding a genuinely unregistered call site.
-    assert.ok(!/responseSchema\s*:\s*\{/.test(src),
+    //
+    // `[:=]`, not `:`. The mention-count test below exists specifically to
+    // catch the DEFERRED form (`cfg.responseSchema = X`) — and this
+    // self-policing check, which is the only thing standing in for it inside an
+    // exempted file, tested for the colon form alone. A real schema literal
+    // written `config.responseSchema = { … }` inside aiCall.js passed
+    // everything: exempt from the mention count, and invisible here.
+    // `responseJsonSchema` is covered for the same reason MENTION_RE covers it.
+    assert.ok(!/response(?:Json)?Schema\s*[:=]\s*\{/.test(src),
       `${rel} defines an inline schema literal — that is a real call site, not a forward`);
   }
+  // The exemption's cost, pinned. aiCall.js is excused from the mention count,
+  // so nothing else notices a new `responseSchema` appearing in it — including
+  // one that is genuinely a second forwarding path needing its own thought.
+  // Counting makes every such addition a deliberate one-line diff here.
+  const seam = stripComments(fs.readFileSync(path.join(SRC, 'aiCall.js'), 'utf8'));
+  assert.strictEqual((seam.match(MENTION_RE) || []).length, 7,
+    'the number of responseSchema mentions in aiCall.js changed. It is exempt from the ' +
+    'mention-count guard, so this is the only place that notices: confirm the new mention ' +
+    'forwards a caller\'s schema rather than defining one, then update this count.');
 });
 
 // The two tests above enumerate SPELLINGS of a call site, so they can only

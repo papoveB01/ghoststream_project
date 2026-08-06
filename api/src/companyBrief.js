@@ -74,7 +74,12 @@ async function generateBrief(markdown, meta, tenantId = null) {
     // a field that silently becomes false is how the preview badge broke.
     return { ...parsed, keyProducts: parsed.keyProducts || [], headline, source: provider };
   } catch (err) {
-    console.warn('[companyBrief] brief generation failed, using metadata fallback:', err.message);
+    // "metadata fallback" was the old sentinel's name, deleted in this same
+    // migration for exactly the reason the log line kept it alive: two words
+    // for one concept. The sentinel is 'fallback'; so is the log line. And the
+    // provider is named, as in relevance.js and preview.js.
+    const provider = (err && err.provider) || 'unknown';
+    console.warn(`[companyBrief] brief generation failed on ${provider}, using fallback:`, err.message);
     return fallback();
   }
 }
