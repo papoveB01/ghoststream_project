@@ -228,7 +228,7 @@ test('keypoints is re-tiered for claude only, leaving gemini untouched', () => {
   // it. Correcting the Gemini tier here too would be a silent cost/quality
   // change in a PR that is meant to change nothing.
   assert.strictEqual(models.resolve('keypoints').model, 'gemini-2.5-flash-lite',
-    'the gemini path must be byte-identical to before');
+    'the gemini path must still resolve to exactly the model it did before');
   asDispatchReady('keypoints', () => withEnv({ AI_PROVIDER: 'anthropic' }, () => {
     assert.strictEqual(models.resolve('keypoints').model, 'claude-sonnet-5',
       'on claude it takes the flash tier, not lite');

@@ -231,6 +231,17 @@ const NO_XHIGH = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5'];
 // claude-mythos-5 is listed unprobed — it is Project Glasswing-only, and the
 // published surface is Fable 5's. Over-dropping on a model we cannot reach is
 // the safe direction; sending a 400 on every call is not.
+//
+// WHAT RE-DERIVES THIS LIST, since nothing did and it is default-allow. Being
+// over-broad here is caught by the suite (adding claude-haiku-4-5 fails two
+// tests); being UNDER-broad was not — deleting 'claude-opus-4-7' left the whole
+// suite green while making every request to that model a hard 400. So the list
+// is now checked against a probe table that is deliberately not this list:
+// test/live/temperature.js holds what the live API answered per model and
+// re-derives it against the real thing (spends money, out of `npm test`), and
+// test/anthropicSurface.test.js asserts for free in CI that supportsTemperature()
+// still agrees with that table — and that every model models.TIERS can resolve
+// to appears in it, so a new tier default cannot ship unclassified.
 const NO_TEMPERATURE = [
   'claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-mythos-5',
   'claude-opus-4-8', 'claude-opus-4-7',
@@ -689,6 +700,12 @@ async function generate({
 // against THIS set rather than a second copy: an effort typo on a
 // Gemini-serving task is silent until the flip, and two lists would drift the
 // moment a new level ships (as `xhigh` did).
+// NO_TEMPERATURE and supportsTemperature are exported FOR THE GUARDS, not for
+// callers: nothing outside this file decides temperature (that is the point of
+// the list living here), but the capability is unobservable from the request
+// shape alone for a model no test happens to call, which is how an under-broad
+// list stayed invisible. See the note above NO_TEMPERATURE.
 module.exports = {
   getClient, isConfigured, generate, textFrom, translateError, refusalError, EFFORTS,
+  NO_TEMPERATURE, supportsTemperature,
 };

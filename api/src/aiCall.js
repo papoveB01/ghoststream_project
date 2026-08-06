@@ -273,6 +273,14 @@ async function generateStructured({
   } catch (err) {
     throw stamp(err, provider);
   }
+  // SEMANTICALLY identical to the four call sites this replaced, not
+  // byte-identical — the earlier wording overclaimed and someone will diff this
+  // eventually. The keys are assembled in a different ORDER here (maxOutputTokens
+  // and thinkingConfig first; temperature, the schema pair, systemInstruction and
+  // abortSignal appended as they apply), where the originals interleaved them
+  // per call site. Same keys, same values, and object key order is not
+  // significant to @google/genai or to the JSON body it serialises — so there is
+  // no behaviour difference to go looking for, and no discrepancy to re-derive.
   const config = {
     maxOutputTokens: maxTokens,
     thinkingConfig: { thinkingBudget: thinking ? -1 : 0 },

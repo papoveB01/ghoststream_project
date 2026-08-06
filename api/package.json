@@ -11,7 +11,8 @@
     "start": "node src/index.js",
     "migrate": "node db/migrate.js",
     "test": "node --test test/*.test.js",
-    "smoke:schemas": "node test/live/smoke.js"
+    "smoke:schemas": "node test/live/smoke.js",
+    "smoke:temperature": "node test/live/temperature.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

@@ -391,6 +391,58 @@ test('unknown options throw rather than vanishing', async () => {
   assert.strictEqual(last().temperature, 0.3, 'but kept on the tier that accepts it');
 });
 
+// ── the temperature list, against the probe that produced it ────────────────
+//
+// The three tests above pin what the wrapper SENDS for the models they name.
+// That is only ever a spot check of a default-ALLOW list: every model nobody
+// wrote a test for gets temperature by default, so the list can only be caught
+// being over-broad. Deleting 'claude-opus-4-7' from NO_TEMPERATURE — the
+// direction that 400s every request to that model in production — left the
+// suite fully green. These two close that, for free, offline.
+
+test('supportsTemperature() still agrees with the live probe, in both directions', () => {
+  const { PROBED } = require('./live/temperature.js');
+  const wrong = [];
+  for (const [model, accepts] of Object.entries(PROBED)) {
+    const weSend = anthropic.supportsTemperature(model);
+    if (weSend === accepts) continue;
+    wrong.push(weSend
+      ? `${model}: the live API REJECTS temperature but we send it — a 400 on every request`
+      : `${model}: the live API ACCEPTS temperature but we drop it — sampling is unpinned`);
+  }
+  assert.deepStrictEqual(wrong, [],
+    'NO_TEMPERATURE in src/anthropic.js no longer matches what the API actually answered.\n' +
+    'If the models changed, re-probe (npm run smoke:temperature) and update the PROBED table in\n' +
+    'test/live/temperature.js — editing only the list is how the under-broad case ships green:\n  ' +
+    wrong.join('\n  '));
+});
+
+test('every model the router can resolve has been classified', () => {
+  const { PROBED } = require('./live/temperature.js');
+  const models = require(path.join(API, 'src', 'models.js'));
+  // Defaults only — a per-task ANTHROPIC_*_MODEL override is an operator's
+  // runtime choice and cannot be checked here. The tier defaults are what a
+  // release ships with, and what the next model generation changes.
+  const unclassified = Object.entries(models.TIERS.anthropic)
+    .filter(([, id]) => !(id in PROBED))
+    .map(([tier, id]) => `${tier} → ${id}`);
+  assert.deepStrictEqual(unclassified, [],
+    'a Claude tier default that nobody has probed for temperature support. Whether the first\n' +
+    'request after a flip 200s or 400s is currently a guess: run `npm run smoke:temperature`\n' +
+    'and record the answer in test/live/temperature.js:\n  ' + unclassified.join('\n  '));
+});
+
+test('NO_TEMPERATURE holds model ids, not substrings that swallow a whole tier', () => {
+  // `matches()` is a substring test, so a stray '' or 'claude-' entry silently
+  // drops temperature for every model at once. The tests above would catch that
+  // too, but from a mismatch three files away; this says what is actually wrong.
+  for (const id of anthropic.NO_TEMPERATURE) {
+    assert.match(id, /^claude-[a-z]+-\d[\d-]*$/,
+      `"${id}" is not a model id — NO_TEMPERATURE is matched with String.includes(), so a loose ` +
+      'entry drops temperature far beyond the model it was meant for');
+  }
+});
+
 test('a truncated answer throws instead of being returned as complete', async () => {
   const real = require.cache[sdkPath].exports;
   const Truncating = function () {

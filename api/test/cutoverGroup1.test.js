@@ -12,9 +12,9 @@
 //      stay on Gemini while `preview` moves, in the same file.
 //   3. `summarySource` is rendered by web/admin/admin.js. It used to be the
 //      literal 'gemini', so the "AI summary" badge would have vanished on flip.
-//      The guard on that runs the real badge expression against a table of
+//      The guard on that RENDERS the real card against a table of summarySource
 //      values rather than grepping for one spelling of the comparison — see the
-//      note above it for the six mutations the textual version let through.
+//      notes above it for the seven mutations the textual versions let through.
 
 'use strict';
 
@@ -225,8 +225,8 @@ function readAdminJs() {
   );
 }
 
-// Lift the badge expression out of admin.js so it can be RUN rather than
-// spell-checked. The previous version of this guard matched the source text for
+// Lift the badge — and then the whole card — out of admin.js so it can be RUN
+// rather than spell-checked. The first version of this guard matched source text for
 // `summarySource === '…'`, which pinned exactly one spelling: mutating the real
 // file seven ways defeated it six times — double quotes, backticks, Yoda order,
 // `['gemini'].includes(…)`, `startsWith('gem')`, and deleting the badge outright.
@@ -263,6 +263,87 @@ function badgeExpression(body) {
   return m ? m[1] : null;
 }
 
+// The card's WHOLE declaration, so it can be EXECUTED rather than read.
+//
+// The seventh mutation the expression-level version let through: the guard
+// checked that `${aiTag}` still appeared in the comment-stripped body, and
+// stripComments strips JAVASCRIPT comments. The badge is interpolated inside a
+// template literal, so `…${escapeHtml(p.summary)}</div><!-- badge ${aiTag}
+// moved -->` is not a JS comment at all — it is live template text that emits an
+// HTML comment. The regex stayed satisfied, the suite stayed 10/10, and the
+// badge rendered where no browser shows it. That is not a contrived edit; it is
+// what commenting markup out looks like when a developer does it in a hurry.
+//
+// A second blind spot in the same line, found while re-running the bypasses: a
+// genuine `/* … */` written INSIDE a template interpolation is not stripped
+// either, because stripComments is quote-aware and treats template contents as
+// string text. Both are the same mistake — reasoning about rendered markup from
+// JavaScript source text.
+//
+// Rendering closes the whole class rather than that one instance: the assertion
+// below becomes "a browser would show the badge for this summarySource", which
+// no rearrangement of source text can satisfy without the badge actually
+// rendering. Text-level checks are kept above it, because they are what catches
+// a guard pointed at the WRONG code (a decoy declaration, a second card) — the
+// failure a render cannot see because it renders whatever it was given.
+//
+// previewCardBody starts one character in (it slices from the match, not the
+// keyword), so re-attach the `f`, and cut at the declaration's own closing brace
+// — the last `\n  }` in the slice, since every brace nested inside the card is
+// indented deeper than its own.
+function previewCardSource(admin) {
+  const body = previewCardBody(admin);
+  if (body == null) return null;
+  const close = body.lastIndexOf('\n  }');
+  return close === -1 ? null : 'f' + body.slice(0, close + 4);
+}
+
+// The card closes over its siblings inside admin.js's one IIFE. They are
+// STUBBED rather than lifted out: the badge is what is under test, and a guard
+// that needs a new stub every time the card starts calling a new helper is a
+// guard that gets deleted the first time it fails for an unrelated edit. So an
+// identifier this test has never heard of resolves to a no-op returning '' —
+// while a real global (String, JSON, Number) still resolves to the real thing,
+// or ordinary code inside the card would silently evaluate to ''.
+const CARD_HELPERS = {
+  escapeHtml: (s) => String(s == null ? '' : s),
+  safeHref: (s) => String(s == null ? '' : s),
+  fmtNum: (n) => String(n),
+  fmtDate: (d) => String(d),
+  prettyCategory: (c) => String(c),
+  renderComparison: () => '',
+};
+
+function renderCard(source, p) {
+  const noop = () => '';
+  const scope = Object.assign({ p }, CARD_HELPERS);
+  const env = new Proxy(scope, {
+    has: (target, key) => (key in target) || !(key in globalThis),
+    // `with` probes Symbol.unscopables on the object; handing it a function
+    // would let a stub decide the scoping rules.
+    get: (target, key) => (key in target ? target[key] : (typeof key === 'symbol' ? undefined : noop)),
+  });
+  let make;
+  try {
+    // `with` is illegal in strict code, and a Function-constructor body does not
+    // inherit this file's 'use strict' — which is the only reason this works.
+    // The card is a function EXPRESSION assigned to a const inside the block, so
+    // that const's own declarative scope wins the name lookup over the proxy.
+    make = new Function('__env', `with (__env) { const __card = ${source}; return __card; }`);
+  } catch (err) {
+    assert.fail(
+      'could not compile renderPreviewCard out of admin.js (' + err.message + ').\n' +
+      'The slice runs from `function renderPreviewCard(` to the next sibling `\\n  function`, so a ' +
+      'sibling written another way — an `async function`, a different indent — makes it swallow ' +
+      'code that is not part of the card. Fix the boundary; do not delete this guard.'
+    );
+  }
+  return String(make(env)(p) || '');
+}
+
+// A browser does not render what is inside an HTML comment. Neither does this.
+const visible = (html) => html.replace(/<!--[\s\S]*?-->/g, '');
+
 test('[BEHAVIOURAL] the admin badge gates on "a model answered", not on a vendor name', () => {
   // web/ is a live bind mount and api/ is a baked image, so the two sides never
   // change at the same instant on a deploy. A frontend comparing summarySource
@@ -270,6 +351,16 @@ test('[BEHAVIOURAL] the admin badge gates on "a model answered", not on a vendor
   // moment the api started answering with the other one — silently, since a
   // missing badge looks like a document that simply had no summary.
   const admin = readAdminJs();
+
+  // ONE definition, or this guard and the browser are reading different code:
+  // admin.js is a single IIFE, so a second `function renderPreviewCard(` is
+  // legal, the LAST one wins at runtime, and everything below slices to the
+  // first.
+  const definitions = (admin.match(/function renderPreviewCard\(/g) || []).length;
+  assert.strictEqual(definitions, 1,
+    `admin.js declares renderPreviewCard ${definitions} times — the browser uses the last one and ` +
+    'this guard reads the first, so the card being checked need not be the card being shipped');
+
   const body = previewCardBody(admin);
   assert.ok(body,
     'no `function renderPreviewCard(` in admin.js — the preview card was renamed or removed, ' +
@@ -289,13 +380,21 @@ test('[BEHAVIOURAL] the admin badge gates on "a model answered", not on a vendor
     'answer from the fallback, and the badge is the only place a user sees the difference.');
   assert.match(expr, /kb-preview-ai-tag/,
     'the badge expression no longer emits the kb-preview-ai-tag span, so nothing renders');
-  // In the SAME slice, and with comments stripped: an `${aiTag}` in another
+  // In the SAME slice, and with JS comments stripped: an `${aiTag}` in another
   // card, or one left behind in a comment, is not this card rendering the badge.
+  // Necessary but NOT sufficient — see previewCardSource above for the HTML
+  // comment this exact line was defeated by. The render below is what decides.
   assert.match(stripComments(body).replace(expr, ''), /\$\{aiTag\}/,
     'the badge is computed inside renderPreviewCard but never interpolated into its own output');
 
-  // Executing the real expression is what makes the spelling irrelevant.
-  const badge = new Function('p', `return (${expr});`);
+  // Rendering the real card is what makes both the spelling AND the surrounding
+  // markup irrelevant: what is asserted is the HTML a browser would show.
+  const source = previewCardSource(admin);
+  assert.ok(source,
+    'renderPreviewCard has no closing `\\n  }` inside its slice — the card is written at an ' +
+    'indent this guard cannot bound, so it can no longer be executed');
+  const render = (summarySource) =>
+    visible(renderCard(source, { summary: 'a one-line summary', summarySource }));
   const cases = [
     // Both providers in flight during ADR-0006 §9 item 5 must badge…
     ['gemini', true],
@@ -313,8 +412,8 @@ test('[BEHAVIOURAL] the admin badge gates on "a model answered", not on a vendor
     ['', false],
   ];
   for (const [summarySource, expected] of cases) {
-    const out = String(badge({ summarySource }) || '');
-    assert.strictEqual(out.includes('kb-preview-ai-tag'), expected,
-      `summarySource=${JSON.stringify(summarySource)} should ${expected ? '' : 'NOT '}show the AI badge`);
+    assert.strictEqual(render(summarySource).includes('kb-preview-ai-tag'), expected,
+      `summarySource=${JSON.stringify(summarySource)} should ${expected ? '' : 'NOT '}show the AI badge ` +
+      'in the card\'s RENDERED html (comments stripped — a badge inside <!-- --> shows nothing)');
   }
 });
