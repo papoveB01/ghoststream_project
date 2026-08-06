@@ -5,6 +5,10 @@
 // text, restore the 429 coverage a cutover silently drops, stop retrying
 // 503/529 at the app layer, and drop the dead `retryDelay` parsers.
 //
+// (§7's brief has five points; the fifth — give the deadline headroom over the
+// per-attempt timeout — is anthropic.js's, not this module's. It was built,
+// measured against the live API, and reverted; see that file.)
+//
 // THREE OF THOSE FOUR NEEDED QUALIFYING, and the reason is the same each time:
 // §7 was written describing the world AFTER the cutover, but this helper ships
 // while every task still resolves to Gemini. Taken literally it would be a live
@@ -50,7 +54,14 @@ const GEMINI_MAX_BACKOFF_MS = 30000;
 
 // A per-day quota is not transient — retrying burns the remaining allowance
 // against a cap that resets tomorrow. Every one of the six copies carried this
-// carve-out (watch.js spelled it differently); it is preserved verbatim.
+// carve-out. The REGEX is preserved verbatim; the semantics are, for five of the
+// six. watch.js applied it as an unconditional veto (`if (perDay || !transient)
+// throw`), where here — as in the other five — it vetoes only the 429 arm. So an
+// error matching BOTH a per-day quota and 503/UNAVAILABLE/overloaded now retries
+// for watch where it used to throw. No real Gemini body carries both tokens
+// (a quota response is not also an overload response), so this is a disclosure,
+// not a live change; recorded because "tightens two matches" was the first
+// description of the watch consolidation and it loosens this one.
 const PER_DAY_RE = /per[_\s-]?day|PerDay|free_tier_requests/i;
 
 // Gemini's transient set, character-for-character from the five copies that

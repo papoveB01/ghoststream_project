@@ -148,6 +148,121 @@ test('an Anthropic error never reaches the Gemini message-scraper', () => {
   assert.strictEqual(aiRetry.classify(new Error(refusalish.message)).transient, true);
 });
 
+test('a refusal is stamped, so free-form provider prose is never scraped', () => {
+  // refusalError never passes through translateError, so the tests above cannot
+  // see it. Deleting its stamp used to leave the suite green while turning a
+  // deterministic decline into three billed calls: measured against a stub
+  // returning HTTP 200 / stop_reason "refusal" whose explanation contained
+  // "…would leave the target service unavailable", 1 billed call became 3.
+  const refusal = anthropic.refusalError({
+    stop_reason: 'refusal',
+    stop_details: {
+      category: 'harmful_content',
+      explanation: 'the request appears to seek an attack that would leave the service unavailable',
+    },
+  });
+  assert.strictEqual(refusal.status, 422);
+  assert.strictEqual(refusal.refusal, true);
+  assert.strictEqual(refusal.provider, 'anthropic', 'unstamped, this gets message-scraped');
+  assert.strictEqual(aiRetry.classify(refusal).transient, false);
+  // The behaviour being excluded, so the assertion above is not mistaken for a
+  // tautology: the same words with no stamp DO read as transient.
+  assert.strictEqual(aiRetry.classify(new Error(refusal.message)).transient, true);
+});
+
+test('argument-validation throws are stamped too — they interpolate caller values', async () => {
+  // Left plain at first, on the reasoning that a literal message cannot match a
+  // transient regex. But these interpolate what the caller passed.
+  await assert.rejects(
+    () => anthropic.generate({ model: 'claude-sonnet-5', prompt: 'x', effort: '503 UNAVAILABLE' }),
+    (e) => {
+      assert.strictEqual(e.provider, 'anthropic');
+      assert.strictEqual(aiRetry.classify(e).transient, false,
+        'an unstamped validation error would buy 3 attempts at a deterministic throw');
+      return true;
+    }
+  );
+});
+
+test('the composed deadline actually reaches the SDK — a hang has to end', async () => {
+  // The guard that prevents an unbounded hang, and NOTHING asserted it: deleting
+  // the signal from generate()'s opts left the suite 291/291 green while a
+  // stalled stream ran past 60s with no bound at all. That is the same
+  // "test that cannot fail" blind spot this whole PR exists to close.
+  const saved = process.env.ANTHROPIC_TIMEOUT_MS;
+  try {
+    process.env.ANTHROPIC_TIMEOUT_MS = '300';
+    delete require.cache[require.resolve(path.join(SRC, 'anthropic.js'))];
+    const fresh = require(path.join(SRC, 'anthropic.js'));
+    const client = fresh.getClient();
+    const neverSettles = new Promise(() => {});
+    client.messages.create = (_params, opts) => {
+      // No signal means no deadline was composed — the request would hang for
+      // ever. Return a promise that never settles so the watchdog below reports
+      // exactly that, rather than the test passing for the wrong reason.
+      if (!opts || !opts.signal) return neverSettles;
+      return new Promise((_resolve, reject) => {
+        opts.signal.addEventListener('abort',
+          () => reject(new Anthropic.APIUserAbortError()), { once: true });
+      });
+    };
+    const call = fresh.generate({ model: 'claude-sonnet-5', prompt: 'x', maxTokens: 100 });
+    // NOT unref'd, deliberately: AbortSignal.timeout's own timer does not keep
+    // the event loop alive, so with nothing else pending the process drains and
+    // the deadline never fires. Harmless in the server (a request is always in
+    // flight); fatal to a test that has only this promise outstanding.
+    let handle;
+    const watchdog = new Promise((_r, reject) => {
+      handle = setTimeout(() => reject(new Error(
+        'generate() did not end within 10x its budget — no deadline reached the SDK'
+      )), 3000);
+    });
+    try {
+      await assert.rejects(() => Promise.race([call, watchdog]), /cancelled or timed out/);
+    } finally { clearTimeout(handle); }
+  } finally {
+    process.env.ANTHROPIC_TIMEOUT_MS = saved;
+    delete require.cache[require.resolve(path.join(SRC, 'anthropic.js'))];
+  }
+});
+
+test('a non-Error throw value cannot reach the Gemini scraper either', () => {
+  const e = anthropic.translateError('a raw string 503 UNAVAILABLE');
+  assert.strictEqual(e.provider, 'anthropic');
+  assert.strictEqual(aiRetry.classify(e).transient, false);
+});
+
+test('ANTHROPIC_MAX_RETRIES=0 hands the retry to the app layer instead of losing it', () => {
+  // The stamp is per error CLASS, so with a client told never to retry it used
+  // to announce "the SDK already retried this" — and the app layer stood down
+  // too. Measured: 1 upstream request, zero retries anywhere. A deployment
+  // setting this to 0 silently lost 429 retry entirely.
+  const saved = process.env.ANTHROPIC_MAX_RETRIES;
+  try {
+    process.env.ANTHROPIC_MAX_RETRIES = '0';
+    delete require.cache[require.resolve(path.join(SRC, 'anthropic.js'))];
+    const fresh = require(path.join(SRC, 'anthropic.js'));
+    const e = fresh.translateError(apiError(429, 'rate limited', 'rate_limit_error'));
+    assert.strictEqual(e.sdkRetried, false, 'a client that never retries must not claim it did');
+    assert.strictEqual(aiRetry.classify(e).transient, true, 'so the app layer covers it');
+  } finally {
+    process.env.ANTHROPIC_MAX_RETRIES = saved;
+    delete require.cache[require.resolve(path.join(SRC, 'anthropic.js'))];
+  }
+});
+
+test('x-should-retry: false is an instruction the stamp has to respect', () => {
+  // The SDK honours the header ahead of the status, so a 429 carrying it was
+  // never retried — stamping it as retried would deny it the app-level cover.
+  const err = Anthropic.APIError.generate(
+    429, { error: { type: 'rate_limit_error', message: 'no' } }, 'no',
+    new Headers({ 'x-should-retry': 'false' })
+  );
+  const e = anthropic.translateError(err);
+  assert.strictEqual(e.sdkRetried, false);
+  assert.strictEqual(aiRetry.classify(e).transient, true);
+});
+
 test('the per-day carve-out survives translation on the Anthropic path', () => {
   // The 429 branch used to discard the provider detail, which made the carve-out
   // permanently dead here: classify matches on the message, and the message no

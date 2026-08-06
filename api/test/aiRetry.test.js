@@ -103,6 +103,13 @@ test('a per-day quota is never transient, on either provider', () => {
     const claude = Object.assign(new Error(msg), { provider: 'anthropic', sdkRetried: true, status: 429 });
     assert.strictEqual(aiRetry.classify(claude).transient, false,
       'a daily cap is not transient just because the status is 429');
+    // With sdkRetried false the 429 arm is otherwise open, so this is the case
+    // that isolates the carve-out on the Anthropic branch. Without it, dropping
+    // `!perDay` there left the suite green.
+    const unretried = Object.assign(new Error(msg), { provider: 'anthropic', sdkRetried: false, status: 429 });
+    assert.strictEqual(aiRetry.classify(unretried).perDay, true);
+    assert.strictEqual(aiRetry.classify(unretried).transient, false,
+      'a daily cap must not be retried even where the app layer would otherwise cover the 429');
   }
 });
 

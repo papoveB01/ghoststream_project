@@ -63,7 +63,8 @@
 //      case for a BARE SDK call, but not through generate(). What is still
 //      live is the OUTER multiplication: each withRetry iteration calls
 //      generate() afresh, minting a new deadline — worst case
-//      ANTHROPIC_TIMEOUT_MS × outer attempts ≈ 366s at the 120s default.
+//      ANTHROPIC_TIMEOUT_MS × outer attempts = 360s at the 120s default
+//      (~366s once the app layer's own 2s+4s sleeps are added).
 //   3. STACKING SURVIVES EXACTLY WHERE IT IS LEAST WANTED, and 429 coverage is
 //      silently lost. translateError() rewrites messages, so the call sites'
 //      Gemini-shaped regexes see: 429 → no match (was 6/6 on the raw error),
@@ -117,15 +118,31 @@ const DEFAULT_MAX_RETRIES = envInt('ANTHROPIC_MAX_RETRIES', 2, 0);
 //   timeout =  40000 (the slice) 3 upstream POSTs, abort at 120.0s
 //
 // Opus 5 generates ~63.7 output tok/s, so a 40s attempt ceiling is ~2,540
-// output tokens — below proposals (3000), watch (6000) and enrichment (8000).
-// The slice bought reachable retries by making three billed generations of the
-// same request the normal outcome of one slow one, and costs.recordClaude sits
-// after the rethrow, so all three recorded $0.00.
+// output tokens — under proposals (3000), watch (6000), enrichment (8000) and
+// assessment's larger call (2600), and close enough to its 2400 one to fail on
+// ordinary variance. The slice bought reachable retries by making three billed
+// generations of the same request the normal outcome of one slow one, and
+// costs.recordClaude sits after the rethrow, so all three recorded $0.00.
 //
 // So: the SDK's retries fire on FAST failures (connection refused, a quick 5xx,
 // a 429 with a short retry-after) and are unreachable on a slow one. That is the
-// correct trade. A slow call keeps its full budget; the deadline still bounds
-// the whole sequence including the streaming path.
+// correct trade. A slow call keeps its full budget.
+//
+// WHAT THE DEADLINE DOES AND DOES NOT BOUND. It bounds a hang and a stalled
+// stream — measured, 6.0s against a 6s budget and 8.0s against an 8s one. It
+// does NOT bound a 429 carrying `retry-after`: the SDK's inter-retry sleep takes
+// no signal (`client.js` calls `await sleep(ms)` with none) and it parses
+// `retry-after` unclamped, so the deadline is only observed at the TOP of the
+// next attempt. Measured: a 3s budget took 45.1s and a 5s budget 60.1s, one
+// upstream request each. The real worst case is
+// `ANTHROPIC_TIMEOUT_MS + maxRetries × retry-after`, unbounded above.
+// scheduler.js's withTimeout is the only guard that actually caps that, which is
+// one more reason ADR-0006 §7 says to keep it. A route with no such wrapper —
+// POST /proposals/:companyId/generate is the live example — is bounded only by
+// nginx's 180s proxy_read_timeout, and nginx timing out does not stop the
+// handler. If Anthropic starts sending large retry-after values on a
+// user-facing route, construct the client with maxRetries: 0 and own the 429
+// retry at the app layer, where the sleep can be made interruptible.
 const ATTEMPT_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
 
 // Above roughly this budget the SDK refuses a non-streaming request (an idle
@@ -237,19 +254,19 @@ function textFrom(message) {
 // instead of a 400 that only appears for some personas.
 function normalizeMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0) {
-    throw new Error('anthropic.generate: messages must be a non-empty array');
+    throw argError('anthropic.generate: messages must be a non-empty array');
   }
   const out = [];
   for (const m of messages) {
     if (!m || (m.role !== 'user' && m.role !== 'assistant')) {
-      throw new Error(
+      throw argError(
         `anthropic.generate: message role must be "user" or "assistant" (got ${JSON.stringify(m && m.role)}). ` +
         'There is no "system" or "model" role here — the system prompt is its own parameter, ' +
         'and Gemini\'s "model" role is spelled "assistant".'
       );
     }
     if (typeof m.content !== 'string' && !Array.isArray(m.content)) {
-      throw new Error('anthropic.generate: message content must be a string or a block array');
+      throw argError('anthropic.generate: message content must be a string or a block array');
     }
     if (typeof m.content === 'string' && m.content.length === 0) continue;
     const prev = out[out.length - 1];
@@ -262,9 +279,9 @@ function normalizeMessages(messages) {
       out.push({ role: m.role, content: m.content });
     }
   }
-  if (out.length === 0) throw new Error('anthropic.generate: messages contained no content');
+  if (out.length === 0) throw argError('anthropic.generate: messages contained no content');
   if (out[0].role !== 'user') {
-    throw new Error('anthropic.generate: the first message must be from the user');
+    throw argError('anthropic.generate: the first message must be from the user');
   }
   return out;
 }
@@ -327,10 +344,13 @@ function refusalError(message) {
 // Every error leaving this module at RUNTIME is stamped with `provider` and
 // `sdkRetried` — translated SDK errors, refusals, truncation and the missing-key
 // error — so aiRetry.classify() has something structured to read instead of
-// scraping a message we ourselves rewrote. The exceptions are the
-// `anthropic.generate: …` argument-validation throws, which are programmer
-// errors with literal messages that no transient regex can match; they are
-// deliberately left plain rather than dressed up as provider failures.
+// scraping a message we ourselves rewrote. That INCLUDES the
+// `anthropic.generate: …` argument-validation throws. They were left plain at
+// first on the reasoning that a literal message cannot match a transient
+// regex — but they interpolate caller-supplied values, so `effort:
+// '503 UNAVAILABLE'` and `role: 'overloaded'` both came back transient and
+// bought three attempts at a deterministic throw. Only reachable from a code
+// bug, but the cost of closing it is one helper.
 // `provider` decides which branch classifies it;
 // `sdkRetried` decides whether the app layer may try again, and IS READ —
 // aiRetry.classify() consults it, which is why it has to be true per branch
@@ -338,17 +358,42 @@ function refusalError(message) {
 // failures; it does NOT retry 401/403/other 4xx, and an abort we raised
 // ourselves never entered its retry path at all. Claiming otherwise would deny
 // an app-level retry to errors that never got one.
+//
+// It is also gated on the CONFIGURED retry count, and that is not pedantry:
+// `ANTHROPIC_MAX_RETRIES=0` is a permitted value, and with a static per-class
+// stamp it meant the wrapper announcing "the SDK already retried this" about a
+// client that had just been told never to retry. The app layer then stood down
+// too, so a deployment setting it to 0 silently lost 429 retry ENTIRELY rather
+// than moving it up a layer. Measured: 1 upstream request, zero retries anywhere.
+const SDK_RETRIES_AT_ALL = DEFAULT_MAX_RETRIES > 0;
+
 function stamp(e, err, sdkRetried) {
   e.provider = 'anthropic';
-  e.sdkRetried = sdkRetried === true;
+  e.sdkRetried = sdkRetried === true && SDK_RETRIES_AT_ALL;
   if (err) e.cause = err;
   return e;
 }
 
+// Argument-validation failures, stamped like everything else that leaves here.
+// A function declaration so it is hoisted above normalizeMessages, which throws
+// several of these and runs before this point in the file.
+function argError(msg) {
+  return stamp(new Error(msg), null, false);
+}
+
 // The SDK's own retry predicate, mirrored for statuses it decided on. Kept
 // narrow and explicit rather than inferred, so a divergence is visible here.
-const sdkRetriesStatus = (status) =>
-  status === 408 || status === 409 || status === 429 || (status >= 500 && status < 600);
+// `x-should-retry: false` is an explicit provider instruction NOT to retry, and
+// the SDK honours it ahead of the status — so a 429 carrying it was never
+// retried and must not be stamped as though it were.
+function sdkRetriesStatus(status, headers) {
+  try {
+    if (headers && typeof headers.get === 'function' && headers.get('x-should-retry') === 'false') {
+      return false;
+    }
+  } catch { /* a header bag that will not answer is not a reason to fail here */ }
+  return status === 408 || status === 409 || status === 429 || (status >= 500 && status < 600);
+}
 
 function translateError(err) {
   if (err instanceof Anthropic.RateLimitError) {
@@ -359,7 +404,7 @@ function translateError(err) {
     // the exact thing all six hand-rolled copies carried a carve-out to prevent.
     const detail = (err.error && err.error.error && err.error.error.message) || '';
     const e = new Error(`AI quota exhausted — retry shortly.${detail ? ` (${detail})` : ''}`);
-    e.status = 429; return stamp(e, err, true);
+    e.status = 429; return stamp(e, err, sdkRetriesStatus(429, err.headers));
   }
   if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) {
     const e = new Error('AI provider rejected our credentials.');
@@ -393,7 +438,7 @@ function translateError(err) {
     const detail = (err.error && err.error.error && err.error.error.message) || err.message || '';
     const e = new Error(`AI provider error (${err.status || '?'})${detail ? `: ${detail}` : ''}`);
     e.status = err.status && err.status < 500 ? 400 : 502;
-    return stamp(e, err, sdkRetriesStatus(err.status));
+    return stamp(e, err, sdkRetriesStatus(err.status, err.headers));
   }
   // Anything that is not an SDK error class — an AnthropicError from option
   // validation, a stream-reassembly failure, a bug in this module. It used to
@@ -402,7 +447,9 @@ function translateError(err) {
   // to contain "unavailable". Stamp it in place; nothing the SDK never saw is
   // claimed as retried.
   if (err instanceof Error) return stamp(err, null, false);
-  return err;
+  // A non-Error throw value would otherwise leave unstamped and be scraped:
+  // translateError('a raw string 503 UNAVAILABLE') came back transient.
+  return stamp(new Error(String(err)), null, false);
 }
 
 // One generation.
@@ -451,24 +498,24 @@ async function generate({
   // it and leaving nothing to notice.
   const stray = Object.keys(unknown);
   if (stray.length) {
-    throw new Error(
+    throw argError(
       `anthropic.generate: unknown option(s) ${stray.join(', ')}. ` +
       'Gemini spellings differ: abortSignal→signal, maxOutputTokens→maxTokens; ' +
       'temperature is not supported (it is a 400 on Opus 5 and Sonnet 5).'
     );
   }
-  if (!model) throw new Error('anthropic.generate: model required');
+  if (!model) throw argError('anthropic.generate: model required');
   if (prompt && messages) {
-    throw new Error('anthropic.generate: pass prompt OR messages, not both');
+    throw argError('anthropic.generate: pass prompt OR messages, not both');
   }
-  if (!prompt && !messages) throw new Error('anthropic.generate: prompt or messages required');
-  if (!EFFORTS.has(effort)) throw new Error(`anthropic.generate: unknown effort "${effort}"`);
+  if (!prompt && !messages) throw argError('anthropic.generate: prompt or messages required');
+  if (!EFFORTS.has(effort)) throw argError(`anthropic.generate: unknown effort "${effort}"`);
   if (!thinking
       && matches(model, THINKING_DISABLED_EFFORT_CAPPED)
       && !THINKING_DISABLED_MAX_EFFORT.has(effort)) {
     // Caught here rather than as a 400 from the API, because the caller cannot
     // see the constraint and the message would not say which knob to move.
-    throw new Error(
+    throw argError(
       `anthropic.generate: thinking:false is only allowed at effort <= high (got "${effort}") — ` +
       'lower the effort or leave thinking on'
     );
@@ -511,7 +558,7 @@ async function generate({
 
   const breakpoints = countBreakpoints(params);
   if (breakpoints > MAX_CACHE_BREAKPOINTS) {
-    throw new Error(
+    throw argError(
       `anthropic.generate: ${breakpoints} cache_control breakpoints, max is ${MAX_CACHE_BREAKPOINTS} ` +
       '— the API rejects the fifth with a 400 rather than dropping it. ' +
       'Cache the longest stable prefixes and leave the rest uncached.'
@@ -573,4 +620,6 @@ async function generate({
   };
 }
 
-module.exports = { getClient, isConfigured, generate, textFrom, translateError };
+// refusalError is exported for tests: it never passes through translateError,
+// so nothing else could assert that it carries the stamp aiRetry branches on.
+module.exports = { getClient, isConfigured, generate, textFrom, translateError, refusalError };
