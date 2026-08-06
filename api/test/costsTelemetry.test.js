@@ -137,11 +137,47 @@ test('[TEXTUAL] no file records the same site label twice', () => {
   assert.deepStrictEqual(offenders, [], offenders.join('\n  '));
 });
 
+// A migrated call site no longer records its own spend: aiCall.generateStructured
+// records for Gemini and anthropic.generate records for Claude, both keyed on the
+// `site` the caller passes. So the sweep has to count BOTH spellings, or the floor
+// below simply erodes as ADR-0006 §9 item 5 proceeds — one call site at a time,
+// each drop individually unremarkable, until the guard is counting almost nothing
+// and still passing. Group 1 alone moved four of them.
+function seamSiteLabels(src) {
+  const out = [];
+  // `.generateStructured({` — the METHOD-CALL form. A bare
+  // `generateStructured\(\{` also matches the function's own definition in
+  // aiCall.js, which is a definer rather than a caller and has no site to pass.
+  for (const m of src.matchAll(/\.generateStructured\(\{/g)) {
+    // Bounded window rather than a lazy match to the next `})`: a nested object
+    // in the arguments would end a lazy match early and silently skip the label.
+    const window = src.slice(m.index, m.index + 1200);
+    const site = window.match(/\bsite:\s*'([^']+)'/);
+    out.push(site ? site[1] : null);
+  }
+  return out;
+}
+
+test('[TEXTUAL] every seam call site passes an explicit site label', () => {
+  // Without one, aiCall falls back to `ai.<task>` — which is not the
+  // '<area>.<operation>' convention the rollup groups on, and would quietly
+  // fragment a task's spend across two labels during a migration.
+  const offenders = [];
+  for (const file of walkJs(SRC)) {
+    const src = stripComments(fs.readFileSync(file, 'utf8'));
+    seamSiteLabels(src).forEach((label, i) => {
+      if (!label) offenders.push(`${path.relative(SRC, file)} — generateStructured #${i + 1} has no site:`);
+    });
+  }
+  assert.deepStrictEqual(offenders, [], offenders.join('\n  '));
+});
+
 test('[TEXTUAL] the recorded site labels are unique and namespaced', () => {
   const labels = [];
   for (const file of walkJs(SRC)) {
     const src = fs.readFileSync(file, 'utf8');
     for (const m of src.matchAll(/costs\.recordGemini\([^,]+,\s*'([^']+)'/g)) labels.push(m[1]);
+    for (const label of seamSiteLabels(src)) if (label) labels.push(label);
   }
   assert.ok(labels.length >= 25, `expected the full call-site sweep to be instrumented, found ${labels.length}`);
   for (const l of labels) {

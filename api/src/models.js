@@ -65,7 +65,20 @@ const DEFAULT_PROVIDER = 'gemini';
 // the router honours the env var by warning and staying put, so an operator who
 // follows the migration runbook early gets a loud no-op instead of a silent
 // corruption.
-const DISPATCH_READY = new Set([]);
+//
+// GROUP 1 (ADR-0006 §9 item 5), migrated onto aiCall.generateStructured:
+//   relevance     knowledge/relevance.js — both call sites
+//   preview       knowledge/preview.js   — summarize() ONLY. `compare` lives in
+//                 the same file and is NOT here: it belongs to a later group,
+//                 so that file deliberately holds one seam call and one direct
+//                 Gemini call until its own cutover.
+//   companyBrief  companyBrief.js
+//
+// Membership alone changes nothing — it makes a task ELIGIBLE. The provider is
+// still chosen by AI_PROVIDER / AI_PROVIDER_<TASK>, which default to gemini,
+// and providerFor() additionally refuses to dispatch when the target provider's
+// key is not configured.
+const DISPATCH_READY = new Set(['relevance', 'preview', 'companyBrief']);
 
 // task → { tier, env(legacy per-task override), anthropicEnv, anthropicTier }
 //

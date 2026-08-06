@@ -172,9 +172,14 @@ test('an unknown option throws instead of vanishing', async () => {
   });
 });
 
-test('the seam flips nothing on its own — every task still resolves to Gemini', () => {
-  assert.strictEqual(models.DISPATCH_READY.size, 0,
-    'PR A ships the seam, not a cutover; a task joins this set with its call site');
+test('membership in DISPATCH_READY is eligibility, not a flip', () => {
+  // Group 1 is migrated and eligible, but with no AI_PROVIDER_* set every task
+  // — ready or not — still resolves to Gemini. Eligibility and activation are
+  // separate on purpose: merging the code must not move traffic, so the flip is
+  // an env change an operator makes deliberately and can reverse.
+  assert.deepStrictEqual([...models.DISPATCH_READY].sort(),
+    ['companyBrief', 'preview', 'relevance'],
+    'a task joins this set in the same PR that migrates its call site');
   for (const task of Object.keys(models.TASKS)) {
     assert.strictEqual(models.resolve(task).provider, 'gemini', task);
   }

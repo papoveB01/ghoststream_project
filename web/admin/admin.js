@@ -9822,7 +9822,13 @@
       ? `<details class="kb-preview-sec"><summary>Outline (${p.outline.length})</summary><ul class="kb-preview-outline">${p.outline.map((o) => `<li class="lvl-${o.level}">${escapeHtml(o.heading)}</li>`).join('')}</ul></details>` : '';
     const fulltext = p.fullText
       ? `<details class="kb-preview-sec"><summary>Extracted text${p.fullTextTruncated ? ' (truncated)' : ''}</summary><pre class="kb-preview-fulltext">${escapeHtml(p.fullText)}</pre></details>` : '';
-    const aiTag = p.summarySource === 'gemini' ? '<span class="kb-preview-ai-tag">AI summary</span>' : '';
+    // Any model-produced summary, not one named vendor. This used to test
+    // === 'gemini', so the badge would have vanished the moment the preview task
+    // moved to Claude (ADR-0006 §9 item 5) — silently, for every tenant, with
+    // web/ being a live bind mount and api/ a baked image so the two sides never
+    // change at the same instant. 'fallback' is the only non-model value.
+    const aiTag = (p.summarySource && p.summarySource !== 'fallback')
+      ? '<span class="kb-preview-ai-tag">AI summary</span>' : '';
     const catHint = p.suggestedCategory ? `
       <div class="kb-preview-cat">
         <span class="kb-preview-cat-label">${p.suggestedCategorySource === 'scope' ? 'Category' : 'Suggested category'}</span>

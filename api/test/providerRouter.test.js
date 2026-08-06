@@ -66,14 +66,21 @@ function asDispatchReady(task, fn) {
 }
 
 test('a task that cannot dispatch yet stays on gemini and says so', () => {
+  // `discovery`, not `relevance`: group 1 migrated relevance/preview/companyBrief
+  // and they are dispatch-ready now (ADR-0006 §9 item 5). This test is about the
+  // UNMIGRATED case, so it has to name a task that is genuinely still unmigrated
+  // — otherwise it would keep passing for the wrong reason as the migration
+  // proceeds, and stop testing anything on the last cutover.
+  assert.ok(!models.DISPATCH_READY.has('discovery'),
+    'pick another unmigrated task — this one has been cut over');
   const warnings = [];
   const realWarn = console.warn;
   console.warn = (m) => warnings.push(String(m));
   try {
-    withEnv({ AI_PROVIDER_RELEVANCE: 'anthropic' }, () => {
-      assert.strictEqual(models.resolve('relevance').provider, 'gemini',
-        'no call site reads resolve().provider yet — honouring this would 404 every call');
-      assert.match(models.resolve('relevance').model, /^gemini-/);
+    withEnv({ AI_PROVIDER_DISCOVERY: 'anthropic' }, () => {
+      assert.strictEqual(models.resolve('discovery').provider, 'gemini',
+        'that call site does not read resolve().provider yet — honouring this would 404 every call');
+      assert.match(models.resolve('discovery').model, /^gemini-/);
     });
   } finally { console.warn = realWarn; }
   assert.ok(warnings.some((w) => w.includes('cannot dispatch yet')),
