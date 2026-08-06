@@ -45,19 +45,44 @@ these are lazily loaded on purpose, so don't work from the summaries below.
 
 ## How work gets built
 
-The four passes below are not a formality bolted onto finished code — they are
-how the work is produced. Writing the code is one step of five, and **the author
-is never the reviewer of record**:
+### The main session agent is the COORDINATOR and does not write the code
 
-1. **Decompose before writing.** Size the change against the review that will
-   have to absorb it. If a per-file pass would need more than ~10 spokes, the PR
-   is too big — split it *first*, and make each half independently coherent: its
-   own tests must pass on their own, and it must leave the tree deployable if
-   the other half never lands.
-2. **Implement.** One reviewable concern per PR (`rules/conventions.md`).
-3. **Per-file spokes → 4. cross-integration → 5. confidence verification →
-   verdict** — exactly as in "Reviewing a PR" below, run as part of delivering
-   the work, not deferred to merge day.
+This is a role separation, not a preference, and it holds for every substantive
+change. The agent talking to the user **orchestrates**; it does not author the
+diff it will then be responsible for shipping.
+
+| Stage | Who | Output |
+| --- | --- | --- |
+| 1. Decompose + brief | **Coordinator** (main session) | scope, risks, split |
+| 2. Implement | **Implementer subagent(s)** | the branch + PR |
+| 3. Integration testing | **Integration spoke(s)** | does it work *together*, end to end |
+| 4. Per-file review | **Review spoke(s)**, count scaled to file count | findings |
+| 5. Confidence verification | **One confidence agent** | PROVEN / DISPROVEN per claim |
+| 6. Merge | **Coordinator** | only on a positive pass 5 |
+
+Rules that make the separation real:
+
+- **The coordinator never writes production code.** It writes briefs, arbitrates
+  between agents, relays findings to the implementer, and merges. If it authors
+  the diff, every later pass is reviewing its own work through a proxy and the
+  whole structure collapses into self-review with extra steps.
+- **Implementation goes to a subagent, and that subagent submits the PR.**
+  Fixes arising from review go back to an implementer agent too — the reviewer
+  reports, the implementer changes.
+- **Spoke count scales with the change.** Roughly one review spoke per file or
+  per tightly-coupled pair; if that needs more than ~10, the PR is too big —
+  split it *first*, and make each half independently coherent: its own tests
+  must pass on their own, and it must leave the tree deployable if the other
+  half never lands.
+- **Integration testing is its own stage, before per-file review** — exercising
+  the change as a working whole, not reading it. A per-file pass cannot tell you
+  the thing runs.
+- **Merge is gated on the confidence agent's verdict.** Negative or partial →
+  back to stage 2. Not "merge and follow up".
+- **One reviewable concern per PR** (`rules/conventions.md`).
+
+The four passes below are not a formality bolted onto finished code — they are
+how the work is produced, and **the author is never the reviewer of record.**
 
 Three rules that separate a real review from a ritual:
 
@@ -121,6 +146,13 @@ opened the rule file yet:
   time (see "How work gets built" and "Reviewing a PR" above). The passes are
   part of building the change, not a merge-day formality. Merging to `main`
   deploys production unattended, so the review *is* the gate.
+
+- **The main session agent coordinates; subagents implement.** The agent
+  speaking to the user does not author the diff — it decomposes, briefs an
+  implementer subagent, then runs integration, per-file review and confidence
+  agents over the result, and merges only on a positive confidence verdict. A
+  coordinator that writes the code has turned every later pass into self-review
+  wearing a costume.
 
 - **Never edit an applied migration** — add a new numbered one.
 - **Never repoint a v1 `STRIPE_PRICE_*` at a v2 price.** Grandfathering depends on v1
