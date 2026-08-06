@@ -667,7 +667,10 @@ creating one; `plans.js` has no code path that migrates a v1 tenant to v2.
 - Six hand-duplicated `withRetry` functions (`watch.js:36`, `proposals.js:30`,
   `research.js:305`, `relevance.js:52`, `assessment.js:86`, `discovery.js:78`),
   each regex-matching Gemini error strings, collapse into one helper over
-  typed SDK exceptions.
+  typed SDK exceptions. **Amended 2026-08-06 (§9 item 3's retry block): one
+  helper yes, typed exceptions only on the Anthropic branch.** There is no typed
+  exception on the Gemini side at all, so message-scraping survives inside
+  `classify()`'s Gemini branch — which is 100% of traffic until the cutover.
 - 1M context with no long-context premium relieves the truncation pressure
   that produced `parseItemsLoose()` (`discovery.js:103-129`, a brace-depth
   scanner that salvages complete elements from truncated JSON) and the
@@ -766,14 +769,28 @@ creating one; `plans.js` has no code path that migrates a v1 tenant to v2.
     composes an `AbortSignal.timeout(...)` the SDK re-links onto every attempt,
     bounding the whole sequence (4.0s with a 4s signal). But the outer
     multiplication is still live: each `withRetry` iteration calls `generate()`
-    afresh, so worst case is `ANTHROPIC_TIMEOUT_MS × outer attempts` ≈ **366s**
-    at the 120s default.
+    afresh, so worst case is `ANTHROPIC_TIMEOUT_MS × outer attempts` = **360s**
+    at the 120s default (~366s with the app layer's own 2s+4s sleeps).
+    ~~Still live.~~ **Closed 2026-08-06:** the app layer no longer re-enters
+    `generate()` on any Anthropic error, so there is no outer multiplication
+    left. And the "bounding the whole sequence" claim is now known to be
+    incomplete — see the deadline note below.
   - **`DEFAULT_TIMEOUT_MS` is used for both the SDK `timeout` and the composed
     deadline**, so on a hang the first attempt consumes the entire budget and
     **the SDK's own retries are unreachable** — which undercuts the "the SDK
     already retries, so we don't need to" premise. Give the deadline headroom
     over the per-attempt timeout, or accept that SDK retries only ever fire on
-    fast failures.
+    fast failures. **Resolved 2026-08-06: the second clause.** Slicing was built,
+    measured against the live API, and reverted — a slow generation is retried on
+    the SDK's connection-error branch exactly like a hung one, so it converts
+    "slow" into three billed failures.
+  - **The deadline does NOT bound a 429 carrying `retry-after`** (added
+    2026-08-06). The SDK's inter-retry sleep takes no signal and parses
+    `retry-after` unclamped, so the deadline is only observed at the top of the
+    next attempt. Measured: a 3s budget took 45.1s, a 5s budget 60.1s, one
+    upstream request each. True worst case is `ANTHROPIC_TIMEOUT_MS + maxRetries
+    × retry-after`, unbounded above — which is a further argument for keeping
+    `scheduler.js`'s `withTimeout`, the only thing that actually caps it.
 
   The consolidated helper (§8 Phase 1) must therefore key off the **typed SDK
   exceptions**, not message text; restore 429 coverage; stop retrying 503/529 at
@@ -1043,6 +1060,14 @@ decomposition exists so that per-file spokes stay tractable.
    §9 item 3 exists for, and this one had to be made to fail before it was worth
    anything.
 
+   ---
+
+   **⚠ THE REST OF THIS ITEM IS A DIFFERENT, UNMERGED PIECE OF WORK.** It is
+   recorded here because item 4's review surfaced it, but it is §8 **Phase 1**,
+   not Phase 2, and it is **not** covered by item 4's `✅ Shipped` marker above.
+   It has no item number of its own only because renumbering items 5–8 would
+   break the cross-references elsewhere in this ADR.
+
    **Related, and better done as its own PR (§8 Phase 1's "consolidated retry
    helper"):** the six hand-rolled `withRetry` copies. Their brief is *not*
    "prevent stacking" — see §7. It is: key off the SDK's typed exceptions rather
@@ -1050,6 +1075,142 @@ decomposition exists so that per-file spokes stay tractable.
    retrying 503/529 at the app layer, delete the four dead `retryDelay` parsers,
    and give the deadline headroom over the per-attempt timeout so the SDK's own
    retries become reachable.
+
+   *Built as `api/src/aiRetry.js` (PR #51). Reviewed 2026-08-06 — first pass
+   verdict DO NOT MERGE, three blockers, all fixed in the same PR; see "What the
+   review found" below. Not merged, not deployed.* **Three of those five points
+   needed qualifying, all for the same reason: §7 describes the world AFTER the
+   cutover, but the helper ships while every task still resolves to Gemini.
+   Taken literally, each would have been a live regression on the only provider
+   currently serving traffic.**
+
+   - **"Key off typed exceptions" — there are none on the Gemini side.** The
+     `@google/genai` SDK puts the upstream JSON straight into `err.message`,
+     which is *why* all six copies grew a regex and why `brief.js`'s
+     `translateGeminiError` has to `JSON.parse` a substring to find the status.
+     So the helper cannot be uniform. What it does instead is classify once:
+     message-scraping survives, but only inside `classify()`'s Gemini branch.
+   - **"Stop retrying 503/529 at the app layer" — right for Anthropic, wrong for
+     Gemini.** Anthropic's SDK retries them, so stacking reaches 9 attempts;
+     Gemini's does not retry at all, so removing it would drop 503 handling from
+     every path running today. Resolved with a `sdkRetried` stamp that
+     `anthropic.translateError` puts on every error leaving the wrapper: the
+     client that already retried says so, and only then does the app layer stand
+     down. **This applies to 429 as well** — the first build exempted it and
+     re-created the stacking; see blocker 2.
+   - **"Delete the `retryDelay` parsers" — dead on Anthropic, live on Gemini**,
+     which suggests a delay in the error body and gives that path its only
+     backoff signal. Kept for Gemini, never consulted for Anthropic.
+
+   Only the 429 point needed no qualification: the translated message contains
+   neither `429` nor `RESOURCE_EXHAUSTED`, so every copy had silently stopped
+   matching the transient they were all written for. `classify()` reads
+   `err.status`, so it is recognised again — but the *retry* is the SDK's, not
+   the app layer's. See blocker 2.
+
+   **The deadline point is ACCEPTED, not fixed, and that is the correction.**
+   The first build took neither option §7 floats: it made `ANTHROPIC_TIMEOUT_MS`
+   the whole-call budget and sliced the SDK's per-attempt timeout out of it
+   (`/(maxRetries+1)`), so retries became reachable inside an unchanged outer
+   bound. That was reverted — the premise was false. A merely SLOW generation is
+   retried on the SDK's connection-error branch exactly like a hung one, so
+   slicing converts "slow" into "failed". §7's own framing — "give the deadline
+   headroom, **or accept that SDK retries only ever fire on fast failures**" —
+   had the right answer in it, and it is the second clause. A slow call keeps its
+   full budget; the SDK's retries cover fast failures, which is the class they
+   are useful for.
+
+   **Two behaviour changes on live Gemini paths, not one.** Five copies shared a
+   classifier; only FOUR shared a backoff — this item's own brief says "four dead
+   `retryDelay` parsers" and the first build then described "the five identical
+   copies" a few lines later. The count mattered:
+
+   - **`watch.js`** was looser in its regex — `429` and `deadline` with no word
+     boundaries. Consolidating tightens both, so the hourly tick stops retrying a
+     `4290` error code and the word "deadline" in prose. Safe direction.
+   - **`proposals.js`** had the four's classifier but **no `retryDelay` parser at
+     all**, so it never slept longer than 4s. Nobody noticed, and inheriting the
+     shared 30s cap would have taken its worst-case app-level sleep from 6s to
+     **60s** on `POST /proposals/:companyId/generate` — synchronous, metered,
+     behind nginx's 180s `proxy_read_timeout`, with a button that reads "~15s".
+     Past that bound nginx 504s while the handler runs to completion, so the
+     DRAFT row lands and `gating.refundCapacity` never fires: the tenant is
+     charged for a generation it saw fail. The draft is not lost — it lists on
+     the next visit — but the unit is spent and a retry spends another.
+
+   Both now carry an explicit bound, and the per-call-site policy lives in one
+   `POLICIES` table in `aiRetry.js` rather than in six inline bindings — the
+   inline binding is *how* proposals inherited a bound it never had, because the
+   divergence sat in the one line of each module a reviewer skims.
+
+   **What the review found (2026-08-06).** Five per-file spokes,
+   cross-integration, then a confidence pass that measured against the live API.
+   Three blockers, none of which a diff read would have surfaced:
+
+   1. **The timeout slice made 40s a hard ceiling on any single generation.**
+      Measured live, `claude-opus-5` @ `max_tokens: 3000` with adaptive thinking,
+      same prompt both trees: base = **1 upstream POST, 47.3s, HTTP 200**;
+      sliced = **3 upstream POSTs, abort at 120.0s**. Opus 5 runs **63.7 output
+      tok/s**, so the ceiling was ~**2,540 output tokens** — under `enrichment`
+      (8000), `watch` (6000), `proposals` (3000) and `assessment`'s larger call
+      (2600), and close enough to its 2400 one to fail on ordinary variance.
+      `costs.recordClaude` sits after the rethrow, so all three billed
+      generations recorded **$0.00** into the meter §6's margin floor depends on.
+   2. **429 stacked 3×3.** `classify()` marked Anthropic 429 transient while the
+      SDK also retries 429. Measured against an always-429 stub: **9 upstream
+      requests** (base: 3). With `retry-after: 60` the SDK's inter-retry `sleep()`
+      takes no signal, so the composed deadline cannot interrupt it — a 5s budget
+      took **60.1s** to fail; at defaults ~366s. `sdkRetried` is now read (it was
+      written, returned by `classify()`, and consumed by nothing while the code
+      and this ADR both described it as the mechanism) and is set truthfully
+      per branch — the SDK
+      does not retry 401/403/other 4xx, and never saw an abort we raised.
+   3. **`proposals.js`'s backoff**, above.
+
+      Also fixed: `translateError`'s 429 branch discarded the provider detail,
+      which made the per-day carve-out permanently dead on the Anthropic path;
+      five error exits left unstamped and so fell into the *Gemini*
+      message-scraper, where free-form provider prose containing "unavailable"
+      would be retried three times; and a non-numeric `ANTHROPIC_MAX_RETRIES`
+      NaN'd into the SDK and threw on every request.
+
+   **The generalisable lesson is about the tests, not the code.** Three of the
+   four fixes the first build shipped had no test at all: gutting the stamp,
+   reverting the timeout, and changing the `2000*(i+1)` ladder each left the
+   suite fully green, because `anthropicSurface.test.js`'s fake client ignores
+   its constructor options and `aiRetry.test.js` built Anthropic errors by hand.
+   A test that cannot fail is the blind spot §9 item 3 exists for. There is now
+   an `anthropicRetrySeam.test.js` driving **real** SDK exception instances
+   through `translateError` into `classify`. Suite **297/297**, from 267 on
+   `main`, with **fifteen** deliberate breaks confirmed to fail.
+
+   **A second independent pass over the fix round found two more, and both were
+   the same species as the originals — a comment asserting something the code
+   does not do.** (1) `ANTHROPIC_MAX_RETRIES=0` is a permitted value, and with a
+   stamp set per error CLASS the wrapper announced "the SDK already retried this"
+   about a client told never to retry; the app layer then stood down too, so that
+   deployment silently lost 429 retry *entirely* rather than moving it up a
+   layer — measured, 1 upstream request and zero retries anywhere. The stamp is
+   now gated on the configured count, and on `x-should-retry: false`, which the
+   SDK honours ahead of the status. (2) The claim that the composed deadline
+   bounds the whole sequence is false on the `retry-after` path, quantified in
+   §7 above.
+
+   That pass also found three deletions that left the suite green — the composed
+   deadline itself (removing it made a stalled stream unbounded), the refusal
+   stamp (turning a deterministic decline into three billed calls), and the
+   per-day carve-out on the Anthropic branch. All three now have assertions, and
+   so does the argument-validation path, where the "literal messages cannot match
+   a transient regex" reasoning was wrong because those messages interpolate
+   caller-supplied values: `effort: '503 UNAVAILABLE'` classified as transient.
+
+   **The pattern across both rounds is worth naming, because it is not a coding
+   error.** Every defect in this PR — the timeout slice, the 429 stack, the
+   proposals backoff, the `maxRetries=0` stamp, the deadline claim — was a
+   comment or an ADR line that described an intent the code did not implement,
+   and in four of the five the prose was *more* confident than the code was
+   correct. The tests that would have caught them were the ones nobody wrote
+   because the behaviour "obviously" worked.
 5. **Per-task cutover PRs** (Phase 3), grouped to keep each reviewable:
    `relevance` + `preview` + `companyBrief`; `keypoints` + `assessment`;
    `research` + `ocr`; `compare` + `enrichment` + `contacts` + `companies`;

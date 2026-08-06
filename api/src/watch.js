@@ -23,6 +23,25 @@ const entitlements = require('./entitlements');
 const auth = require('./auth');
 const discovery = require('./knowledge/discovery');
 const keypoints = require('./knowledge/keypoints');
+
+// Shared retry helper (ADR-0006 §7). Bound here with this module's label so
+// every call site below is unchanged; the classification that used to live in
+// a local copy of this function now happens once, in aiRetry.classify().
+// watch keeps a tighter 8s backoff cap than the four knowledge modules (30s) —
+// the hourly tick fans out over a worker pool and a 30s sleep per entity would
+// stall the whole scan. The value lives in aiRetry's POLICIES table; the reason
+// lives here.
+//
+// Note what that cap now does that it never did: watch had no retryDelay parser
+// either, so its sleeps were always 2s then 4s and the 8s cap was unreachable.
+// Honouring Gemini's suggested delay makes it reachable, so worst-case sleep per
+// wrapped call goes 6s → 16s. Left at 8s rather than dropped to 4s because this
+// is background work inside scheduler.js's 600s WATCH_ENTITY_TIMEOUT_MS budget
+// (≤48s of sleep across the three wrapped call sites), and honouring the
+// provider's backoff is worth more than 10s on a path with no one waiting.
+const aiRetry = require('./aiRetry');
+const withRetry = aiRetry.forLabel('watch');
+
 const knowledge = require('./knowledge/service');
 const schedule = require('./watchSchedule');
 const costs = require('./costs');
@@ -31,23 +50,6 @@ const MODEL = require('./models').modelFor('marketWatch');
 const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://dealscope.io').replace(/\/+$/, '');
 
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
-
-// copy of the discovery/research retry helper (transient 503 / per-minute 429).
-async function withRetry(fn, tries = 3) {
-  let lastErr;
-  for (let i = 0; i < tries; i++) {
-    try { return await fn(); }
-    catch (err) {
-      lastErr = err;
-      const msg = String((err && err.message) || err);
-      const perDay = /per[_\s-]?day|PerDay|free_tier_requests/i.test(msg);
-      const transient = /503|UNAVAILABLE|overloaded|high demand|deadline|429|RESOURCE_EXHAUSTED/i.test(msg);
-      if (perDay || !transient || i === tries - 1) throw err;
-      await new Promise((r) => setTimeout(r, Math.min(2000 * (i + 1), 8000)));
-    }
-  }
-  throw lastErr;
-}
 
 // Closed set — a real schema enum, not a prose hint. The digest email groups by
 // this value and it is stored verbatim on watch_findings, so a synonym or a

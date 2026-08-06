@@ -23,6 +23,13 @@ const keypoints = require('./keypoints');
 const db = require('../db');
 
 const MODEL = require('../models').modelFor('assessment');
+
+// Shared retry helper (ADR-0006 §7). Bound here with this module's label so
+// every call site below is unchanged; the classification that used to live in
+// a local copy of this function now happens once, in aiRetry.classify().
+const aiRetry = require('../aiRetry');
+const withRetry = aiRetry.forLabel('assessment');
+
 const INPUT_CAP = parseInt(process.env.KB_ASSESSMENT_INPUT_CAP || '16000', 10);
 
 // Fixed scoreboard axes. Names are stable strings used both server-side
@@ -81,28 +88,6 @@ const PROMPT =
   '(4) topImprovements is our prioritised action list — three items, biggest lever first, each tied to a real gap surfaced above. ' +
   '(5) "summary" must name the SINGLE biggest reason we win or lose this matchup. No diplomatic hedging. ' +
   '\n\nCRITICAL — completely ignore website boilerplate (cookie/consent banners, privacy notices, terms-of-use, navigation). None of that is evidence; never quote it.';
-
-// Retry on transient Gemini errors (mirrors research.js with the same
-// per-day-quota carve-out so we don't burn retries when the daily cap hit).
-async function withRetry(fn, tries = 3) {
-  let lastErr;
-  for (let i = 0; i < tries; i++) {
-    try { return await fn(); }
-    catch (err) {
-      lastErr = err;
-      const msg = String((err && err.message) || err);
-      const is429 = /\b429\b|RESOURCE_EXHAUSTED/i.test(msg);
-      const isDailyQuota = /per[_\s-]?day|PerDay|free_tier_requests/i.test(msg);
-      const transient = /\b(503|UNAVAILABLE|overloaded)\b|high demand|deadline[ _]?exceeded/i.test(msg) || (is429 && !isDailyQuota);
-      if (!transient || i === tries - 1) throw err;
-      const m = msg.match(/retryDelay["']?\s*[:=]\s*["']?(\d+)/i);
-      const waitMs = m ? Math.min(parseInt(m[1], 10) * 1000 + 500, 30000) : 2000 * (i + 1);
-      console.warn(`[assessment] transient Gemini error (attempt ${i + 1}/${tries}), retrying in ${waitMs}ms`);
-      await new Promise((r) => setTimeout(r, waitMs));
-    }
-  }
-  throw lastErr;
-}
 
 // Coerce + validate the model's output. Fills missing axes with unknown rows,
 // trims weights to sum 100, clamps scores to [0,10], derives weightedAdvantage.

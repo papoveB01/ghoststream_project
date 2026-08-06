@@ -15,6 +15,12 @@ const web = require('./web');
 
 const MODEL = require('../models').modelFor('discovery');
 
+// Shared retry helper (ADR-0006 §7). Bound here with this module's label so
+// every call site below is unchanged; the classification that used to live in
+// a local copy of this function now happens once, in aiRetry.classify().
+const aiRetry = require('../aiRetry');
+const withRetry = aiRetry.forLabel('discovery');
+
 // How many web hits to gather + how much scraped body to feed the model.
 const MAX_HITS = parseInt(process.env.KB_DISCOVERY_MAX_HITS || '10', 10);
 const SCRAPE_TOP = parseInt(process.env.KB_DISCOVERY_SCRAPE_TOP || '2', 10);
@@ -74,27 +80,6 @@ const buildCompetitorProductsSchema = (ourIds) => ({
   },
   required: ['products'],
 });
-
-// Retry on transient Gemini errors (mirrors assessment.js / relevance.js).
-async function withRetry(fn, tries = 3) {
-  let lastErr;
-  for (let i = 0; i < tries; i++) {
-    try { return await fn(); }
-    catch (err) {
-      lastErr = err;
-      const msg = String((err && err.message) || err);
-      const is429 = /\b429\b|RESOURCE_EXHAUSTED/i.test(msg);
-      const isDailyQuota = /per[_\s-]?day|PerDay|free_tier_requests/i.test(msg);
-      const transient = /\b(503|UNAVAILABLE|overloaded)\b|high demand|deadline[ _]?exceeded/i.test(msg) || (is429 && !isDailyQuota);
-      if (!transient || i === tries - 1) throw err;
-      const m = msg.match(/retryDelay["']?\s*[:=]\s*["']?(\d+)/i);
-      const waitMs = m ? Math.min(parseInt(m[1], 10) * 1000 + 500, 30000) : 2000 * (i + 1);
-      console.warn(`[discovery] transient Gemini error (attempt ${i + 1}/${tries}), retrying in ${waitMs}ms`);
-      await new Promise((r) => setTimeout(r, waitMs));
-    }
-  }
-  throw lastErr;
-}
 
 // Parse the model's structured-JSON array, tolerating truncation. A response cut
 // off at the output-token cap leaves an unterminated string → JSON.parse throws;
