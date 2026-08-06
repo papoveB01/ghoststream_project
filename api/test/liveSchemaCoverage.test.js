@@ -147,6 +147,37 @@ test('[TEXTUAL] the registry has no rows that no longer exist in src/', () => {
   );
 });
 
+// Files that FORWARD a caller's schema instead of defining one of their own.
+//
+// aiCall.js is the one-shot provider seam (ADR-0006 §9 item 5). It names its
+// parameter `responseSchema` deliberately — so that migrated call sites keep
+// the token this guard scans for — and then mentions it several more times
+// destructuring and forwarding it. Those mentions are not call sites and can
+// never have a registry row: the schema is whatever the caller passed, and the
+// registry is keyed on a literal expression.
+//
+// This is an exemption from the MENTION-COUNT test only. The seam's callers are
+// still scanned normally, which is the whole point of keeping the parameter
+// name — a schema is registered where it is DEFINED, not where it is relayed.
+const SCHEMA_FORWARDERS = new Set(['aiCall.js']);
+
+test('the forwarder exemption list stays exactly what it claims to be', () => {
+  // An exemption list is a hole in a guard. This makes growing it a visible,
+  // deliberate diff rather than the quiet way a file stops being checked —
+  // which is how a [TEXTUAL] guard in this repo has been defeated twice.
+  assert.deepStrictEqual([...SCHEMA_FORWARDERS].sort(), ['aiCall.js']);
+  for (const rel of SCHEMA_FORWARDERS) {
+    assert.ok(fs.existsSync(path.join(SRC, rel)), `${rel} is exempted but does not exist`);
+    const src = stripComments(fs.readFileSync(path.join(SRC, rel), 'utf8'));
+    assert.ok(/responseSchema/.test(src),
+      `${rel} no longer mentions responseSchema — drop it from the exemption list`);
+    // A forwarder relays; it must not carry a schema literal of its own, or the
+    // exemption would be hiding a genuinely unregistered call site.
+    assert.ok(!/responseSchema\s*:\s*\{/.test(src),
+      `${rel} defines an inline schema literal — that is a real call site, not a forward`);
+  }
+});
+
 // The two tests above enumerate SPELLINGS of a call site, so they can only
 // catch the spellings someone thought of. This one is structural: every
 // surviving mention of the token must be one the pattern matched. It is what
@@ -156,11 +187,13 @@ test('[TEXTUAL] the registry has no rows that no longer exist in src/', () => {
 test('[TEXTUAL] no responseSchema mention escapes the call-site pattern', () => {
   const offenders = [];
   for (const file of walkJs(SRC)) {
+    const rel = path.relative(SRC, file).split(path.sep).join('/');
+    if (SCHEMA_FORWARDERS.has(rel)) continue;
     const src = stripComments(fs.readFileSync(file, 'utf8'));
     const mentions = (src.match(MENTION_RE) || []).length;
     const matched = (src.match(SITE_RE) || []).length;
     if (mentions !== matched) {
-      offenders.push(`${path.relative(SRC, file).split(path.sep).join('/')} — ${mentions} mention(s), ${matched} matched as a call site`);
+      offenders.push(`${rel} — ${mentions} mention(s), ${matched} matched as a call site`);
     }
   }
   assert.deepStrictEqual(

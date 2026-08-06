@@ -118,6 +118,32 @@ function warnOnce(key, message) {
   console.warn(message);
 }
 
+// Is this provider actually usable in this process? Checked by env rather than
+// by requiring the client modules, which keeps this file free of a require
+// cycle and matches exactly what those modules test on their own first call.
+//
+// WHY DISPATCHING TO AN UNCONFIGURED PROVIDER MUST FAIL CLOSED. `getClient()`
+// throws "ANTHROPIC_API_KEY is not set" on every call. For most tasks that is a
+// visible outage. For `relevance` it is worse than an outage and completely
+// silent: checkDocRelevance catches everything, returns null, and
+// shouldMarkQuarantine(null) is false — so every competitor document skips the
+// quarantine gate, for every tenant, with nothing in the UI or the logs that
+// looks like a failure. The same fail-open shape is why `relevance` was singled
+// out in DISPATCH_READY's comment below.
+//
+// So a provider with no credentials is not "configured but broken", it is not
+// available, and the router treats it the way it treats an unknown provider
+// name: stay on Gemini and say so loudly.
+const PROVIDER_CONFIGURED = {
+  gemini: () => Boolean(process.env.GEMINI_API_KEY),
+  anthropic: () => Boolean(process.env.ANTHROPIC_API_KEY),
+};
+
+function isProviderConfigured(provider) {
+  const check = PROVIDER_CONFIGURED[provider];
+  return check ? check() : false;
+}
+
 // Per-task override wins, then the global default, then Gemini. An unknown
 // value falls back rather than throwing: a typo in an env var must not take the
 // api down on boot, and the fallback is the provider we were already on.
@@ -137,6 +163,17 @@ function providerFor(task) {
     warnOnce(`dispatch:${task}:${p}`,
       `[models] task "${task}" is configured for ${p} but its call site cannot dispatch yet — ` +
       `staying on ${DEFAULT_PROVIDER}. Remove ${providerEnvName(task)} or migrate the call site first.`
+    );
+    return DEFAULT_PROVIDER;
+  }
+  // Checked AFTER dispatch-readiness so the message an operator gets names the
+  // thing they can actually fix, and checked on every resolve rather than once
+  // at boot because a key can be rotated into a running process's environment.
+  if (p !== DEFAULT_PROVIDER && !isProviderConfigured(p)) {
+    warnOnce(`unconfigured:${task}:${p}`,
+      `[models] task "${task}" is configured for ${p} but ${p.toUpperCase()}_API_KEY is not set — ` +
+      `staying on ${DEFAULT_PROVIDER}. Dispatching anyway would throw on every call, and for ` +
+      'fail-open tasks like "relevance" that is a silent quarantine bypass, not an outage.'
     );
     return DEFAULT_PROVIDER;
   }
@@ -187,5 +224,6 @@ function providerOfModel(model) {
 
 module.exports = {
   modelFor, resolve, providerFor, providerEnvName, providerOfModel,
+  isProviderConfigured,
   TIERS, TASKS, DISPATCH_READY,
 };
