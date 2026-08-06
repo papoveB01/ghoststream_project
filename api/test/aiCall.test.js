@@ -41,6 +41,7 @@ const models = require(path.join(SRC, 'models.js'));
 const gemini = geminiStub;
 const anthropic = require(path.join(SRC, 'anthropic.js'));
 const costs = require(path.join(SRC, 'costs.js'));
+const aiRetry = require(path.join(SRC, 'aiRetry.js'));
 
 const SCHEMA = {
   type: 'object',
@@ -170,6 +171,75 @@ test('an unknown option throws instead of vanishing', async () => {
       /unknown option\(s\) abortSignal/
     );
   });
+});
+
+// ── every error this module raises is attributable ─────────────────────────
+//
+// An unstamped error reaches aiRetry.classify() with no `provider` and is
+// classified by SCRAPING ITS MESSAGE against Gemini's transient patterns. Two
+// things fall out of that, and both were live here: a Claude-side failure got
+// logged as a Gemini one by relevance.js's fail-open warning, and a message
+// that happens to contain 503/UNAVAILABLE/overloaded got retried three times.
+// The parse error's message is the dangerous one — it quotes the model's own
+// output.
+
+// Chosen, not invented: V8's parse message quotes the first TEN characters of
+// the input, so this one comes back as `Unexpected token 'o', "overloaded"...`
+// and matches GEMINI_TRANSIENT_RE's `\boverloaded\b`. (A leading `503 …` does
+// NOT reproduce — a leading digit parses far enough that V8 reports a position
+// instead of quoting the text — so the ten-character window is the whole
+// exposure, and it is wide enough to hit.)
+const badJson = 'overloaded — the model returned prose instead of JSON';
+
+test('an unparseable Claude answer is attributed to Claude, and not retried', async () => {
+  await withStubs({ provider: 'anthropic' }, async () => {
+    anthropic.generate = async () => ({ text: badJson, usage: null, stopReason: 'end_turn', model: 'claude-haiku-4-5' });
+    const err = await aiCall.generateStructured({
+      task: 'relevance', prompt: 'p', responseSchema: SCHEMA, site: 'kb.relevanceDoc',
+    }).then(() => null, (e) => e);
+    assert.ok(err instanceof SyntaxError, 'the parse failure itself still surfaces');
+    assert.strictEqual(err.provider, 'anthropic');
+    assert.strictEqual(err.sdkRetried, false, 'nothing retried this — the parse is after the response');
+    assert.strictEqual(aiRetry.classify(err).transient, false,
+      'the model opening with the word "overloaded" must not buy three more attempts');
+    assert.strictEqual(aiRetry.classify(Object.assign(new Error(err.message), {})).transient, true,
+      'sanity: the same message WITHOUT the stamp is scraped as transient — that is the leak');
+  });
+});
+
+test('an unparseable Gemini answer is attributed to Gemini', async () => {
+  await withStubs({ provider: 'gemini' }, async () => {
+    gemini.getClient = () => ({
+      models: { generateContent: async () => ({ text: badJson, usageMetadata: {} }) },
+    });
+    const err = await aiCall.generateStructured({
+      task: 'relevance', prompt: 'p', responseSchema: SCHEMA, site: 'kb.relevanceDoc',
+    }).then(() => null, (e) => e);
+    assert.strictEqual(err.provider, 'gemini',
+      'a log line naming the wrong provider is worse than one naming none');
+    // Gemini's classification is deliberately unchanged: its branch scrapes
+    // whether or not the error is stamped, and every task runs here today.
+    assert.strictEqual(aiRetry.classify(err).transient, true);
+  });
+});
+
+test('the seam\'s own validation throws are stamped, and are never transient', async () => {
+  // 'aiCall', not a vendor: no provider has been resolved when these fire. The
+  // retry side matters because the unknown-option message interpolates the
+  // caller's key names, so a mechanical port could put a Gemini transient token
+  // straight into a message about a caller bug.
+  const cases = [
+    { task: 'relevance', prompt: 'p', deadlineExceeded: 1 },
+    { prompt: 'p' },
+    { task: 'relevance' },
+  ];
+  for (const args of cases) {
+    const err = await aiCall.generateStructured(args).then(() => null, (e) => e);
+    assert.strictEqual(err.provider, 'aiCall', `${JSON.stringify(args)} left an unstamped error`);
+    assert.strictEqual(err.sdkRetried, false);
+    assert.strictEqual(aiRetry.classify(err).transient, false,
+      `${JSON.stringify(args)} is a deterministic caller bug — retrying it is three throws, not one`);
+  }
 });
 
 test('membership in DISPATCH_READY is eligibility, not a flip', () => {

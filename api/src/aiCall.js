@@ -57,6 +57,57 @@ function warnOnce(key, message) {
   console.warn(message);
 }
 
+// EVERY error this module raises itself is stamped, for the same reason
+// anthropic.js stamps its own argument-validation throws. An UNSTAMPED error
+// reaches aiRetry.classify() with no `provider` and falls into the Gemini
+// branch, which decides transience by scraping the message. Two consequences,
+// both reproduced on this seam:
+//
+//   - relevance.js logged `failed on gemini` for a Claude-side failure, on a
+//     fail-open guard whose failures are already invisible in the product —
+//     triage sent to the wrong provider is worse than no line at all.
+//   - a message containing 503 / UNAVAILABLE / overloaded came back transient
+//     and bought three attempts at a deterministic failure. That is the exact
+//     leak the Anthropic stamp exists to close, reopened one layer up.
+function stamp(err, provider) {
+  err.provider = provider;
+  // Truthful, and READ: classify() only lets the app layer stand down when the
+  // client already retried. Nothing raised here went through an SDK retry loop
+  // — the parse happens after the response arrived, the validation before the
+  // request was built.
+  err.sdkRetried = false;
+  return err;
+}
+
+// JSON.parse of a model answer, attributed to the model that produced it.
+// V8's SyntaxError message QUOTES THE FIRST TEN CHARACTERS of the input, so an
+// unstamped Claude answer opening "overloaded…" — measured, not hypothetical —
+// arrives at classify() as `Unexpected token 'o', "overloaded"...`, matches
+// Gemini's transient regex and is retried three times. Gemini's own
+// classification is
+// unchanged (its branch scrapes either way, and a regenerate can genuinely fix
+// malformed JSON there); what changes on that side is only that the log line
+// names the right provider.
+function parseAnswer(text, provider) {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw stamp(err, provider);
+  }
+}
+
+// The seam's own pre-dispatch throws. `provider` is 'aiCall' rather than a
+// vendor name because NO PROVIDER HAS BEEN RESOLVED YET — models.resolve() has
+// not run, and cannot when `task` is the thing that is missing. Naming Gemini
+// or Claude here would be a guess that reads as fact in a log line; leaving it
+// blank would hand the error to the message-scraping branch, and the
+// unknown-option message interpolates CALLER-SUPPLIED key names, so a
+// mechanical port passing `{ deadlineExceeded: … }` would be retried three
+// times over a caller bug. classify() treats 'aiCall' as never transient.
+function seamError(msg) {
+  return stamp(new Error(msg), 'aiCall');
+}
+
 // One structured generation for `task`, on whichever provider it resolves to.
 //
 //   task        routes the provider AND the model (models.resolve) — nothing
@@ -72,7 +123,9 @@ function warnOnce(key, message) {
 //
 // Returns { text, parsed, usage, model, provider }. `parsed` is the JSON.parse
 // of `text` when a schema was given, and parsing is the CALLER'S error to
-// handle if it throws — the same as before this seam existed.
+// handle if it throws — the same as before this seam existed, except that the
+// error now carries the provider that produced the unparseable answer (see
+// parseAnswer).
 async function generateStructured({
   task,
   prompt,
@@ -93,13 +146,13 @@ async function generateStructured({
   // site's output budget or its only wall-clock bound with it.
   const stray = Object.keys(unknown);
   if (stray.length) {
-    throw new Error(
+    throw seamError(
       `aiCall.generateStructured: unknown option(s) ${stray.join(', ')}. ` +
       'Gemini spellings differ: maxOutputTokens→maxTokens, abortSignal→signal.'
     );
   }
-  if (!task) throw new Error('aiCall.generateStructured: task required');
-  if (!prompt) throw new Error('aiCall.generateStructured: prompt required');
+  if (!task) throw seamError('aiCall.generateStructured: task required');
+  if (!prompt) throw seamError('aiCall.generateStructured: prompt required');
 
   const { provider, model } = models.resolve(task);
   const label = site || `ai.${task}`;
@@ -120,7 +173,7 @@ async function generateStructured({
     });
     return {
       text: r.text,
-      parsed: responseSchema ? JSON.parse(r.text) : null,
+      parsed: responseSchema ? parseAnswer(r.text, provider) : null,
       usage: r.usage,
       model: r.model,
       provider,
@@ -148,7 +201,7 @@ async function generateStructured({
   costs.recordGemini(tenantId, label, model, resp.usageMetadata);
   return {
     text: resp.text,
-    parsed: responseSchema ? JSON.parse(resp.text) : null,
+    parsed: responseSchema ? parseAnswer(resp.text, provider) : null,
     usage: resp.usageMetadata || null,
     model,
     provider,

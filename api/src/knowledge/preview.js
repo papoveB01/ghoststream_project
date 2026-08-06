@@ -19,8 +19,12 @@ const db = require('../db');
 //
 // COMPARE_MODEL stays resolved at require time because it is still Gemini-only.
 // The preview path no longer captures a model id at all: aiCall resolves the
-// provider and the model per call, so a flip (or a rollback) takes effect
-// without a restart.
+// provider and the model per call, as a matched pair. That is NOT a
+// restart-free flip — AI_PROVIDER_* is container env (docker-compose.yml), so
+// changing one means `docker compose up -d` and a fresh process either way.
+// What per-call resolution actually buys is that no model id is frozen at boot
+// behind a routing decision (fail-closed fallback included) that later differs,
+// and that flipping or rolling back a task is an env change, not a code change.
 const aiCall = require('../aiCall');
 
 const COMPARE_MODEL = require('../models').modelFor('compare');

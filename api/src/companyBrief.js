@@ -11,7 +11,11 @@
 const web = require('./knowledge/web');
 
 // One-shot provider seam (ADR-0006 §9 item 5). Resolves provider AND model per
-// call — no require-time model id, so a flip or a rollback needs no restart.
+// call, as a matched pair — no model id frozen at require time behind a routing
+// decision (including the fail-closed fallback to Gemini) that can no longer be
+// seen, and no code change to flip a task or roll one back. It is NOT a
+// restart-free change: AI_PROVIDER_* is container env (docker-compose.yml), so
+// setting one means `docker compose up -d`, which recreates the process anyway.
 const aiCall = require('./aiCall');
 
 const BRIEF_SCHEMA = {
@@ -42,7 +46,14 @@ async function generateBrief(markdown, meta, tenantId = null) {
     primaryAudience: '',
     valuePropCount: 0,
     headline: meta && meta.title ? `Indexed: ${meta.title}` : 'We scanned your homepage.',
-    source: 'metadata',
+    // 'fallback' — the SAME sentinel preview.js uses, not a second word for the
+    // same idea. On the success path `source` holds the PROVIDER that answered,
+    // so the only way a consumer can ask "did a model produce this?" without
+    // naming a vendor is to test `!== 'fallback'`. Under that rule the previous
+    // value, 'metadata', reads as a model answer. Nothing renders this field
+    // today — portfolio.js's company-bootstrap response drops it — which is
+    // exactly why it is cheap to align now rather than after a UI reads it.
+    source: 'fallback',
   });
   try {
     const { parsed, provider } = await aiCall.generateStructured({

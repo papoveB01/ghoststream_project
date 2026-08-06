@@ -17,10 +17,15 @@
 
 // One-shot provider seam (ADR-0006 §9 item 5). It resolves the provider AND the
 // model PER CALL — the model id is deliberately no longer captured at require
-// time. A require-time `modelFor()` freezes whatever the router said when the
-// process booted, so a provider flip needs a restart to take effect and, worse,
-// a rollback does not take effect until one either. Same fix as personas.js in
-// item 4.
+// time. What that buys is NOT "a flip takes effect without a restart":
+// AI_PROVIDER_* is a container env var (docker-compose.yml), so changing one
+// means `docker compose up -d`, which recreates the process anyway. What it
+// buys is that provider and model always come back as a MATCHED PAIR from
+// models.resolve() — including its fail-closed fallback to Gemini when the
+// chosen provider has no credentials — instead of a model id frozen at boot
+// behind a routing decision that can no longer be seen; and that flipping or
+// rolling back this task is an env change rather than a code change. Same fix
+// as personas.js in item 4.
 const aiCall = require('../aiCall');
 
 // Shared retry helper (ADR-0006 §7). Bound here with this module's label so
@@ -75,7 +80,13 @@ const OFFERING_SCHEMA = {
 // anonymous. Refusals get their own greppable marker and name the provider and
 // category; everything else says which provider produced it.
 function warnRelevanceFailure(where, err) {
-  const provider = (err && err.provider) || 'gemini';
+  // 'unknown', not 'gemini'. Two providers can serve this path, so a default
+  // that names one is a guess printed as a fact — and it guessed wrong for
+  // every unstamped Claude-side failure, sending triage to the provider that
+  // was not involved. An honest 'unknown' also makes the gap greppable: a line
+  // that says `failed on unknown` is a missing stamp to go and add, which is
+  // how the aiCall parse errors were found.
+  const provider = (err && err.provider) || 'unknown';
   const msg = (err && err.message) || String(err);
   if (err && err.refusal) {
     console.warn(

@@ -12,6 +12,9 @@
 //      stay on Gemini while `preview` moves, in the same file.
 //   3. `summarySource` is rendered by web/admin/admin.js. It used to be the
 //      literal 'gemini', so the "AI summary" badge would have vanished on flip.
+//      The guard on that runs the real badge expression against a table of
+//      values rather than grepping for one spelling of the comparison — see the
+//      note above it for the six mutations the textual version let through.
 
 'use strict';
 
@@ -35,6 +38,7 @@ const aiCall = require(path.join(SRC, 'aiCall.js'));
 const models = require(path.join(SRC, 'models.js'));
 const relevance = require(path.join(SRC, 'knowledge', 'relevance.js'));
 const preview = require(path.join(SRC, 'knowledge', 'preview.js'));
+const companyBrief = require(path.join(SRC, 'companyBrief.js'));
 
 // Replace the seam itself so nothing resolves a provider or touches a network.
 async function withSeam(impl, fn) {
@@ -112,6 +116,32 @@ test('an ordinary failure names the provider that produced it', async () => {
     'two providers now serve this path; a log line that names neither cannot be triaged');
 });
 
+test('an UNSTAMPED failure says so rather than blaming the provider that is not running', async () => {
+  // The default used to be 'gemini', so anything that lost its stamp — the
+  // JSON.parse inside aiCall was the live case — printed the wrong vendor with
+  // full confidence, on the one guard whose failures are otherwise invisible.
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (m) => warnings.push(String(m));
+  try {
+    await withSeam(async () => { throw new Error('boom'); },
+      async () => { await relevance.checkDocRelevance({ text: 'x'.repeat(200), competitorName: 'A' }); });
+  } finally { console.warn = realWarn; }
+  assert.ok(warnings.some((w) => /checkDocRelevance failed on unknown/.test(w)),
+    'an unattributable failure must read as unattributed, not as a Gemini failure');
+  assert.ok(!warnings.some((w) => /failed on gemini/.test(w)));
+});
+
+test('companyBrief and preview use ONE sentinel for "no model answered"', async () => {
+  // Two words for one concept is how `!== 'fallback'` quietly starts treating a
+  // fallback as a model answer. companyBrief said 'metadata' until this test.
+  await withSeam(async () => { throw new Error('down'); }, async () => {
+    const brief = await companyBrief.generateBrief('some markdown', { title: 'Acme' }, 't1');
+    assert.strictEqual(brief.source, 'fallback',
+      "the non-model sentinel is 'fallback' everywhere — anything else reads as a provider name");
+  });
+});
+
 test('preview reports the provider that answered, never a hardcoded vendor', async () => {
   await withSeam(ok({ documentType: 'doc', summary: 's', keyTopics: [], suggestedCategory: null }), async (calls) => {
     const card = await preview.buildPreview('y'.repeat(300), { tenantId: 't1', sourceType: 'pdf' });
@@ -136,15 +166,60 @@ test('the fallback path stays distinguishable from a model answer', async () => 
   });
 });
 
-test('[TEXTUAL] the admin badge does not gate on a provider name', () => {
+// Lift the badge expression out of admin.js so it can be RUN rather than
+// spell-checked. The previous version of this guard matched the source text for
+// `summarySource === '…'`, which pinned exactly one spelling: mutating the real
+// file seven ways defeated it six times — double quotes, backticks, Yoda order,
+// `['gemini'].includes(…)`, `startsWith('gem')`, and deleting the badge outright.
+// There is no eslint or prettier in this repo, so the double-quote rewrite is an
+// ordinary edit, not a contrived one. Behaviour is the thing worth pinning.
+function badgeExpression(admin) {
+  // Anchored on the assignment and terminated by the statement's semicolon. A
+  // rename or a deletion returns null and fails the test below — a guard that
+  // quietly finds nothing left to check is the failure mode being fixed here,
+  // so this must never degrade to "no offenders found".
+  const m = admin.match(/const\s+aiTag\s*=\s*([\s\S]*?);\s*\n/);
+  return m ? m[1] : null;
+}
+
+test('[BEHAVIOURAL] the admin badge gates on "a model answered", not on a vendor name', () => {
   // web/ is a live bind mount and api/ is a baked image, so the two sides never
   // change at the same instant on a deploy. A frontend comparing summarySource
   // to a vendor name would blank the "AI summary" badge for every tenant the
   // moment the api started answering with the other one — silently, since a
   // missing badge looks like a document that simply had no summary.
   const admin = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'admin', 'admin.js'), 'utf8');
-  const offenders = [...admin.matchAll(/summarySource\s*[!=]==\s*'([^']+)'/g)].map((m) => m[1])
-    .filter((v) => v !== 'fallback');
-  assert.deepStrictEqual(offenders, [],
-    `admin.js gates on summarySource === ${offenders.join(', ')}; test against 'fallback' instead`);
+  const expr = badgeExpression(admin);
+  assert.ok(expr,
+    'no `const aiTag = …` in admin.js — the "AI summary" badge was renamed or removed. ' +
+    'Deleting it is not a way to satisfy this guard: summarySource exists to tell a model ' +
+    'answer from the fallback, and the badge is the only place a user sees the difference.');
+  assert.match(expr, /kb-preview-ai-tag/,
+    'the badge expression no longer emits the kb-preview-ai-tag span, so nothing renders');
+  assert.match(admin, /\$\{aiTag\}/,
+    'the badge is computed but never interpolated into the preview card');
+
+  // Executing the real expression is what makes the spelling irrelevant.
+  const badge = new Function('p', `return (${expr});`);
+  const cases = [
+    // Both providers in flight during ADR-0006 §9 item 5 must badge…
+    ['gemini', true],
+    ['anthropic', true],
+    // …and so must one that does not exist yet. summarySource carries whatever
+    // models.resolve() returned, so a guard listing today's vendors is the same
+    // bug with a longer list.
+    ['some-future-provider', true],
+    // 'fallback' is the one and only non-model value (preview.js, and now
+    // companyBrief.js).
+    ['fallback', false],
+    // A preview from an older api, or a card built before summarize() ran.
+    [undefined, false],
+    [null, false],
+    ['', false],
+  ];
+  for (const [summarySource, expected] of cases) {
+    const out = String(badge({ summarySource }) || '');
+    assert.strictEqual(out.includes('kb-preview-ai-tag'), expected,
+      `summarySource=${JSON.stringify(summarySource)} should ${expected ? '' : 'NOT '}show the AI badge`);
+  }
 });
