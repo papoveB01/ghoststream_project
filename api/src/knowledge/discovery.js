@@ -19,7 +19,7 @@ const MODEL = require('../models').modelFor('discovery');
 // every call site below is unchanged; the classification that used to live in
 // a local copy of this function now happens once, in aiRetry.classify().
 const aiRetry = require('../aiRetry');
-const withRetry = (fn, tries = 3) => aiRetry.withRetry(fn, { tries, label: 'discovery' });
+const withRetry = aiRetry.forLabel('discovery');
 
 // How many web hits to gather + how much scraped body to feed the model.
 const MAX_HITS = parseInt(process.env.KB_DISCOVERY_MAX_HITS || '10', 10);
@@ -80,8 +80,6 @@ const buildCompetitorProductsSchema = (ourIds) => ({
   },
   required: ['products'],
 });
-
-// Retry on transient Gemini errors (mirrors assessment.js / relevance.js).
 
 // Parse the model's structured-JSON array, tolerating truncation. A response cut
 // off at the output-token cap leaves an unterminated string → JSON.parse throws;

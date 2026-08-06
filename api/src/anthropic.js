@@ -73,41 +73,60 @@
 //      up to 9 attempts on the statuses Anthropic uses for overload. (500 is
 //      NOT lost — the Gemini-shaped regexes never matched a 500 either.)
 //
-// ALL THREE ARE NOW ADDRESSED, two here and one in aiRetry.js:
-//   - (1) is fixed: ANTHROPIC_TIMEOUT_MS is the whole-call budget and the SDK's
-//     per-attempt timeout is a slice of it, so retries are reachable without
-//     widening the worst case. See ATTEMPT_TIMEOUT_MS below.
-//   - (2) still holds and is now bounded in practice, because aiRetry only
-//     re-enters generate() on a 429 — not on the timeouts that make the outer
-//     multiplication expensive.
+// WHERE ALL THREE LANDED:
+//   - (1) is ACCEPTED, not fixed, and the accepting is deliberate. Slicing the
+//     budget into per-attempt timeouts was tried and reverted — see the comment
+//     on DEFAULT_TIMEOUT_MS below for the measurement that killed it. The SDK's
+//     own retries fire on FAST failures only; a slow generation gets the whole
+//     budget rather than being killed to make room for a retry of itself.
+//   - (2) is fixed by (3): the app layer no longer re-enters generate() on ANY
+//     Anthropic error, so there is no outer multiplication left to bound.
 //   - (3) is fixed in aiRetry.js, which reads the `provider`/`sdkRetried` stamp
-//     translateError() puts on every error leaving here instead of regexing a
-//     message we rewrote. 429 retries again; 503/529 no longer stack.
+//     translateError() puts on errors leaving here instead of regexing a message
+//     we rewrote. Nothing the SDK already retried is retried again.
 
 const Anthropic = require('@anthropic-ai/sdk');
 const costs = require('./costs');
 const { toAnthropicSchema } = require('./schemaCompat');
 
-const DEFAULT_TIMEOUT_MS = parseInt(process.env.ANTHROPIC_TIMEOUT_MS || '120000', 10);
-const DEFAULT_MAX_RETRIES = parseInt(process.env.ANTHROPIC_MAX_RETRIES || '2', 10);
+// A bad value used to propagate: `parseInt('none')` is NaN, and NaN reaching the
+// SDK's validatePositiveInteger throws "timeout must be an integer" on EVERY
+// request — a total outage of the Claude path from one typo in an env file.
+// Fall back instead.
+function envInt(name, fallback, min) {
+  const n = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(n) && n >= min ? n : fallback;
+}
 
-// ANTHROPIC_TIMEOUT_MS is the budget for the WHOLE call, retries included — it
-// is the deadline composed in generate(). The SDK's per-attempt timeout is a
-// slice of it, so the retries are reachable inside the same outer bound.
+const DEFAULT_TIMEOUT_MS = envInt('ANTHROPIC_TIMEOUT_MS', 120000, 1);
+const DEFAULT_MAX_RETRIES = envInt('ANTHROPIC_MAX_RETRIES', 2, 0);
+
+// ANTHROPIC_TIMEOUT_MS is BOTH the SDK's per-attempt timeout and the whole-call
+// deadline composed in generate(). That looks redundant and is not.
 //
-// Before this split, both were DEFAULT_TIMEOUT_MS: on a hang the first attempt
-// consumed the entire budget and the SDK's own retries could never fire, which
-// undercut the "the SDK already retries, so we needn't" premise this module is
-// built on (measured 2026-08-05: 3.0s / 1 attempt against a hanging server at
-// timeout=3s, vs 10.5s / 3 attempts bare). Slicing rather than multiplying is
-// deliberate — the alternative the ADR floats, giving the deadline headroom
-// ABOVE the per-attempt timeout, buys reachable retries by widening the worst
-// case to 360s, and scheduler.js's withTimeout guard exists because long AI
-// calls are how a tenant-wide outage started.
-const ATTEMPT_TIMEOUT_MS = Math.max(
-  1000,
-  Math.floor(DEFAULT_TIMEOUT_MS / (DEFAULT_MAX_RETRIES + 1))
-);
+// The obvious-looking alternative — slice the budget so the SDK's own retries
+// fit inside it (`timeout = budget / (maxRetries + 1)`) — shipped briefly and
+// was reverted, because it rests on a false premise: that only a HANG consumes
+// an attempt. A merely slow generation is retried on the SDK's connection-error
+// branch exactly like a hung one, so slicing converts "slow" into "failed".
+//
+// Measured live 2026-08-05/06, claude-opus-5 @ max_tokens 3000 with adaptive
+// thinking, same prompt both ways:
+//
+//   timeout = 120000 (this)      1 upstream POST,  47.3s, HTTP 200
+//   timeout =  40000 (the slice) 3 upstream POSTs, abort at 120.0s
+//
+// Opus 5 generates ~63.7 output tok/s, so a 40s attempt ceiling is ~2,540
+// output tokens — below proposals (3000), watch (6000) and enrichment (8000).
+// The slice bought reachable retries by making three billed generations of the
+// same request the normal outcome of one slow one, and costs.recordClaude sits
+// after the rethrow, so all three recorded $0.00.
+//
+// So: the SDK's retries fire on FAST failures (connection refused, a quick 5xx,
+// a 429 with a short retry-after) and are unreachable on a slow one. That is the
+// correct trade. A slow call keeps its full budget; the deadline still bounds
+// the whole sequence including the streaming path.
+const ATTEMPT_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
 
 // Above roughly this budget the SDK refuses a non-streaming request (an idle
 // connection would outlive the HTTP timeout), so we stream and reassemble.
@@ -183,7 +202,7 @@ let _client;
 function getClient() {
   if (_client) return _client;
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
+  if (!apiKey) throw stamp(new Error('ANTHROPIC_API_KEY is not set'), null, false);
   _client = new Anthropic({
     apiKey,
     timeout: ATTEMPT_TIMEOUT_MS,
@@ -294,49 +313,77 @@ function refusalError(message) {
   err.status = 422;
   err.refusal = true;
   err.category = details.category || null;
-  return err;
+  // Stamped like a translated error even though it never passes through
+  // translateError: an unstamped error falls into aiRetry's GEMINI branch and
+  // gets message-scraped. A refusal explanation is free-form provider prose, so
+  // "…would leave the service unavailable" is one substring away from being
+  // retried three times as a transient. It is deterministic; it must not be.
+  return stamp(err, null, false);
 }
 
 // Translate the SDK's typed exceptions into the same shape gemini.js's
 // translateGeminiError produces, so route handlers keep one error contract
 // across providers during the migration.
-// Every error leaving this module is stamped with `provider` and `sdkRetried`
-// so aiRetry.classify() has something structured to read instead of scraping a
-// message we ourselves rewrote. `sdkRetried` is the load-bearing one: it says
-// the SDK already exhausted its own attempts, which is how the app-level helper
-// knows to stand down on 503/529 rather than stacking to 9 attempts (ADR-0006
-// §7) — while the Gemini path, whose SDK does not retry, keeps its own.
-function stamp(e, err) {
+// Every error leaving this module at RUNTIME is stamped with `provider` and
+// `sdkRetried` — translated SDK errors, refusals, truncation and the missing-key
+// error — so aiRetry.classify() has something structured to read instead of
+// scraping a message we ourselves rewrote. The exceptions are the
+// `anthropic.generate: …` argument-validation throws, which are programmer
+// errors with literal messages that no transient regex can match; they are
+// deliberately left plain rather than dressed up as provider failures.
+// `provider` decides which branch classifies it;
+// `sdkRetried` decides whether the app layer may try again, and IS READ —
+// aiRetry.classify() consults it, which is why it has to be true per branch
+// rather than blanket-true. The SDK retries 408/409/429/5xx and connection
+// failures; it does NOT retry 401/403/other 4xx, and an abort we raised
+// ourselves never entered its retry path at all. Claiming otherwise would deny
+// an app-level retry to errors that never got one.
+function stamp(e, err, sdkRetried) {
   e.provider = 'anthropic';
-  e.sdkRetried = true;
-  e.cause = err;
+  e.sdkRetried = sdkRetried === true;
+  if (err) e.cause = err;
   return e;
 }
 
+// The SDK's own retry predicate, mirrored for statuses it decided on. Kept
+// narrow and explicit rather than inferred, so a divergence is visible here.
+const sdkRetriesStatus = (status) =>
+  status === 408 || status === 409 || status === 429 || (status >= 500 && status < 600);
+
 function translateError(err) {
   if (err instanceof Anthropic.RateLimitError) {
-    const e = new Error('AI quota exhausted — retry shortly.');
-    e.status = 429; return stamp(e, err);
+    // Keep the provider detail. The 429 branch used to discard it, which made
+    // aiRetry's per-day carve-out permanently dead on this path — it matches on
+    // the message, and the message no longer said which quota was exhausted. A
+    // daily cap would then be retried against an allowance that resets tomorrow,
+    // the exact thing all six hand-rolled copies carried a carve-out to prevent.
+    const detail = (err.error && err.error.error && err.error.error.message) || '';
+    const e = new Error(`AI quota exhausted — retry shortly.${detail ? ` (${detail})` : ''}`);
+    e.status = 429; return stamp(e, err, true);
   }
   if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) {
     const e = new Error('AI provider rejected our credentials.');
-    e.status = 502; return stamp(e, err);
+    e.status = 502; return stamp(e, err, false);
   }
   // Checked before APIError: a caller-side abort extends APIError, not
   // APIConnectionError, so the catch-all below would report our own 60s timeout
   // as "AI provider error" — which is what an on-call engineer would then go
   // and investigate at the provider.
   if (err instanceof Anthropic.APIUserAbortError) {
+    // Our own deadline or the caller's signal. The SDK checks the signal before
+    // deciding to retry, so this error never went through its retry path —
+    // sdkRetried is false, and it is non-transient anyway: another attempt would
+    // just spend a budget that has already run out.
     const e = new Error('AI request cancelled or timed out locally.');
-    e.status = 504; e.aborted = true; return stamp(e, err);
+    e.status = 504; e.aborted = true; return stamp(e, err, false);
   }
   if (err instanceof Anthropic.APIConnectionTimeoutError) {
     const e = new Error('AI request timed out.');
-    e.status = 504; return stamp(e, err);
+    e.status = 504; return stamp(e, err, true);
   }
   if (err instanceof Anthropic.APIConnectionError) {
     const e = new Error('Could not reach the AI provider.');
-    e.status = 502; return stamp(e, err);
+    e.status = 502; return stamp(e, err, true);
   }
   if (err instanceof Anthropic.APIError) {
     // Keep the provider's own message. The first version of this function threw
@@ -346,8 +393,15 @@ function translateError(err) {
     const detail = (err.error && err.error.error && err.error.error.message) || err.message || '';
     const e = new Error(`AI provider error (${err.status || '?'})${detail ? `: ${detail}` : ''}`);
     e.status = err.status && err.status < 500 ? 400 : 502;
-    return stamp(e, err);
+    return stamp(e, err, sdkRetriesStatus(err.status));
   }
+  // Anything that is not an SDK error class — an AnthropicError from option
+  // validation, a stream-reassembly failure, a bug in this module. It used to
+  // leave unstamped, which sent it to aiRetry's Gemini message-scraper: an
+  // Anthropic-path error retried or not on whether some proxy's prose happened
+  // to contain "unavailable". Stamp it in place; nothing the SDK never saw is
+  // claimed as retried.
+  if (err instanceof Error) return stamp(err, null, false);
   return err;
 }
 
@@ -508,7 +562,7 @@ async function generate({
     );
     err.status = 502;
     err.truncated = true;
-    throw err;
+    throw stamp(err, null, false);
   }
 
   return {

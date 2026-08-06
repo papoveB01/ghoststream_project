@@ -28,7 +28,7 @@ const MODEL = require('../models').modelFor('assessment');
 // every call site below is unchanged; the classification that used to live in
 // a local copy of this function now happens once, in aiRetry.classify().
 const aiRetry = require('../aiRetry');
-const withRetry = (fn, tries = 3) => aiRetry.withRetry(fn, { tries, label: 'assessment' });
+const withRetry = aiRetry.forLabel('assessment');
 
 const INPUT_CAP = parseInt(process.env.KB_ASSESSMENT_INPUT_CAP || '16000', 10);
 
@@ -88,9 +88,6 @@ const PROMPT =
   '(4) topImprovements is our prioritised action list — three items, biggest lever first, each tied to a real gap surfaced above. ' +
   '(5) "summary" must name the SINGLE biggest reason we win or lose this matchup. No diplomatic hedging. ' +
   '\n\nCRITICAL — completely ignore website boilerplate (cookie/consent banners, privacy notices, terms-of-use, navigation). None of that is evidence; never quote it.';
-
-// Retry on transient Gemini errors (mirrors research.js with the same
-// per-day-quota carve-out so we don't burn retries when the daily cap hit).
 
 // Coerce + validate the model's output. Fills missing axes with unknown rows,
 // trims weights to sum 100, clamps scores to [0,10], derives weightedAdvantage.

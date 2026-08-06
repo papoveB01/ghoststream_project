@@ -24,7 +24,7 @@ const MODEL = require('../models').modelFor('relevance');
 // every call site below is unchanged; the classification that used to live in
 // a local copy of this function now happens once, in aiRetry.classify().
 const aiRetry = require('../aiRetry');
-const withRetry = (fn, tries = 3) => aiRetry.withRetry(fn, { tries, label: 'relevance' });
+const withRetry = aiRetry.forLabel('relevance');
 
 // Doc body slice fed to the topicality judge. Smaller than the scoreboard cap —
 // a few thousand chars is plenty to tell what a doc is about.
@@ -53,9 +53,6 @@ const OFFERING_SCHEMA = {
   },
   required: ['plausible', 'reason'],
 };
-
-// Retry on transient Gemini errors (mirrors assessment.js, including the
-// per-day-quota carve-out so we don't burn retries against the daily cap).
 
 // Is this document actually about the competitor (and named product, if any)?
 // Returns { isOnTopic, confidence, reason } or null on any failure (fail-open).

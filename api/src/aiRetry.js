@@ -23,7 +23,9 @@
 //      statuses Anthropic uses for overload. Wrong for Gemini, whose SDK does
 //      not retry, so removing it would drop 503 handling on every path that
 //      runs today. Hence `sdkRetried`: the client that already retried says so,
-//      and only then does the app layer stand down.
+//      and only then does the app layer stand down. This applies to 429 too —
+//      see the Anthropic branch, where getting that wrong cost 9 upstream
+//      requests for one logical call.
 //   3. "DROP THE retryDelay PARSERS." They are dead on Anthropic (it sends
 //      `retry-after`, which the SDK honours). They are LIVE on Gemini, which
 //      suggests a delay in the error body and is the only backoff signal that
@@ -32,7 +34,16 @@
 // The one part of the brief that needed no qualification is 429: Anthropic's
 // translated message no longer contains "429" or "RESOURCE_EXHAUSTED", so every
 // one of the six regexes stopped matching it — the transient they were all
-// written for. classify() reads `err.status`, so it matches again.
+// written for. classify() reads `err.status`, so it is recognised again. The
+// coverage is restored by the SDK, which retries 429 honouring `retry-after`;
+// the app layer's job is to not stack a second set of attempts on top.
+//
+// A NOTE ON WHAT "THE SIX COPIES" WERE, because the first version of this file
+// got it wrong and the error was load-bearing. Five copies shared a classifier;
+// only FOUR shared a backoff. `proposals.js` had the same transient predicate
+// as the four knowledge modules but NO retryDelay parser and no cap — it always
+// slept 2s then 4s. `watch.js` differed in both. So consolidating changes the
+// backoff of two call sites, not one, and both are named at their bindings.
 
 const DEFAULT_TRIES = 3;
 const GEMINI_MAX_BACKOFF_MS = 30000;
@@ -42,10 +53,11 @@ const GEMINI_MAX_BACKOFF_MS = 30000;
 // carve-out (watch.js spelled it differently); it is preserved verbatim.
 const PER_DAY_RE = /per[_\s-]?day|PerDay|free_tier_requests/i;
 
-// Gemini's transient set, character-for-character from the five identical
-// copies. Do not "tidy" it: `\b429\b` not `429` matters, because an error body
-// can contain 4290 or a timestamp, and `deadline[ _]?exceeded` not `deadline`
-// matters because "deadline" alone matches prose in unrelated messages.
+// Gemini's transient set, character-for-character from the five copies that
+// shared a classifier. Do not "tidy" it: `\b429\b` not `429` matters, because an
+// error body can contain 4290 or a timestamp, and `deadline[ _]?exceeded` not
+// `deadline` matters because "deadline" alone matches prose in unrelated
+// messages.
 const GEMINI_429_RE = /\b429\b|RESOURCE_EXHAUSTED/i;
 const GEMINI_TRANSIENT_RE = /\b(503|UNAVAILABLE|overloaded)\b|high demand|deadline[ _]?exceeded/i;
 const GEMINI_RETRY_DELAY_RE = /retryDelay["']?\s*[:=]\s*["']?(\d+)/i;
@@ -66,23 +78,42 @@ function classify(err) {
   // real signal to read and no message scraping is needed or wanted.
   if (err && err.provider === 'anthropic') {
     const status = err.status || null;
+    const sdkRetried = err.sdkRetried === true;
     return {
       status,
       perDay,
-      sdkRetried: err.sdkRetried === true,
+      sdkRetried,
       backoffMs: null,
-      // 429 only. 502/503/529 arrive here having already been retried by the
-      // SDK; retrying again is the stacking §7 measured. A local timeout (504,
-      // err.aborted) means our own deadline fired — another attempt would just
-      // spend it again.
-      transient: !perDay && status === 429,
+      // `sdkRetried` is the whole decision, and it is why the stamp exists.
+      //
+      // The first version of this branch retried every 429 — which is the one
+      // status the Anthropic SDK also retries, honouring `retry-after`. The two
+      // layers multiplied: measured against an always-429 stub, 3 SDK attempts ×
+      // 3 app tries = 9 UPSTREAM REQUESTS (base: 3), and with `retry-after: 60`
+      // the SDK's inter-retry sleep takes no signal, so the composed deadline
+      // cannot interrupt it — ~366s and ~6 upstream for one logical call. That
+      // is the stacking §7 exists to remove, reintroduced by the fix for it.
+      //
+      // So: if the client already retried, the app layer stands down. What
+      // remains retryable here is only what the SDK declined to retry and we
+      // still think is worth another go — today that is nothing, because the
+      // SDK's retryable set (408/409/429/5xx/connection) is a superset of ours.
+      // The branch is kept rather than hardcoded to false so that a future call
+      // site with `maxRetries: 0` gets app-level cover automatically.
+      //
+      // Keyed on 429 alone, NOT on `status >= 500`: `status` here is the
+      // route-facing status translateError assigned, not the provider's. It maps
+      // rejected credentials AND a truncated answer to 502, and both are
+      // deterministic — a `>= 500` test would retry them three times each.
+      transient: !perDay && !sdkRetried && status === 429,
     };
   }
 
   // ── Gemini (and anything else) ───────────────────────────────────────────
   // No typed exception to read; the status is inside the message. This branch
-  // reproduces the five identical copies exactly, so the Gemini path — which is
-  // every path today — behaves as it did before consolidation.
+  // reproduces the five shared classifiers exactly, so the Gemini path — which
+  // is every path today — classifies as it did before consolidation. Backoff is
+  // the caller's to bound: see `maxBackoffMs` and the two bindings that set it.
   const is429 = GEMINI_429_RE.test(msg);
   const m = msg.match(GEMINI_RETRY_DELAY_RE);
   return {
@@ -99,9 +130,11 @@ function classify(err) {
 //   tries  total attempts, not extra ones (3 = the original + 2 retries), which
 //          is what all six copies meant by it
 //   label  log prefix, e.g. 'watch' — matches what each copy printed
-//   maxBackoffMs  cap on the computed delay. watch.js capped at 8s where the
-//          others capped at 30s; pass it rather than silently harmonising, so
-//          the hourly tick keeps its tighter bound.
+//   maxBackoffMs  cap on the computed delay, and the knob that keeps the two
+//          odd copies from inheriting a bound they never had. The four knowledge
+//          modules capped at 30s (the default). watch.js and proposals.js had no
+//          retryDelay parser at all and so never slept longer than 4s; both pass
+//          their own cap rather than being silently harmonised up to 30s.
 async function withRetry(fn, { tries = DEFAULT_TRIES, label = 'ai', maxBackoffMs = GEMINI_MAX_BACKOFF_MS } = {}) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
@@ -122,4 +155,38 @@ async function withRetry(fn, { tries = DEFAULT_TRIES, label = 'ai', maxBackoffMs
   throw lastErr;
 }
 
-module.exports = { withRetry, classify, DEFAULT_TRIES, GEMINI_MAX_BACKOFF_MS };
+// Per-call-site policy, in one place instead of six bindings.
+//
+// The bindings were inline at first, and that is how proposals.js silently
+// inherited a 30s backoff cap it had never had — the divergence lived in the
+// one line of each module a reviewer skims. Here the six sit together, so a
+// deviation has to be read next to the five things it deviates from, and a test
+// can assert the table rather than trusting six separate call sites.
+//
+// An unknown label throws rather than falling back to the defaults: a typo
+// would otherwise be a silent policy change.
+const POLICIES = {
+  // The four that shared a classifier AND a backoff. Defaults, stated
+  // explicitly so "not listed" is never confused with "takes the defaults".
+  research: {},
+  relevance: {},
+  assessment: {},
+  discovery: {},
+  // Synchronous, metered, a rep is watching. See the note in proposals.js.
+  proposals: { maxBackoffMs: 4000 },
+  // Background fan-out inside a 600s per-entity budget. See watch.js.
+  watch: { maxBackoffMs: 8000 },
+};
+
+function forLabel(label) {
+  if (!Object.prototype.hasOwnProperty.call(POLICIES, label)) {
+    throw new Error(
+      `aiRetry.forLabel: no policy for "${label}". Add one to POLICIES in aiRetry.js ` +
+      '— falling back to the defaults silently is how a call site inherits a bound it never had.'
+    );
+  }
+  const policy = POLICIES[label];
+  return (fn, tries = DEFAULT_TRIES) => withRetry(fn, { tries, label, ...policy });
+}
+
+module.exports = { withRetry, classify, forLabel, POLICIES, DEFAULT_TRIES, GEMINI_MAX_BACKOFF_MS };

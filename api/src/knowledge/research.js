@@ -24,7 +24,7 @@ const MODEL = require('../models').modelFor('research');
 // every call site below is unchanged; the classification that used to live in
 // a local copy of this function now happens once, in aiRetry.classify().
 const aiRetry = require('../aiRetry');
-const withRetry = (fn, tries = 3) => aiRetry.withRetry(fn, { tries, label: 'research' });
+const withRetry = aiRetry.forLabel('research');
 
 const SITE_MAP_LIMIT    = parseInt(process.env.RESEARCH_SITE_MAP_LIMIT || '40', 10);
 const SITE_SCRAPE_LIMIT = parseInt(process.env.RESEARCH_SITE_SCRAPE_LIMIT || '5', 10);
@@ -305,10 +305,6 @@ const ANALYSIS_PROMPT =
   'Rules: use ONLY facts that are actually in the dossier — never invent a signal or extrapolate. Map to products that ACTUALLY EXIST in OUR portfolio above; if none of ours genuinely fits a signal, either skip it or put a capability category in `products` (do not claim we have something we do not). ' +
   'CRITICAL — completely ignore website boilerplate: cookie/consent banners, "we use cookies", "we value/take your privacy", "we process your personal information in accordance with regulations", "by continuing to use this site", privacy policies, terms of use, navigation, footers, copyright lines. None of that is a signal — never quote, paraphrase, or build a point on it. ' +
   'If the dossier (minus boilerplate) is thin, return few or no opportunities. Do not pass off a generic company description as an "opportunity".';
-
-// Retry a Gemini call on transient errors: 503 / UNAVAILABLE / "high demand" /
-// overloaded / deadline-exceeded, and per-MINUTE 429s (rate, not daily quota).
-// A per-DAY quota 429 ("…PerDay…") is NOT retried — it won't clear in seconds.
 
 async function analyze(tenantId, name, dossier) {
   const context = await keypoints.tenantContextText(tenantId);

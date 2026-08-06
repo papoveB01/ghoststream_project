@@ -26,15 +26,28 @@ const MODEL = require('./models').modelFor('proposal');
 // Shared retry helper (ADR-0006 §7). Bound here with this module's label so
 // every call site below is unchanged; the classification that used to live in
 // a local copy of this function now happens once, in aiRetry.classify().
+//
+// This label's backoff bound is NOT the shared default, and the reason is the
+// route. The value itself lives in aiRetry's POLICIES table so the six sit
+// together; what belongs here is why this one deviates.
+//
+// This module's original copy had no retryDelay parser — it slept a flat 2s
+// then 4s, never more. The shared helper honours Gemini's suggested delay, and
+// Gemini suggests values like "56s" under a per-minute 429, so inheriting the
+// 30s default would take the worst-case app-level sleep from 6s to 60s on
+// POST /proposals/:companyId/generate — a SYNCHRONOUS request a rep is watching
+// (the button reads "~15s"), behind nginx's 180s proxy_read_timeout. When that
+// bound is crossed nginx returns 504 while the handler runs on to completion,
+// so the DRAFT row lands and gating.refundCapacity never fires: the tenant is
+// charged for a proposal nobody can see. 4000 preserves the old maximum single
+// sleep exactly; worst case across three tries is 8s against the old 6s.
 const aiRetry = require('./aiRetry');
-const withRetry = (fn, tries = 3) => aiRetry.withRetry(fn, { tries, label: 'proposals' });
+const withRetry = aiRetry.forLabel('proposals');
 
 const EVIDENCE_TEXT_CAP = parseInt(process.env.PROPOSAL_EVIDENCE_TEXT_CAP || '1800', 10);
 const MAX_CALLS         = parseInt(process.env.PROPOSAL_MAX_CALLS || '8', 10);
 const MAX_PROSPECT_DOCS = parseInt(process.env.PROPOSAL_MAX_PROSPECT_DOCS || '8', 10);
 const MAX_COMPETITOR_DOCS = parseInt(process.env.PROPOSAL_MAX_COMPETITOR_DOCS || '6', 10);
-
-// ── Retry on transient Gemini errors (same policy as knowledge/research.js) ──
 
 // ── Evidence gathering — the 4 intelligence layers, as a numbered list ──────
 // Returns { profileText, evidence: [{n,type,label,text}], byLayer }.
