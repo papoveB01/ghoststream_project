@@ -70,7 +70,18 @@ const ENTRIES = [
   // ── assessment ────────────────────────────────────────────────────────────
   { site: 'kb.assessment', cluster: 'assessment', task: 'assessment', file: 'knowledge/assessment.js', expr: 'ASSESSMENT_SCHEMA',
     schema: () => load('knowledge/assessment.js').ASSESSMENT_SCHEMA },
-  { site: 'kb.battlecard', cluster: 'assessment', task: 'assessment', file: 'knowledge/assessment.js', expr: 'BATTLECARD_SCHEMA',
+  // `task` is what resolveFor() sends this schema to, so it must track the
+  // call site: knowledge/assessment.js's battlecard synthesis resolves
+  // `battlecard`, which is FLASH on Claude while `assessment` is LITE. Keyed to
+  // `assessment` this row would have validated BATTLECARD_SCHEMA against Haiku
+  // and reported green for a schema production sends to Sonnet.
+  //
+  // The CLUSTER deliberately stays `assessment`: ADR-0006 §9 item 5 groups
+  // keypoints + assessment as one cutover, and its runbook is "run the check
+  // for a group before flipping it (--cluster=)". A `battlecard` cluster would
+  // quietly drop this schema out of `--cluster=assessment`, which is the one
+  // command that group is told to run.
+  { site: 'kb.battlecard', cluster: 'assessment', task: 'battlecard', file: 'knowledge/assessment.js', expr: 'BATTLECARD_SCHEMA',
     schema: () => load('knowledge/assessment.js').BATTLECARD_SCHEMA },
 
   // ── discovery ─────────────────────────────────────────────────────────────

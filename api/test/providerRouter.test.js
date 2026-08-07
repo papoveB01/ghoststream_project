@@ -24,6 +24,12 @@ const assert = require('node:assert');
 const SRC = path.join(__dirname, '..', 'src');
 const models = require(path.join(SRC, 'models.js'));
 
+// The set as models.js actually ships it, captured before any test mutates it.
+// Tests below temporarily add tasks to the real Set — there is no seam for a
+// fake one — so anything asserting on its CONTENTS has to compare against this,
+// or against a set that has been restored to it.
+const SHIPPED_DISPATCH_READY = new Set(models.DISPATCH_READY);
+
 // ANTHROPIC_API_KEY defaults to a placeholder, and a caller that names it wins.
 //
 // The router fails CLOSED on an unconfigured provider (models.js), so every
@@ -188,6 +194,10 @@ test('claude tiers follow ADR-0006 §4.1', () => {
     assert.strictEqual(models.resolve('content').model, 'claude-sonnet-5', 'content tier');
     assert.strictEqual(models.resolve('relevance').model, 'claude-haiku-4-5', 'lite tier');
   });
+  // RESTORE, not clear. `clear()` left the module's real set empty for every
+  // test that ran after this one, so an assertion about what ships in
+  // DISPATCH_READY passed no matter what models.js said — which is also how the
+  // battlecard non-goal further down was briefly unfalsifiable.
   } finally {
     models.DISPATCH_READY.clear();
     for (const k of snapshot) models.DISPATCH_READY.add(k);
@@ -232,6 +242,64 @@ test('keypoints is re-tiered for claude only, leaving gemini untouched', () => {
   asDispatchReady('keypoints', () => withEnv({ AI_PROVIDER: 'anthropic' }, () => {
     assert.strictEqual(models.resolve('keypoints').model, 'claude-sonnet-5',
       'on claude it takes the flash tier, not lite');
+  }));
+});
+
+// ── the assessment split (ADR-0006 §4.1) ────────────────────────────────────
+//
+// One key used to serve two call sites of very different difficulty: scoring a
+// single competitor document (extraction, LITE) and synthesising a battlecard
+// from up to 20 of them (judgment, FLASH). Flipping the shared key would have
+// sent battlecard synthesis to Haiku — and a worse battlecard is not an error
+// anyone sees, so nothing downstream would have reported it.
+
+test('battlecard resolves to the same gemini model assessment does', () => {
+  // This is the whole safety property of the split: it is a router-only change,
+  // so the provider serving 100% of today's traffic must not notice it.
+  assert.strictEqual(models.resolve('battlecard').provider, 'gemini');
+  assert.strictEqual(models.resolve('battlecard').model, models.resolve('assessment').model,
+    're-tiering the gemini path here would be a live quality-and-cost change in a PR that is meant to change nothing');
+  assert.strictEqual(models.resolve('battlecard').model, 'gemini-2.5-flash-lite');
+});
+
+test('battlecard takes the flash tier on claude while assessment stays lite', () => {
+  asDispatchReady('battlecard', () => withEnv({ AI_PROVIDER: 'anthropic' }, () => {
+    assert.strictEqual(models.resolve('battlecard').model, 'claude-sonnet-5',
+      'BATTLECARD_SCHEMA is synthesis over up to 20 dossiers; Haiku regresses it silently');
+  }));
+  asDispatchReady('assessment', () => withEnv({ AI_PROVIDER: 'anthropic' }, () => {
+    assert.strictEqual(models.resolve('assessment').model, 'claude-haiku-4-5',
+      'per-document scoring is the genuinely LITE half — the split exists so it can stay there');
+  }));
+});
+
+test('battlecard is not dispatch-ready, so flipping it warns and stays on gemini', () => {
+  assert.strictEqual(SHIPPED_DISPATCH_READY.has('battlecard'), false,
+    'this PR splits the key; the call site still speaks only to the Gemini SDK');
+  assert.strictEqual(models.DISPATCH_READY.has('battlecard'), false,
+    'and no earlier test may have left it in the live set');
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (m) => warnings.push(String(m));
+  try {
+    withEnv({ AI_PROVIDER_BATTLECARD: 'anthropic' }, () => {
+      assert.strictEqual(models.resolve('battlecard').provider, 'gemini');
+      assert.match(models.resolve('battlecard').model, /^gemini-/);
+    });
+  } finally { console.warn = realWarn; }
+  assert.ok(warnings.some((w) => w.includes('battlecard') && w.includes('cannot dispatch yet')),
+    'an operator following the runbook early must get a loud no-op, not silence');
+});
+
+test('the battlecard env overrides are the names compose passes', () => {
+  assert.strictEqual(models.providerEnvName('battlecard'), 'AI_PROVIDER_BATTLECARD');
+  withEnv({ GEMINI_BATTLECARD_MODEL: 'gemini-battlecard-custom' }, () => {
+    assert.strictEqual(models.resolve('battlecard').model, 'gemini-battlecard-custom');
+    // The sibling must not move with it — one key, one call site, is the point.
+    assert.strictEqual(models.resolve('assessment').model, 'gemini-2.5-flash-lite');
+  });
+  asDispatchReady('battlecard', () => withEnv({ AI_PROVIDER: 'anthropic', ANTHROPIC_BATTLECARD_MODEL: 'claude-battlecard-custom' }, () => {
+    assert.strictEqual(models.resolve('battlecard').model, 'claude-battlecard-custom');
   }));
 });
 

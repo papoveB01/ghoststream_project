@@ -84,6 +84,9 @@ services:
       # routing could not actually be flipped in a deployed environment.
       GEMINI_RELEVANCE_MODEL: ${GEMINI_RELEVANCE_MODEL:-}
       GEMINI_ASSESSMENT_MODEL: ${GEMINI_ASSESSMENT_MODEL:-}
+      # Not one of the eleven — `battlecard` is a task key added when the
+      # assessment split landed (ADR-0006 §4.1). Wired from the start.
+      GEMINI_BATTLECARD_MODEL: ${GEMINI_BATTLECARD_MODEL:-}
       GEMINI_COMPANYBRIEF_MODEL: ${GEMINI_COMPANYBRIEF_MODEL:-}
       GEMINI_PREVIEW_MODEL: ${GEMINI_PREVIEW_MODEL:-}
       GEMINI_ENTITY_MODEL: ${GEMINI_ENTITY_MODEL:-}
@@ -104,11 +107,13 @@ services:
       ANTHROPIC_MODEL_FLASH: ${ANTHROPIC_MODEL_FLASH:-}
       ANTHROPIC_MODEL_PRO: ${ANTHROPIC_MODEL_PRO:-}
       ANTHROPIC_MODEL_CONTENT: ${ANTHROPIC_MODEL_CONTENT:-}
-      # Per-task Claude overrides. models.js reads all fifteen; omitting them
+      # Per-task Claude overrides. models.js reads all sixteen (fifteen plus
+      # `battlecard`, split out of `assessment` per ADR-0006 §4.1); omitting one
       # here would reproduce exactly the Gemini gap fixed above.
       ANTHROPIC_RELEVANCE_MODEL: ${ANTHROPIC_RELEVANCE_MODEL:-}
       ANTHROPIC_KEYPOINTS_MODEL: ${ANTHROPIC_KEYPOINTS_MODEL:-}
       ANTHROPIC_ASSESSMENT_MODEL: ${ANTHROPIC_ASSESSMENT_MODEL:-}
+      ANTHROPIC_BATTLECARD_MODEL: ${ANTHROPIC_BATTLECARD_MODEL:-}
       ANTHROPIC_COMPANYBRIEF_MODEL: ${ANTHROPIC_COMPANYBRIEF_MODEL:-}
       ANTHROPIC_PREVIEW_MODEL: ${ANTHROPIC_PREVIEW_MODEL:-}
       ANTHROPIC_ENTITY_MODEL: ${ANTHROPIC_ENTITY_MODEL:-}
@@ -127,6 +132,7 @@ services:
       AI_PROVIDER_RELEVANCE: ${AI_PROVIDER_RELEVANCE:-}
       AI_PROVIDER_KEYPOINTS: ${AI_PROVIDER_KEYPOINTS:-}
       AI_PROVIDER_ASSESSMENT: ${AI_PROVIDER_ASSESSMENT:-}
+      AI_PROVIDER_BATTLECARD: ${AI_PROVIDER_BATTLECARD:-}
       AI_PROVIDER_COMPANY_BRIEF: ${AI_PROVIDER_COMPANY_BRIEF:-}
       AI_PROVIDER_PREVIEW: ${AI_PROVIDER_PREVIEW:-}
       AI_PROVIDER_CALL_ENTITIES: ${AI_PROVIDER_CALL_ENTITIES:-}
