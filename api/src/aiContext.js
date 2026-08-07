@@ -31,16 +31,39 @@
 //     while geminiCacheScan.test.js pins a fix for a real incident
 //     (redis.keys() blocking the Redis that also holds sessions). The layer
 //     goes in Phase 5 with the /caches endpoints, not here.
-//   - It does not flip any task. Its only production consumer is
-//     knowledge/globalCache.js, which pins CACHE_TASK = 'personas', and
-//     `personas` is not in models.DISPATCH_READY — so models.resolve('personas')
-//     stays on 'gemini' whatever AI_PROVIDER_PERSONAS says, and the anthropic
-//     branches below are unreachable in production. Check THAT premise, not the
-//     one this note used to state: DISPATCH_READY is no longer empty (relevance,
-//     preview and companyBrief joined it in group 1, ADR-0006 §9 item 5), so it
-//     is `personas` being absent from the set that holds this, and the arena
-//     group of item 5 is the PR that lifts the hold. Tests reach the branch by
-//     adding the task to the set themselves.
+//   - It does not flip any task — but the three exported functions are held
+//     back by three DIFFERENT mechanisms, which lift at different times. Do not
+//     collapse them, and do not reach for "DISPATCH_READY is empty": it is not
+//     (relevance, preview and companyBrief joined it in group 1, ADR-0006 §9
+//     item 5). Check the premise that matches the branch you are touching.
+//
+//     prepare()   HELD BY THE ROUTER. Its only production caller is
+//                 knowledge/globalCache.js, which pins CACHE_TASK = 'personas',
+//                 and `personas` is not in models.DISPATCH_READY — so
+//                 resolve('personas') stays on 'gemini' whatever
+//                 AI_PROVIDER_PERSONAS says. The arena group of item 5 adds
+//                 `personas` to the set, and that lifts this hold, and only
+//                 this one.
+//     discard()   HELD BY ITS CALLER, not the router. globalCache.js passes
+//                 `provider: 'gemini'` explicitly at both of its call sites and
+//                 discard() prefers the explicit provider, so resolve() never
+//                 runs on that path. That does NOT expire at the arena cutover
+//                 — it is deliberate and permanent, for the reason discard()'s
+//                 own note gives: a stored Gemini pointer is a Gemini fact.
+//     generate()  NO PRODUCTION CALLER AT ALL. globalCache.js is the only
+//                 module outside tests that requires this seam, and it calls
+//                 prepare() and discard() and nothing else. So generateAnthropic
+//                 — the larger branch, and the one carrying the consequences —
+//                 stays dead past the `personas` flip too, until arena.js is
+//                 separately moved off ensurePersonaCache /
+//                 gemini.generateForRecord onto this seam. That port, not the
+//                 set membership, is where the two asymmetries documented above
+//                 generate() get decided: arena's temperature: 0.85 silently
+//                 dropped with a warning, and over-budget output turning from a
+//                 truncated render into a hard 502.
+//
+//     Tests reach the anthropic branches by adding the task to the set
+//     themselves.
 //
 // TURN SHAPE. The neutral conversation unit is { role: 'user' | 'assistant',
 // text }. Text only — this seam carries no images or PDFs. Gemini spells the

@@ -208,8 +208,21 @@ test('group 1 survives the only test that rewrites the whole set', () => {
   // Placed immediately after that test on purpose: it is the tripwire for a
   // helper that mutates the exported Set without restoring it. `clear()` in the
   // tiering test above used to make this fail.
+  //
+  // It is also the forcing function for the PROSE. Pinning the exact contents
+  // means no cutover PR can change the set without opening this file, so the
+  // failure message is where the list of comments that go stale WITH the set
+  // lives — that is the only thing here that would have caught #52's four
+  // expired premises before #54 went looking for them. Anchors, not line
+  // numbers, since those go stale the same way. aiCall.test.js pins the same
+  // contents and deliberately does not repeat this list: one copy, so the
+  // reminder cannot drift the way its subject did.
   assert.deepStrictEqual([...models.DISPATCH_READY].sort(),
-    ['companyBrief', 'preview', 'relevance']);
+    ['companyBrief', 'preview', 'relevance'],
+    'changing this set also invalidates prose that asserts what is in it: ' +
+    'anthropic.js (header), aiCall.js (header), gemini.js (assertGeminiModel) ' +
+    'and aiContext.js ("it does not flip any task") — PR #54 existed because ' +
+    '#52 changed the set and left all four stale');
 });
 
 test('the fail-closed fallback escalates when the fallback provider is unconfigured too', () => {

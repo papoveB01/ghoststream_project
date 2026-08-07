@@ -57,9 +57,18 @@ function toContents(contents) {
 // Claude id at Google's caches API (ADR-0006 §9 item 4). What prevents it today
 // is that `personas` is not in models.DISPATCH_READY, so providerFor() warns and
 // stays on Gemini — not that the set is empty, which it stopped being when group
-// 1 landed. When the arena group adds `personas` (ADR-0006 §9 item 5), this
-// check is what is left. Google's own answer to that request is a 404 that
-// mentions neither the provider nor the env var that caused it.
+// 1 landed.
+//
+// A CORRECT arena cutover never reaches this check. models.js states the rule on
+// DISPATCH_READY itself — a task joins the set in the same PR that migrates its
+// call site — and ADR-0006 §9 item 5 groups `personas` with `arena` and
+// `arenaHistory` for exactly that reason: done right, arena.js's
+// `getOrCreateCache({ model: seed.model })` no longer exists by the time
+// `personas` is added, and the call-site migration is the gate. This guard is
+// for the INCORRECT one — key added, call site left on the Gemini SDK — so do
+// not treat it as the thing that makes the flip safe. Google's own answer to
+// that request is a 404 that mentions neither the provider nor the env var that
+// caused it.
 //
 // Unknown ids pass — see models.providerOfModel for why this blocks rather than
 // allow-lists.

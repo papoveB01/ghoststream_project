@@ -2,20 +2,34 @@
 //
 // THIS MODULE CAN NOW MOVE REAL TRAFFIC. relevance, preview and companyBrief are
 // in models.DISPATCH_READY (ADR-0006 §9 item 5) and their call sites dispatch
-// through aiCall.js, so AI_PROVIDER_RELEVANCE=anthropic alone sends every
-// competitor-document relevance check into this file — an environment change,
-// not a code change. Membership is eligibility, not activation: the provider is
-// still chosen by AI_PROVIDER / AI_PROVIDER_<TASK>, and both environments run
-// AI_PROVIDER=gemini with every per-task override unset (checked on the running
-// ghost-api and dsp-api containers, 2026-08-07), so nothing routes here today.
-// Read those two facts together rather than separately — "reached only by tests"
-// stopped being true when group 1 landed, and what stands between this file and
-// production traffic is one environment variable, not another PR.
+// through aiCall.js, so AI_PROVIDER_RELEVANCE=anthropic routes BOTH relevance
+// call sites into this file — checkDocRelevance, on every competitor document,
+// and checkOfferingPlausibility, a product-name plausibility check with no
+// document at all. That is an environment change, not a code change.
 //
-// It is loaded by every process either way: index.js → knowledge/globalCache →
-// aiContext → here, and aiCall.js requires it too. It landed ahead of the
-// cutover so that flipping a task (ADR-0006 §4.5, one env var at a time) changes
-// a router entry, not a new integration written under time pressure.
+// TWO env gates, not one — the shorthand "one env var away" is true only while
+// the key happens to be set. providerFor() falls back to Gemini and warns unless
+// ANTHROPIC_API_KEY is set too, so the provider var is necessary and not
+// sufficient; models.js states both gates on DISPATCH_READY itself. And
+// membership in that set is eligibility, not activation. Read the membership
+// and the environment together rather than separately: "reached only by tests"
+// stopped being true when group 1 landed, and what stands between this file and
+// production traffic is environment, not another PR.
+//
+// ENVIRONMENT SNAPSHOT — a fact about the deploy on 2026-08-07, not a property
+// of this file, and it can go false with no commit, no diff and no review. On
+// that date both ghost-api and dsp-api ran AI_PROVIDER=gemini with every
+// AI_PROVIDER_<TASK> empty, while both already carried an ANTHROPIC_API_KEY: so
+// the key gate was already satisfied and only the provider vars held. Check it
+// (`printenv | grep AI_PROVIDER` in the container) rather than trusting this
+// line.
+//
+// It is loaded by every process either way: index.js → knowledge/index.js →
+// knowledge/globalCache.js → aiContext.js → here, with arena.js →
+// knowledge/globalCache.js as a second route, and aiCall.js requires it too. It
+// landed ahead of the cutover so that flipping a task (ADR-0006 §4.5, one env
+// var at a time) changes a router entry, not a new integration written under
+// time pressure.
 //
 // It deliberately mirrors gemini.js's shape — a lazy singleton client plus one
 // generate() — so migrating a call site is a swap, not a rewrite. What it does

@@ -184,7 +184,7 @@ function warnOnce(key, message) {
 // shouldMarkQuarantine(null) is false — so every competitor document skips the
 // quarantine gate, for every tenant, with nothing in the UI or the logs that
 // looks like a failure. The same fail-open shape is why `relevance` was singled
-// out in DISPATCH_READY's comment below.
+// out in DISPATCH_READY's comment above.
 //
 // So a provider with no credentials is not "configured but broken", it is not
 // available, and the router treats it the way it treats an unknown provider
