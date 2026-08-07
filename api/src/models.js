@@ -60,12 +60,17 @@ const DEFAULT_PROVIDER = 'gemini';
 // warns), so every competitor document would skip the quarantine silently, for
 // every tenant, with nothing in the UI or the logs that looks like a failure.
 //
-// BEFORE ADDING A TASK, READ THE `assessment` NOTE ABOVE TASKS, and check that
-// the key you are adding serves exactly ONE call site. `assessment` used to
-// serve two at two different difficulty levels, so joining this set by
-// pattern-matching on the line below would have sent BATTLECARD_SCHEMA
-// synthesis to Haiku. That specific hazard is gone — the synthesis has its own
-// `battlecard` key now — but the shape of the mistake is not.
+// BEFORE ADDING A TASK, READ THE `assessment` NOTE ABOVE TASKS. The test is
+// not "does this key serve exactly one call site" — `relevance` below serves
+// two and ships. It is: every call site the key serves sits at the SAME
+// difficulty tier, and every one of them has been migrated. `assessment` used
+// to serve two at two different tiers, so joining this set by pattern-matching
+// on the line below would have sent BATTLECARD_SCHEMA synthesis to Haiku. That
+// specific hazard is gone — the synthesis has its own `battlecard` key now —
+// but the shape of the mistake is not. The "all of them" half bites separately
+// where one FILE carries call sites for two keys (`preview.js` holds `preview`
+// and `compare`): migrate only the key you are adding, and see the GROUP 1
+// list below for how that is meant to look.
 //
 // A task joins this set in the same PR that migrates its call site. Until then
 // the router honours the env var by warning and staying put, so an operator who

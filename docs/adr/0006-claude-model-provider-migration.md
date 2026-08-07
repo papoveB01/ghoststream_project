@@ -860,7 +860,8 @@ decomposition exists so that per-file spokes stay tractable.
    New `api/src/anthropic.js`; `api/src/models.js` gains `resolve(task)`
    returning `{provider, model}` (not a changed `modelFor`); the eleven
    unreachable `GEMINI_*_MODEL` overrides wired through `docker-compose.yml`,
-   plus the fifteen `ANTHROPIC_*_MODEL` equivalents; `.env.example`,
+   plus the `ANTHROPIC_*_MODEL` equivalents — fifteen when this shipped,
+   sixteen since PR #53 split `battlecard` out of `assessment`; `.env.example`,
    `.env.production.example`, `api/package.json`, `platformAdmin.js`
    (`AI: ['GEMINI_API_KEY']` → add `ANTHROPIC_API_KEY`).
 
@@ -1182,8 +1183,10 @@ decomposition exists so that per-file spokes stay tractable.
       same prompt both trees: base = **1 upstream POST, 47.3s, HTTP 200**;
       sliced = **3 upstream POSTs, abort at 120.0s**. Opus 5 runs **63.7 output
       tok/s**, so the ceiling was ~**2,540 output tokens** — under `enrichment`
-      (8000), `watch` (6000), `proposals` (3000) and `assessment`'s larger call
-      (2600), and close enough to its 2400 one to fail on ordinary variance.
+      (8000), `watch` (6000), `proposals` (3000) and the battlecard synthesis
+      (2600 — part of `assessment` when this was measured, its own `battlecard`
+      key since PR #53), and close enough to the `assessment` scorer's 2400 to
+      fail on ordinary variance.
       `costs.recordClaude` sits after the rethrow, so all three billed
       generations recorded **$0.00** into the meter §6's margin floor depends on.
    2. **429 stacked 3×3.** `classify()` marked Anthropic 429 transient while the
@@ -1256,10 +1259,27 @@ decomposition exists so that per-file spokes stay tractable.
    returns a normal battlecard — so the only symptom is that §6's margin table
    prices a task that never moved, and the cutover looks complete when it is
    half done. `battlecard` also still needs its call site migrated onto
-   `aiCall.generateStructured` and a row in `aiRetry.POLICIES` (PR #53 was
-   router-only and deliberately added neither); until that happens it cannot
-   dispatch to Claude at all, and adding it to `DISPATCH_READY` on its own would
-   hand a Claude model id to the Gemini SDK.
+   `aiCall.generateStructured` (PR #53 was router-only and deliberately did
+   not); until that happens it cannot dispatch to Claude at all, and adding it
+   to `DISPATCH_READY` on its own would hand a Claude model id to the Gemini
+   SDK.
+
+   **That migration needs no `aiRetry.POLICIES` row — the seam does not
+   retry.** `aiCall.js` requires `models`, `gemini`, `anthropic` and `costs`
+   and nothing else; every `forLabel()` binding lives in a *caller*
+   (`proposals.js`, `relevance.js`, `discovery.js`, `watch.js`,
+   `assessment.js`, `research.js`), and `relevance.js:132`/`:174` show the
+   shape — `await withRetry(() => aiCall.generateStructured({…}))`, the caller
+   wrapping the seam. Retry is therefore a separate, caller-side decision that
+   group 2 makes deliberately, and a POLICIES row is needed only if the answer
+   is yes (`forLabel()` throws on an unknown label, which is what forces that
+   to be deliberate). **The answer here is probably no**, and the note above
+   `forLabel('assessment')` in `knowledge/assessment.js` — the very file group
+   2 edits — records why: `extractBattlecard` is synchronous behind the
+   rep-facing `POST /portfolio/competitors/:id/battlecard/regenerate`, so
+   wrapping it turns a fast 502 into three attempts with backoff while a rep
+   waits. Weigh that; don't inherit a wrapper from the sibling call site just
+   because it has one.
 
    Every group's schemas are already proven acceptable by item 3 — **except
    `proposals`, which carries the §4.7 reshape and is the reason that group is

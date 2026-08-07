@@ -253,13 +253,22 @@ test('keypoints is re-tiered for claude only, leaving gemini untouched', () => {
 // sent battlecard synthesis to Haiku — and a worse battlecard is not an error
 // anyone sees, so nothing downstream would have reported it.
 
+// Both tests below assert the DEFAULT gemini model ids, so they have to clear
+// the per-task overrides first. `GEMINI_ASSESSMENT_MODEL` and
+// `GEMINI_BATTLECARD_MODEL` are both compose-wired and supported — the second
+// is the variable this very split tells operators to use — so a developer or
+// runner with either set would otherwise get a red suite from a correct tree.
+// Ambient env is never a false green here, only a false red; withEnv deletes a
+// key whose value is `undefined`, which is what makes this work.
 test('battlecard resolves to the same gemini model assessment does', () => {
-  // This is the whole safety property of the split: it is a router-only change,
-  // so the provider serving 100% of today's traffic must not notice it.
-  assert.strictEqual(models.resolve('battlecard').provider, 'gemini');
-  assert.strictEqual(models.resolve('battlecard').model, models.resolve('assessment').model,
-    're-tiering the gemini path here would be a live quality-and-cost change in a PR that is meant to change nothing');
-  assert.strictEqual(models.resolve('battlecard').model, 'gemini-2.5-flash-lite');
+  withEnv({ GEMINI_ASSESSMENT_MODEL: undefined, GEMINI_BATTLECARD_MODEL: undefined }, () => {
+    // This is the whole safety property of the split: it is a router-only change,
+    // so the provider serving 100% of today's traffic must not notice it.
+    assert.strictEqual(models.resolve('battlecard').provider, 'gemini');
+    assert.strictEqual(models.resolve('battlecard').model, models.resolve('assessment').model,
+      're-tiering the gemini path here would be a live quality-and-cost change in a PR that is meant to change nothing');
+    assert.strictEqual(models.resolve('battlecard').model, 'gemini-2.5-flash-lite');
+  });
 });
 
 test('battlecard takes the flash tier on claude while assessment stays lite', () => {
@@ -292,15 +301,18 @@ test('battlecard is not dispatch-ready, so flipping it warns and stays on gemini
 });
 
 test('the battlecard env overrides are the names compose passes', () => {
-  assert.strictEqual(models.providerEnvName('battlecard'), 'AI_PROVIDER_BATTLECARD');
-  withEnv({ GEMINI_BATTLECARD_MODEL: 'gemini-battlecard-custom' }, () => {
-    assert.strictEqual(models.resolve('battlecard').model, 'gemini-battlecard-custom');
-    // The sibling must not move with it — one key, one call site, is the point.
-    assert.strictEqual(models.resolve('assessment').model, 'gemini-2.5-flash-lite');
+  withEnv({ GEMINI_ASSESSMENT_MODEL: undefined, GEMINI_BATTLECARD_MODEL: undefined }, () => {
+    assert.strictEqual(models.providerEnvName('battlecard'), 'AI_PROVIDER_BATTLECARD');
+    withEnv({ GEMINI_BATTLECARD_MODEL: 'gemini-battlecard-custom' }, () => {
+      assert.strictEqual(models.resolve('battlecard').model, 'gemini-battlecard-custom');
+      // The sibling must not move with it — separate keys, separate knobs, is
+      // the point of the split.
+      assert.strictEqual(models.resolve('assessment').model, 'gemini-2.5-flash-lite');
+    });
+    asDispatchReady('battlecard', () => withEnv({ AI_PROVIDER: 'anthropic', ANTHROPIC_BATTLECARD_MODEL: 'claude-battlecard-custom' }, () => {
+      assert.strictEqual(models.resolve('battlecard').model, 'claude-battlecard-custom');
+    }));
   });
-  asDispatchReady('battlecard', () => withEnv({ AI_PROVIDER: 'anthropic', ANTHROPIC_BATTLECARD_MODEL: 'claude-battlecard-custom' }, () => {
-    assert.strictEqual(models.resolve('battlecard').model, 'claude-battlecard-custom');
-  }));
 });
 
 test('a per-task model override wins over the tier, per provider', () => {
