@@ -22,11 +22,34 @@ const costs = require('../costs');
 const keypoints = require('./keypoints');
 const db = require('../db');
 
+// Two tasks, not one. `assessment` is the per-document competitive scorer
+// (extractCompetitiveAssessment) — genuinely extraction-shaped, LITE. The
+// battlecard synthesis below is judgment over up to 20 dossiers and takes its
+// own key, so it can be tiered independently (ADR-0006 §4.1). On Gemini both
+// resolve to the same model today — both are tier `lite` — unless the legacy
+// GEMINI_ASSESSMENT_MODEL override is set, which now steers only the scorer
+// (see the note on `battlecard` in models.js). On Claude `battlecard` is FLASH.
+//
+// Both are still resolved at REQUIRE time, which is the hazard ADR-0006 §9
+// item 4 fixed in personas.js: an env change is not seen until the process
+// restarts. Left as-is on purpose — converting these to per-call resolution is
+// part of group 2's cutover (§9 item 5), which is also what makes the provider
+// actually able to vary at run time. Doing it here would change behaviour in a
+// PR whose whole point is that it does not.
 const MODEL = require('../models').modelFor('assessment');
+const BATTLECARD_MODEL = require('../models').modelFor('battlecard');
 
 // Shared retry helper (ADR-0006 §7). Bound here with this module's label so
 // every call site below is unchanged; the classification that used to live in
 // a local copy of this function now happens once, in aiRetry.classify().
+//
+// Only ONE call site in this file retries: extractCompetitiveAssessment. The
+// battlecard synthesis has never been wrapped — it is synchronous behind
+// POST /portfolio/competitors/:id/battlecard/regenerate and turns any failure
+// into a 502 a rep sees immediately. So the `battlecard` task split below adds
+// no retry label, and aiRetry.POLICIES needs no new row; forLabel() throws on
+// an unknown label, so a future wrapper here has to add one deliberately —
+// which is the point of that throw.
 const aiRetry = require('../aiRetry');
 const withRetry = aiRetry.forLabel('assessment');
 
@@ -574,7 +597,7 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
   try {
     const ai = gemini.getClient();
     const resp = await ai.models.generateContent({
-      model: MODEL,
+      model: BATTLECARD_MODEL,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         temperature: 0.3,
@@ -584,7 +607,7 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
-    costs.recordGemini(tenantId, 'kb.battlecard', MODEL, resp.usageMetadata);
+    costs.recordGemini(tenantId, 'kb.battlecard', BATTLECARD_MODEL, resp.usageMetadata);
     const parsed = JSON.parse(resp.text);
 
     // If we have no per-doc aggregate (all axes weight=0), use Gemini's
@@ -628,7 +651,18 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
       // Manual edits are preserved by the caller — extractBattlecard only
       // produces the AI fields; the route stitches them with stored edits.
       lastRefreshedAt: new Date().toISOString(),
-      model: MODEL,
+      // Persisted onto competitors.battlecard. It must name the model that
+      // produced THIS card, not the model some other call site uses.
+      //
+      // Five places read it back and none BRANCH on it, so re-pointing it is
+      // safe and stored rows keep whatever they were stamped with (the value is
+      // identical today anyway): web/admin/admin.js renders it in the card's
+      // meta line, in the Markdown export and per-version in the History
+      // drawer; portfolio.js returns it from the battlecard history route; and
+      // watch.js folds the whole battlecard record into a Market Watch prompt,
+      // where it is prose the model reads. Adding a reader that branches on it
+      // would change that — this list is what such a change has to update.
+      model: BATTLECARD_MODEL,
     };
   } catch (err) {
     console.warn('[battlecard] synthesis failed:', err.message);

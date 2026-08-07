@@ -60,11 +60,17 @@ const DEFAULT_PROVIDER = 'gemini';
 // warns), so every competitor document would skip the quarantine silently, for
 // every tenant, with nothing in the UI or the logs that looks like a failure.
 //
-// BEFORE ADDING A TASK, READ THE `assessment` NOTE ABOVE TASKS. Joining this
-// set by pattern-matching on the line below is exactly how BATTLECARD_SCHEMA
-// synthesis would end up on Haiku: `assessment` is one task key serving two
-// call sites at two different difficulty levels, and only one of them is a
-// LITE-tier job.
+// BEFORE ADDING A TASK, READ THE `assessment` NOTE ABOVE TASKS. The test is
+// not "does this key serve exactly one call site" — `relevance` below serves
+// two and ships. It is: every call site the key serves sits at the SAME
+// difficulty tier, and every one of them has been migrated. `assessment` used
+// to serve two at two different tiers, so joining this set by pattern-matching
+// on the line below would have sent BATTLECARD_SCHEMA synthesis to Haiku. That
+// specific hazard is gone — the synthesis has its own `battlecard` key now —
+// but the shape of the mistake is not. The "all of them" half bites separately
+// where one FILE carries call sites for two keys (`preview.js` holds `preview`
+// and `compare`): migrate only the key you are adding, and see the GROUP 1
+// list below for how that is meant to look.
 //
 // A task joins this set in the same PR that migrates its call site. Until then
 // the router honours the env var by warning and staying put, so an operator who
@@ -94,24 +100,50 @@ const DISPATCH_READY = new Set(['relevance', 'preview', 'companyBrief']);
 // Gemini tier at the same time would be a silent quality-and-cost change in a
 // PR that is meant to change nothing.
 //
-// ADR-0006 §4.1 names a SECOND correction that is deliberately NOT made here:
-// `assessment` should split, with per-document scoring staying LITE and the
-// BATTLECARD_SCHEMA synthesis (knowledge/assessment.js) moving to FLASH. That
-// needs a new task key AND a change at the battlecard call site, so it belongs
-// with that call site's phase-3 migration rather than in a router-only PR.
+// ADR-0006 §4.1's SECOND correction — the `assessment` split — IS made here.
+// `battlecard` below is that new key: per-document competitive scoring keeps
+// `assessment`, and the BATTLECARD_SCHEMA synthesis (knowledge/assessment.js)
+// takes `battlecard`, which is FLASH on Claude and unchanged LITE on Gemini.
 //
-// UNCONDITIONALLY BLOCKING, and no longer contingent on anything: `assessment`
-// MUST NOT JOIN DISPATCH_READY until it is split. The original wording — "which
-// is harmless while DISPATCH_READY is empty" — expired the moment group 1
-// landed, and it read as a condition the next migrator could check rather than
-// a prerequisite they must satisfy. One task key serves two call sites of very
-// different difficulty; flipping it sends BATTLECARD_SCHEMA synthesis to Haiku,
-// and a worse battlecard is not an error anyone sees.
+// This is what lifts the block that used to sit here. The rule was:
+// `assessment` MUST NOT join DISPATCH_READY until it is split, because one key
+// served two call sites of very different difficulty and flipping it sent
+// BATTLECARD_SCHEMA synthesis to Haiku — a worse battlecard, which is not an
+// error anyone sees. That rule was UNCONDITIONAL, not contingent on
+// DISPATCH_READY being empty (an earlier wording said "harmless while
+// DISPATCH_READY is empty", which expired the moment group 1 landed and read as
+// a condition to check rather than a prerequisite to satisfy). It is satisfied
+// now, and only because the split happened: battlecard no longer resolves
+// through `assessment` at all, so `assessment` cannot carry it to Haiku.
+//
+// What is still NOT done, and is deliberately not done here: neither
+// `assessment` nor `battlecard` is in DISPATCH_READY, and neither of their call
+// sites can dispatch to Claude yet. Both of those keys move in group 2's
+// cutover PR (ADR-0006 §9 item 5, `keypoints` + `assessment` + `battlecard`) —
+// this is a router-only change, so it flips no traffic and re-tiers nothing on
+// the provider currently serving 100% of it.
 const TASKS = {
   // LITE — high-volume, structured/extraction
   relevance:    { tier: 'lite',    env: 'GEMINI_RELEVANCE_MODEL',    anthropicEnv: 'ANTHROPIC_RELEVANCE_MODEL' },
   keypoints:    { tier: 'lite',    env: 'GEMINI_KEYPOINTS_MODEL',    anthropicEnv: 'ANTHROPIC_KEYPOINTS_MODEL', anthropicTier: 'flash' },
   assessment:   { tier: 'lite',    env: 'GEMINI_ASSESSMENT_MODEL',   anthropicEnv: 'ANTHROPIC_ASSESSMENT_MODEL' },
+  // Battlecard SYNTHESIS, split out of `assessment` (ADR-0006 §4.1). Same
+  // `anthropicTier` pattern as keypoints above, for the same reason and with
+  // the same restraint: tier stays `lite` so the Gemini model this call site
+  // gets is byte-for-byte what it got before, and only the Claude path moves to
+  // FLASH. Re-tiering Gemini here would be a live quality-and-cost change to
+  // 100% of today's traffic inside a router-only PR.
+  //
+  // "byte-for-byte what it got before" holds because both keys fall through to
+  // the same `lite` tier default. It is conditional on ONE thing: the legacy
+  // override `GEMINI_ASSESSMENT_MODEL` used to steer this call site too, and
+  // after the split it steers only the per-document scorer. Set it, and the
+  // synthesis silently drops back to the tier default while the scorer follows
+  // the override. It is unset in every deployed environment (staging `ghost-api`
+  // and production `dsp-api` both pass it through empty), so nothing moves —
+  // but an operator pinning the battlecard must now use
+  // `GEMINI_BATTLECARD_MODEL`.
+  battlecard:   { tier: 'lite',    env: 'GEMINI_BATTLECARD_MODEL',   anthropicEnv: 'ANTHROPIC_BATTLECARD_MODEL', anthropicTier: 'flash' },
   companyBrief: { tier: 'lite',    env: 'GEMINI_COMPANYBRIEF_MODEL', anthropicEnv: 'ANTHROPIC_COMPANYBRIEF_MODEL' },
   preview:      { tier: 'lite',    env: 'GEMINI_PREVIEW_MODEL',      anthropicEnv: 'ANTHROPIC_PREVIEW_MODEL' },
   callEntities: { tier: 'lite',    env: 'GEMINI_ENTITY_MODEL',       anthropicEnv: 'ANTHROPIC_ENTITY_MODEL' },

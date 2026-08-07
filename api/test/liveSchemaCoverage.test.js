@@ -247,6 +247,35 @@ test('the registry rows are individually addressable', () => {
   }
 });
 
+// The two schemas in knowledge/assessment.js go to DIFFERENT models on Claude
+// (ADR-0006 §4.1): per-document scoring is `assessment`/lite, battlecard
+// synthesis is `battlecard`/flash. `task` is what smoke.js resolves the model
+// from, so a row keyed to the wrong one validates the schema against a model
+// production never sends it to — and reports green either way. The test above
+// only checks the task EXISTS, and `assessment` exists, so nothing else here
+// notices the drift.
+test('the two assessment schemas are keyed to their own tasks, in one cluster', () => {
+  const byS = Object.fromEntries(ENTRIES.map((e) => [e.site, e]));
+  // Assert the rows EXIST before reading through them. `--site=kb.battlecard`
+  // is the command MEDIUM 3 of this PR's review round is run with, so a renamed
+  // site label has to fail here with a sentence, not as a bare TypeError three
+  // lines down.
+  for (const site of ['kb.assessment', 'kb.battlecard']) {
+    assert.ok(byS[site], `no registry row is labelled ${site} — the site labels are what --site= selects on`);
+  }
+  assert.strictEqual(byS['kb.assessment'].task, 'assessment');
+  assert.strictEqual(byS['kb.battlecard'].task, 'battlecard',
+    'BATTLECARD_SCHEMA would be smoke-tested against Haiku while production sends it to Sonnet');
+  // ADR-0006 §9 item 5 groups keypoints + assessment + battlecard as one
+  // cutover and tells the operator to run `--cluster=` for the group before
+  // flipping it. Giving battlecard its own cluster would drop it out of that one
+  // command — so assert the VALUE, not merely that the two rows agree: renaming
+  // both to a third string would keep them equal and still miss `assessment`.
+  assert.strictEqual(byS['kb.assessment'].cluster, 'assessment');
+  assert.strictEqual(byS['kb.battlecard'].cluster, 'assessment',
+    '--cluster=assessment must still reach both schemas');
+});
+
 test('every registered task exists in the model router', () => {
   const { TASKS } = require('../src/models.js');
   const unknown = [...new Set(ENTRIES.map((e) => e.task))].filter((t) => !TASKS[t]);
