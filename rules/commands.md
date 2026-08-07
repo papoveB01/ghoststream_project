@@ -4,6 +4,8 @@
 
 Run from `api/` (Node 22). Note: `node`/`npm` may not be on the host PATH — if so, run inside the api image, e.g. `docker run --rm -v "$PWD":/app -w /app <api-image> <cmd>`.
 
+Mount the **repo root**, not just `api/`: the admin-badge guard in `test/cutoverGroup1.test.js` reads `web/admin/admin.js` and fails (deliberately loudly, never skips) if `web/` is absent — `docker compose run --rm --no-deps -v "$PWD":/repo -w /repo/api api npm test`.
+
 ```bash
 npm test                       # full suite: node --test test/*.test.js
 node --test test/plans.test.js # a single test file

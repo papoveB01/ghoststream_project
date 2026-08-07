@@ -280,12 +280,14 @@ function badgeExpression(body) {
 // string text. Both are the same mistake — reasoning about rendered markup from
 // JavaScript source text.
 //
-// Rendering closes the whole class rather than that one instance: the assertion
-// below becomes "a browser would show the badge for this summarySource", which
-// no rearrangement of source text can satisfy without the badge actually
-// rendering. Text-level checks are kept above it, because they are what catches
-// a guard pointed at the WRONG code (a decoy declaration, a second card) — the
-// failure a render cannot see because it renders whatever it was given.
+// Rendering closes both of those, and every other way JS source text can be
+// rearranged around the badge — but calling it "the whole class" overclaimed,
+// which is the same mistake one level up. The assertion is only ever as strong
+// as what visible() considers painted, and three mutants beat the first version
+// of that (see visible() below). Text-level checks are kept above it, because
+// they are what catches a guard pointed at the WRONG code (a decoy declaration,
+// a second card, a call site pointed elsewhere) — the failure a render cannot
+// see, because it renders whatever it was given.
 //
 // previewCardBody starts one character in (it slices from the match, not the
 // keyword), so re-attach the `f`, and cut at the declaration's own closing brace
@@ -341,8 +343,56 @@ function renderCard(source, p) {
   return String(make(env)(p) || '');
 }
 
-// A browser does not render what is inside an HTML comment. Neither does this.
-const visible = (html) => html.replace(/<!--[\s\S]*?-->/g, '');
+// What a browser actually PAINTS, projected onto a string this test can assert
+// over: element class names plus text nodes, and nothing else.
+//
+// The first version stripped HTML comments and called the result "what a browser
+// would show", which overclaimed — it was still a substring test over a markup
+// string. Three ordinary-looking edits put the badge somewhere no user can see it
+// and kept the guard green: the whole span moved into an ATTRIBUTE value
+// (`data-badge="<span class=…>AI summary</span>"`), the span wrapped in
+// `<div style="display:none">`, and the span parked inside
+// `<script type="text/template">`. All three are markup that contains the badge
+// and renders none of it.
+//
+// So: comments go, the bodies of script/style/template go, a display:none
+// subtree goes, tags are consumed quote-aware (an attribute value may legally
+// contain '>', which is exactly where the first mutant hid), and of each tag only
+// its FIRST class attribute survives — which is what keeps the assertion below
+// able to look for kb-preview-ai-tag at all.
+//
+// What this deliberately does NOT model, so nobody reads more into a pass than is
+// there: CSS from stylesheets (there is none in scope here — admin.css is not
+// loaded), `visibility:hidden`, the `hidden` attribute, off-screen positioning,
+// zero sizing, and element nesting of the same tag inside a display:none subtree.
+// It models the ways markup can swallow the badge, not the whole of CSS.
+function visible(html) {
+  const markup = String(html)
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(script|style|template)\b[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<(\w+)\b[^>]*?\bstyle\s*=\s*(["'])[^"']*display\s*:\s*none[\s\S]*?<\/\1\s*>/gi, '');
+
+  let out = '';
+  let i = 0;
+  while (i < markup.length) {
+    const lt = markup.indexOf('<', i);
+    if (lt === -1) { out += markup.slice(i); break; }
+    out += markup.slice(i, lt);           // a text node — painted
+    let j = lt + 1;
+    let quote = null;
+    for (; j < markup.length; j++) {
+      const c = markup[j];
+      if (quote) { if (c === quote) quote = null; }
+      else if (c === '"' || c === '\'') quote = c;
+      else if (c === '>') break;
+    }
+    const tag = markup.slice(lt, j + 1);
+    const cls = tag.match(/\sclass\s*=\s*(["'])([^"']*)\1/i);
+    out += cls ? ' ' + cls[2] + ' ' : ' ';  // every other attribute value: not painted
+    i = j + 1;
+  }
+  return out;
+}
 
 test('[BEHAVIOURAL] the admin badge gates on "a model answered", not on a vendor name', () => {
   // web/ is a live bind mount and api/ is a baked image, so the two sides never
@@ -360,6 +410,28 @@ test('[BEHAVIOURAL] the admin badge gates on "a model answered", not on a vendor
   assert.strictEqual(definitions, 1,
     `admin.js declares renderPreviewCard ${definitions} times — the browser uses the last one and ` +
     'this guard reads the first, so the card being checked need not be the card being shipped');
+
+  // …and it must be the definition the page actually CALLS. "Exactly one
+  // `function renderPreviewCard(`" proves membership of the file, not wiring:
+  // adding a badge-less renderPreviewCardV2 and repointing the two
+  // `result.innerHTML = …(x.preview || {})` sites at it leaves the original
+  // intact, this file green, and the badge gone for every tenant — which is the
+  // very failure the definition count was added to stop. Reassigning the name
+  // after its declaration does the same thing without touching a call site.
+  const wired = stripComments(admin);
+  const callSites = [...wired.matchAll(/innerHTML\s*=\s*([A-Za-z_$][\w$]*)\s*\(\s*[A-Za-z_$][\w$]*\.preview\b/g)]
+    .map((m) => m[1]);
+  assert.ok(callSites.length >= 2,
+    `found ${callSites.length} preview-card call sites in admin.js, expected the file/web dry-run pair — ` +
+    'either they were rewritten into a shape this guard cannot see, in which case fix the match, ' +
+    'or nothing renders the preview card any more');
+  assert.deepStrictEqual([...new Set(callSites)], ['renderPreviewCard'],
+    `the preview card is rendered by ${[...new Set(callSites)].join(', ')} — this guard reads, slices and ` +
+    'executes renderPreviewCard, so anything else at the call site means it is testing code the browser ' +
+    'never runs');
+  assert.ok(!/renderPreviewCard\s*=[^=]/.test(wired),
+    'renderPreviewCard is reassigned somewhere in admin.js — the declaration this guard renders is then ' +
+    'not the function the call sites invoke');
 
   const body = previewCardBody(admin);
   assert.ok(body,
@@ -414,6 +486,7 @@ test('[BEHAVIOURAL] the admin badge gates on "a model answered", not on a vendor
   for (const [summarySource, expected] of cases) {
     assert.strictEqual(render(summarySource).includes('kb-preview-ai-tag'), expected,
       `summarySource=${JSON.stringify(summarySource)} should ${expected ? '' : 'NOT '}show the AI badge ` +
-      'in the card\'s RENDERED html (comments stripped — a badge inside <!-- --> shows nothing)');
+      'in the card\'s PAINTED output — see visible(): a badge inside <!-- -->, inside an attribute value, ' +
+      'inside <script>/<style>/<template>, or inside a display:none subtree is markup a user never sees');
   }
 });
