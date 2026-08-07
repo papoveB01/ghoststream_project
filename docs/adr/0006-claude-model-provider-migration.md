@@ -167,7 +167,7 @@ decided.
 | Tier | Model | Tasks | Settings |
 | --- | --- | --- | --- |
 | `pro` | **`claude-opus-5`** | `callAnalysis`, `proposal` | `thinking: {type:"adaptive"}`, `output_config: {effort:"high"}` |
-| `flash` / `content` | **`claude-sonnet-5`** | `discovery`, `research`, `marketWatch`, `brief`, `compare`, `personas`, `content`, **`keypoints`** | adaptive, `effort:"medium"`; `effort:"low"` on `personas` |
+| `flash` / `content` | **`claude-sonnet-5`** | `discovery`, `research`, `marketWatch`, `brief`, `compare`, `personas`, `content`, **`keypoints`**, **`battlecard`** | adaptive, `effort:"medium"`; `effort:"low"` on `personas` |
 | `lite` | **`claude-haiku-4-5`** | `relevance`, `callEntities`, `preview`, `companyBrief`, doc-level `assessment` | `effort` unsupported — omit |
 
 Two corrections fall out of this and are part of the decision:
@@ -176,9 +176,15 @@ Two corrections fall out of this and are part of the decision:
   (`knowledge/keypoints.js:258+`) asks for `differentiator`,
   `idealCustomerProfile` and `pricingPosture` — judgment, not extraction. It
   was mis-tiered under Gemini too; Haiku would regress it visibly.
-- **`assessment` splits.** Per-document scoring stays `lite`; the
-  `BATTLECARD_SCHEMA` synthesis (`knowledge/assessment.js:595`) moves to
-  `flash`.
+- **`assessment` splits.** Per-document scoring stays `lite` under the
+  `assessment` key; the `BATTLECARD_SCHEMA` synthesis
+  (`knowledge/assessment.js:595`) moves to `flash` under a **new task key,
+  `battlecard`** — the lowercase string is the router key in `models.js` and the
+  `AI_PROVIDER_BATTLECARD` / `ANTHROPIC_BATTLECARD_MODEL` /
+  `GEMINI_BATTLECARD_MODEL` env names derive from it. *Landed in the router
+  2026-08-07 (PR #53). Both keys stay on Gemini and `battlecard` keeps Gemini
+  tier `lite`, so only the Claude side is re-tiered; the Gemini-side correction,
+  if one is wanted, is a separate decision.*
 
 **`thinkingBudget: 0` does not map to `thinking: {type:"disabled"}`.** On
 Opus 5 disabled thinking is legal only at effort ≤ `high` and has two
@@ -820,7 +826,7 @@ finding and must keep passing through the redesign.
 
 **Phase 3 — per-task cutover, cheapest and lowest-risk first.**
 `relevance` → `callEntities` → `preview` / `companyBrief` → `keypoints` /
-`assessment` → `research` / `compare` / `brief` → `watch` →
+`assessment` / `battlecard` → `research` / `compare` / `brief` → `watch` →
 `arena` / `personas` → `discovery` → `analysis` / `proposals`.
 Founders/INTERNAL tenant first at each step. Shadow-compare
 `discovery.js`, `analysis.js` and `proposals.js` against Gemini before
@@ -879,6 +885,30 @@ decomposition exists so that per-file spokes stay tractable.
    three per-tenant *builder* schemas are each also exercised with empty tenant
    data — `closedSet` drops the enum when the list is empty, which is a
    different validator path, not a smaller one.)
+
+   **Re-verified 2026-08-07 for the `assessment` split (PR #53), and the count
+   is unchanged at 28/29.** Re-keying the `kb.battlecard` row from `assessment`
+   to `battlecard` changed what this check actually sends: a different model
+   (`claude-haiku-4-5` → `claude-sonnet-5`) *and* a different request shape,
+   because Haiku is in `anthropic.js`'s `NO_EFFORT` list so `output_config.effort`
+   was dropped, and Sonnet is not, so `effort:"low"` is now sent with
+   `BATTLECARD_SCHEMA`. Neither CI nor the CD smoke test can reach that, so it
+   was run against the live API before merge:
+
+   ```
+   $ docker compose run --rm --no-deps -v "$PWD/api":/app -w /app \
+       api node test/live/smoke.js --site=kb.battlecard,kb.assessment
+   live-schema smoke: 2 schema(s) × anthropic
+
+     ── assessment ────────────────────────────── [anthropic]
+     ok       kb.assessment                      claude-haiku-4-5       accepted, output parses
+     ok       kb.battlecard                      claude-sonnet-5        accepted, output parses
+
+   2/2 accepted
+   ```
+
+   No registry row was added or removed, so 29 rows and 28 acceptances still
+   stand; what changed is which model backs one of them.
 
    Two things it does NOT do, so nobody reads more into a green run than is
    there: it does not validate responses against the schema field by field
@@ -1212,10 +1242,24 @@ decomposition exists so that per-file spokes stay tractable.
    correct. The tests that would have caught them were the ones nobody wrote
    because the behaviour "obviously" worked.
 5. **Per-task cutover PRs** (Phase 3), grouped to keep each reviewable:
-   `relevance` + `preview` + `companyBrief`; `keypoints` + `assessment`;
-   `research` + `ocr`; `compare` + `enrichment` + `contacts` + `companies`;
-   `brief`; `watch` + scheduler env; `arena` + `arenaHistory` + `personas`
-   (depends on 4); `discovery`; `analysis` + `proposals` (last).
+   `relevance` + `preview` + `companyBrief`; **`keypoints` + `assessment` +
+   `battlecard`**; `research` + `ocr`; `compare` + `enrichment` + `contacts` +
+   `companies`; `brief`; `watch` + scheduler env; `arena` + `arenaHistory` +
+   `personas` (depends on 4); `discovery`; `analysis` + `proposals` (last).
+
+   **Group 2 is three keys, not two, and all three must flip together.**
+   `knowledge/assessment.js` holds two call sites, and since PR #53 they resolve
+   two different task keys: `extractCompetitiveAssessment` → `assessment`
+   (lite/Haiku), `extractBattlecard` → `battlecard` (flash/Sonnet). Flipping
+   `assessment` alone leaves half of that one file on Gemini. **Nothing errors**
+   — the un-flipped half keeps calling the Gemini SDK with a Gemini model id and
+   returns a normal battlecard — so the only symptom is that §6's margin table
+   prices a task that never moved, and the cutover looks complete when it is
+   half done. `battlecard` also still needs its call site migrated onto
+   `aiCall.generateStructured` and a row in `aiRetry.POLICIES` (PR #53 was
+   router-only and deliberately added neither); until that happens it cannot
+   dispatch to Claude at all, and adding it to `DISPATCH_READY` on its own would
+   hand a Claude model id to the Gemini SDK.
 
    Every group's schemas are already proven acceptable by item 3 — **except
    `proposals`, which carries the §4.7 reshape and is the reason that group is

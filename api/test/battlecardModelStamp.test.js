@@ -72,18 +72,40 @@ gemini.getClient = () => ({
 costs.recordGemini = (tenantId, site, model) => { recorded.push({ site, model }); };
 keypoints.tenantContextText = async () => 'our context';
 
-// extractBattlecard issues three queries in a fixed order; dispatch on the
-// table each one names rather than on call count, so an added query does not
-// silently shift the fixtures onto the wrong statement.
+// extractBattlecard issues three queries; each fixture is selected by a
+// discriminator that ONLY its own statement matches, never by call order.
+//
+// A chain of `if`s would not have given that: the competitor-dossier query
+// names both `kb_document_competitors` AND `kb_documents`, so it matched two
+// arms and landed on the right fixture only because that arm was tested first
+// — reordering the two `if`s would have swapped the fixtures silently, and both
+// fixtures parse, so the swap surfaces as a confusing assertion failure rather
+// than as "your dispatcher is ambiguous". Hence: collect EVERY matching rule
+// and refuse to answer unless exactly one matched.
+//
+//   competitor name  → `FROM competitors` (competitor_offerings does not match:
+//                       the \b after `competitors` excludes `competitors_…`)
+//   THEIR dossiers   → the only query that JOINs kb_document_competitors
+//   OUR intel        → the only query that filters d.scope = 'TENANT'
+const QUERY_FIXTURES = [
+  { name: 'competitor name', match: /\bFROM competitors\b/,
+    rows: [{ name: 'Acme' }] },
+  { name: 'their dossiers', match: /\bJOIN\s+kb_document_competitors\b/,
+    rows: [{ id: 'doc_1', title: 'Acme dossier', metadata: {}, body: 'Acme ships an API marketplace. '.repeat(40) }] },
+  { name: 'our intel', match: /d\.scope\s*=\s*'TENANT'/,
+    rows: [{ id: 'doc_2', title: 'Our portfolio', body: 'We ship a fraud engine. '.repeat(40), product_ids: null }] },
+];
+
 db.query = async (sql) => {
-  if (/FROM competitors/.test(sql)) return { rows: [{ name: 'Acme' }] };
-  if (/kb_document_competitors/.test(sql)) {
-    return { rows: [{ id: 'doc_1', title: 'Acme dossier', metadata: {}, body: 'Acme ships an API marketplace. '.repeat(40) }] };
+  const text = String(sql);
+  const hits = QUERY_FIXTURES.filter((f) => f.match.test(text));
+  if (hits.length !== 1) {
+    throw new Error(
+      `${hits.length === 0 ? 'unmatched' : `ambiguous (${hits.map((h) => h.name).join(' + ')})`} ` +
+      `query in test — fix the discriminator, do not rely on rule order: ${text.replace(/\s+/g, ' ').slice(0, 120)}`
+    );
   }
-  if (/kb_documents/.test(sql)) {
-    return { rows: [{ id: 'doc_2', title: 'Our portfolio', body: 'We ship a fraud engine. '.repeat(40), product_ids: null }] };
-  }
-  throw new Error(`unexpected query in test: ${String(sql).slice(0, 80)}`);
+  return { rows: hits[0].rows };
 };
 
 test('the battlecard synthesis sends, records and stamps the battlecard model', async () => {

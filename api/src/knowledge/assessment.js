@@ -26,7 +26,9 @@ const db = require('../db');
 // (extractCompetitiveAssessment) — genuinely extraction-shaped, LITE. The
 // battlecard synthesis below is judgment over up to 20 dossiers and takes its
 // own key, so it can be tiered independently (ADR-0006 §4.1). On Gemini both
-// resolve to the same model today; on Claude `battlecard` is FLASH.
+// resolve to the same model today — both are tier `lite` — unless the legacy
+// GEMINI_ASSESSMENT_MODEL override is set, which now steers only the scorer
+// (see the note on `battlecard` in models.js). On Claude `battlecard` is FLASH.
 //
 // Both are still resolved at REQUIRE time, which is the hazard ADR-0006 §9
 // item 4 fixed in personas.js: an env change is not seen until the process
@@ -651,6 +653,15 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
       lastRefreshedAt: new Date().toISOString(),
       // Persisted onto competitors.battlecard. It must name the model that
       // produced THIS card, not the model some other call site uses.
+      //
+      // Five places read it back and none BRANCH on it, so re-pointing it is
+      // safe and stored rows keep whatever they were stamped with (the value is
+      // identical today anyway): web/admin/admin.js renders it in the card's
+      // meta line, in the Markdown export and per-version in the History
+      // drawer; portfolio.js returns it from the battlecard history route; and
+      // watch.js folds the whole battlecard record into a Market Watch prompt,
+      // where it is prose the model reads. Adding a reader that branches on it
+      // would change that — this list is what such a change has to update.
       model: BATTLECARD_MODEL,
     };
   } catch (err) {

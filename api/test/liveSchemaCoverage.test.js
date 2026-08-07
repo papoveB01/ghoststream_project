@@ -256,13 +256,23 @@ test('the registry rows are individually addressable', () => {
 // notices the drift.
 test('the two assessment schemas are keyed to their own tasks, in one cluster', () => {
   const byS = Object.fromEntries(ENTRIES.map((e) => [e.site, e]));
+  // Assert the rows EXIST before reading through them. `--site=kb.battlecard`
+  // is the command MEDIUM 3 of this PR's review round is run with, so a renamed
+  // site label has to fail here with a sentence, not as a bare TypeError three
+  // lines down.
+  for (const site of ['kb.assessment', 'kb.battlecard']) {
+    assert.ok(byS[site], `no registry row is labelled ${site} — the site labels are what --site= selects on`);
+  }
   assert.strictEqual(byS['kb.assessment'].task, 'assessment');
   assert.strictEqual(byS['kb.battlecard'].task, 'battlecard',
     'BATTLECARD_SCHEMA would be smoke-tested against Haiku while production sends it to Sonnet');
-  // ADR-0006 §9 item 5 groups keypoints + assessment as one cutover and tells
-  // the operator to run `--cluster=` for the group before flipping it. Giving
-  // battlecard its own cluster would drop it out of that one command.
-  assert.strictEqual(byS['kb.battlecard'].cluster, byS['kb.assessment'].cluster,
+  // ADR-0006 §9 item 5 groups keypoints + assessment + battlecard as one
+  // cutover and tells the operator to run `--cluster=` for the group before
+  // flipping it. Giving battlecard its own cluster would drop it out of that one
+  // command — so assert the VALUE, not merely that the two rows agree: renaming
+  // both to a third string would keep them equal and still miss `assessment`.
+  assert.strictEqual(byS['kb.assessment'].cluster, 'assessment');
+  assert.strictEqual(byS['kb.battlecard'].cluster, 'assessment',
     '--cluster=assessment must still reach both schemas');
 });
 
