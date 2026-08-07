@@ -280,7 +280,7 @@ every task is confirmed stable — and `embeddings.js` keeps them forever (§4.2
   behaviour. `resolve()` is the provider-aware API; `modelFor()` remains a
   string-returning wrapper and is deleted when the last call site moves.
 - **An env var alone is not sufficient to flip a task.** The router carries a
-  `DISPATCH_READY` set, which starts empty and grows one task per cutover PR —
+  `DISPATCH_READY` set, which starts empty and grows as call sites migrate —
   a task is in it only once its call site can actually branch on
   `resolve().provider`. Setting `AI_PROVIDER_<TASK>=anthropic` before then
   warns and stays on Gemini. Without that gate the env var would hand a Claude
@@ -954,9 +954,17 @@ decomposition exists so that per-file spokes stay tractable.
    - **`personas.js` resolves `modelFor('personas')` at REQUIRE time** and feeds
      it straight to `gemini.caches.create()` via `arena.js`. Setting
      `AI_PROVIDER_PERSONAS=anthropic` hands a Claude model id to the Gemini
-     caches API; guarded today only because `personas` is not in
-     `DISPATCH_READY` (the set itself is no longer empty — group 1 filled it).
-     Move it or document it in this item.
+     caches API; guarded when this was written only because `DISPATCH_READY` was
+     empty. Move it or document it in this item.
+
+     *(Aside added 2026-08-07 by PR #54, not a change to the record above: both
+     halves of that sentence have since moved. `personas.js` no longer resolves
+     at require time — `defaultModel()` resolves on read (`personas.js:22-28`),
+     which this very item fixed. And the Claude-id-into-Google path is now
+     guarded by two independent facts rather than an empty set: `personas` is
+     not in `DISPATCH_READY`, which stopped being empty when group 1 landed, and
+     `assertGeminiModel` refuses a non-Gemini id inside `getOrCreateCache`
+     (`gemini.js:113`) — the boundary `arena.js:91` takes.)*
    - **`api/test/geminiCacheScan.test.js` must NOT be deleted here.** It pins a
      fix for a real incident (`redis.keys()` blocking the Redis that also holds
      sessions and login-guard counters, stalling auth platform-wide). §7 already

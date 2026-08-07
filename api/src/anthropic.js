@@ -21,8 +21,9 @@
 // that date both ghost-api and dsp-api ran AI_PROVIDER=gemini with every
 // AI_PROVIDER_<TASK> empty, while both already carried an ANTHROPIC_API_KEY: so
 // the key gate was already satisfied and only the provider vars held. Check it
-// (`printenv | grep AI_PROVIDER` in the container) rather than trusting this
-// line.
+// (`printenv | grep -E 'AI_PROVIDER|ANTHROPIC_API_KEY'` in the container — both
+// gates, since the key half is the one this paragraph just made load-bearing)
+// rather than trusting this line.
 //
 // It is loaded by every process either way: index.js → knowledge/index.js →
 // knowledge/globalCache.js → aiContext.js → here, with arena.js →

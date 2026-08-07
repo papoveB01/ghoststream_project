@@ -43,7 +43,10 @@
 //                 resolve('personas') stays on 'gemini' whatever
 //                 AI_PROVIDER_PERSONAS says. The arena group of item 5 adds
 //                 `personas` to the set, and that lifts this hold, and only
-//                 this one.
+//                 this one — and lifting it is ELIGIBILITY, not a flip: the
+//                 branch becomes reachable, and AI_PROVIDER_PERSONAS plus
+//                 ANTHROPIC_API_KEY still decide whether anything takes it
+//                 (anthropic.js's header spells out both gates).
 //     discard()   HELD BY ITS CALLER, not the router. globalCache.js passes
 //                 `provider: 'gemini'` explicitly at both of its call sites and
 //                 discard() prefers the explicit provider, so resolve() never
@@ -55,12 +58,24 @@
 //                 prepare() and discard() and nothing else. So generateAnthropic
 //                 — the larger branch, and the one carrying the consequences —
 //                 stays dead past the `personas` flip too, until arena.js is
-//                 separately moved off ensurePersonaCache /
-//                 gemini.generateForRecord onto this seam. That port, not the
-//                 set membership, is where the two asymmetries documented above
-//                 generate() get decided: arena's temperature: 0.85 silently
-//                 dropped with a warning, and over-budget output turning from a
-//                 truncated render into a hard 502.
+//                 separately moved onto this seam. Two things there, not one:
+//                 ensurePersonaCache (arena.js:88), which calls
+//                 gemini.getOrCreateCache, and its own callGemini helper (:115),
+//                 which builds models.generateContent directly (:131-135). NOT
+//                 gemini.generateForRecord — its only production caller is
+//                 index.js:158, the /gemini/roleplay/:slug superadmin endpoint,
+//                 which is a different port and a Phase 5 one (it is one of the
+//                 eight listed above). That arena port, not the set membership,
+//                 is where the two asymmetries documented above generate() get
+//                 decided: arena's temperature — 0.9 on the opener
+//                 (arena.js:199), 0.85 per turn (:258) — silently dropped with a
+//                 warning, and over-budget output turning from a truncated
+//                 render into a hard 502.
+//
+//                 Unlike the other two, this premise does not move with
+//                 DISPATCH_READY, so the set pins cannot catch it going stale:
+//                 aiContext.test.js's [TEXTUAL] guard fails the first src/
+//                 caller instead.
 //
 //     Tests reach the anthropic branches by adding the task to the set
 //     themselves.
@@ -191,8 +206,9 @@ async function discard({ task, name, provider = null }) {
 //   temperature       GEMINI ONLY. Claude removed it (a 400 on Opus 5,
 //                     non-default rejected on Sonnet 5), so on the anthropic
 //                     branch it is dropped with a warning rather than passed
-//                     through — arena.js's 0.85 exists specifically for persona
-//                     variety across runs and there is no parameter substitute
+//                     through — arena.js's 0.9 opener (arena.js:199) and 0.85
+//                     per turn (:258) exist specifically for persona variety
+//                     across runs and there is no parameter substitute
 //                     (ADR-0006 §7, §10). Losing it silently would look like the
 //                     model got blander.
 //   effort / thinking ANTHROPIC ONLY. The Gemini branch keeps thinkingBudget: 0,

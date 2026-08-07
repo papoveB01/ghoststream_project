@@ -21,9 +21,11 @@
 
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
 const assert = require('node:assert');
+const { stripComments } = require('./helpers/stripComments');
 
 const SRC = path.join(__dirname, '..', 'src');
 
@@ -483,4 +485,68 @@ test('generate refuses an empty conversation', async () => {
   const record = await aiContext.prepare({ task: 'personas', name: 'x', turns: PREFIX });
   await assert.rejects(() => aiContext.generate({ record }), /turns or message required/);
   await assert.rejects(() => aiContext.generate({ message: 'x' }), /record required/);
+});
+
+// The seam's header bullet for generate() opens "NO PRODUCTION CALLER AT ALL",
+// and everything after it — that generateAnthropic stays dead past the
+// `personas` flip, that the arena port is where the two asymmetries get decided
+// — rests on that being true.
+//
+// Every OTHER premise in that block is pinned by the DISPATCH_READY assertions
+// in providerRouter.test.js and aiCall.test.js, which fire when the set changes.
+// This one does not depend on the set at all: a PR that adds an
+// aiContext.generate() caller in src/ falsifies the bullet with the whole suite
+// green and nothing anywhere to read. So it is checked textually, in the idiom
+// costsTelemetry.test.js and liveSchemaCoverage.test.js already use, over
+// comment-stripped source (a `//` inside a string would otherwise hide a call
+// site from the scan — see helpers/stripComments.js).
+const JS_EXT = /\.(js|mjs|cjs)$/;
+
+function walkJs(dir, out = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walkJs(full, out);
+    else if (JS_EXT.test(entry.name)) out.push(full);
+  }
+  return out;
+}
+
+test('[TEXTUAL] nothing in src/ calls aiContext.generate — the header bullet that says so', () => {
+  const offenders = [];
+
+  for (const file of walkJs(SRC)) {
+    const rel = path.relative(SRC, file).split(path.sep).join('/');
+    if (rel === 'aiContext.js') continue;          // the seam defines it
+    const src = stripComments(fs.readFileSync(file, 'utf8'));
+
+    // The plain spelling, which is what globalCache.js's binding name makes the
+    // natural one to write.
+    if (/\baiContext\s*\.\s*generate\s*\(/.test(src)) offenders.push(`${rel} — aiContext.generate(`);
+
+    // …and the two ways a new caller would spell it without matching that:
+    // a differently-named binding, and destructuring generate off the require.
+    // Matching only the literal text would let `const ctx = require('./aiContext')`
+    // walk straight past a guard whose whole job is to notice a new caller.
+    for (const m of src.matchAll(/require\(\s*['"]([^'"]*\/)?aiContext(?:\.js)?['"]\s*\)/g)) {
+      const before = src.slice(Math.max(0, m.index - 200), m.index);
+      const bind = before.match(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*$/);
+      const destructured = before.match(/(?:const|let|var)\s*\{([^}]*)\}\s*=\s*$/);
+      if (bind && new RegExp(`\\b${bind[1]}\\s*\\.\\s*generate\\s*\\(`).test(src)) {
+        offenders.push(`${rel} — ${bind[1]}.generate( (aliased require)`);
+      }
+      if (destructured && /\bgenerate\b/.test(destructured[1])) {
+        offenders.push(`${rel} — destructures generate off the seam`);
+      }
+    }
+  }
+
+  assert.deepStrictEqual(
+    offenders, [],
+    'aiContext.js\'s header says generate() has NO PRODUCTION CALLER AT ALL, and the rest of that\n' +
+    'bullet is reasoning FROM that fact. The first real caller has to update it in the same PR —\n' +
+    'including the two asymmetries it defers to the arena port (temperature dropped with a warning,\n' +
+    'and over-budget output turning from a truncated render into a hard 502, aiContext.js §"TWO\n' +
+    'DELIBERATE ASYMMETRIES"), which that caller now has to decide about itself:\n  ' +
+    offenders.join('\n  ')
+  );
 });

@@ -12,11 +12,21 @@
 // one module nobody diffed against the other five.
 //
 // THIS MODULE CAN NOW MOVE REAL TRAFFIC. relevance, preview and companyBrief
-// are in models.DISPATCH_READY (ADR-0006 §9 item 5), so the anthropic branch
-// below is one `AI_PROVIDER_RELEVANCE=anthropic` away from serving every
-// competitor-document ingest. Membership is eligibility, not activation — the
-// default is still Gemini for every task — but "reached only by tests" stopped
-// being true when group 1 landed.
+// are in models.DISPATCH_READY (ADR-0006 §9 item 5) and their call sites
+// dispatch through here, so AI_PROVIDER_RELEVANCE=anthropic routes BOTH
+// relevance call sites into the anthropic branch below — checkDocRelevance,
+// reached from knowledge/service.js on every competitor document, and
+// checkOfferingPlausibility, a product-name plausibility check with no document
+// at all, reached from portfolio.js:763 and never from ingest. The older
+// shorthand here — "every competitor-document ingest" — named only the first of
+// those two and quietly scoped the second out of view.
+//
+// TWO env gates, not one: the shorthand "one env var away" is true only while
+// ANTHROPIC_API_KEY happens to be set, because providerFor() falls back to
+// Gemini and warns without it. And membership is eligibility, not
+// activation — the default is still Gemini for every task. But "reached only by
+// tests" stopped being true when group 1 landed. anthropic.js's header states
+// both gates in full; keep this paragraph in step with it.
 //
 // WHAT THE TWO PROVIDERS DO NOT SHARE, and how that is resolved here:
 //

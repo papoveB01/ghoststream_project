@@ -65,10 +65,10 @@ function toContents(contents) {
 // `arenaHistory` for exactly that reason: done right, arena.js's
 // `getOrCreateCache({ model: seed.model })` no longer exists by the time
 // `personas` is added, and the call-site migration is the gate. This guard is
-// for the INCORRECT one — key added, call site left on the Gemini SDK — so do
-// not treat it as the thing that makes the flip safe. Google's own answer to
-// that request is a 404 that mentions neither the provider nor the env var that
-// caused it.
+// for the INCORRECT one — task key added to `DISPATCH_READY`, call site left on
+// the Gemini SDK — so do not treat it as the thing that makes the flip safe.
+// Google's own answer to that request is a 404 that mentions neither the
+// provider nor the env var that caused it.
 //
 // Unknown ids pass — see models.providerOfModel for why this blocks rather than
 // allow-lists.

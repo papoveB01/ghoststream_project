@@ -221,7 +221,7 @@ test('group 1 survives the only test that rewrites the whole set', () => {
     ['companyBrief', 'preview', 'relevance'],
     'changing this set also invalidates prose that asserts what is in it: ' +
     'anthropic.js (header), aiCall.js (header), gemini.js (assertGeminiModel) ' +
-    'and aiContext.js ("it does not flip any task") — PR #54 existed because ' +
+    'and aiContext.js ("It does not flip any task") — PR #54 existed because ' +
     '#52 changed the set and left all four stale');
 });
 
