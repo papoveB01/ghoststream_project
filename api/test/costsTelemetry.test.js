@@ -137,11 +137,91 @@ test('[TEXTUAL] no file records the same site label twice', () => {
   assert.deepStrictEqual(offenders, [], offenders.join('\n  '));
 });
 
+// A migrated call site no longer records its own spend: aiCall.generateStructured
+// records for Gemini and anthropic.generate records for Claude, both keyed on the
+// `site` the caller passes. So the sweep has to count BOTH spellings, or the floor
+// below simply erodes as ADR-0006 §9 item 5 proceeds — one call site at a time,
+// each drop individually unremarkable, until the guard is counting almost nothing
+// and still passing. Group 1 alone moved four of them.
+// Whitespace-tolerant, exactly like CALL_RE above — and for the same reason.
+// The first version spelled this `/\.generateStructured\(\{/g`, so
+// `.generateStructured( {` (a prettier pass, or a human) and a destructured
+// `const { generateStructured } = require(...); generateStructured({…})` both
+// escaped it. Each escape silently takes its `site:` off the floor the last
+// test in this section asserts, one call site at a time, exactly as the
+// migration proceeds — which is the erosion that floor exists to catch.
+//
+// The dot-less alternative must still skip aiCall.js's own
+// `async function generateStructured({…})` — a definer, with no site to pass —
+// so `function` is excluded explicitly rather than by requiring the dot.
+const SEAM_CALL_RE =
+  /(?:\.\s*generateStructured|(?<![.\w])(?<!function\s)generateStructured)\s*\(\s*\{/g;
+
+// Brace-matched, not a fixed window. The 1200-char window this replaces is
+// ALREADY too small for the next group: analysis.js's config key sits 1235+
+// chars into its call, so the very next cutover would have reported a
+// legitimately-labelled call site as unlabelled — or, with the label past the
+// window, missed a genuinely missing one. Depth counting has no such ceiling,
+// and an unbalanced call (truncated file, a brace inside a string) returns null
+// and is reported as an offender rather than silently passing.
+function callWindow(src, from) {
+  let depth = 0;
+  for (let i = from; i < src.length; i++) {
+    const c = src[i];
+    if (c === '{' || c === '(') depth++;
+    else if (c === '}' || c === ')') {
+      depth--;
+      if (depth === 0) return src.slice(from, i + 1);
+    }
+  }
+  return null;
+}
+
+function seamSiteLabels(src) {
+  const out = [];
+  for (const m of src.matchAll(SEAM_CALL_RE)) {
+    const window = callWindow(src, m.index + m[0].indexOf('('));
+    // An unbalanced call is reported, never skipped: "we could not read this
+    // call site" and "this call site has no label" are both failures of the
+    // sweep, and silently dropping the first is how a guard starts counting
+    // less than it claims to.
+    if (window === null) { out.push({ unreadable: true }); continue; }
+    const site = window.match(/\bsite:\s*'([^']+)'/);
+    out.push(site ? site[1] : null);
+  }
+  return out;
+}
+
+test('[TEXTUAL] every seam call site passes an explicit site label', () => {
+  // Without one, aiCall falls back to `ai.<task>` — which is not the
+  // '<area>.<operation>' convention the rollup groups on, and would quietly
+  // fragment a task's spend across two labels during a migration.
+  const offenders = [];
+  for (const file of walkJs(SRC)) {
+    const src = stripComments(fs.readFileSync(file, 'utf8'));
+    seamSiteLabels(src).forEach((label, i) => {
+      if (label && label.unreadable) {
+        offenders.push(`${path.relative(SRC, file)} — generateStructured #${i + 1} has unbalanced ` +
+          'braces/parens, so this sweep could not read it at all');
+      } else if (!label) {
+        offenders.push(`${path.relative(SRC, file)} — generateStructured #${i + 1} has no site:`);
+      }
+    });
+  }
+  assert.deepStrictEqual(offenders, [], offenders.join('\n  '));
+});
+
 test('[TEXTUAL] the recorded site labels are unique and namespaced', () => {
   const labels = [];
   for (const file of walkJs(SRC)) {
-    const src = fs.readFileSync(file, 'utf8');
+    // stripComments, like every other sweep in this file. Reading raw was
+    // defeat #1 from this file's own header comment, reproduced against the new
+    // seam counting: two commented-out `// aiCall.generateStructured({ site:
+    // 'fake' })` lines padded the floor below back to 25 while real call sites
+    // went uninstrumented.
+    const src = stripComments(fs.readFileSync(file, 'utf8'));
     for (const m of src.matchAll(/costs\.recordGemini\([^,]+,\s*'([^']+)'/g)) labels.push(m[1]);
+    for (const label of seamSiteLabels(src)) if (typeof label === 'string') labels.push(label);
   }
   assert.ok(labels.length >= 25, `expected the full call-site sweep to be instrumented, found ${labels.length}`);
   for (const l of labels) {

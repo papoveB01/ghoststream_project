@@ -12,7 +12,21 @@ const gemini = require('../gemini');
 const costs = require('../costs');
 const db = require('../db');
 
-const SUMMARY_MODEL = require('../models').modelFor('preview');
+// This file hosts TWO tasks in DIFFERENT cutover groups (ADR-0006 §9 item 5):
+// `preview` migrates here, `compare` does not — it moves with research/brief.
+// So the file is touched twice across the migration, and until the second pass
+// it deliberately holds one seam call and one direct Gemini call side by side.
+//
+// COMPARE_MODEL stays resolved at require time because it is still Gemini-only.
+// The preview path no longer captures a model id at all: aiCall resolves the
+// provider and the model per call, as a matched pair. That is NOT a
+// restart-free flip — AI_PROVIDER_* is container env (docker-compose.yml), so
+// changing one means `docker compose up -d` and a fresh process either way.
+// What per-call resolution actually buys is that no model id is frozen at boot
+// behind a routing decision (fail-closed fallback included) that later differs,
+// and that flipping or rolling back a task is an env change, not a code change.
+const aiCall = require('../aiCall');
+
 const COMPARE_MODEL = require('../models').modelFor('compare');
 const FULLTEXT_CAP = parseInt(process.env.KB_PREVIEW_FULLTEXT_CAP || '60000', 10);
 const SUMMARY_INPUT_CAP = parseInt(process.env.KB_PREVIEW_SUMMARY_INPUT_CAP || '24000', 10);
@@ -106,20 +120,15 @@ async function summarize(text, meta) {
   const body = String(text || '').trim();
   if (body.length < 40) return fallback();
   try {
-    const ai = gemini.getClient();
-    const resp = await ai.models.generateContent({
-      model: SUMMARY_MODEL,
-      contents: [{ role: 'user', parts: [{ text: `${SUMMARY_PROMPT}\n\n---CONTENT---\n${body.slice(0, SUMMARY_INPUT_CAP)}` }] }],
-      config: {
-        temperature: 0.3,
-        maxOutputTokens: 800,
-        responseMimeType: 'application/json',
-        responseSchema: SUMMARY_SCHEMA,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+    const { parsed, provider } = await aiCall.generateStructured({
+      task: 'preview',
+      prompt: `${SUMMARY_PROMPT}\n\n---CONTENT---\n${body.slice(0, SUMMARY_INPUT_CAP)}`,
+      responseSchema: SUMMARY_SCHEMA,
+      maxTokens: 800,
+      temperature: 0.3,
+      tenantId: (meta && meta.tenantId) || null,
+      site: 'kb.preview',
     });
-    costs.recordGemini((meta && meta.tenantId) || null, 'kb.preview', SUMMARY_MODEL, resp.usageMetadata);
-    const parsed = JSON.parse(resp.text);
     return {
       documentType: parsed.documentType || ((meta && meta.sourceType) || 'document'),
       summary: parsed.summary || fallback().summary,
@@ -130,10 +139,23 @@ async function summarize(text, meta) {
       // dropdown for the uploader to set. Defaulting here made "the model had no
       // idea" indistinguishable from "the model chose PRODUCT_INTEL".
       suggestedCategory: KB_CATEGORIES.includes(parsed.suggestedCategory) ? parsed.suggestedCategory : null,
-      source: 'gemini',
+      // The PROVIDER, not the literal 'gemini' it used to be. web/admin/admin.js
+      // renders the "AI summary" badge off this field; hardcoding a vendor name
+      // meant the badge would either lie after a flip or vanish, depending on
+      // which side changed first. The consumer now tests `!== 'fallback'`, which
+      // is what the field always actually meant: did a model answer, or did we
+      // fall back? Tolerant of 'gemini', 'anthropic' and anything after them,
+      // which matters because web/ is a live bind mount and api/ is a baked
+      // image — the two do not change at the same instant on a deploy.
+      source: provider,
     };
   } catch (err) {
-    console.warn('[preview] summary generation failed, using fallback:', err.message);
+    // Name the provider, the same way relevance.js does — two providers serve
+    // this path now, and a line that names neither cannot be triaged. 'unknown'
+    // rather than a guess: an unattributed failure must read as unattributed,
+    // and `failed on unknown` is a greppable missing stamp to go and add.
+    const provider = (err && err.provider) || 'unknown';
+    console.warn(`[preview] summary generation failed on ${provider}, using fallback:`, err.message);
     return fallback();
   }
 }

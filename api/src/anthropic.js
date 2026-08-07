@@ -44,6 +44,10 @@
 //      is rejected (or worse, silently reinterpreted) by Anthropic's strict
 //      validator. schemaCompat translates it on the way out — see that module
 //      for the two specific incompatibilities and why one of them is silent.
+//   5. `temperature` is model-gated, not absent. It 400s on the 4.7 generation
+//      and later and is accepted on everything before it — including the whole
+//      LITE tier. See NO_TEMPERATURE below; this file assumed the wrong half of
+//      that and dropped it for every model.
 //
 // Retries and timeouts are the SDK's, configured once here. We do NOT wrap this
 // in another retry helper. Three things about that, all measured 2026-08-05 —
@@ -200,12 +204,56 @@ const NO_EFFORT = [
 // `xhigh` arrived with Opus 4.7; older effort-capable models cap at max/high.
 const NO_XHIGH = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5'];
 
+// TEMPERATURE IS A PER-MODEL CAPABILITY, NOT A CLAUDE-WIDE GAP — which is the
+// opposite of what this file used to assert, and the difference is not cosmetic.
+// It was removed in the 4.7 generation and later; everything before it still
+// takes it. Live-probed 2026-08-06, `temperature: 0.1` on a 16-token request:
+//
+//   claude-haiku-4-5  200      claude-opus-4-6   200      claude-sonnet-4-6  200
+//   claude-sonnet-5   400 "`temperature` is deprecated for this model."
+//   claude-opus-5     400      claude-opus-4-8   400      claude-opus-4-7    400
+//   claude-fable-5    400
+//
+// Haiku 4.5 is the whole LITE tier — relevance, preview, companyBrief,
+// callEntities, assessment — so "Claude does not take temperature" was wrong
+// about every task in group 1. Dropping it there is not a neutral loss: the
+// relevance judge's `confidence` is compared against QUARANTINE_THRESHOLD 0.4,
+// so a sampling wobble across that line quarantines a document on one ingest
+// and passes the same document on a re-upload.
+//
+// THE LIST LIVES HERE, not at the seam, for the same reason NO_EFFORT and
+// NO_ADAPTIVE_THINKING do: the thing that decides is the MODEL ID, and this is
+// the only place a model id becomes request params. Keeping it at the seam
+// would mean aiCall re-deriving a capability from a model it does not own, a
+// second copy to drift, and no coverage for the direct callers of generate()
+// (aiContext.js today) that never pass through the seam.
+//
+// claude-mythos-5 is listed unprobed — it is Project Glasswing-only, and the
+// published surface is Fable 5's. Over-dropping on a model we cannot reach is
+// the safe direction; sending a 400 on every call is not.
+//
+// WHAT RE-DERIVES THIS LIST, since nothing did and it is default-allow. Being
+// over-broad here is caught by the suite (adding claude-haiku-4-5 fails two
+// tests); being UNDER-broad was not — deleting 'claude-opus-4-7' left the whole
+// suite green while making every request to that model a hard 400. So the list
+// is now checked against a probe table that is deliberately not this list:
+// test/live/temperature.js holds what the live API answered per model and
+// re-derives it against the real thing (spends money, out of `npm test`), and
+// test/anthropicSurface.test.js asserts for free in CI that supportsTemperature()
+// still agrees with that table — and that every model models.TIERS can resolve
+// to appears in it, so a new tier default cannot ship unclassified.
+const NO_TEMPERATURE = [
+  'claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-mythos-5',
+  'claude-opus-4-8', 'claude-opus-4-7',
+];
+
 const matches = (model, list) => {
   const m = String(model || '').toLowerCase();
   return list.some((prefix) => m.includes(prefix));
 };
 const supportsAdaptiveThinking = (model) => !matches(model, NO_ADAPTIVE_THINKING);
 const supportsEffort = (model) => !matches(model, NO_EFFORT);
+const supportsTemperature = (model) => !matches(model, NO_TEMPERATURE);
 
 // Clamp rather than 400: an unsupported effort level is a capability gap, not a
 // caller mistake, and downgrading one notch is always safe.
@@ -315,6 +363,22 @@ function warnIfNothingCached(model, site, usage) {
     `[anthropic] ${site} asked to cache a prefix on ${model} but nothing was cached ` +
     '(cache_creation and cache_read are both 0) — the prefix is most likely under this ' +
     "model's minimum cacheable size. Billing at full input rate on every call."
+  );
+}
+
+// A determinism setting silently disappearing is the change nobody sees for
+// three weeks and then reports as "the model got flakier". Once per model+site
+// because these run in loops, same as the cache-miss warning above.
+const _tempDropWarned = new Set();
+function warnTemperatureDropped(model, site, temperature) {
+  const key = `${model}:${site}`;
+  if (_tempDropWarned.has(key)) return;
+  _tempDropWarned.add(key);
+  console.warn(
+    `[anthropic] ${site} set temperature ${temperature}, which ${model} rejects with a 400 ` +
+    '("`temperature` is deprecated for this model") — dropping it. Determinism has to come ' +
+    'from the prompt on this model; models before the 4.7 generation (Haiku 4.5, Opus/Sonnet 4.6) ' +
+    'still honour it. See NO_TEMPERATURE above and ADR-0006 §7.'
   );
 }
 
@@ -465,6 +529,9 @@ function translateError(err) {
 //   maxTokens  : REQUIRED by the API. Remember it bounds thinking + text.
 //   effort     : low | medium | high | xhigh | max
 //   thinking   : true (adaptive, default) | false (disabled; effort must be <= high)
+//   temperature: passed through on models that take it, dropped with a one-time
+//                warning on the ones that 400 — see NO_TEMPERATURE above. null
+//                means "don't send it", which is not the same as sending 1.0
 //   tenantId/site : spend telemetry, same contract as the Gemini call sites
 //
 // Returns { text, usage, stopReason, model }. Throws on refusal so an empty
@@ -485,13 +552,14 @@ async function generate({
   // is a per-task decision made when that task is migrated, not a side effect
   // of the swap.
   thinking = false,
+  temperature = null,
   cacheSystem = false,
   allowTruncation = false,
   tenantId = null,
   site = 'anthropic.generate',
   signal = null,
   ...unknown
-}) {
+} = {}) {
   // Silently ignoring an unknown key is how `abortSignal` (the Gemini spelling
   // of `signal`) or `maxOutputTokens` (of `maxTokens`) would vanish during a
   // mechanical port, taking a call site's only time bound or output budget with
@@ -501,7 +569,7 @@ async function generate({
     throw argError(
       `anthropic.generate: unknown option(s) ${stray.join(', ')}. ` +
       'Gemini spellings differ: abortSignal→signal, maxOutputTokens→maxTokens; ' +
-      'temperature is not supported (it is a 400 on Opus 5 and Sonnet 5).'
+      'a Gemini-dialect schema is passed as `schema` and translated here.'
     );
   }
   if (!model) throw argError('anthropic.generate: model required');
@@ -553,8 +621,14 @@ async function generate({
       ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
       : system;
   }
-  // NOTE: no temperature. It is removed on Opus 5 (400) and non-default values
-  // are rejected on Sonnet 5. Steer with the prompt, not with sampling.
+  // Temperature is forwarded on the models that take it and dropped on the ones
+  // that 400 — the per-model split is in NO_TEMPERATURE above, with the live
+  // probe that produced it. Dropping SILENTLY was the defect: it removed the
+  // determinism setting from the LITE tier, which accepts it.
+  if (temperature != null) {
+    if (supportsTemperature(model)) params.temperature = temperature;
+    else warnTemperatureDropped(model, site, temperature);
+  }
 
   const breakpoints = countBreakpoints(params);
   if (breakpoints > MAX_CACHE_BREAKPOINTS) {
@@ -622,4 +696,16 @@ async function generate({
 
 // refusalError is exported for tests: it never passes through translateError,
 // so nothing else could assert that it carries the stamp aiRetry branches on.
-module.exports = { getClient, isConfigured, generate, textFrom, translateError, refusalError };
+// EFFORTS is exported so aiCall.js can validate the vocabulary at the seam
+// against THIS set rather than a second copy: an effort typo on a
+// Gemini-serving task is silent until the flip, and two lists would drift the
+// moment a new level ships (as `xhigh` did).
+// NO_TEMPERATURE and supportsTemperature are exported FOR THE GUARDS, not for
+// callers: nothing outside this file decides temperature (that is the point of
+// the list living here), but the capability is unobservable from the request
+// shape alone for a model no test happens to call, which is how an under-broad
+// list stayed invisible. See the note above NO_TEMPERATURE.
+module.exports = {
+  getClient, isConfigured, generate, textFrom, translateError, refusalError, EFFORTS,
+  NO_TEMPERATURE, supportsTemperature,
+};

@@ -84,6 +84,18 @@ function classify(err) {
   const msg = String((err && err.message) || err || '');
   const perDay = PER_DAY_RE.test(msg);
 
+  // ── the seam's own pre-dispatch throws ───────────────────────────────────
+  // aiCall stamps 'aiCall' on the errors it raises BEFORE a provider is
+  // resolved (unknown option, missing task/prompt). There is no vendor to
+  // attribute them to, and nothing worth scraping: the message is one we wrote,
+  // and it interpolates caller-supplied option names — so a mechanical port
+  // passing `{ deadlineExceeded: … }` would match GEMINI_TRANSIENT_RE below and
+  // buy three attempts at a deterministic caller bug. Same hole anthropic.js
+  // closed on its own argument validation, one layer up.
+  if (err && err.provider === 'aiCall') {
+    return { status: null, perDay, sdkRetried: false, backoffMs: null, transient: false };
+  }
+
   // ── Anthropic ────────────────────────────────────────────────────────────
   // anthropic.translateError stamps `provider` and `sdkRetried`, so there is a
   // real signal to read and no message scraping is needed or wanted.

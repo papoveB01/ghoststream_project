@@ -53,19 +53,37 @@ const DEFAULT_PROVIDER = 'gemini';
 
 // Tasks whose CALL SITE can actually dispatch to a non-Gemini provider.
 //
-// Empty on purpose: this phase ships the router and the client, not the call
-// sites. Until a task's call site reads resolve().provider and branches, asking
-// for anthropic would hand a Claude model id to the Gemini SDK — a 404 on every
-// call. For `relevance` that is worse than an outage: it fails OPEN
-// (relevance.js returns null and only warns), so every competitor document
-// would skip the quarantine silently, for every tenant, with nothing in the UI
-// or the logs that looks like a failure.
+// Grows one task per cutover PR; it is NOT empty. Until a task's call site
+// reads resolve().provider and branches, asking for anthropic would hand a
+// Claude model id to the Gemini SDK — a 404 on every call. For `relevance` that
+// is worse than an outage: it fails OPEN (relevance.js returns null and only
+// warns), so every competitor document would skip the quarantine silently, for
+// every tenant, with nothing in the UI or the logs that looks like a failure.
+//
+// BEFORE ADDING A TASK, READ THE `assessment` NOTE ABOVE TASKS. Joining this
+// set by pattern-matching on the line below is exactly how BATTLECARD_SCHEMA
+// synthesis would end up on Haiku: `assessment` is one task key serving two
+// call sites at two different difficulty levels, and only one of them is a
+// LITE-tier job.
 //
 // A task joins this set in the same PR that migrates its call site. Until then
 // the router honours the env var by warning and staying put, so an operator who
 // follows the migration runbook early gets a loud no-op instead of a silent
 // corruption.
-const DISPATCH_READY = new Set([]);
+//
+// GROUP 1 (ADR-0006 §9 item 5), migrated onto aiCall.generateStructured:
+//   relevance     knowledge/relevance.js — both call sites
+//   preview       knowledge/preview.js   — summarize() ONLY. `compare` lives in
+//                 the same file and is NOT here: it belongs to a later group,
+//                 so that file deliberately holds one seam call and one direct
+//                 Gemini call until its own cutover.
+//   companyBrief  companyBrief.js
+//
+// Membership alone changes nothing — it makes a task ELIGIBLE. The provider is
+// still chosen by AI_PROVIDER / AI_PROVIDER_<TASK>, which default to gemini,
+// and providerFor() additionally refuses to dispatch when the target provider's
+// key is not configured.
+const DISPATCH_READY = new Set(['relevance', 'preview', 'companyBrief']);
 
 // task → { tier, env(legacy per-task override), anthropicEnv, anthropicTier }
 //
@@ -81,9 +99,14 @@ const DISPATCH_READY = new Set([]);
 // BATTLECARD_SCHEMA synthesis (knowledge/assessment.js) moving to FLASH. That
 // needs a new task key AND a change at the battlecard call site, so it belongs
 // with that call site's phase-3 migration rather than in a router-only PR.
-// Until then both assessment call sites share one tier — which is harmless
-// while DISPATCH_READY is empty, and must be fixed before `assessment` is added
-// to it, or battlecards get synthesised by Haiku.
+//
+// UNCONDITIONALLY BLOCKING, and no longer contingent on anything: `assessment`
+// MUST NOT JOIN DISPATCH_READY until it is split. The original wording — "which
+// is harmless while DISPATCH_READY is empty" — expired the moment group 1
+// landed, and it read as a condition the next migrator could check rather than
+// a prerequisite they must satisfy. One task key serves two call sites of very
+// different difficulty; flipping it sends BATTLECARD_SCHEMA synthesis to Haiku,
+// and a worse battlecard is not an error anyone sees.
 const TASKS = {
   // LITE — high-volume, structured/extraction
   relevance:    { tier: 'lite',    env: 'GEMINI_RELEVANCE_MODEL',    anthropicEnv: 'ANTHROPIC_RELEVANCE_MODEL' },
@@ -118,6 +141,49 @@ function warnOnce(key, message) {
   console.warn(message);
 }
 
+// Is this provider actually usable in this process? Checked by env rather than
+// by requiring the client modules, which keeps this file free of a require
+// cycle and matches exactly what those modules test on their own first call.
+//
+// WHY DISPATCHING TO AN UNCONFIGURED PROVIDER MUST FAIL CLOSED. `getClient()`
+// throws "ANTHROPIC_API_KEY is not set" on every call. For most tasks that is a
+// visible outage. For `relevance` it is worse than an outage and completely
+// silent: checkDocRelevance catches everything, returns null, and
+// shouldMarkQuarantine(null) is false — so every competitor document skips the
+// quarantine gate, for every tenant, with nothing in the UI or the logs that
+// looks like a failure. The same fail-open shape is why `relevance` was singled
+// out in DISPATCH_READY's comment below.
+//
+// So a provider with no credentials is not "configured but broken", it is not
+// available, and the router treats it the way it treats an unknown provider
+// name: stay on Gemini and say so loudly.
+const PROVIDER_CONFIGURED = {
+  gemini: () => Boolean(process.env.GEMINI_API_KEY),
+  anthropic: () => Boolean(process.env.ANTHROPIC_API_KEY),
+};
+
+function isProviderConfigured(provider) {
+  const check = PROVIDER_CONFIGURED[provider];
+  return check ? check() : false;
+}
+
+// Every fallback to DEFAULT_PROVIDER goes through here so it can say the one
+// thing the three call sites below all omitted: whether the provider we are
+// falling back TO is itself usable. isProviderConfigured('gemini') was defined
+// and never called, so with an Anthropic key and no Gemini key the router
+// cheerfully "stayed on Gemini" — into gemini.getClient() throwing on every
+// call, which assessment.js and keypoints.js swallow into null. That is the
+// same silent fail-open the guard exists to prevent, one provider over.
+function fallbackToDefault(task, key, reason) {
+  const escalation = isProviderConfigured(DEFAULT_PROVIDER)
+    ? ''
+    : ` AND ${DEFAULT_PROVIDER.toUpperCase()}_API_KEY IS NOT SET EITHER — there is no working ` +
+      `provider for "${task}" in this process. Every call will throw, and the callers that ` +
+      'swallow errors (relevance, assessment, keypoints) will degrade silently rather than fail.';
+  warnOnce(key, reason + escalation);
+  return DEFAULT_PROVIDER;
+}
+
 // Per-task override wins, then the global default, then Gemini. An unknown
 // value falls back rather than throwing: a typo in an env var must not take the
 // api down on boot, and the fallback is the provider we were already on.
@@ -125,8 +191,15 @@ function providerFor(task) {
   const raw = process.env[providerEnvName(task)] || process.env.AI_PROVIDER || DEFAULT_PROVIDER;
   const p = String(raw).trim().toLowerCase();
   if (!PROVIDERS.has(p)) {
-    console.warn(`[models] unknown provider "${raw}" for task "${task}" — falling back to ${DEFAULT_PROVIDER}`);
-    return DEFAULT_PROVIDER;
+    // warnOnce, not console.warn. Pre-cutover the three group-1 tasks resolved
+    // their model ONCE at require time, so a typo'd AI_PROVIDER printed one
+    // line per process. Resolving per call (ADR-0006 §9 item 4) put this on the
+    // hot path — relevance alone runs twice per ingested document — so a raw
+    // console.warn turns one typo into a log flood. The two branches below
+    // already document exactly this hazard; this one had not been given the
+    // same treatment.
+    return fallbackToDefault(task, `unknown:${task}:${p}`,
+      `[models] unknown provider "${raw}" for task "${task}" — falling back to ${DEFAULT_PROVIDER}.`);
   }
   if (p !== DEFAULT_PROVIDER && !DISPATCH_READY.has(task)) {
     // Once per task+provider. This used to fire once per process for `personas`
@@ -134,11 +207,20 @@ function providerFor(task) {
     // (ADR-0006 §9 item 4) moved it onto the Arena's per-turn path, where an
     // operator following the migration runbook — which is precisely who sets
     // this variable — would get the same line on every request.
-    warnOnce(`dispatch:${task}:${p}`,
+    return fallbackToDefault(task, `dispatch:${task}:${p}`,
       `[models] task "${task}" is configured for ${p} but its call site cannot dispatch yet — ` +
       `staying on ${DEFAULT_PROVIDER}. Remove ${providerEnvName(task)} or migrate the call site first.`
     );
-    return DEFAULT_PROVIDER;
+  }
+  // Checked AFTER dispatch-readiness so the message an operator gets names the
+  // thing they can actually fix, and checked on every resolve rather than once
+  // at boot because a key can be rotated into a running process's environment.
+  if (p !== DEFAULT_PROVIDER && !isProviderConfigured(p)) {
+    return fallbackToDefault(task, `unconfigured:${task}:${p}`,
+      `[models] task "${task}" is configured for ${p} but ${p.toUpperCase()}_API_KEY is not set — ` +
+      `staying on ${DEFAULT_PROVIDER}. Dispatching anyway would throw on every call, and for ` +
+      'fail-open tasks like "relevance" that is a silent quarantine bypass, not an outage.'
+    );
   }
   return p;
 }
@@ -187,5 +269,6 @@ function providerOfModel(model) {
 
 module.exports = {
   modelFor, resolve, providerFor, providerEnvName, providerOfModel,
+  isProviderConfigured,
   TIERS, TASKS, DISPATCH_READY,
 };

@@ -15,16 +15,34 @@
 //
 // Mirrors the structured-output + retry conventions in assessment.js.
 
-const gemini = require('../gemini');
-const costs = require('../costs');
-
-const MODEL = require('../models').modelFor('relevance');
+// One-shot provider seam (ADR-0006 §9 item 5). It resolves the provider AND the
+// model PER CALL — the model id is deliberately no longer captured at require
+// time. What that buys is NOT "a flip takes effect without a restart":
+// AI_PROVIDER_* is a container env var (docker-compose.yml), so changing one
+// means `docker compose up -d`, which recreates the process anyway. What it
+// buys is that provider and model always come back as a MATCHED PAIR from
+// models.resolve() — including its fail-closed fallback to Gemini when the
+// chosen provider has no credentials — instead of a model id frozen at boot
+// behind a routing decision that can no longer be seen; and that flipping or
+// rolling back this task is an env change rather than a code change. Same fix
+// as personas.js in item 4.
+const aiCall = require('../aiCall');
 
 // Shared retry helper (ADR-0006 §7). Bound here with this module's label so
 // every call site below is unchanged; the classification that used to live in
 // a local copy of this function now happens once, in aiRetry.classify().
 const aiRetry = require('../aiRetry');
 const withRetry = aiRetry.forLabel('relevance');
+
+// THE PARSE IS INSIDE withRetry, AND THAT IS A PRICED CHOICE, not a refactor
+// artefact. Before the seam, JSON.parse ran here, outside the retry loop; now
+// aiCall does it and a parse failure is a retryable-looking error inside the
+// loop. Measured: a Gemini answer whose FIRST TEN CHARACTERS match
+// GEMINI_TRANSIENT_RE — V8 quotes exactly ten, so `overloaded…` matches while
+// `The model is overloaded.` does not — costs 3 metered generations instead of
+// 1. Kept, because on Gemini a regenerate can genuinely fix malformed JSON and
+// that is every task today; the Claude side pays nothing, because aiCall stamps
+// its parse errors and classify() never scrapes a stamped one.
 
 // Doc body slice fed to the topicality judge. Smaller than the scoreboard cap —
 // a few thousand chars is plenty to tell what a doc is about.
@@ -54,6 +72,42 @@ const OFFERING_SCHEMA = {
   required: ['plausible', 'reason'],
 };
 
+// Both checks below fail OPEN, which is the right default — a transient model
+// error must not block ingest or bury a legitimate document. The cost of that
+// default is that EVERY failure here is invisible in the product: a null verdict
+// is indistinguishable from "this document is fine".
+//
+// That was tolerable while the only failure mode was a Gemini 5xx. Claude adds
+// one that is not transient and not rare on this exact subject matter: a REFUSAL
+// is HTTP 200 with `stop_reason: 'refusal'`, and competitor intelligence and
+// security-vendor research are precisely what ADR-0006 §7 flags as plausible
+// false positives for the elevated safeguards. A systematically-refusing model
+// would quietly stop quarantining anything, for every tenant, and the only
+// evidence would be one line indistinguishable from a timeout.
+//
+// So the failure is still swallowed — changing that would wrongly quarantine
+// documents on a transient error, a worse trade — but it is no longer
+// anonymous. Refusals get their own greppable marker and name the provider and
+// category; everything else says which provider produced it.
+function warnRelevanceFailure(where, err) {
+  // 'unknown', not 'gemini'. Two providers can serve this path, so a default
+  // that names one is a guess printed as a fact — and it guessed wrong for
+  // every unstamped Claude-side failure, sending triage to the provider that
+  // was not involved. An honest 'unknown' also makes the gap greppable: a line
+  // that says `failed on unknown` is a missing stamp to go and add, which is
+  // how the aiCall parse errors were found.
+  const provider = (err && err.provider) || 'unknown';
+  const msg = (err && err.message) || String(err);
+  if (err && err.refusal) {
+    console.warn(
+      `[relevance] REFUSAL from ${provider} in ${where} — failing open, so this document ` +
+      `SKIPS THE QUARANTINE GATE. category=${err.category || 'unspecified'}: ${msg}`
+    );
+    return;
+  }
+  console.warn(`[relevance] ${where} failed on ${provider} (fail-open): ${msg}`);
+}
+
 // Is this document actually about the competitor (and named product, if any)?
 // Returns { isOnTopic, confidence, reason } or null on any failure (fail-open).
 async function checkDocRelevance({ text, title = null, competitorName = null, competitorProductName = null, tenantId = null } = {}) {
@@ -75,20 +129,15 @@ async function checkDocRelevance({ text, title = null, competitorName = null, co
     `===CLAIM===\n${claim}\n\n` +
     `===DOCUMENT${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
   try {
-    const ai = gemini.getClient();
-    const resp = await withRetry(() => ai.models.generateContent({
-      model: MODEL,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.1,
-        maxOutputTokens: 400,
-        responseMimeType: 'application/json',
-        responseSchema: DOC_SCHEMA,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+    const { parsed } = await withRetry(() => aiCall.generateStructured({
+      task: 'relevance',
+      prompt,
+      responseSchema: DOC_SCHEMA,
+      maxTokens: 400,
+      temperature: 0.1,
+      tenantId,
+      site: 'kb.relevanceDoc',
     }));
-    costs.recordGemini(tenantId, 'kb.relevanceDoc', MODEL, resp.usageMetadata);
-    const parsed = JSON.parse(resp.text);
     const confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
     return {
       isOnTopic: parsed.isOnTopic === true,
@@ -96,7 +145,7 @@ async function checkDocRelevance({ text, title = null, competitorName = null, co
       reason: String(parsed.reason || '').trim(),
     };
   } catch (err) {
-    console.warn(`[relevance] checkDocRelevance failed (fail-open): ${(err && err.message) || err}`);
+    warnRelevanceFailure('checkDocRelevance', err);
     return null;
   }
 }
@@ -122,26 +171,21 @@ async function checkOfferingPlausibility({ competitorName = null, productName = 
     'If you are unsure, or the name is generic enough that it could plausibly be theirs, answer plausible=true. ' +
     'Keep the reason to one short sentence.';
   try {
-    const ai = gemini.getClient();
-    const resp = await withRetry(() => ai.models.generateContent({
-      model: MODEL,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.1,
-        maxOutputTokens: 200,
-        responseMimeType: 'application/json',
-        responseSchema: OFFERING_SCHEMA,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+    const { parsed } = await withRetry(() => aiCall.generateStructured({
+      task: 'relevance',
+      prompt,
+      responseSchema: OFFERING_SCHEMA,
+      maxTokens: 200,
+      temperature: 0.1,
+      tenantId,
+      site: 'kb.relevanceOffering',
     }));
-    costs.recordGemini(tenantId, 'kb.relevanceOffering', MODEL, resp.usageMetadata);
-    const parsed = JSON.parse(resp.text);
     return {
       plausible: parsed.plausible !== false,
       reason: String(parsed.reason || '').trim(),
     };
   } catch (err) {
-    console.warn(`[relevance] checkOfferingPlausibility failed (skip warning): ${(err && err.message) || err}`);
+    warnRelevanceFailure('checkOfferingPlausibility', err);
     return null;
   }
 }
