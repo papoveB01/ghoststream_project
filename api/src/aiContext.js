@@ -24,18 +24,65 @@
 // WHAT THIS DOES NOT DO, deliberately:
 //
 //   - It does not replace gemini.js's cache layer. Eight call sites across seven
-//     superadmin endpoints in index.js use listCachedRecords / invalidate /
-//     getOrCreateCache / generateForRecord directly — the two easy to miss are
-//     GET /admin/overview and GET /admin/caches, which sit outside the
-//     /gemini/* block — and two of them are pinned by routeContract.test.js,
-//     while geminiCacheScan.test.js pins a fix for a real incident
-//     (redis.keys() blocking the Redis that also holds sessions). The layer
-//     goes in Phase 5 with the /caches endpoints, not here.
-//   - It does not flip any task. DISPATCH_READY is still empty, so
-//     models.resolve() returns provider 'gemini' for everything and the
-//     anthropic branch below is unreachable in production. It is reached by
-//     tests, and by the per-task cutover PRs (ADR-0006 §9 item 5) that add a
-//     task to DISPATCH_READY.
+//     endpoints in index.js use listCachedRecords / invalidate /
+//     getOrCreateCache / generateForRecord directly. Six of those endpoints are
+//     superadmin-gated; POST /gemini/roleplay/:slug (index.js:145) is the one
+//     exception, carrying auth.authMiddleware alone, so any authenticated
+//     session reaches it. The two easy to miss are GET /admin/overview and
+//     GET /admin/caches, which sit outside the /gemini/* block — and two of
+//     them are pinned by routeContract.test.js, while geminiCacheScan.test.js
+//     pins a fix for a real incident (redis.keys() blocking the Redis that also
+//     holds sessions). The layer goes in Phase 5 with the /caches endpoints,
+//     not here.
+//   - It does not flip any task — but the three exported functions are held
+//     back by three DIFFERENT mechanisms, which lift at different times. Do not
+//     collapse them, and do not reach for "DISPATCH_READY is empty": it is not
+//     (relevance, preview and companyBrief joined it in group 1, ADR-0006 §9
+//     item 5). Check the premise that matches the branch you are touching.
+//
+//     prepare()   HELD BY THE ROUTER. Its only production caller is
+//                 knowledge/globalCache.js, which pins CACHE_TASK = 'personas',
+//                 and `personas` is not in models.DISPATCH_READY — so
+//                 resolve('personas') stays on 'gemini' whatever
+//                 AI_PROVIDER_PERSONAS says. The arena group of item 5 adds
+//                 `personas` to the set, and that lifts this hold, and only
+//                 this one — and lifting it is ELIGIBILITY, not a flip: the
+//                 branch becomes reachable, and AI_PROVIDER_PERSONAS plus
+//                 ANTHROPIC_API_KEY still decide whether anything takes it
+//                 (anthropic.js's header spells out both gates).
+//     discard()   HELD BY ITS CALLER, not the router. globalCache.js passes
+//                 `provider: 'gemini'` explicitly at both of its call sites and
+//                 discard() prefers the explicit provider, so resolve() never
+//                 runs on that path. That does NOT expire at the arena cutover
+//                 — it is deliberate and permanent, for the reason discard()'s
+//                 own note gives: a stored Gemini pointer is a Gemini fact.
+//     generate()  NO PRODUCTION CALLER AT ALL. globalCache.js is the only
+//                 module outside tests that requires this seam, and it calls
+//                 prepare() and discard() and nothing else. So generateAnthropic
+//                 — the larger branch, and the one carrying the consequences —
+//                 stays dead past the `personas` flip too, until arena.js is
+//                 separately moved onto this seam. Two things there, not one:
+//                 ensurePersonaCache (arena.js:88), which calls
+//                 gemini.getOrCreateCache, and its own callGemini helper (:115),
+//                 which builds models.generateContent directly (:131-135). NOT
+//                 gemini.generateForRecord — its only production caller is
+//                 index.js:158, the /gemini/roleplay/:slug endpoint
+//                 (authenticated, not superadmin-gated, unlike its
+//                 /gemini/caches* siblings), which is a different port and a
+//                 Phase 5 one (it is one of the eight listed above). That arena
+//                 port, not the set membership, is where the two asymmetries
+//                 documented above generate() get decided: arena's temperature
+//                 — 0.9 on the opener (arena.js:199), 0.85 per turn (:258) —
+//                 silently dropped with a warning, and over-budget output
+//                 turning from a truncated render into a hard 502.
+//
+//                 Unlike the other two, this premise does not move with
+//                 DISPATCH_READY, so the set pins cannot catch it going stale:
+//                 aiContext.test.js's [TEXTUAL] guard fails the first src/
+//                 caller instead.
+//
+//     Tests reach the anthropic branches by adding the task to the set
+//     themselves.
 //
 // TURN SHAPE. The neutral conversation unit is { role: 'user' | 'assistant',
 // text }. Text only — this seam carries no images or PDFs. Gemini spells the
@@ -163,8 +210,9 @@ async function discard({ task, name, provider = null }) {
 //   temperature       GEMINI ONLY. Claude removed it (a 400 on Opus 5,
 //                     non-default rejected on Sonnet 5), so on the anthropic
 //                     branch it is dropped with a warning rather than passed
-//                     through — arena.js's 0.85 exists specifically for persona
-//                     variety across runs and there is no parameter substitute
+//                     through — arena.js's 0.9 opener (arena.js:199) and 0.85
+//                     per turn (:258) exist specifically for persona variety
+//                     across runs and there is no parameter substitute
 //                     (ADR-0006 §7, §10). Losing it silently would look like the
 //                     model got blander.
 //   effort / thinking ANTHROPIC ONLY. The Gemini branch keeps thinkingBudget: 0,

@@ -53,8 +53,10 @@ const DEFAULT_PROVIDER = 'gemini';
 
 // Tasks whose CALL SITE can actually dispatch to a non-Gemini provider.
 //
-// Grows one task per cutover PR; it is NOT empty. Until a task's call site
-// reads resolve().provider and branches, asking for anthropic would hand a
+// Grows as call sites migrate — not one task per PR; group 1 added three at
+// once, and §9 item 5's later groups are up to four keys that must flip
+// together. It is NOT empty. Until a task's call site reads
+// resolve().provider and branches, asking for anthropic would hand a
 // Claude model id to the Gemini SDK — a 404 on every call. For `relevance` that
 // is worse than an outage: it fails OPEN (relevance.js returns null and only
 // warns), so every competitor document would skip the quarantine silently, for
@@ -89,6 +91,15 @@ const DEFAULT_PROVIDER = 'gemini';
 // still chosen by AI_PROVIDER / AI_PROVIDER_<TASK>, which default to gemini,
 // and providerFor() additionally refuses to dispatch when the target provider's
 // key is not configured.
+//
+// EDITING THE LINE BELOW ALSO INVALIDATES PROSE. Four comment blocks assert what
+// is in this set and go stale with it: anthropic.js (header), aiCall.js
+// (header), gemini.js (assertGeminiModel) and aiContext.js ("It does not flip
+// any task"). Update them in the same PR. The pins in providerRouter.test.js and
+// aiCall.test.js carry the same list in their failure messages — but a message
+// is only read on a red run, and the PR that changes this set deliberately greps
+// for it, fixes both pins in the same pass and goes green first try, never
+// seeing either one. That PR is the reader this note is for.
 const DISPATCH_READY = new Set(['relevance', 'preview', 'companyBrief']);
 
 // task → { tier, env(legacy per-task override), anthropicEnv, anthropicTier }
@@ -184,7 +195,7 @@ function warnOnce(key, message) {
 // shouldMarkQuarantine(null) is false — so every competitor document skips the
 // quarantine gate, for every tenant, with nothing in the UI or the logs that
 // looks like a failure. The same fail-open shape is why `relevance` was singled
-// out in DISPATCH_READY's comment below.
+// out in DISPATCH_READY's comment above.
 //
 // So a provider with no credentials is not "configured but broken", it is not
 // available, and the router treats it the way it treats an unknown provider
