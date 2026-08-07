@@ -54,8 +54,11 @@ function toContents(contents) {
 // reaching it is not a bad request, it is a routing bug, and it has a specific
 // live path: personas.js resolves modelFor('personas') and arena.js feeds that
 // straight into caches.create(), so AI_PROVIDER_PERSONAS=anthropic aims a
-// Claude id at Google's caches API (ADR-0006 §9 item 4). Today only an empty
-// DISPATCH_READY prevents it. Google's own answer to that request is a 404 that
+// Claude id at Google's caches API (ADR-0006 §9 item 4). What prevents it today
+// is that `personas` is not in models.DISPATCH_READY, so providerFor() warns and
+// stays on Gemini — not that the set is empty, which it stopped being when group
+// 1 landed. When the arena group adds `personas` (ADR-0006 §9 item 5), this
+// check is what is left. Google's own answer to that request is a 404 that
 // mentions neither the provider nor the env var that caused it.
 //
 // Unknown ids pass — see models.providerOfModel for why this blocks rather than

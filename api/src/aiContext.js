@@ -31,11 +31,16 @@
 //     while geminiCacheScan.test.js pins a fix for a real incident
 //     (redis.keys() blocking the Redis that also holds sessions). The layer
 //     goes in Phase 5 with the /caches endpoints, not here.
-//   - It does not flip any task. DISPATCH_READY is still empty, so
-//     models.resolve() returns provider 'gemini' for everything and the
-//     anthropic branch below is unreachable in production. It is reached by
-//     tests, and by the per-task cutover PRs (ADR-0006 §9 item 5) that add a
-//     task to DISPATCH_READY.
+//   - It does not flip any task. Its only production consumer is
+//     knowledge/globalCache.js, which pins CACHE_TASK = 'personas', and
+//     `personas` is not in models.DISPATCH_READY — so models.resolve('personas')
+//     stays on 'gemini' whatever AI_PROVIDER_PERSONAS says, and the anthropic
+//     branches below are unreachable in production. Check THAT premise, not the
+//     one this note used to state: DISPATCH_READY is no longer empty (relevance,
+//     preview and companyBrief joined it in group 1, ADR-0006 §9 item 5), so it
+//     is `personas` being absent from the set that holds this, and the arena
+//     group of item 5 is the PR that lifts the hold. Tests reach the branch by
+//     adding the task to the set themselves.
 //
 // TURN SHAPE. The neutral conversation unit is { role: 'user' | 'assistant',
 // text }. Text only — this seam carries no images or PDFs. Gemini spells the
