@@ -455,14 +455,64 @@ app.post('/_internal/meetings/:id/process', requireInternalAuth, async (req, res
 // First Loop — full pipeline on the sample 5-minute call
 // =========================================================================
 
-app.post('/first-loop', auth.authMiddleware, async (req, res, next) => {
-  try {
-    const transcript = (req.body && req.body.transcript) || sampleTranscript;
+// The caller supplies `transcript` verbatim and it reaches three model stages
+// unchanged — analysis.formatTranscript() applies no bound of its own, so the
+// only limit was express.json's 2mb body cap, i.e. roughly half a million
+// tokens per request, three times over, plus a Cloudflare Stream ingest+clip.
+// 20 000 characters is the bound inboundEmail.js already uses for
+// caller-supplied body text (INBOUND_MAX_BODY_CHARS), and it fits this route's
+// actual purpose with room to spare: the bundled sample is 1 623 characters of
+// speech for a 5-minute call (~325 chars/minute), so 20 000 still covers a full
+// hour of conversation and 12× the sample this endpoint exists to replay.
+//
+// Over the bound is a 4xx, never a silent truncation: dropping the tail would
+// return moments, an objection clip range and a follow-up email describing a
+// call that did not happen, with nothing in the response saying so.
+const FIRST_LOOP_MAX_TRANSCRIPT_CHARS =
+  parseInt(process.env.FIRST_LOOP_MAX_TRANSCRIPT_CHARS || '20000', 10);
 
-    // First-loop is a demo endpoint scoped to the Founders tenant (it exercises
-    // the recall.ai → portal flow against the seeded demo KB). Requires a
-    // session (see fix/gate-cost-endpoints): it drives paid Gemini analysis, so
-    // it must not be anonymous. Runs unfiltered (no engagement profile / tags).
+// First Loop replays a sample call through the whole pipeline against the
+// FOUNDERS tenant's knowledge base — the tenant id below is hard-wired, not
+// derived from the caller (ADR-0001 §7 PR 4 keeps it that way deliberately:
+// "a demo endpoint hard-wired to Founders"). With only auth.authMiddleware in
+// front, any caller who completed public self-serve signup could steer that
+// retrieval with `req.body.transcript`, because the transcript decides the
+// entities extracted at analysis.js stage 0 and those entities ARE the
+// pgvector query. The response returns `pipeline` verbatim, so Founders'
+// documentTitle / sourceUrl / category came back in grounding.citations[] and
+// the chunk bodies came back as prose in moments.knowledgeGaps[].contradiction
+// — a direct break of ADR-0001 §4.2's primary (application-filter) layer, with
+// only RLS (defence in depth, and off by default in db.js) still standing.
+//
+// Nothing in web/ or mcp/ calls this route — it is a demo/probe endpoint, like
+// the /gemini/caches* siblings above, so it takes the same superadmin gate.
+// That closes the cross-tenant read and the unmetered spend at once: the
+// Founders KB is now only reachable by the Founders tenant's own superadmin,
+// and no ordinary tenant can drive three model stages plus a Cloudflare Stream
+// ingest+clip on a meter that charges nothing (costs.recordGemini attributes
+// the spend to Founders, so it never even showed up on the caller's bill).
+app.post('/first-loop', auth.authMiddleware, auth.requireSuperadmin, async (req, res, next) => {
+  try {
+    const supplied = (req.body && req.body.transcript) || null;
+    if (supplied) {
+      if (typeof supplied !== 'object' || !Array.isArray(supplied.segments) || !Array.isArray(supplied.participants)) {
+        return res.status(400).json({ error: 'transcript must be an object with segments[] and participants[]' });
+      }
+      // Measure the speech text — the part that is concatenated into every
+      // prompt. `[startSec, endSec, speaker, text]` is the segment shape.
+      const chars = supplied.segments.reduce(
+        (n, seg) => n + String((Array.isArray(seg) && seg[3]) || '').length, 0);
+      if (chars > FIRST_LOOP_MAX_TRANSCRIPT_CHARS) {
+        return res.status(413).json({
+          error: `transcript too long (${chars} chars of speech, max ${FIRST_LOOP_MAX_TRANSCRIPT_CHARS})`,
+          code: 'TRANSCRIPT_TOO_LONG',
+          maxChars: FIRST_LOOP_MAX_TRANSCRIPT_CHARS,
+        });
+      }
+    }
+    const transcript = supplied || sampleTranscript;
+
+    // Runs unfiltered (no engagement profile / tags).
     const meeting = await store.createMeeting({
       source: 'first-loop',
       meetingUrl: '(mock 5-minute call)',

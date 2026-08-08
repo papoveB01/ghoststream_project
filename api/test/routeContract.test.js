@@ -399,6 +399,30 @@ test('CRITICAL FIX: GET /meetings/:id requires auth.authMiddleware', () => {
   assert.ok(chainHas(r, 'authMiddleware'), 'GET /meetings/:id has no auth.authMiddleware again — this is the exact route that leaked full call transcripts (incl. internal knowledgeGaps coaching notes) to anonymous callers in the 2026-07-29 review; see the comment above this route in src/index.js for the two-tier trust model it depends on (the stripped public shape belongs on GET /portals/:id, not here)');
 });
 
+// ===========================================================================
+// 6. POST /first-loop — the route that reads a KB that is not the caller's.
+//    Its handler passes userModel.FOUNDERS_TENANT_ID to analysis.runPipeline
+//    regardless of who called, and the caller's own `req.body.transcript`
+//    decides the entities that become the pgvector query. So with only
+//    authMiddleware in front, any self-serve trial tenant could steer
+//    retrieval into the Founders KB and read the result back out of the
+//    verbatim `pipeline` in the response — grounding.citations[] carries
+//    documentTitle / sourceUrl / category, and moments.knowledgeGaps[]
+//    .contradiction restates the retrieved chunk bodies in prose.
+//    Nothing in web/ or mcp/ calls it; it is a demo endpoint (ADR-0001 §7
+//    PR 4 says so in as many words), so like the /gemini/caches* siblings it
+//    is superadmin-only. Postgres RLS also blocks the read, but only when
+//    RLS_ENFORCE=on — db.js defaults it to off, so RLS is defence in depth
+//    here, not the control.
+// ===========================================================================
+
+test('CRITICAL FIX: POST /first-loop requires auth.requireSuperadmin (its handler reads the FOUNDERS tenant KB, not the caller\'s)', () => {
+  const r = findRoute('POST', '/first-loop');
+  assert.ok(r, 'POST /first-loop route not found — did it move or get removed?');
+  assert.ok(chainHas(r, 'authMiddleware'), 'POST /first-loop lost auth.authMiddleware');
+  assert.ok(chainHas(r, 'requireSuperadmin'), 'POST /first-loop lost auth.requireSuperadmin — its handler hard-codes tenantId: userModel.FOUNDERS_TENANT_ID into analysis.runPipeline while the caller controls req.body.transcript (and therefore the retrieval query), so without this ANY signed-in tenant can read the Founders knowledge base out of the response\'s grounding.citations[] and moments.knowledgeGaps[].contradiction — a break of ADR-0001 §4.2. It also drives three unmetered model stages plus a Cloudflare Stream ingest+clip per call, billed to Founders.');
+});
+
 // ---------------------------------------------------------------------------
 // Cleanup: disconnect the ioredis client index.js's module graph opened (see
 // the file-level comment above) so `node --test` can exit instead of hanging
