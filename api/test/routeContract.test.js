@@ -420,7 +420,26 @@ test('CRITICAL FIX: POST /first-loop requires auth.requireSuperadmin (its handle
   const r = findRoute('POST', '/first-loop');
   assert.ok(r, 'POST /first-loop route not found — did it move or get removed?');
   assert.ok(chainHas(r, 'authMiddleware'), 'POST /first-loop lost auth.authMiddleware');
-  assert.ok(chainHas(r, 'requireSuperadmin'), 'POST /first-loop lost auth.requireSuperadmin — its handler hard-codes tenantId: userModel.FOUNDERS_TENANT_ID into analysis.runPipeline while the caller controls req.body.transcript (and therefore the retrieval query), so without this ANY signed-in tenant can read the Founders knowledge base out of the response\'s grounding.citations[] and moments.knowledgeGaps[].contradiction — a break of ADR-0001 §4.2. It also drives three unmetered model stages plus a Cloudflare Stream ingest+clip per call, billed to Founders.');
+  assert.ok(chainHas(r, 'requireSuperadmin'), 'POST /first-loop lost auth.requireSuperadmin — its handler hard-codes tenantId: userModel.FOUNDERS_TENANT_ID into analysis.runPipeline while the caller controls req.body.transcript (and therefore the retrieval query), so without this ANY signed-in tenant reaches ADR-0001 §4.2\'s layer-1 gap on this route (RLS, layer 2, is what actually stopped the read) AND drives three unmetered model stages plus a Cloudflare Stream ingest+clip per call, billed to Founders — that spend path RLS never covered.');
+});
+
+// chainHas() is a MEMBERSHIP check over route.tags — it says the gate is
+// somewhere in the chain, not that it runs before the handler. Moving
+// `auth.requireSuperadmin` to AFTER the handler leaves every assertion above
+// green while making the gate dead code, because the handler responds and the
+// chain never advances. On this route the gate is the entire change, so pin
+// the order too. (The same weakness applies to /admin/portals,
+// /admin/meetings and /gemini/caches* — repo-wide, and deliberately not
+// changed here; this is the one route whose PR is about the gate.)
+test('CRITICAL FIX: POST /first-loop\'s requireSuperadmin runs BEFORE the handler, not after it', () => {
+  const r = findRoute('POST', '/first-loop');
+  assert.ok(r, 'POST /first-loop route not found — did it move or get removed?');
+  const idx = r.chain.findIndex((fn) => tagsFor(fn).includes('requireSuperadmin'));
+  assert.ok(idx >= 0, 'POST /first-loop has no auth.requireSuperadmin in its chain at all');
+  assert.ok(idx < r.chain.length - 1,
+    `auth.requireSuperadmin is the LAST layer on POST /first-loop (index ${idx} of ${r.chain.length}), i.e. ` +
+    'it sits after the route handler and never runs — the handler responds first. A gate behind the thing ' +
+    'it gates is not a gate, and the membership assertion above cannot see the difference.');
 });
 
 // ---------------------------------------------------------------------------

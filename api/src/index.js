@@ -11,6 +11,7 @@ const arena = require('./arena');
 const arenaHistory = require('./arenaHistory');
 const auth = require('./auth');
 const sampleTranscript = require('./sample-transcript');
+const firstLoopBound = require('./firstLoopBound');
 const db = require('./db');
 const migrate = require('../db/migrate');
 const knowledge = require('./knowledge');
@@ -455,60 +456,61 @@ app.post('/_internal/meetings/:id/process', requireInternalAuth, async (req, res
 // First Loop — full pipeline on the sample 5-minute call
 // =========================================================================
 
-// The caller supplies `transcript` verbatim and it reaches three model stages
-// unchanged — analysis.formatTranscript() applies no bound of its own, so the
-// only limit was express.json's 2mb body cap, i.e. roughly half a million
-// tokens per request, three times over, plus a Cloudflare Stream ingest+clip.
-// 20 000 characters is the bound inboundEmail.js already uses for
-// caller-supplied body text (INBOUND_MAX_BODY_CHARS), and it fits this route's
-// actual purpose with room to spare: the bundled sample is 1 623 characters of
-// speech for a 5-minute call (~325 chars/minute), so 20 000 still covers a full
-// hour of conversation and 12× the sample this endpoint exists to replay.
-//
-// Over the bound is a 4xx, never a silent truncation: dropping the tail would
-// return moments, an objection clip range and a follow-up email describing a
-// call that did not happen, with nothing in the response saying so.
-const FIRST_LOOP_MAX_TRANSCRIPT_CHARS =
-  parseInt(process.env.FIRST_LOOP_MAX_TRANSCRIPT_CHARS || '20000', 10);
-
 // First Loop replays a sample call through the whole pipeline against the
 // FOUNDERS tenant's knowledge base — the tenant id below is hard-wired, not
 // derived from the caller (ADR-0001 §7 PR 4 keeps it that way deliberately:
 // "a demo endpoint hard-wired to Founders"). With only auth.authMiddleware in
-// front, any caller who completed public self-serve signup could steer that
-// retrieval with `req.body.transcript`, because the transcript decides the
-// entities extracted at analysis.js stage 0 and those entities ARE the
-// pgvector query. The response returns `pipeline` verbatim, so Founders'
-// documentTitle / sourceUrl / category came back in grounding.citations[] and
-// the chunk bodies came back as prose in moments.knowledgeGaps[].contradiction
-// — a direct break of ADR-0001 §4.2's primary (application-filter) layer, with
-// only RLS (defence in depth, and off by default in db.js) still standing.
+// front, any caller who completed public self-serve signup reached it, and the
+// caller's own `req.body.transcript` steers what gets retrieved from that KB,
+// because the transcript decides the entities extracted at analysis.js stage 0
+// and those entities ARE the pgvector query. The handler returns `pipeline`
+// verbatim, so a successful retrieval would put Founders' documentTitle /
+// sourceUrl / category into grounding.citations[] and the chunk bodies into
+// moments.knowledgeGaps[].contradiction as prose.
+//
+// WHAT THAT ACTUALLY WAS, stated precisely. ADR-0001 §4.2's layer 1 (the
+// application tenant filter) was absent on this route. Layer 2 (Postgres RLS)
+// held: RLS_ENFORCE=on in both deployed containers, and with it on
+// retrieval.hasReadyDocuments(FOUNDERS) returns zero rows under the caller's
+// own tenant context, so stage 0 and the retrieval never ran and no Founders
+// document was disclosed. So this was a defence-in-depth failure, not a live
+// cross-tenant read — plus one hole RLS did not cover at all and which WAS
+// live: any signed-in tenant could drive three model stages and a real
+// Cloudflare Stream ingest + createClip on no meter whatsoever, with
+// costs.recordGemini attributing the spend to Founders rather than to the
+// caller. db.js:21 defaults RLS_ENFORCE to off and .env.example ships it off,
+// which is not evidence the read was reachable — it is the reason layer 1 has
+// to be here rather than being left to layer 2 to catch.
 //
 // Nothing in web/ or mcp/ calls this route — it is a demo/probe endpoint, like
 // the /gemini/caches* siblings above, so it takes the same superadmin gate.
-// That closes the cross-tenant read and the unmetered spend at once: the
-// Founders KB is now only reachable by the Founders tenant's own superadmin,
-// and no ordinary tenant can drive three model stages plus a Cloudflare Stream
-// ingest+clip on a meter that charges nothing (costs.recordGemini attributes
-// the spend to Founders, so it never even showed up on the caller's bill).
+// That closes both at once: the Founders KB path is reachable only by the
+// Founders tenant's own superadmin, and no ordinary tenant can spend against
+// it.
 app.post('/first-loop', auth.authMiddleware, auth.requireSuperadmin, async (req, res, next) => {
   try {
     const supplied = (req.body && req.body.transcript) || null;
     if (supplied) {
-      if (typeof supplied !== 'object' || !Array.isArray(supplied.segments) || !Array.isArray(supplied.participants)) {
-        return res.status(400).json({ error: 'transcript must be an object with segments[] and participants[]' });
-      }
-      // Measure the speech text — the part that is concatenated into every
-      // prompt. `[startSec, endSec, speaker, text]` is the segment shape.
-      const chars = supplied.segments.reduce(
-        (n, seg) => n + String((Array.isArray(seg) && seg[3]) || '').length, 0);
-      if (chars > FIRST_LOOP_MAX_TRANSCRIPT_CHARS) {
-        return res.status(413).json({
-          error: `transcript too long (${chars} chars of speech, max ${FIRST_LOOP_MAX_TRANSCRIPT_CHARS})`,
-          code: 'TRANSCRIPT_TOO_LONG',
-          maxChars: FIRST_LOOP_MAX_TRANSCRIPT_CHARS,
-        });
-      }
+      // Bound what the caller's transcript will PROJECT INTO the three model
+      // prompts — which is not the same thing as the speech text, and is why
+      // this lives in its own module. `segments[i][3]` is one of five
+      // caller-controlled fields that reach a prompt, and three of them
+      // (participants[].name/.role, and segments[i][2] when no participant
+      // matches) are re-rendered once per segment, so summing speech alone
+      // left the caller in control of both factors of a product: a 43 KB body
+      // with one long participant name measured 200 characters and rendered
+      // 8 044 500. firstLoopBound.js has the full table and computes the
+      // projection arithmetically — deliberately without building the string,
+      // since building it is the attack. Rejected before store.createMeeting,
+      // analysis.runPipeline and the Stream ingest+clip below, i.e. before
+      // anything is spent.
+      //
+      // Over the bound is a 4xx, never a silent truncation: dropping the tail
+      // would return moments, an objection clip range and a follow-up email
+      // describing a call that did not happen, with nothing in the response
+      // saying so.
+      const verdict = firstLoopBound.checkTranscript(supplied);
+      if (!verdict.ok) return res.status(verdict.status).json(verdict.body);
     }
     const transcript = supplied || sampleTranscript;
 
