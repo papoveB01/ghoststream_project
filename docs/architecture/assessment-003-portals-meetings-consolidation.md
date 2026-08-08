@@ -190,7 +190,7 @@ Repo: `papoveB01/ghoststream_project` only.
 
 - No filters → row count equals `meetings.length`.
 - `status=ready` row count equals `portals.length`.
-- Failure smoke: `POST /first-loop` with Gemini stubbed to throw → call appears under `Failed` with `analysisError` and a `Replay` action.
+- Failure smoke: `POST /first-loop` with Gemini stubbed to throw → call appears under `Failed` with `analysisError` and a `Replay` action. (Since PR #55 this route is superadmin-only, so run the smoke step as a superadmin session; an ordinary tenant session now gets a 403.)
 - A `Ready` row opens `/portal/?id=<portalId>`; a `Failed` row opens the operations detail.
 
 **Gotchas**
