@@ -358,6 +358,15 @@ async function extractCompetitiveAssessmentStrict({ text, tenantId = null, title
 // extractCompetitiveAssessment(...) — the never-throws form: returns null on any
 // failure so ingest proceeds. Only callers that are not overwriting a stored
 // scoreboard may use it.
+//
+// ONE CONSEQUENCE REACHES INGEST, and it is worth naming rather than claiming
+// this half is untouched: a degenerate answer used to be stored as a blank
+// all-unknown scoreboard on the new row, and now stores nothing at all
+// (`...(scoreboard ? { assessment } : {})` in service.js). That is the better of
+// the two — extractBattlecard averages per-doc scoreboards, and a fake all-zero
+// card dragged the aggregate toward a verdict nobody made — but it IS a change,
+// and nothing else about ingest moves: the swallow, the fail-open and every
+// other return value are what they were.
 async function extractCompetitiveAssessment(opts = {}) {
   try {
     return await extractCompetitiveAssessmentStrict(opts);

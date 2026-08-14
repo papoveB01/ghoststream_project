@@ -1767,7 +1767,13 @@ decomposition exists so that per-file spokes stay tractable.
    overwrite still open in three places where the call returns 200 with nothing
    usable in it — worse than the throw case, because `refreshFailures` is `[]`
    and nothing records it. All three are closed **in the strict forms only**, so
-   ingest still swallows, which is correct where nothing is stored yet:
+   ingest still swallows, which is correct where nothing is stored yet — with one
+   consequence that does reach ingest, named here rather than glossed: a
+   degenerate assessment answer now stores **no** `assessment` key on the new row
+   where it used to store a blank all-unknown one. That is the better of the two
+   — `extractBattlecard` averages these per-doc scoreboards and a fake all-zero
+   card dragged the aggregate toward a verdict nobody made — which is exactly why
+   it could have gone unremarked. The changes themselves:
    `extractKeyPointsStrict` throws when the answer carries no `points` array
    (`required` in the schema, and it was coerced to `[]` — the exact value that
    means "this document genuinely has none"); `extractCompetitiveAssessmentStrict`
