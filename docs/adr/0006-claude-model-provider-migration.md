@@ -1733,11 +1733,14 @@ decomposition exists so that per-file spokes stay tractable.
    figure both places use is **4,297**, the DB's own
    `length(metadata->>'companyAnalysis')`, which is what the table above quotes.)*
 
-   **The mechanism, as it then was — none of the arrows below is current, and the
-   last two no longer exist:** `stop_reason: 'max_tokens'` with `allowTruncation`
+   **The mechanism, as it then was — the chain is broken at the third arrow: the
+   strict forms throw instead of swallowing, so a `null` that reaches the `else
+   delete` now means the document genuinely has none. The last step therefore no
+   longer happens, but the code that performed it is unchanged and still reads
+   exactly as written below:** `stop_reason: 'max_tokens'` with `allowTruncation`
    unset (these call sites passed nothing) → `anthropic.generate` threw →
    `extractCompanyAnalysis` caught it and returned `null` →
-   `knowledge/service.js`'s regenerate path **was**
+   `knowledge/service.js`'s regenerate path
    `if (analysis) md.companyAnalysis = analysis; else delete md.companyAnalysis`
    → **the good stored analysis was deleted and the route still answered
    `{ ok: true }`.** On ingest it was simply never written; `portfolio.js`'s
