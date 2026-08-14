@@ -8772,21 +8772,33 @@
   function warnPartialKeypointsRefresh(body) {
     const failed = (body && Array.isArray(body.refreshFailures)) ? body.refreshFailures : [];
     if (!failed.length) return;
-    const md = (body && body.document && body.document.metadata) || {};
+    const doc = body && body.document;
+    const md = (doc && doc.metadata) || {};
+    const all = [];
     const kept = [];
     const empty = [];
     for (const f of failed) {
       const key = f && f.field;
       if (!key) continue;
       const label = KB_REFRESH_FIELD_LABELS[key] || key;
+      all.push(label);
       const stored = md[key];
       const has = Array.isArray(stored) ? stored.length > 0 : (stored !== null && stored !== undefined);
       (has ? kept : empty).push(label);
     }
-    if (!kept.length && !empty.length) return;
+    if (!all.length) return;
     const lines = ["This analysis couldn't be fully regenerated just now."];
-    if (kept.length) lines.push(`Kept what you already had: ${kept.join(', ')}.`);
-    if (empty.length) lines.push(`Still empty — nothing had been generated yet: ${empty.join(', ')}.`);
+    if (!doc) {
+      // No document came back — the row was deleted between the write and the
+      // re-read, or an older API build answered with the failure list alone.
+      // Which fields kept a stored value is then unknowable, and the `|| {}`
+      // above would report every one of them as "still empty": the same
+      // falsehood this helper was fixed for, pointing the other way.
+      lines.push(`Couldn't be regenerated: ${all.join(', ')}.`);
+    } else {
+      if (kept.length) lines.push(`Kept what you already had: ${kept.join(', ')}.`);
+      if (empty.length) lines.push(`Still empty — nothing had been generated yet: ${empty.join(', ')}.`);
+    }
     lines.push('Nothing you had was lost. Try again in a moment.');
     alert(lines.join('\n'));
   }
