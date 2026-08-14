@@ -563,12 +563,13 @@ test('the route emits refreshFailures in the body, not merely in its destructuri
 // it. And the helper's actual output — the label map, the kept-vs-still-empty
 // split — had no coverage at all.
 //
-// So both are sliced out of admin.js and RUN, with their globals injected:
+// So all three are sliced out of admin.js and RUN, with their globals injected:
 // `warnPartialKeypointsRefresh` (pure — a response body in, one alert string
-// out) and `kbRegenKeyPoints`, the ↻ refresh handler that calls it. admin.js
-// cannot be required (one ~12k-line IIFE against a live DOM), and a copy of
-// either pasted into this file would pass happily against an admin.js that had
-// stopped resembling it.
+// out), `kbRegenKeyPoints`, the ↻ refresh handler on the library card, and the
+// intel-doc modal's click listener, the second call site. admin.js cannot be
+// required (one ~12k-line IIFE against a live DOM), and a copy of any of them
+// pasted into this file would pass happily against an admin.js that had stopped
+// resembling it.
 
 const ADMIN_JS = path.join(__dirname, '..', '..', 'web', 'admin', 'admin.js');
 
@@ -642,6 +643,50 @@ function loadRegenHandler({ response, jsonBody, reloadThrows, label = 'Generate 
   const factory = new Function(...names, `${slice}\nreturn kbRegenKeyPoints;`);
   const kbRegenKeyPoints = factory(...names.map((n) => env[n]));
   return { run: () => kbRegenKeyPoints(DOC_ID, btn), log, alerts, warnArgs, btn };
+}
+
+// The SECOND call site: the ↻ button inside the intel-document modal. This one
+// was left to a string search because the listener is nested in a ~200-line
+// builder that needs a DOM — but the builder does not have to run, only the
+// arrow function does, and its free variables are exactly `doc`, `fetch`,
+// `alert`, `warnPartialKeypointsRefresh`, `onChange` and `closeIntelDocModal`.
+// So it comes out by the same brace match and runs the same way, with no DOM.
+//
+// That matters because the search it replaces was defeatable in one line. It
+// stripped `//` comments from the window between the 200 check and the warning
+// before looking for a re-render, so a string literal CONTAINING `//` — a URL —
+// swallowed the rest of its own line, and `const u = 'https://…'; onChange();`
+// inserted above the warning moved the re-render ahead of it, which is the exact
+// defect this PR has now fixed twice, with the suite still at 28/0.
+function loadModalKeypointsHandler({ response, jsonBody, onChangeThrows, label = 'Generate analysis' }) {
+  const admin = fs.readFileSync(ADMIN_JS, 'utf8');
+  const anchor = admin.indexOf("'[data-intel-doc-keypoints]').addEventListener('click',");
+  assert.notStrictEqual(anchor, -1,
+    'the intel-doc modal no longer wires a click handler onto its ↻ analysis button');
+  const { start, end } = sliceFn(admin, 'async (e) => {', anchor);
+  const slice = checkSlice(admin.slice(start, end), 'warnPartialKeypointsRefresh(', 8000,
+    'the modal refresh listener');
+
+  const log = [];
+  const alerts = [];
+  const warnArgs = [];
+  const btn = { disabled: false, textContent: label };
+  const env = {
+    doc: { id: DOC_ID },
+    fetch: async () => ({ ...response, json: async () => jsonBody }),
+    alert: (m) => { alerts.push(String(m)); },
+    warnPartialKeypointsRefresh: (b) => { log.push('warn'); warnArgs.push(b); },
+    onChange: () => {
+      log.push('rerender');
+      if (onChangeThrows) throw new Error(onChangeThrows);
+    },
+    closeIntelDocModal: () => { log.push('close'); },
+  };
+  const names = Object.keys(env);
+  // eslint-disable-next-line no-new-func
+  const factory = new Function(...names, `return ${slice};`);
+  const listener = factory(...names.map((n) => env[n]));
+  return { run: () => listener({ currentTarget: btn }), log, alerts, warnArgs, btn };
 }
 
 test('a mixed failure names the kept field and the still-empty one, in the rep\'s words', () => {
@@ -811,69 +856,96 @@ test('a non-200 warns about nothing and restores the button\'s own label', async
   }
 });
 
-test('both admin SPA call sites warn on the success path, before anything re-renders', () => {
-  // The one property execution cannot see: WHERE the call sits. Everything the
-  // helper does is pinned above by running it; what is left is ordering, and the
-  // ordering is the defect this PR fixed twice — a throw out of the re-render
-  // lands in the catch, reports "Couldn't generate key points: <unrelated
-  // message>" on a 200 whose document was written, and swallows the warning.
-  // Deliberately kept small: a string search is a bad instrument and every extra
-  // thing it pins is a future false red.
+// ── 5d. the modal's ↻ listener, executed ─────────────────────────────────────
+
+test('the modal hands the warning the PARSED BODY, before anything re-renders', async () => {
+  // The ordering the textual guard was supposed to hold down and could not. A
+  // re-render moved ahead of the warning shows up here as a `rerender` before
+  // the `warn`, whatever it is hidden behind — a URL string literal, a helper
+  // called something else, a line the comment stripper ate.
+  const body = {
+    ok: true,
+    document: { id: DOC_ID, metadata: { assessment: STORED_ASSESSMENT } },
+    refreshFailures: [{ field: 'assessment', provider: 'gemini' }],
+  };
+  const h = loadModalKeypointsHandler({ response: { ok: true, status: 200 }, jsonBody: body });
+  await h.run();
+
+  assert.deepStrictEqual(h.warnArgs, [body],
+    'the warning must be given the parsed response body — handed the Response, or the document ' +
+    'alone, it never sees refreshFailures and can never fire');
+  assert.deepStrictEqual(h.log, ['warn', 'rerender', 'close'],
+    'the warning must run BEFORE the re-render and the close, not after either');
+  assert.deepStrictEqual(h.alerts, [], 'a 200 is not an error');
+});
+
+test('a re-render that throws in the modal has already shown the warning', async () => {
+  // The consequence of getting the order wrong, driven directly. With the
+  // re-render first, this throw lands in the catch and the rep is told the
+  // generate failed on a 200 that wrote the document — while the partial-refresh
+  // warning, the only signal there is, is never shown at all.
+  //
+  // Note the asymmetry with kbRegenKeyPoints, which moved its reload out of the
+  // try so a render failure says it is a render failure. Here the close and the
+  // re-render are still inside it, so this alert still reads "Couldn't generate
+  // key points". That is a second wrong signal and is worth fixing, but it is a
+  // different concern from this PR's, so it is recorded rather than asserted:
+  // what is pinned is only that the warning survives.
+  const body = {
+    ok: true,
+    document: { id: DOC_ID, metadata: {} },
+    refreshFailures: [{ field: 'keyPoints', provider: 'gemini' }],
+  };
+  const h = loadModalKeypointsHandler({
+    response: { ok: true, status: 200 }, jsonBody: body, onChangeThrows: 'DSText is not defined',
+  });
+  await h.run();
+
+  assert.deepStrictEqual(h.warnArgs, [body], 'a failing re-render must not swallow the warning');
+  assert.deepStrictEqual(h.log, ['warn', 'rerender'],
+    'the warning had already run when the re-render threw');
+});
+
+test('a non-200 in the modal warns about nothing and restores the button\'s own label', async () => {
+  // Same two labels, same reason as the library card's handler above.
+  for (const label of ['Generate analysis', '↻ Refresh analysis']) {
+    const h = loadModalKeypointsHandler({
+      response: { ok: false, status: 503 }, jsonBody: { error: 'upstream unavailable' }, label,
+    });
+    await h.run();
+
+    assert.deepStrictEqual(h.log, [],
+      'nothing may warn, re-render or close on a response that is not a 200');
+    assert.deepStrictEqual(h.alerts, ["Couldn't generate key points: upstream unavailable"]);
+    assert.strictEqual(h.btn.disabled, false, 'the button must be usable again');
+    assert.strictEqual(h.btn.textContent, label,
+      `the label must be captured, not assumed: seeded "${label}" and got back ` +
+      `"${h.btn.textContent}"`);
+  }
+});
+
+// ── 5e. how many call sites there are ────────────────────────────────────────
+
+test('there are exactly two POST …/keypoints call sites in the admin SPA', () => {
+  // The only property left that execution cannot see. Both handlers are now
+  // sliced out of admin.js and RUN (§5c, §5d), which pins the ordering and the
+  // argument directly, at the site rather than by proxy; what running the two
+  // cannot notice is a THIRD button wired somewhere else with no warning at all.
+  //
+  // Everything else this guard used to assert is deliberately gone. It searched
+  // a comment-stripped window for `loadKbLibrary` / `closeIntelDocModal` /
+  // `onChange(`, and stripping `//` comments means a string literal containing
+  // one — any URL — eats the rest of its line: a re-render on that line moved
+  // ahead of the warning and the suite stayed green. It also matched the parsed
+  // body by name, which execution now establishes by value. A string search is a
+  // bad instrument, and every property it pins that something else can prove is
+  // a future false red for no coverage.
   const admin = fs.readFileSync(ADMIN_JS, 'utf8');
 
   const sites = [];
   for (let i = admin.indexOf('/keypoints`'); i !== -1; i = admin.indexOf('/keypoints`', i + 1)) sites.push(i);
   assert.strictEqual(sites.length, 2,
     `expected the two POST …/keypoints call sites in the admin SPA, found ${sites.length} — ` +
-    'if a third was added it needs the same warning, and this guard needs to know about it');
-
-  for (const at of sites) {
-    const after = admin.slice(at);
-    // `if (!r.ok)`, not `if (!r.ok) throw`: bracing the throw is a no-op and
-    // must not fail this test.
-    const okCheck = after.indexOf('if (!r.ok)');
-    const endOfTry = after.indexOf('} catch');   // NOT `.catch(` — a block, not a method
-    const warnAt = after.indexOf('warnPartialKeypointsRefresh(');
-    const where = `admin.js offset ${at}`;
-    assert.ok(okCheck !== -1, `${where}: no \`if (!r.ok)\` — the success path is not identifiable`);
-    assert.ok(warnAt !== -1, `${where}: this call site does not warn at all`);
-    assert.ok(endOfTry > okCheck, `${where}: no catch closing the try that holds the fetch`);
-    assert.ok(warnAt > okCheck,
-      `${where}: warnPartialKeypointsRefresh must run AFTER the !r.ok check, or it is warning ` +
-      'about a body it has not established is a 200');
-    assert.ok(warnAt < endOfTry,
-      `${where}: warnPartialKeypointsRefresh is outside the try — in the catch it receives an ` +
-      'Error and can never fire, and after the catch a re-render that throws swallows it. The ' +
-      'rep gets a 200, a document that looks refreshed, and the silence this PR removed');
-
-    // Nothing that re-renders may run between the 200 and the warning. Written
-    // as "not in the window" rather than "warnAt < indexOf(x)" because neither
-    // call site contains both names, and an absent name would otherwise pass or
-    // fail by accident depending on what happens to sit further down the file.
-    //
-    // Comments come out first: both call sites carry a comment EXPLAINING this
-    // ordering, and both name the very calls being looked for. Reading those as
-    // code is how a guard fails for editing the prose that documents it.
-    const beforeWarn = after.slice(okCheck, warnAt)
-      .replace(/\/\*[\s\S]*?\*\//g, ' ')
-      .replace(/\/\/[^\n]*/g, ' ');
-    for (const rerender of ['loadKbLibrary', 'closeIntelDocModal', 'onChange(']) {
-      assert.ok(!beforeWarn.includes(rerender),
-        `${where}: ${rerender} runs before warnPartialKeypointsRefresh. A throw out of it lands ` +
-        'in the catch, tells the rep the generate failed on a 200 that wrote the document, and ' +
-        'the partial-refresh warning — the only signal there is — is never shown');
-    }
-
-    // And that it is handed the PARSED BODY. §5c proves this by execution for
-    // kbRegenKeyPoints; the modal's handler is a listener nested inside a
-    // ~200-line builder that cannot be sliced out and run, so for that one site
-    // this stays textual — matched against whatever `await r.json()` was
-    // assigned to, so a rename is fine and passing `r` is not.
-    const parsed = /(?:const|let|var)\s+(\w+)\s*=\s*await\s+r\.json\(\)/.exec(after);
-    assert.ok(parsed, `${where}: no \`await r.json()\` — cannot tell what the warning is given`);
-    assert.ok(after.startsWith(`warnPartialKeypointsRefresh(${parsed[1]})`, warnAt),
-      `${where}: the warning is not given \`${parsed[1]}\`, the parsed response body. Handed the ` +
-      'Response, or the document alone, it never sees refreshFailures and can never fire — with ' +
-      'its name, its position and its occurrence count all still exactly right');
-  }
+    'a third one needs the same warning on its success path, and needs its own executed guard ' +
+    'here, because nothing above would notice that it warns about nothing');
 });
