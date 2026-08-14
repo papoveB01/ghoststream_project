@@ -1688,10 +1688,15 @@ decomposition exists so that per-file spokes stay tractable.
    and `redis.js` faked, seeded from the real staging row, nothing written back):
    the route answered **`{ ok: true }`** while the stored **4,297-char**
    `companyAnalysis` was **deleted**. The mechanism:
-   *(This paragraph said 4,209 and the table above says 4,297, for the same
-   stored string — a difference of how it was counted, not of what was deleted.
-   Re-read from the live staging row: `length(metadata->>'companyAnalysis')` is
-   **4,297**, so that is the figure both places now use.)*
+   *(This paragraph said 4,209 and the table above says 4,297. **Both counts are
+   real**, and the earlier note here — "for the same stored string" — had the
+   explanation wrong, which is what made the discrepancy read as drift.
+   `metadata->'companyAnalysis'` is a jsonb **object**, 9 top-level keys, not a
+   string. Postgres's jsonb→text output pads a space after each of its 88
+   structural `:`/`,` separators; Node's `JSON.stringify` is compact; and
+   4,297 − 4,209 = **88** exactly. One measurement, two serializations. The
+   figure both places use is **4,297**, the DB's own
+   `length(metadata->>'companyAnalysis')`, which is what the table above quotes.)*
 
    `stop_reason: 'max_tokens'` with `allowTruncation` unset (these call sites
    pass nothing) → `anthropic.generate` throws → `extractCompanyAnalysis`

@@ -239,8 +239,14 @@ const FLIP_BLOCKED = new Map([
   // inferred: driving the real knowledge/service.js -> keypoints.js -> aiCall ->
   // anthropic path against the live API on that document, the route answered
   // { ok: true } while the stored 4,297-char companyAnalysis was DELETED — the
-  // same figure as above, which this line used to give as 4,209 for the same
-  // string. Two numbers for one measurement is how one of them goes stale.
+  // same figure as above, which this line used to give as 4,209. BOTH COUNTS
+  // ARE REAL, and the reason is that the field is a jsonb OBJECT (9 top-level
+  // keys), not a string: Postgres pads a space after each of its 88 structural
+  // `:`/`,` separators and Node's JSON.stringify does not, so 4,297 - 4,209 = 88
+  // exactly. One measurement, two serializations. 4,297 is the DB's own
+  // `length(metadata->>'companyAnalysis')` and is what ADR-0006's table quotes,
+  // so it is the figure both places use — but "for the same stored string" was
+  // the wrong explanation and is what made the discrepancy look like drift.
   // stop_reason 'max_tokens' with allowTruncation unset (these call sites pass
   // nothing) throws in anthropic.js; extractCompanyAnalysis catches it and
   // returns null; and the regenerate path is `if (analysis) md.companyAnalysis
