@@ -1713,13 +1713,15 @@ decomposition exists so that per-file spokes stay tractable.
    `end_turn`, peak 1,871 of 2,200) — close enough to the budget that "safe" is
    the wrong word, but it is not what reproduces.
 
-   **The failure path deletes stored intelligence rather than erroring**, which
-   is why this outranks an ordinary truncation — and it was observed end to end,
-   not inferred. Driving the real `knowledge/service.js` → `keypoints.js` →
-   `aiCall` → `anthropic` path against the live API on `91bfba3e…` (only `db.js`
-   and `redis.js` faked, seeded from the real staging row, nothing written back):
-   the route answered **`{ ok: true }`** while the stored **4,297-char**
-   `companyAnalysis` was **deleted**. The mechanism:
+   **The failure path used to delete stored intelligence rather than erroring** —
+   observed end to end, not inferred, and **fixed on 2026-08-14 in
+   `fix/kb-keypoints-refresh-data-loss`, which is a separate concern from this
+   migration and shipped as its own PR.** Driving the real
+   `knowledge/service.js` → `keypoints.js` → `aiCall` → `anthropic` path against
+   the live API on `91bfba3e…` (only `db.js` and `redis.js` faked, seeded from
+   the real staging row, nothing written back): the route answered
+   **`{ ok: true }`** while the stored **4,297-char** `companyAnalysis` was
+   **deleted**. The mechanism, as it then was:
    *(This paragraph said 4,209 and the table above says 4,297. **Both counts are
    real**, and the earlier note here — "for the same stored string" — had the
    explanation wrong, which is what made the discrepancy read as drift.
@@ -1737,6 +1739,30 @@ decomposition exists so that per-file spokes stay tractable.
    → **the good stored analysis is deleted and the route still answers
    `{ ok: true }`.** On ingest it is simply never written; `portfolio.js`'s
    company-profile draft 502s instead.
+
+   **What the fix changed, and what it deliberately did not.** The deletion was
+   never the truncation — it was the last arrow: `else delete` reading a
+   *swallowed error* as "this document has none", which is why it was live on
+   **Gemini** too and Claude would only have made it frequent. Each extractor now
+   exists in two forms: the historical never-throws one (still what **ingest**
+   calls, where the failure costs a missing field on a row that does not exist
+   yet) and a `*Strict` sibling that throws, so `null` / `[]` from it means the
+   document genuinely has none — and only that. `regenerateKeyPoints` calls the
+   strict forms, attempts each field independently (partial failure is the normal
+   case: `keyPoints` and `companyAnalysis` are separate calls), keeps the stored
+   value on a failure, and returns `{ document, refreshFailures }`, which the
+   route surfaces as `refreshFailures: [{ field, provider, message }]` on an
+   otherwise unchanged 200. **The scope/category-driven clears were kept
+   untouched** — they are how a re-tagged doc sheds a stale key and are not model
+   results. Nothing about what either provider receives moved: no prompt, schema,
+   `maxTokens` or temperature change, so §9 item 5's Gemini-parity property holds.
+
+   **This entry stays.** What is left after the fix is still a block: a flip makes
+   `kb.companyAnalysis` refreshes on a body this size fail **5 times out of 5**,
+   so the rep presses "refresh analysis", the stored analysis survives and never
+   updates, and the correction is a warning after the fact. The exit criterion
+   below is unchanged, because what it measures is the truncation — only the
+   severity moved.
 
    **The evidence in this entry structurally could not see it**, and that is the
    same argument this ADR makes about `battlecard`, turned on the sibling key:

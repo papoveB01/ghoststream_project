@@ -290,8 +290,11 @@ test('a migrated but BLOCKED task refuses the flip instead of merely warning', (
 test('both blocked keys are blocked, and each carries a reason', () => {
   // keypoints is the one nothing else in this file would catch: its call sites
   // are migrated, its schemas pass the smoke check, and the defect is an output
-  // BUDGET that truncates on Sonnet — where a truncated answer deletes the
-  // stored analysis rather than erroring.
+  // BUDGET that truncates on Sonnet — so the refresh of an analysis that size
+  // fails every time and silently never updates. (It used to DELETE the stored
+  // analysis too; that half was service.js's `else delete` reading a swallowed
+  // error as "this document has none", and it is fixed — regenerateKeyPoints
+  // now keeps the stored value and reports the field in `refreshFailures`.)
   assert.deepStrictEqual([...models.FLIP_BLOCKED.keys()].sort(), ['battlecard', 'keypoints']);
   for (const [task, reason] of models.FLIP_BLOCKED) {
     assert.ok(models.DISPATCH_READY.has(task),
