@@ -38,6 +38,13 @@ const fs = require('node:fs');
 const { test } = require('node:test');
 const assert = require('node:assert');
 
+// The route guard at the bottom requires knowledge/index.js, which pulls
+// src/auth.js — that refuses to load without a secret rather than accepting a
+// forgeable default. Same defaults as routeContract.test.js; CI sets real ones.
+process.env.NODE_ENV = process.env.NODE_ENV || 'test';
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'ci-test-jwt-secret-at-least-32-bytes-long-xx';
+process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'ci-test-encryption-key-not-a-real-secret';
+
 const SRC = path.join(__dirname, '..', 'src');
 
 function stub(relFromSrc, exportsObj) {
@@ -233,6 +240,33 @@ test('a failed refresh does not throw, and says which field failed and on which 
   assert.deepStrictEqual(out.refreshFailures.map((f) => f.field), ['keyPoints', 'companyAnalysis']);
 });
 
+test('the reported provider is the one that failed, and UNSTAMPED says so', async () => {
+  // The case that matters most is the one with no stamp at all. Raw @google/genai
+  // errors carry no `provider`, and `keypoints` is FLIP_BLOCKED (models.js), so
+  // Gemini serves 100% of this path today — 'unknown' is what essentially every
+  // real failure here reports, and a fixture that only ever stamps 'anthropic'
+  // cannot tell that apart from a hard-coded literal. It is the same guard
+  // test/cutoverGroup2.test.js puts on the sibling extractors' log lines.
+  for (const [stamped, expected] of [['anthropic', 'anthropic'], ['gemini', 'gemini'], [null, 'unknown']]) {
+    seed({ scope: 'TENANT', category: 'ORG_INTELLIGENCE', metadata: { companyAnalysis: STORED_COMPANY } });
+    const out = await withSeam(() => {
+      const e = new Error('down');
+      if (stamped) e.provider = stamped;
+      throw e;
+    }, async (_calls, warnings) => {
+      const r = await service.regenerateKeyPoints(TENANT, DOC_ID);
+      assert.ok(warnings.some((w) => w.includes(`failed on ${expected}`)),
+        `a failure stamped ${stamped} must log "failed on ${expected}": ${warnings.join(' | ')}`);
+      return r;
+    });
+    for (const f of out.refreshFailures) {
+      assert.strictEqual(f.provider, expected,
+        `a failure stamped ${stamped} must be reported as ${expected} — naming a provider by ` +
+        'default prints a guess as a fact, and here the default would name the one not running');
+    }
+  }
+});
+
 // ── 2. legitimate absence still clears ──────────────────────────────────────
 
 test('a SUCCESSFUL extraction that finds nothing still clears the stored value', async () => {
@@ -401,6 +435,24 @@ test('the re-tagging clears fire even when that branch\'s model call failed', as
     'and the failed field still keeps its stored value');
 });
 
+test('a company-wide doc sheds a stale productAnalysis even when its own call failed', async () => {
+  // The mirror of the test above, and the one clear of the four that nothing was
+  // holding down: a doc re-tagged OFF a product line onto company-wide keeps a
+  // productAnalysis from its previous life unless this delete fires, and it must
+  // fire on the branch where the companyAnalysis call threw — otherwise a
+  // provider outage silently reinstates the stale key.
+  seed({
+    scope: 'TENANT', category: 'ORG_INTELLIGENCE',
+    metadata: { productAnalysis: STORED_PRODUCT, companyAnalysis: STORED_COMPANY },
+  });
+  await withSeam(boom, () => service.regenerateKeyPoints(TENANT, DOC_ID));
+
+  assert.ok(!('productAnalysis' in persisted),
+    'an ORG_INTELLIGENCE doc must lose the product-scoped analysis from its previous life');
+  assert.deepStrictEqual(persisted.companyAnalysis, STORED_COMPANY,
+    'and the field whose call failed still keeps its stored value');
+});
+
 test('a doc re-scoped out of TENANT and out of competitive sheds both stale keys', async () => {
   seed({
     scope: 'PROSPECT', category: 'ORG_INTELLIGENCE',
@@ -444,25 +496,82 @@ test('one field failing neither aborts the request nor discards the field that s
 });
 
 // ── 5. the failure has to reach a human ─────────────────────────────────────
+//
+// Both guards below replace source-scraping ones that could not fail. The route
+// guard read a window that ended before the line it was checking (the first
+// `});` in the handler is the one inside res.json), so deleting `refreshFailures`
+// from the RESPONSE left it green; it now invokes the handler and reads what was
+// emitted. The SPA guard counted occurrences of an identifier, so moving the call
+// into the catch — where it gets an Error, can never see a 200 body and can never
+// fire — kept the count at 3; it now checks WHERE the call is.
 
-test('the route and the admin SPA both carry refreshFailures through to the rep', async () => {
-  // A preserve nobody is told about is its own defect: the rep sees a 200 and a
-  // document that looks refreshed, re-clicks, and gets the same silence. This is
-  // a source guard rather than a live request because the route needs auth,
-  // tenancy and multer to reach; it fails loudly if the wiring is unpicked.
-  const route = fs.readFileSync(path.join(SRC, 'knowledge', 'index.js'), 'utf8');
-  const handler = route.slice(route.indexOf("router.post('/documents/:id/keypoints'"));
-  const body = handler.slice(0, handler.indexOf('});'));
-  assert.match(body, /refreshFailures/,
-    'POST /documents/:id/keypoints must forward refreshFailures — without it the service ' +
-    'preserves the data and nothing tells the rep the refresh was partial');
+test('the route emits refreshFailures in the body, not merely in its destructuring', async () => {
+  // Invoked, not read. The handler needs no auth, tenancy or multer — those are
+  // mounted above it in src/index.js — so the only stub required is the service
+  // call it wraps.
+  const { router } = require(path.join(SRC, 'knowledge', 'index.js'));
+  const layer = router.stack.find((l) => l.route && l.route.path === '/documents/:id/keypoints'
+    && l.route.methods && l.route.methods.post);
+  assert.ok(layer, 'POST /documents/:id/keypoints is no longer mounted on the knowledge router');
 
+  const FAILURES = [{ field: 'assessment', provider: 'gemini' }];
+  const realRegen = service.regenerateKeyPoints;
+  service.regenerateKeyPoints = async () => ({
+    document: { id: DOC_ID, metadata: { keyPoints: STORED_KEYPOINTS } },
+    refreshFailures: FAILURES,
+  });
+  let sent = null;
+  let failedNext = null;
+  try {
+    for (const s of layer.route.stack) {
+      await s.handle(
+        { tenantId: TENANT, params: { id: DOC_ID }, body: {}, query: {} },
+        { json: (b) => { sent = b; }, status() { return this; } },
+        (err) => { failedNext = err || new Error('next() called with no error'); }
+      );
+    }
+  } finally { service.regenerateKeyPoints = realRegen; }
+
+  assert.ifError(failedNext);
+  assert.ok(sent, 'the handler answered nothing at all');
+  assert.strictEqual(sent.ok, true);
+  assert.deepStrictEqual(sent.refreshFailures, FAILURES,
+    'the EMITTED body must carry refreshFailures — destructuring it out of the service result ' +
+    'and then not forwarding it deletes this PR\'s entire user-visible mechanism and leaves ' +
+    'warnPartialKeypointsRefresh dead code, with the rep back in the silence');
+  assert.strictEqual(sent.document.id, DOC_ID, 'and the document still comes back');
+});
+
+test('both admin SPA call sites warn on the SUCCESS path, not from a catch', async () => {
+  // Scoped to each handler rather than counted across the file: a count is
+  // satisfied by a call in the catch block (which receives an Error, never a 200
+  // body, and can never fire), and is broken by a harmless rename or a
+  // legitimate third call site. What has to be true is positional — the warning
+  // runs after the response is known good and before anything that can throw.
   const admin = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'admin', 'admin.js'), 'utf8');
   assert.ok(admin.includes('function warnPartialKeypointsRefresh'),
     'web/admin/admin.js lost the partial-refresh warning helper');
-  const calls = admin.match(/warnPartialKeypointsRefresh\(/g) || [];
-  assert.strictEqual(calls.length, 3,
-    'both POST …/keypoints call sites in the admin SPA must call warnPartialKeypointsRefresh ' +
-    `(1 declaration + 2 call sites = 3 occurrences; found ${calls.length}) — a refresh button ` +
-    'that swallows the warning puts the rep back in the silence this PR removed');
+
+  const sites = [];
+  for (let i = admin.indexOf('/keypoints`'); i !== -1; i = admin.indexOf('/keypoints`', i + 1)) sites.push(i);
+  assert.strictEqual(sites.length, 2,
+    `expected the two POST …/keypoints call sites in the admin SPA, found ${sites.length} — ` +
+    'if a third was added it needs the same warning, and this guard needs to know about it');
+
+  for (const at of sites) {
+    const after = admin.slice(at);
+    const okCheck = after.indexOf('if (!r.ok) throw');
+    const endOfTry = after.indexOf('} catch');   // NOT `.catch(` — a block, not a method
+    const warnAt = after.indexOf('warnPartialKeypointsRefresh(');
+    const where = `admin.js offset ${at}`;
+    assert.ok(okCheck !== -1, `${where}: no \`if (!r.ok) throw\` — the success path is not identifiable`);
+    assert.ok(endOfTry > okCheck, `${where}: no catch closing the try that holds the fetch`);
+    assert.ok(warnAt > okCheck,
+      `${where}: warnPartialKeypointsRefresh must run AFTER the !r.ok throw, or it is warning ` +
+      'about a body it has not established is a 200');
+    assert.ok(warnAt < endOfTry,
+      `${where}: warnPartialKeypointsRefresh is outside the try — in the catch it receives an ` +
+      'Error and can never fire, and after the catch a re-render that throws swallows it. The ' +
+      'rep gets a 200, a document that looks refreshed, and the silence this PR removed');
+  }
 });
