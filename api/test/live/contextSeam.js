@@ -73,7 +73,7 @@ const EXPECTATIONS = [
 // measured flip blocker this file would do it too.
 //
 // EVERY LIFT IS CONDITIONAL, and both restores are conditional on the same flag
-// — `smoke.js:141/145/171` has always been, this file was not. An unconditional
+// — `smoke.js:161/165/201` has always been, this file was not. An unconditional
 // `DISPATCH_READY.add` / `.delete` pair does not restore, it DELETES: for a task
 // that is already dispatch-ready (which is what `personas` becomes at the arena
 // cutover, i.e. the first run that is not latent), the first probe removes the
@@ -81,21 +81,41 @@ const EXPECTATIONS = [
 // back to Gemini. No live call is needed to see it — the end-of-run diagnostic
 // below prints `gemini/gemini-2.5-flash` and providerFor() emits "its call site
 // cannot dispatch yet" at the end of an otherwise green run.
+//
+// THE GATE AND ENV READS ARE INSIDE THE try TOO, not just the resolve() check —
+// same correction smoke.js:139 carries, reached by the same route. models.js:168
+// explicitly anticipates a key LEAVING FLIP_BLOCKED, and the set itself going
+// away with the migration is the natural end state, at which point
+// `models.FLIP_BLOCKED.has(...)` is a TypeError. Read outside the try that throw
+// carried no `harnessBug` tag: measured with FLIP_BLOCKED removed from models.js's
+// exports, this file exited 4, "Errors only — nothing judged, re-run", with
+// `personas` left added to DISPATCH_READY — so the end-of-run diagnostic below
+// reported a MUTATED router as the real one — where smoke.js under the identical
+// mutation exits 2, "HARNESS BUG … fix the script, don't re-run". Tagging every
+// throw from in here is right rather than over-broad: nothing before
+// aiContext.prepare() talks to a provider, so NOTHING WAS SENT is true of all of
+// it.
+//
+// The two flags are initialised to "nothing to undo" rather than to false/false
+// for the reason smoke.js:155 gives: a throw between here and the lift must not
+// make restore() delete a membership this call never added — the unconditional-
+// restore defect above, reached from the other side.
 function prepareVia(task, model) {
-  const wasReady = models.DISPATCH_READY.has(task);
-  if (!wasReady) models.DISPATCH_READY.add(task);
-  const wasBlocked = models.FLIP_BLOCKED.has(task);
-  const blockReason = models.FLIP_BLOCKED.get(task);
-  if (wasBlocked) models.FLIP_BLOCKED.delete(task);
-  const envName = models.providerEnvName(task);
-  const saved = process.env[envName];
-  process.env[envName] = 'anthropic';
+  // Cannot throw, so it is read before the try and restore() never has to guess
+  // whether the read happened. The env-name read CAN throw, so `envName` guards
+  // its own half of the restore, exactly as smoke.js:203 does.
   const savedModel = process.env.ANTHROPIC_PERSONAS_MODEL;
-  process.env.ANTHROPIC_PERSONAS_MODEL = model;
+  let envName;
+  let saved;
+  let wasReady = true;
+  let wasBlocked = false;
+  let blockReason;
   const restore = () => {
     if (!wasReady) models.DISPATCH_READY.delete(task);
     if (wasBlocked) models.FLIP_BLOCKED.set(task, blockReason);
-    if (saved === undefined) delete process.env[envName]; else process.env[envName] = saved;
+    if (envName !== undefined) {
+      if (saved === undefined) delete process.env[envName]; else process.env[envName] = saved;
+    }
     if (savedModel === undefined) delete process.env.ANTHROPIC_PERSONAS_MODEL;
     else process.env.ANTHROPIC_PERSONAS_MODEL = savedModel;
   };
@@ -122,19 +142,33 @@ function prepareVia(task, model) {
   // The gates are already lifted at this point; a refusal now means a gate this
   // function does not know about, or no ANTHROPIC_API_KEY in the environment.
   try {
+    wasReady = models.DISPATCH_READY.has(task);
+    if (!wasReady) models.DISPATCH_READY.add(task);
+    wasBlocked = models.FLIP_BLOCKED.has(task);
+    blockReason = models.FLIP_BLOCKED.get(task);
+    if (wasBlocked) models.FLIP_BLOCKED.delete(task);
+    envName = models.providerEnvName(task);
+    saved = process.env[envName];
+    process.env[envName] = 'anthropic';
+    process.env.ANTHROPIC_PERSONAS_MODEL = model;
+
     const resolved = models.resolve(task);
     if (resolved.provider !== 'anthropic' || resolved.model !== model) {
-      const err = new Error(
+      throw new Error(
         `the router refused the dispatch: resolve("${task}") is ` +
         `${resolved.provider}/${resolved.model}, asked for anthropic/${model}. NOTHING WAS SENT. ` +
         'prepareVia() lifts DISPATCH_READY and FLIP_BLOCKED, so a gate added to models.js since ' +
         'then has to be lifted there too — or ANTHROPIC_API_KEY is not set in this process ' +
         '(providerFor() refuses an unconfigured provider the same way it refuses a blocked one).'
       );
-      err.harnessBug = true;
-      throw err;
     }
   } catch (err) {
+    // Tagged here rather than at each throw site, so a gate export that has gone
+    // away is reported as the harness bug it is and not as a transient. restore()
+    // is called explicitly rather than from a `finally`: the success path hands
+    // restore to prepare()'s .finally() below, and a finally here would undo the
+    // lift before the call it was taken out for.
+    err.harnessBug = true;
     restore();
     throw err;
   }
