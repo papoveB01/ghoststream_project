@@ -1502,8 +1502,10 @@ decomposition exists so that per-file spokes stay tractable.
      3 was built to check, and says nothing about whether responses to the real
      request are usable. Read it as schema acceptance, never as flip-readiness.
      (This paragraph first said "~30% … a single sample passes ~70%"; the rate
-     was wrong, and the argument it makes is *weaker* at the real rate, not
-     stronger — one sample is even less able to see a 2.5% defect. Neither
+     was wrong, and the argument it makes is *stronger* at the real rate, not
+     weaker — one sample is even less able to see a 2.5% defect than a 30% one,
+     so "read the green as schema acceptance, never as flip-readiness" holds
+     harder, not less. Neither
      version sends a temperature: `claude-sonnet-5` is in `NO_TEMPERATURE`, so
      the production call sites' `0.3` is dropped before the wire in production
      too.)
