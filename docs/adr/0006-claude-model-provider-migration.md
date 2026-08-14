@@ -1751,8 +1751,12 @@ decomposition exists so that per-file spokes stay tractable.
    strict forms, attempts each field independently (partial failure is the normal
    case: `keyPoints` and `companyAnalysis` are separate calls), keeps the stored
    value on a failure, and returns `{ document, refreshFailures }`, which the
-   route surfaces as `refreshFailures: [{ field, provider, message }]` on an
-   otherwise unchanged 200. **The scope/category-driven clears were kept
+   route surfaces as `refreshFailures: [{ field, provider }]` on an otherwise
+   unchanged 200. **The provider's own error text is not in that body** — it is
+   the upstream SDK string (raw provider JSON carrying quota metric and project
+   identifiers on a 429; a fragment of the model's answer on a parse failure),
+   the rep can do nothing with it, and the response is rendered in a browser. It
+   goes to the api log instead. **The scope/category-driven clears were kept
    untouched** — they are how a re-tagged doc sheds a stale key and are not model
    results. Nothing about what either provider receives moved: no prompt, schema,
    `maxTokens` or temperature change, so §9 item 5's Gemini-parity property holds.

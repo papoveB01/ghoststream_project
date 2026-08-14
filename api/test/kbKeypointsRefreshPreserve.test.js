@@ -161,6 +161,17 @@ test('keyPoints: a failed extraction keeps the stored points instead of deleting
     'both call sites on a COMPETITOR doc failed and both must be reported');
   assert.strictEqual(out.refreshFailures[0].provider, 'anthropic',
     'the failure names the provider that produced it, not a default');
+  // The shape is pinned exactly, not just checked for what it must contain: the
+  // failure object is rendered in a browser, and `err.message` is the upstream
+  // SDK string — provider JSON with quota metric and project identifiers on a
+  // 429, or a fragment of the model's own answer on a parse failure. A field
+  // added here leaks to the rep by default, so adding one has to be deliberate
+  // enough to edit this line.
+  for (const f of out.refreshFailures) {
+    assert.deepStrictEqual(Object.keys(f).sort(), ['field', 'provider'],
+      `refreshFailures entries carry exactly { field, provider }; got ${JSON.stringify(f)} — ` +
+      'the provider\'s raw error text belongs in the log, not in a browser-visible body');
+  }
 });
 
 test('companyAnalysis: a failed extraction keeps the stored analysis instead of deleting it', async () => {

@@ -194,11 +194,17 @@ router.patch('/documents/:id/tags', express.json(), async (req, res, next) => {
 // that predate the feature, or to refresh the points.
 //
 // `refreshFailures` is [] on a clean refresh, and otherwise carries one
-// { field, provider, message } per field whose model call failed. Those fields
-// KEPT their previously stored value instead of being cleared — the document is
-// intact, which is why this is still a 200 — but the rep has to be told the
-// refresh was partial or they re-click into the same silence. Callers that
-// ignore the array see exactly the response they saw before.
+// { field, provider } per field whose model call failed. Those fields KEPT their
+// previously stored value instead of being cleared — the document is intact,
+// which is why this is still a 200 — but the rep has to be told the refresh was
+// partial or they re-click into the same silence. Callers that ignore the array
+// see exactly the response they saw before.
+//
+// The provider's error text is deliberately NOT here: it is the upstream SDK
+// string (raw provider JSON with quota/project identifiers on a 429, or a
+// fragment of the model's own answer on a parse failure), it tells the rep
+// nothing they can act on, and this response is rendered in a browser. It stays
+// in the api log, which is where someone can do something about it.
 router.post('/documents/:id/keypoints', async (req, res, next) => {
   try {
     const { document, refreshFailures } = await service.regenerateKeyPoints(req.tenantId, req.params.id);

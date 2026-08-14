@@ -638,7 +638,9 @@ async function updateTags(tenantId, documentId, { productIds, personaIds, compet
 //
 // Returns { document, refreshFailures } — not a bare document, because unlike
 // ingest this function OVERWRITES data that is already stored, and the caller
-// has to be able to tell a clean refresh from a partial one.
+// has to be able to tell a clean refresh from a partial one. Each entry is
+// { field, provider }; the provider's own error text stays in the log (see the
+// note on `attempt` below).
 //
 // TWO OUTCOMES THAT USED TO BE ONE. Each field below is its own model call, and
 // each can come back empty for two entirely different reasons:
@@ -681,6 +683,15 @@ async function regenerateKeyPoints(tenantId, documentId) {
   // that looks refreshed, and re-click into the same silence. So the failure is
   // logged with the field, the provider and the document, AND handed back to the
   // route (see knowledge/index.js) for the UI to show.
+  //
+  // WHAT CROSSES THE BOUNDARY IS { field, provider } AND NOTHING ELSE. `err.message`
+  // here is the upstream SDK string verbatim — on Gemini the raw upstream JSON,
+  // which on a 429 carries the quota metric and project identifiers, and via
+  // aiCall.js's parse path can quote the first characters of the model's own
+  // answer. None of that is the rep's to see and none of it belongs in a
+  // browser-visible body; the warn line below already carries it to the place
+  // that can act on it. Before this fix nothing about the failure crossed at
+  // all, so the response is the narrower of the two obligations, not the wider.
   const refreshFailures = [];
   const attempt = async (field, run) => {
     try {
@@ -689,7 +700,7 @@ async function regenerateKeyPoints(tenantId, documentId) {
       // Same idiom as keypoints.js/assessment.js: two providers serve this path,
       // so naming one by default would print a guess as a fact.
       const provider = (err && err.provider) || 'unknown';
-      refreshFailures.push({ field, provider, message: err.message });
+      refreshFailures.push({ field, provider });
       console.warn(
         `[knowledge] keypoints refresh: ${field} failed on ${provider} for document ${documentId} ` +
         `(tenant ${tenantId}) — KEEPING the stored value:`,
