@@ -51,11 +51,23 @@ const EXPECTATIONS = [
 ];
 
 // Drive prepare() rather than hand-building the record, so the run exercises
-// the seam's own anthropic branch and not just generate(). DISPATCH_READY is
-// empty by design, so the task has to be opened here — which is exactly what a
-// §9 item 5 cutover PR does permanently.
+// the seam's own anthropic branch and not just generate(). `personas` is not in
+// DISPATCH_READY, so the task has to be opened here — which is exactly what a
+// §9 item 5 cutover PR does permanently. (This used to say "DISPATCH_READY is
+// empty by design", which expired the moment group 1 landed. It is one of the
+// blocks models.js's "EDITING THE LINE BELOW ALSO INVALIDATES PROSE" note now
+// names, so it goes stale WITH the set rather than quietly after it.)
+//
+// BOTH gates are lifted, not just DISPATCH_READY. `personas` is not in
+// FLIP_BLOCKED today, so this is latent rather than broken — but it is the same
+// omission that made test/live/smoke.js post a Gemini model id to the Anthropic
+// API for four of the five group-2 entries, and the day `personas` acquires a
+// measured flip blocker this file would do it too.
 function prepareVia(task, model) {
   models.DISPATCH_READY.add(task);
+  const wasBlocked = models.FLIP_BLOCKED.has(task);
+  const blockReason = models.FLIP_BLOCKED.get(task);
+  models.FLIP_BLOCKED.delete(task);
   const envName = models.providerEnvName(task);
   const saved = process.env[envName];
   process.env[envName] = 'anthropic';
@@ -63,6 +75,7 @@ function prepareVia(task, model) {
   process.env.ANTHROPIC_PERSONAS_MODEL = model;
   const restore = () => {
     models.DISPATCH_READY.delete(task);
+    if (wasBlocked) models.FLIP_BLOCKED.set(task, blockReason);
     if (saved === undefined) delete process.env[envName]; else process.env[envName] = saved;
     if (savedModel === undefined) delete process.env.ANTHROPIC_PERSONAS_MODEL;
     else process.env.ANTHROPIC_PERSONAS_MODEL = savedModel;
@@ -77,8 +90,15 @@ function prepareVia(task, model) {
 
 async function probe(model) {
   const record = await prepareVia('personas', model);
+  // A mismatch here is a bug in THIS FILE, not in the seam: the router refused
+  // the dispatch and prepareVia() failed to lift the refusal. Say so, rather
+  // than leaving the next reader to conclude aiContext.prepare() is broken.
   if (record.provider !== 'anthropic' || record.model !== model) {
-    throw new Error(`prepare() returned ${record.provider}/${record.model}, expected anthropic/${model}`);
+    throw new Error(
+      `HARNESS BUG — prepare() returned ${record.provider}/${record.model}, expected anthropic/${model}. ` +
+      'The router refused the dispatch; prepareVia() lifts DISPATCH_READY and FLIP_BLOCKED, so a gate ' +
+      'added to models.js since then has to be lifted there too. Nothing was sent.'
+    );
   }
 
   // Turn 1: multi-turn conversation on top of the cached prefix.
