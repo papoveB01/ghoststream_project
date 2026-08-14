@@ -215,30 +215,50 @@ const FLIP_BLOCKED = new Map([
     'driven against the live API (2.5%, 95% CI 0.3-8.7%; measured 2026-08-14), on the one call site ' +
     'with no retry, behind a synchronous rep-facing regenerate. See ADR-0006 §9 item 5.'],
 
-  // Measured 2026-08-14 (group 2's per-file review): the 2200-token output
-  // budgets at extractCompanyAnalysis and extractProductAnalysis are GEMINI-
-  // sized and truncate on Sonnet 5. §5.2's own table puts prose-bearing JSON at
-  // 1.74-1.88x on the new-gen tokenizer these resolve to; staging's largest
-  // stored companyAnalysis is 6,438 chars ~ 2,660-3,460 output tokens against
-  // 2,200 — over even on the most generous pairing.
+  // Measured 2026-08-14 (group 2's confidence pass, at the SHIPPED call-site
+  // shape — maxTokens 2200, allowTruncation unset): kb.companyAnalysis against
+  // staging document 91bfba3e-a001-451e-87df-985a6a468395 "Wibmo — homepage"
+  // (body 10,685 chars; stored companyAnalysis 4,297 chars) returned
+  // stop_reason 'max_tokens' 5 OF 5 TIMES. The 2200-token budgets at
+  // extractCompanyAnalysis and extractProductAnalysis are GEMINI-sized and
+  // truncate on Sonnet 5.
   //
-  // WHY THAT IS DATA LOSS AND NOT AN ERROR. stop_reason 'max_tokens' with
-  // allowTruncation unset (these call sites pass nothing) throws in
-  // anthropic.js; extractCompanyAnalysis catches it and returns null; and
-  // knowledge/service.js's regenerate path is `if (analysis) md.companyAnalysis
-  // = analysis; else delete md.companyAnalysis` — so a truncated answer DELETES
-  // the good stored analysis and the route still answers { ok: true }. On the
-  // ingest path it is simply never written; portfolio.js's company-profile
-  // draft 502s instead.
+  // THE ARITHMETIC THIS ENTRY FIRST RESTED ON WAS INVALID IN KIND, and the
+  // correction matters because it changes which document reproduces. It read
+  // staging's largest STORED companyAnalysis (6,438 chars, a Gemini output) as
+  // ~2,660-3,460 output tokens via §5.2's 1.74-1.88x density. But output length
+  // is driven by the SOURCE BODY and the schema, not by what a different model
+  // once wrote: Sonnet's answer for that same document is ~1,150 tokens and it
+  // completes 9 of 9 times. Converting a stored output back into a budget
+  // estimate is not a measurement, and it happened to point at a document that
+  // passes. kb.productAnalysis is NOT observed to truncate either — 15/15
+  // end_turn, peak 1,871 of 2,200, which is close enough that "safe" would be
+  // the wrong word for it.
   //
-  // TO DELETE THIS ENTRY: one live kb.companyAnalysis call at maxTokens 2200
-  // against staging's 6,438-char document, showing stop_reason 'end_turn'. Do
-  // NOT just raise maxTokens — the value is provider-agnostic at that call site,
-  // so raising it changes what GEMINI receives and breaks the parity property
-  // group 2 shipped on. Sizing per provider is the flip PR's problem to solve.
+  // WHY THAT IS DATA LOSS AND NOT AN ERROR, observed end to end and not
+  // inferred: driving the real knowledge/service.js -> keypoints.js -> aiCall ->
+  // anthropic path against the live API on that document, the route answered
+  // { ok: true } while the stored 4,209-char companyAnalysis was DELETED.
+  // stop_reason 'max_tokens' with allowTruncation unset (these call sites pass
+  // nothing) throws in anthropic.js; extractCompanyAnalysis catches it and
+  // returns null; and the regenerate path is `if (analysis) md.companyAnalysis
+  // = analysis; else delete md.companyAnalysis`. On the ingest path it is simply
+  // never written; portfolio.js's company-profile draft 502s instead.
+  //
+  // TO DELETE THIS ENTRY: live kb.companyAnalysis calls at maxTokens 2200
+  // against document 91bfba3e-a001-451e-87df-985a6a468395 — the one that
+  // reproduces — showing stop_reason 'end_turn'. Repeated, not one: the current
+  // measurement is 5 of 5, so a single end_turn is not evidence the budget is
+  // adequate. Do NOT name the 6,438-char document here again; it passes today
+  // (9/9 end_turn), so an exit criterion built on it would delete this entry
+  // with the defect untouched. And do NOT just raise maxTokens — the value is
+  // provider-agnostic at that call site, so raising it changes what GEMINI
+  // receives and breaks the parity property group 2 shipped on. Sizing per
+  // provider is the flip PR's problem to solve.
   ['keypoints',
     'the 2200-token budgets at kb.companyAnalysis / kb.productAnalysis are Gemini-sized and ' +
-    'truncate on claude-sonnet-5 (§5.2: prose-bearing JSON is 1.74-1.88x denser); a truncated ' +
+    'truncate on claude-sonnet-5 (measured 5 of 5 stop_reason max_tokens on staging document ' +
+    '91bfba3e, a 10,685-char body); a truncated ' +
     "answer DELETES the stored analysis via service.js's regenerate path. See ADR-0006 §9 item 5."],
 ]);
 

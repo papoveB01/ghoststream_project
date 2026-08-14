@@ -1628,18 +1628,43 @@ decomposition exists so that per-file spokes stay tractable.
    un-retried, needs the production shape sampled this way before its flip — and
    `proposals` (§4.7) is the next one that fits that description.
 
-   **A second flip blocker, on the sibling key** (2026-08-14, per-file review).
+   **A second flip blocker, on the sibling key** (2026-08-14, per-file review;
+   **evidence replaced by the confidence pass — see the amendment below**).
    `keypoints` is blocked too, for an unrelated and previously unseen reason:
    **the 2200-token output budgets at `extractCompanyAnalysis` and
-   `extractProductAnalysis` are Gemini-sized and truncate on Sonnet 5.** §5.2's
-   own measured table puts prose-bearing JSON at **1.74–1.88×** on the new-gen
-   tokenizer those two resolve to. Against real staging payloads, the largest
-   stored `companyAnalysis` is **6,438 chars ≈ 2,660–3,460 output tokens against
-   a 2,200 budget** — over even on the most generous pairing (4.2 chars/token ×
-   1.74 = 2,667).
+   `extractProductAnalysis` are Gemini-sized and truncate on Sonnet 5.**
+
+   Measured at the **shipped call-site shape** (`maxTokens: 2200`,
+   `allowTruncation` unset):
+
+   | document | body | call site | n | result |
+   | --- | --- | --- | --- | --- |
+   | `91bfba3e-a001-451e-87df-985a6a468395` "Wibmo — homepage" (stored `companyAnalysis` 4,297 chars) | 10,685 | `kb.companyAnalysis` | 5 | **5/5 `max_tokens` → throws → `null`** |
+   | `b89b311f…` "[Trend] CBN MFA mandate" | 3,262 | `kb.companyAnalysis` | 3 | 3/3 `end_turn`, 1,145–1,175 tok |
+   | `e58527cc…` "Wibmo_Payment gateway" | 14,244 | `kb.productAnalysis` | 3 | 3/3 `end_turn`, 1,576–1,871 tok |
+
+   **⚠ AMENDMENT (2026-08-14, confidence pass): the evidence this entry was first
+   written on was invalid in kind, and it named a document that passes.** The
+   original argument read staging's largest **stored** `companyAnalysis` — 6,438
+   chars, *a Gemini output* — through §5.2's 1.74–1.88× density to "≈ 2,660–3,460
+   output tokens against a 2,200 budget". That conversion has no basis: output
+   length is driven by the **source body** and the schema, not by what a
+   different model once wrote about the same document. Sonnet's answer for that
+   very document is ~1,150 tokens and completes **9 of 9**. The block is real,
+   but for a different document than the one recorded — and the exit criterion
+   built on the recorded one *already passed on the cutover branch*, so the first
+   flip PR to honour it would have deleted the gate with the defect untouched.
+   `kb.productAnalysis` is likewise **not observed to truncate** (15/15
+   `end_turn`, peak 1,871 of 2,200) — close enough to the budget that "safe" is
+   the wrong word, but it is not what reproduces.
 
    **The failure path deletes stored intelligence rather than erroring**, which
-   is why this outranks an ordinary truncation:
+   is why this outranks an ordinary truncation — and it was observed end to end,
+   not inferred. Driving the real `knowledge/service.js` → `keypoints.js` →
+   `aiCall` → `anthropic` path against the live API on `91bfba3e…` (only `db.js`
+   and `redis.js` faked, seeded from the real staging row, nothing written back):
+   the route answered **`{ ok: true }`** while the stored **4,209-char**
+   `companyAnalysis` was **deleted**. The mechanism:
 
    `stop_reason: 'max_tokens'` with `allowTruncation` unset (these call sites
    pass nothing) → `anthropic.generate` throws → `extractCompanyAnalysis`
@@ -1658,9 +1683,12 @@ decomposition exists so that per-file spokes stay tractable.
    **Do not fix this by raising `maxTokens`.** The value is provider-agnostic at
    that call site, so raising it changes what *Gemini* receives and breaks the
    parity property group 2 shipped on. Sizing per provider is the flip PR's
-   problem. **To clear the block:** one live `kb.companyAnalysis` call at
-   `maxTokens: 2200` against staging's 6,438-char document, showing `stop_reason:
-   'end_turn'`.
+   problem. **To clear the block:** live `kb.companyAnalysis` calls at
+   `maxTokens: 2200` against document **`91bfba3e-a001-451e-87df-985a6a468395`**
+   — the one that reproduces — showing `stop_reason: 'end_turn'`. **Repeated, not
+   one:** the measurement is 5 of 5, so a single `end_turn` is not evidence the
+   budget is adequate. Do not re-point this criterion at the 6,438-char document;
+   that is the mistake this entry already made once.
 
    **`FLIP_BLOCKED` is the mechanism both of these use, and it is a second set on
    purpose.** `DISPATCH_READY` is a claim about the *code* — this call site reads
