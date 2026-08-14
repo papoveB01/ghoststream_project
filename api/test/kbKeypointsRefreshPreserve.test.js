@@ -589,6 +589,15 @@ function sliceFn(src, header, from = 0) {
 
 // A mis-extraction that swallowed half the SPA would still "run", and would then
 // be measuring something else entirely. Make it loud instead.
+//
+// The cap is deliberately loose. It only has to separate one function from a
+// runaway slice of a ~730,000-char file, and the length it measures counts
+// COMMENTS: at 4,000 the two handlers sat at 2,785 and 1,767, so roughly a
+// further page of the prose explaining why they are shaped the way they are
+// would have gone red for a non-reason — a guard that quietly penalises
+// commenting the thing it guards.
+const SLICE_LIMIT = 8000;
+
 function checkSlice(slice, mustContain, limit, what) {
   assert.ok(slice.includes(mustContain),
     `the extracted ${what} does not contain \`${mustContain}\``);
@@ -611,7 +620,7 @@ function loadWarnHelper(src) {
   assert.notStrictEqual(labelsAt, -1, 'web/admin/admin.js lost KB_REFRESH_FIELD_LABELS — the ' +
     'refresh failures are back to being shown to a sales rep as raw api metadata keys');
   const { end } = sliceFn(admin, 'function warnPartialKeypointsRefresh(', labelsAt);
-  const slice = checkSlice(admin.slice(labelsAt, end), 'alert(', 4000, 'the warning helper');
+  const slice = checkSlice(admin.slice(labelsAt, end), 'alert(', SLICE_LIMIT, 'the warning helper');
   const alerts = [];
   // eslint-disable-next-line no-new-func
   const factory = new Function('alert', `${slice}\nreturn warnPartialKeypointsRefresh;`);
@@ -625,7 +634,7 @@ function loadWarnHelper(src) {
 function loadRegenHandler({ response, jsonBody, reloadThrows, label = 'Generate analysis' }) {
   const admin = fs.readFileSync(ADMIN_JS, 'utf8');
   const { start, end } = sliceFn(admin, 'async function kbRegenKeyPoints(');
-  const slice = checkSlice(admin.slice(start, end), 'warnPartialKeypointsRefresh(', 4000,
+  const slice = checkSlice(admin.slice(start, end), 'warnPartialKeypointsRefresh(', SLICE_LIMIT,
     'the refresh handler');
 
   const log = [];
@@ -670,7 +679,7 @@ function loadModalKeypointsHandler({ response, jsonBody, onChangeThrows, label =
   assert.notStrictEqual(anchor, -1,
     'the intel-doc modal no longer wires a click handler onto its ↻ analysis button');
   const { start, end } = sliceFn(admin, 'async (e) => {', anchor);
-  const slice = checkSlice(admin.slice(start, end), 'warnPartialKeypointsRefresh(', 8000,
+  const slice = checkSlice(admin.slice(start, end), 'warnPartialKeypointsRefresh(', SLICE_LIMIT,
     'the modal refresh listener');
 
   const log = [];
