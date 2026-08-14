@@ -153,8 +153,12 @@ function parseAnswer(text, provider) {
     throw stamp(
       new Error(
         `aiCall: ${provider} returned valid JSON that is not an object ` +
-        `(${Array.isArray(parsed) ? 'array' : typeof parsed}) — every schema in this repo ` +
-        'describes an object, so this cannot be read as a verdict.'
+        // `typeof null === 'object'`, so the obvious spelling of this line
+        // printed "is not an object (object)" for the one input the sentence is
+        // most about — self-contradictory, on the string that is the entire
+        // signal this branch produces.
+        `(${parsed === null ? 'null' : Array.isArray(parsed) ? 'array' : typeof parsed}) — ` +
+        'every schema in this repo describes an object, so this cannot be read as a verdict.'
       ),
       provider
     );

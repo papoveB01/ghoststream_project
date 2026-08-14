@@ -113,37 +113,138 @@ const DEFAULT_PROVIDER = 'gemini';
 // Membership alone changes nothing — it makes a task ELIGIBLE. The provider is
 // still chosen by AI_PROVIDER / AI_PROVIDER_<TASK>, which default to gemini,
 // and providerFor() additionally refuses to dispatch when the target provider's
-// key is not configured.
+// key is not configured — or when the task is in FLIP_BLOCKED below.
 //
-// ⚠ ELIGIBLE IS NOT THE SAME AS READY TO FLIP, and `battlecard` is the standing
-// proof: it is in this set, one env var moves it, and moving it today 502s
-// roughly one rep-facing regenerate in three on a measured schema-conformance
-// defect. Read the ⚠ block on the `battlecard` entry in TASKS below BEFORE
-// setting any AI_PROVIDER_* here. Nothing in this set — and nothing in the
-// live-schema smoke check, which samples each schema once — asserts that a task
-// is safe to serve on Claude.
+// ELIGIBLE IS NOT THE SAME AS SAFE, and the two facts are deliberately NOT
+// merged into this set. This one answers "can the call site dispatch?", which is
+// a property of the code and is what the EDITING note below pins. Whether a flip
+// is a good idea is a property of measurements against a live provider, changes
+// without a code change, and lives in FLIP_BLOCKED.
 //
-// EDITING THE LINE BELOW ALSO INVALIDATES PROSE. Four comment blocks assert what
-// is in this set and go stale with it: anthropic.js (header), aiCall.js
-// (header), gemini.js (assertGeminiModel) and aiContext.js ("It does not flip
-// any task"). Update them in the same PR. The pins in providerRouter.test.js and
-// aiCall.test.js carry the same list in their failure messages — but a message
-// is only read on a red run, and the PR that changes this set deliberately greps
-// for it, fixes both pins in the same pass and goes green first try, never
-// seeing either one. That PR is the reader this note is for.
+// EDITING THE LINE BELOW ALSO INVALIDATES PROSE. FIVE blocks assert what is in
+// this set and go stale with it: anthropic.js (header), aiCall.js (header),
+// gemini.js (assertGeminiModel), aiContext.js ("It does not flip any task") —
+// and `.env.example`'s "Provider routing" section, which is the only one an
+// OPERATOR reads and the one that drifts hardest, because nothing in a code
+// review naturally opens it. It was already listed as a P1 fix in group 1's
+// review round (e69eb88, "four stale comments and .env.example") and drifted
+// again within one group, which is why it is named here rather than remembered.
+//
+// The pins in providerRouter.test.js and aiCall.test.js carry the same list in
+// their failure messages — but a message is only read on a red run, and the PR
+// that changes this set deliberately greps for it, fixes both pins in the same
+// pass and goes green first try, never seeing either one. That PR is the reader
+// this note is for. costsTelemetry.test.js pins the seam CALL-SITE COUNT, and
+// checks it against the number anthropic.js's header quotes, because a count
+// living in prose is the half of this a set-equality assertion cannot see.
 const DISPATCH_READY = new Set([
   'relevance', 'preview', 'companyBrief',      // group 1
   'keypoints', 'assessment', 'battlecard',     // group 2
 ]);
 
+// Tasks whose call site CAN dispatch but which must not be flipped yet, because
+// something measured against the live provider says the result would be worse
+// than what we have. providerFor() refuses these exactly the way it refuses a
+// task that is not dispatch-ready: fall back to Gemini, warn once, name the
+// reason. A warning alone would not do — an operator following the runbook sets
+// the variable and moves on, and the whole point is that the flip does not
+// happen.
+//
+// WHY THIS IS A SECOND SET AND NOT A SUBTRACTION FROM THE FIRST. DISPATCH_READY
+// is a claim about the code: this call site reads resolve().provider and
+// branches. It is verifiable by reading the file, it is pinned by two tests, and
+// it is what every comment in this file that says "a task joins the set in the
+// same PR that migrates its call site" is about. Blocking a flip is a claim
+// about a measurement against a live API — it can become false with no code
+// change at all (a provider ships a fix; we reshape a schema; we add a retry).
+// Folding the second into the first would make membership mean two things and
+// leave the migration unable to state either one honestly.
+//
+// A KEY LEAVES THIS SET IN THE PR THAT FIXES OR MEASURES AWAY ITS REASON —
+// exactly the symmetry by which keys JOIN DISPATCH_READY in the PR that migrates
+// their call site. Removing an entry with no new evidence recorded next to it is
+// the same failure as adding a task to DISPATCH_READY whose call site was never
+// migrated: it looks like progress and is a silent regression. Each entry below
+// therefore states what would have to be true to delete it.
+const FLIP_BLOCKED = new Map([
+  // Measured 2026-08-14 (group 2's integration pass), sending this call site's
+  // real request shape — claude-sonnet-5, effort 'medium', temperature 0.3,
+  // max_tokens 2600, the real BATTLECARD_SCHEMA: 3 OF 10 RESPONSES WERE
+  // UNPARSEABLE JSON. stop_reason 'end_turn', not truncation — a trailing comma
+  // inside an `objections` item. 0 of 10 on the other four group-2 schemas, so
+  // it is the largest translated schema (4048 chars) misbehaving under
+  // constrained decoding, not a schemaCompat bug: the provider ACCEPTS this
+  // schema, which is why the live smoke check is green over it.
+  //
+  // extractBattlecard is the one migrated call site with no retry, synchronous
+  // behind the rep-facing POST /portfolio/competitors/:id/battlecard/regenerate.
+  // So flipping it is ~1 regeneration in 3 returning 502, per rep, per click.
+  //
+  // TO DELETE THIS ENTRY you need BOTH a fix and a re-measurement, and the
+  // obvious fix does not work: wrapping the call in aiRetry does NOT retry this.
+  // aiCall stamps the SyntaxError `provider: 'anthropic'`, and classify()'s
+  // Anthropic branch is `transient: !perDay && !sdkRetried && status === 429` —
+  // a parse error carries no status, so it is one attempt. The real change is
+  // classify() treating an anthropic-stamped parse error as transient, and/or
+  // reshaping BATTLECARD_SCHEMA — and any retry here must fit inside nginx's
+  // 180s proxy_read_timeout, which 3 x ANTHROPIC_TIMEOUT_MS (120s) + 2s + 4s
+  // does not: that turns a 502 into a 504 mid-write.
+  ['battlecard',
+    '3 of 10 live claude-sonnet-5 responses to the real BATTLECARD_SCHEMA request were ' +
+    'unparseable JSON (measured 2026-08-14), on the one call site with no retry, behind a ' +
+    'synchronous rep-facing regenerate. See ADR-0006 §9 item 5.'],
+
+  // Measured 2026-08-14 (group 2's per-file review): the 2200-token output
+  // budgets at extractCompanyAnalysis and extractProductAnalysis are GEMINI-
+  // sized and truncate on Sonnet 5. §5.2's own table puts prose-bearing JSON at
+  // 1.74-1.88x on the new-gen tokenizer these resolve to; staging's largest
+  // stored companyAnalysis is 6,438 chars ~ 2,660-3,460 output tokens against
+  // 2,200 — over even on the most generous pairing.
+  //
+  // WHY THAT IS DATA LOSS AND NOT AN ERROR. stop_reason 'max_tokens' with
+  // allowTruncation unset (these call sites pass nothing) throws in
+  // anthropic.js; extractCompanyAnalysis catches it and returns null; and
+  // knowledge/service.js's regenerate path is `if (analysis) md.companyAnalysis
+  // = analysis; else delete md.companyAnalysis` — so a truncated answer DELETES
+  // the good stored analysis and the route still answers { ok: true }. On the
+  // ingest path it is simply never written; portfolio.js's company-profile
+  // draft 502s instead.
+  //
+  // TO DELETE THIS ENTRY: one live kb.companyAnalysis call at maxTokens 2200
+  // against staging's 6,438-char document, showing stop_reason 'end_turn'. Do
+  // NOT just raise maxTokens — the value is provider-agnostic at that call site,
+  // so raising it changes what GEMINI receives and breaks the parity property
+  // group 2 shipped on. Sizing per provider is the flip PR's problem to solve.
+  ['keypoints',
+    'the 2200-token budgets at kb.companyAnalysis / kb.productAnalysis are Gemini-sized and ' +
+    'truncate on claude-sonnet-5 (§5.2: prose-bearing JSON is 1.74-1.88x denser); a truncated ' +
+    "answer DELETES the stored analysis via service.js's regenerate path. See ADR-0006 §9 item 5."],
+]);
+
 // task → { tier, env(legacy per-task override), anthropicEnv, anthropicTier }
 //
 // `anthropicTier` re-tiers a task for Claude only, leaving Gemini untouched.
-// keypoints is mis-tiered as LITE (ADR-0006 §4.1) — COMPANY_ANALYSIS_SCHEMA
-// asks for differentiator / idealCustomerProfile / pricingPosture, which is
-// judgment, not extraction, and Haiku would regress it visibly. Correcting the
-// Gemini tier at the same time would be a silent quality-and-cost change in a
-// PR that is meant to change nothing.
+// keypoints is mis-tiered as LITE (ADR-0006 §4.1): COMPANY_ANALYSIS_SCHEMA asks
+// for `differentiator` and `idealCustomerProfile`, and PRODUCT_ANALYSIS_SCHEMA
+// for `pricingPosture`, `whoBuysIt` and `competingProducts` — judgment, not
+// extraction, on TWO of the key's three call sites, and Haiku would regress both
+// visibly. (`pricingPosture` lives in the PRODUCT schema, not the COMPANY one;
+// this comment said otherwise, as did ADR §4.1, which understated the case by
+// attributing everything to one schema.) Correcting the Gemini tier at the same
+// time would be a silent quality-and-cost change in a PR meant to change nothing.
+//
+// THE THIRD CALL SITE IS THE BEND, and it is worth naming rather than leaving
+// implied. `kb.keypoints` is plain bullet extraction and runs on EVERY ingested
+// document — the highest-volume site this key serves — and it inherits Sonnet
+// because a tier is per key, not per call site. That is the mirror image of the
+// `assessment` hazard below: there one key rounded two sites DOWN to Haiku and
+// silently degraded the harder one; here one key rounds three sites UP and the
+// cheapest one overpays. Over-tiering is the safe direction and §6 prices this
+// key at FLASH throughout, so it is a deliberate bend, not an oversight. The
+// residual risk is the knob §4.5 invites an operator to turn:
+// ANTHROPIC_KEYPOINTS_MODEL=claude-haiku-4-5 would save money on the extraction
+// site by demoting the two judgment sites — the exact regression the tier exists
+// to prevent, reachable without touching this file.
 //
 // ADR-0006 §4.1's SECOND correction — the `assessment` split — IS made here.
 // `battlecard` below is that new key: per-document competitive scoring keeps
@@ -197,32 +298,12 @@ const TASKS = {
   // but an operator pinning the battlecard must now use
   // `GEMINI_BATTLECARD_MODEL`.
   //
-  // ⚠ DO NOT SET `AI_PROVIDER_BATTLECARD=anthropic` YET. This key is in
-  // DISPATCH_READY, so the router will honour that variable — and it is
-  // currently the wrong thing to do. Measured live 2026-08-14 by the group-2
-  // cutover's integration pass, sending THIS call site's real request shape
-  // (`claude-sonnet-5`, effort 'medium', temperature 0.3, max_tokens 2600, the
-  // real BATTLECARD_SCHEMA): **3 of 10 responses were unparseable JSON**, with
-  // `stop_reason: end_turn` — not truncation — from a trailing comma inside an
-  // `objections` item. 0 of 10 on the other four group-2 schemas, so it is this
-  // schema (the largest translated one, 4048 chars) misbehaving under
-  // constrained decoding, not a schemaCompat bug.
   //
-  // WHY THAT IS AN OUTAGE HERE SPECIFICALLY: extractBattlecard is the one
-  // migrated call site with NO retry wrapper, and it is synchronous behind the
-  // rep-facing POST /portfolio/competitors/:id/battlecard/regenerate. So a flip
-  // today means roughly ONE IN THREE REGENERATIONS 502s, per rep, per click,
-  // with no second attempt.
-  //
-  // The live-schema smoke check does NOT cover this and reports green over it:
-  // it sends effort 'low', max_tokens 800, no temperature, and ONE sample per
-  // schema, so a ~30% stochastic malformation passes it ~70% of the time.
-  // "5/5 accepted" is schema acceptance, not flip-readiness.
-  //
-  // Fixing it — a retry wrapper (which needs an aiRetry.POLICIES.battlecard row)
-  // or reshaping BATTLECARD_SCHEMA — is deliberately NOT part of the cutover PR:
-  // it changes the retry decision that PR documents, and it belongs with the
-  // flip. ADR-0006 §9 item 5 carries the full measurement.
+  // ⚠ `AI_PROVIDER_BATTLECARD=anthropic` IS REFUSED — this key is in
+  // FLIP_BLOCKED above, which is where the measurement and the exit criteria
+  // live. Not repeated here: two copies of a number is how one of them goes
+  // stale, and the one an operator hits at run time is the one that must be
+  // right.
   battlecard:   { tier: 'lite',    env: 'GEMINI_BATTLECARD_MODEL',   anthropicEnv: 'ANTHROPIC_BATTLECARD_MODEL', anthropicTier: 'flash' },
   companyBrief: { tier: 'lite',    env: 'GEMINI_COMPANYBRIEF_MODEL', anthropicEnv: 'ANTHROPIC_COMPANYBRIEF_MODEL' },
   preview:      { tier: 'lite',    env: 'GEMINI_PREVIEW_MODEL',      anthropicEnv: 'ANTHROPIC_PREVIEW_MODEL' },
@@ -324,6 +405,19 @@ function providerFor(task) {
       `staying on ${DEFAULT_PROVIDER}. Remove ${providerEnvName(task)} or migrate the call site first.`
     );
   }
+  // Between dispatch-readiness and the key check on purpose. A blocked task IS
+  // migrated, so "migrate the call site first" would be wrong advice; and adding
+  // a key would not unblock it either, so this has to be said before that
+  // message is. It is a Map rather than a Set so the reason travels with the
+  // key: an operator told only "blocked" goes looking for the ADR, and the
+  // number is the thing that stops them arguing with it.
+  if (p !== DEFAULT_PROVIDER && FLIP_BLOCKED.has(task)) {
+    return fallbackToDefault(task, `flipblocked:${task}:${p}`,
+      `[models] task "${task}" is MIGRATED but BLOCKED from ${p} — staying on ${DEFAULT_PROVIDER}. ` +
+      `${FLIP_BLOCKED.get(task)} Unset ${providerEnvName(task)}. This is a measured defect, not a ` +
+      'code gap: the call site dispatches fine, the result would be worse than what you have.'
+    );
+  }
   // Checked AFTER dispatch-readiness so the message an operator gets names the
   // thing they can actually fix, and checked on every resolve rather than once
   // at boot because a key can be rotated into a running process's environment.
@@ -382,5 +476,5 @@ function providerOfModel(model) {
 module.exports = {
   modelFor, resolve, providerFor, providerEnvName, providerOfModel,
   isProviderConfigured,
-  TIERS, TASKS, DISPATCH_READY,
+  TIERS, TASKS, DISPATCH_READY, FLIP_BLOCKED,
 };

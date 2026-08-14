@@ -172,13 +172,32 @@ decided.
 
 Two corrections fall out of this and are part of the decision:
 
-- **`keypoints` is promoted from `lite` to `flash`.** `COMPANY_ANALYSIS_SCHEMA`
-  (`knowledge/keypoints.js:258+`) asks for `differentiator`,
-  `idealCustomerProfile` and `pricingPosture` — judgment, not extraction. It
-  was mis-tiered under Gemini too; Haiku would regress it visibly.
+- **`keypoints` is promoted from `lite` to `flash`.** Two of the key's three
+  call sites are judgment, not extraction: `COMPANY_ANALYSIS_SCHEMA`
+  (`knowledge/keypoints.js`, `extractCompanyAnalysis`) asks for `differentiator`
+  and `idealCustomerProfile`, and `PRODUCT_ANALYSIS_SCHEMA`
+  (`extractProductAnalysis`) asks for `pricingPosture`, `whoBuysIt` and
+  `competingProducts`. It was mis-tiered under Gemini too; Haiku would regress
+  both visibly. *(Corrected 2026-08-14: this line put `pricingPosture` in the
+  COMPANY schema and rested the whole argument on one schema. It is in the
+  PRODUCT one — so the case is stronger than it was written, two sites out of
+  three rather than one. The same error was copied into `models.js` and
+  `keypoints.js`; all three are fixed. Line numbers dropped rather than
+  re-pinned — they were already stale by ~46 lines, and a symbol name does not
+  rot.)*
+
+  **The third site is a deliberate bend, recorded so it is not read as an
+  oversight.** `kb.keypoints` is plain bullet extraction and runs on every
+  ingested document — the highest-volume site this key serves — and a tier is
+  per key, so it is carried up to Sonnet with the other two. Over-tiering is the
+  safe direction and §6 prices this key at FLASH throughout. It is the exact
+  mirror of the `assessment` hazard below (one key rounding two sites *down* to
+  Haiku and silently degrading the harder one), and the residual risk is the
+  knob §4.5 invites an operator to turn: `ANTHROPIC_KEYPOINTS_MODEL=claude-haiku-4-5`
+  would save money on the extraction site by demoting the two judgment ones.
 - **`assessment` splits.** Per-document scoring stays `lite` under the
   `assessment` key; the `BATTLECARD_SCHEMA` synthesis
-  (`knowledge/assessment.js:595`) moves to `flash` under a **new task key,
+  (`knowledge/assessment.js`, `extractBattlecard`) moves to `flash` under a **new task key,
   `battlecard`** — the lowercase string is the router key in `models.js` and the
   `AI_PROVIDER_BATTLECARD` / `ANTHROPIC_BATTLECARD_MODEL` /
   `GEMINI_BATTLECARD_MODEL` env names derive from it. *Landed in the router
@@ -211,7 +230,7 @@ table does not clear the floor without them.
 1. **Prompt caching** (`cache_control` breakpoints, reads at 0.1× input,
    writes 1.25× at 5m / 2× at 1h, max 4 breakpoints). Mandatory on: the call
    transcript, which `analysis.js` re-sends across all three stages — cache at
-   Stage 0, read at Stages 1 and 2; `tenantContextText` (`keypoints.js:135`,
+   Stage 0, read at Stages 1 and 2; `tenantContextText` (`keypoints.js`,
    capped 5,000 chars, rebuilt per call today); the Arena persona seed; and
    the `globalCache` body.
 2. **Batch API** (−50% on input *and* output, stacks multiplicatively with
@@ -1262,7 +1281,14 @@ decomposition exists so that per-file spokes stay tractable.
    `companies`; `brief`; `watch` + scheduler env; `arena` + `arenaHistory` +
    `personas` (depends on 4); `discovery`; `analysis` + `proposals` (last).
 
-   **Group 2 is three keys, not two, and all three must flip together.**
+   **Group 2 is three keys, not two, and all three must SHIP together.**
+   *(Amended 2026-08-14: this said "flip together", which is a different and
+   wrong claim. The keys flip INDEPENDENTLY — one `AI_PROVIDER_<TASK>` each, and
+   group 2's own tests assert `battlecard` moving while `assessment` stays. What
+   must be simultaneous is the MIGRATION, and the argument below is specifically
+   about `assessment` + `battlecard`, the two keys sharing one file. `keypoints`
+   is in the group because §8 Phase 3 batches it there for review size, not
+   because it is coupled to them.)*
    `knowledge/assessment.js` holds two call sites, and since PR #53 they resolve
    two different task keys: `extractCompetitiveAssessment` → `assessment`
    (lite/Haiku), `extractBattlecard` → `battlecard` (flash/Sonnet). Flipping
@@ -1347,29 +1373,52 @@ decomposition exists so that per-file spokes stay tractable.
      once-per-model+site warning, not silently — while `assessment`'s `0.25`
      survives on Haiku 4.5. Determinism on those two has to come from the prompt.
 
-     **That drop has a named consumer, so it is not only a prose-quality
+     **That drop has named consumers, so it is not only a prose-quality
      question.** When a competitor's docs carry no per-doc assessment,
      `extractBattlecard`'s `!hasAggregate` branch takes `weightedAdvantage` from
      `parsed.axesScored` — numbers the model *samples* out of
-     `BATTLECARD_SCHEMA`. That figure leaves the function as the lead/trail
-     percentage on the competitor page (`web/admin/admin.js:4648`, `:4192`), the
-     Market Map node verdict, and the ±5 threshold in `renderAssessmentText`,
-     and none of those surfaces show that it came from inline scoring rather
-     than from evidence. Measured 2026-08-14: **1 of the 4 production
-     battlecards that carry a model stamp is on that path** (`nightout`, which
-     renders "+60%"). So on Sonnet 5 a rep-facing percentage would be produced
-     with no determinism control at all. Recorded here and at the branch itself
-     so the flip decision is made with this in view, not after someone asks why
-     a competitor's lead moved.
+     `BATTLECARD_SCHEMA`. On Sonnet 5 that figure is produced with no
+     determinism control at all, and it surfaces in four places, none of which
+     show that it came from inline scoring rather than from evidence:
+
+     - the competitor detail page's lead/trail figure, thresholded at ±5 **by the
+       frontend** (`web/admin/admin.js`);
+     - `verdictByNode`, the offering-node chips on that same page;
+     - the per-version figure in the battlecard **History drawer**, served by
+       `portfolio.js`'s history route;
+     - the **Markdown snapshot export**, which persists "We lead by 60%" back
+       into the KB as a battlecard document — a sampling-derived number
+       re-entering the corpus as evidence, where a later synthesis reads it as a
+       fact about the matchup. That is the one worth pausing on.
+
+     **Two corrections to an earlier draft of this note, because an inaccurate
+     blast-radius map is itself the defect when documentation is the
+     mitigation.** The **Market Map does not consume this number** — its
+     colouring comes from `GET /portfolio/competitors/threats`, which
+     regex-parses "Competing-threat level: N/5" out of intel text. And
+     `renderAssessmentText`'s ±5 threshold reads `d.metadata.assessment`, the
+     **per-doc** scoreboard produced by the `assessment` task, which keeps its
+     temperature on Haiku 4.5 — a different field entirely. The drawer and the
+     export were missing.
+
+     Measured 2026-08-14: **1 of the 4 production battlecards that carry a model
+     stamp is on that path** (`nightout`, rendering "+60%") — independently
+     re-derived by querying for cards whose every axis has empty `evidence` and
+     `gaps`, which is the signature the inline branch leaves.
    - **Existing rows: nothing to migrate, and the one field that can change is
      display-only.** No schema object changed, so every stored payload keeps its
      shape. The only value that moves is the `model` string stamped onto
      `kb_documents.metadata.companyAnalysis` / `.productAnalysis` and
      `competitors.battlecard`, which is now the SERVING model from the seam
      rather than a boot-time constant. All five readers render it as text and
-     none branch on it (`web/admin/admin.js` ×4 — the two `ca-meta` lines, the
-     Markdown export, the History drawer; `portfolio.js`'s battlecard history
-     route; `watch.js` folds the record into a prompt as prose).
+     none branch on it. Precisely: **seven surfaces across two different stored
+     fields** — the `companyAnalysis` / `productAnalysis` `ca-meta` lines are two
+     surfaces over the keypoints field, and the battlecard field has five (the
+     card's meta line, the Markdown export, the History drawer's per-version
+     line, `portfolio.js`'s history route, and `watch.js` folding the record
+     into a Market Watch prompt as prose). An earlier draft of this sentence said
+     "five readers", merging the two fields; the per-file comments each had their
+     own field right.
 
      **Three tables carry that field, not one** — the first cut of this entry
      named only `competitors.battlecard` and missed `competitor_battlecards` and
@@ -1433,7 +1482,9 @@ decomposition exists so that per-file spokes stay tractable.
      nothing about whether responses to the real request are usable. Read it as
      schema acceptance, never as flip-readiness.
 
-   ### The finding that stops `battlecard` flipping (2026-08-14, integration pass)
+   **The finding that stops `battlecard` flipping** (2026-08-14, integration
+   pass). *(A bold lead-in rather than a heading: this sits inside item 5 of an
+   ordered list, and an `h3` here outlines as a peer of §4.1.)*
 
    Driving the **exact production request shape** — `claude-sonnet-5`,
    `effort: 'medium'`, `temperature: 0.3`, `max_tokens: 2600`, the real
@@ -1473,15 +1524,43 @@ decomposition exists so that per-file spokes stay tractable.
    probably wrong for Claude and must be re-argued against *this* failure mode
    rather than re-quoted from the ADR.
 
-   **Deferred to the flip PR, deliberately, and not to a backlog:** adding
-   `aiRetry.POLICIES.battlecard` plus a wrapper, and/or reshaping
-   `BATTLECARD_SCHEMA` (§4.7 already establishes that this provider's structured
-   output has schema-size failure modes nothing on the Gemini side bounds — this
-   is a second, *softer* one: accepted, then unreliable). Doing it in the cutover
-   PR would reverse the decision that PR documents and add a second reviewable
-   concern to it. The gate lives where an operator will actually hit it: a ⚠
-   block on the `battlecard` entry in `models.js` and a second on
-   `DISPATCH_READY` itself, both naming the 3-in-10 number and the 502.
+   **⚠ THE OBVIOUS REMEDIATION IS INERT, AND IT FAILS GREEN.** This is the most
+   important sentence in the entry, because the first draft of it recorded
+   "add an `aiRetry.POLICIES.battlecard` row and wrap the call" as the plan.
+   Driven through `forLabel('assessment')` with the measured malformation:
+   `aiCall.parseAnswer` stamps the `SyntaxError` `provider: 'anthropic'` →
+   `classify()` takes the Anthropic branch → `transient: !perDay && !sdkRetried
+   && status === 429` → a parse error has no `status` → **`transient: false`, one
+   attempt.** So a flip PR that follows that plan adds a row, wraps the call,
+   watches a retry test go green, and ships the same ~30% rate.
+
+   Two corollaries that have to travel with it:
+
+   - **The wrapper `extractCompetitiveAssessment` keeps is worth nothing against
+     this mode on Claude either.** It protects the *Gemini* branch, where parse
+     errors are unstamped and message-scraped. This is also why
+     `cutoverGroup2.test.js`'s retry-asymmetry test cannot see the gap: it drives
+     an unstamped, Gemini-shaped error.
+   - **Any retry here has to fit inside nginx's 180s `proxy_read_timeout`.**
+     Three attempts at `ANTHROPIC_TIMEOUT_MS` (120s) plus 2s+4s backoff is
+     **366s**, which converts this call site's clean 502 into a 504 while the
+     handler is still writing — the same shape §9 item 4 found on
+     `proposals.js`.
+
+   **What would actually have to change:** `classify()` treating an
+   anthropic-stamped parse error as transient, and/or reshaping
+   `BATTLECARD_SCHEMA` so it stops happening — within that 180s bound. (§4.7
+   already establishes that this provider's structured output has schema-size
+   failure modes nothing on the Gemini side bounds; this is a second, *softer*
+   one: accepted, then unreliable.)
+
+   **Deferred to the flip PR deliberately, not to a backlog.** Doing it in the
+   cutover PR would reverse the decision that PR documents and add a second
+   reviewable concern to it. And the deferral is enforced rather than advised:
+   `battlecard` is in **`models.FLIP_BLOCKED`**, so `providerFor()` refuses
+   `AI_PROVIDER_BATTLECARD=anthropic`, falls back to Gemini and warns with the
+   3-in-10 number. A warning alone would not have been a gate — an operator
+   following the runbook sets the variable and moves on.
 
    **Method note for later groups, which is the transferable part:** this was
    found by sending the real request shape n=10, not by reading a diff and not by
@@ -1491,7 +1570,54 @@ decomposition exists so that per-file spokes stay tractable.
    sampled repeatedly before its flip — and `proposals` (§4.7) is the next one
    that fits that description.
 
-   **One inherited defect left alone, recorded so it is not re-found as new.**
+   **A second flip blocker, on the sibling key** (2026-08-14, per-file review).
+   `keypoints` is blocked too, for an unrelated and previously unseen reason:
+   **the 2200-token output budgets at `extractCompanyAnalysis` and
+   `extractProductAnalysis` are Gemini-sized and truncate on Sonnet 5.** §5.2's
+   own measured table puts prose-bearing JSON at **1.74–1.88×** on the new-gen
+   tokenizer those two resolve to. Against real staging payloads, the largest
+   stored `companyAnalysis` is **6,438 chars ≈ 2,660–3,460 output tokens against
+   a 2,200 budget** — over even on the most generous pairing (4.2 chars/token ×
+   1.74 = 2,667).
+
+   **The failure path deletes stored intelligence rather than erroring**, which
+   is why this outranks an ordinary truncation:
+
+   `stop_reason: 'max_tokens'` with `allowTruncation` unset (these call sites
+   pass nothing) → `anthropic.generate` throws → `extractCompanyAnalysis`
+   catches and returns `null` → `knowledge/service.js`'s regenerate path is
+   `if (analysis) md.companyAnalysis = analysis; else delete md.companyAnalysis`
+   → **the good stored analysis is deleted and the route still answers
+   `{ ok: true }`.** On ingest it is simply never written; `portfolio.js`'s
+   company-profile draft 502s instead.
+
+   **The evidence in this entry structurally could not see it**, and that is the
+   same argument this ADR makes about `battlecard`, turned on the sibling key:
+   `smoke.js` sends `max_tokens: 800`, its recorded runs produced ~12-token
+   answers (read back out of the `usage_costs` rows §9 item 1's instrumentation
+   writes), and `smoke.js` reports a truncated response as **`accepted`**.
+
+   **Do not fix this by raising `maxTokens`.** The value is provider-agnostic at
+   that call site, so raising it changes what *Gemini* receives and breaks the
+   parity property group 2 shipped on. Sizing per provider is the flip PR's
+   problem. **To clear the block:** one live `kb.companyAnalysis` call at
+   `maxTokens: 2200` against staging's 6,438-char document, showing `stop_reason:
+   'end_turn'`.
+
+   **`FLIP_BLOCKED` is the mechanism both of these use, and it is a second set on
+   purpose.** `DISPATCH_READY` is a claim about the *code* — this call site reads
+   `resolve().provider` and branches — verifiable by reading the file and pinned
+   by two tests. Whether a flip is a good idea is a claim about a *measurement*
+   against a live provider, which can stop being true with no code change at all.
+   Folding the second into the first would make membership mean two things and
+   leave the migration unable to state either honestly, so `battlecard` and
+   `keypoints` stay in `DISPATCH_READY` (they are migrated; that is a fact) and
+   sit in `FLIP_BLOCKED` (they are unsafe; that is a measurement). **A key leaves
+   `FLIP_BLOCKED` in the PR that fixes or measures away its reason**, exactly as
+   keys join `DISPATCH_READY` in the PR that migrates their call site — and each
+   entry carries the evidence that would have to be produced to delete it.
+
+      **One inherited defect left alone, recorded so it is not re-found as new.**
    The `providerOf(err) → 'unknown'` idiom (group 1's, now in five more places)
    claims that `unknown` means "a missing stamp to go and add". On today's
    100%-Gemini traffic it is the *common* case instead: raw `@google/genai`

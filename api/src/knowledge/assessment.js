@@ -52,15 +52,32 @@ const db = require('../db');
 // Gemini tier of both keys is deliberately unchanged, so nothing about a Gemini
 // request moves in this PR.
 //
-// THAT DROP HAS A NAMED CONSUMER, so it is not only a prose-quality question.
+// THAT DROP HAS NAMED CONSUMERS, so it is not only a prose-quality question.
 // When a competitor's docs carry no per-doc assessment, the `!hasAggregate`
 // branch below takes `weightedAdvantage` from `parsed.axesScored` — a NUMBER the
-// model samples out of BATTLECARD_SCHEMA — and that number is the lead/trail %
-// on the competitor page, the Market Map node verdict, and the ±5 threshold in
-// renderAssessmentText. On Sonnet 5 that number is produced with no temperature
-// control at all. It is a live path, not a corner: measured 2026-08-14, 1 of the
-// 4 production battlecards that have a model stamped took it (`nightout`, which
-// renders "+60%").
+// model samples out of BATTLECARD_SCHEMA. On Sonnet 5 that number is produced
+// with no temperature control at all, and it surfaces in four places:
+//
+//   - the competitor detail page's lead/trail figure, thresholded at ±5 by the
+//     FRONTEND (web/admin/admin.js) — not by renderAssessmentText below, whose
+//     own ±5 reads d.metadata.assessment, the PER-DOC scoreboard from the
+//     `assessment` task, which keeps its temperature on Haiku;
+//   - `verdictByNode`, the offering-node chips on that same page;
+//   - the per-version figure in the battlecard History drawer, served by
+//     portfolio.js's history route;
+//   - the Markdown snapshot export — which persists "We lead by 60%" back into
+//     the KB as a battlecard document. That is the one worth pausing on: a
+//     sampling-derived number re-entering the corpus as evidence, where a later
+//     synthesis reads it as a fact about the matchup.
+//
+// NOT the Market Map: its colouring comes from GET /portfolio/competitors/
+// threats, which regex-parses "Competing-threat level: N/5" out of intel text
+// and never sees this number. (An earlier version of this comment claimed it did
+// and omitted the drawer and the export — an inaccurate blast-radius map is a
+// defect in its own right here, because documentation IS the mitigation.)
+//
+// It is a live path, not a corner: measured 2026-08-14, 1 of the 4 production
+// battlecards that carry a model stamp took it (`nightout`, rendering "+60%").
 const aiCall = require('../aiCall');
 
 // Shared retry helper (ADR-0006 §7). Bound here with this module's label so
@@ -93,24 +110,44 @@ const aiCall = require('../aiCall');
 // HAS HERE. Measured live 2026-08-14 with this call site's real request shape:
 // 3 of 10 `claude-sonnet-5` responses were unparseable JSON — `stop_reason:
 // end_turn`, a trailing comma inside an `objections` item, not truncation — and
-// 0 of 10 on the other four group-2 schemas. A retry demonstrably fixes a
-// stochastic malformation, which is exactly what the note above the aiCall
-// binding already concedes for the Gemini side. So the asymmetry as it stands is
+// 0 of 10 on the other four group-2 schemas. So the asymmetry as it stands is
 // right for the provider serving 100% of this traffic today and is very likely
-// WRONG for Claude. It is left unchanged here on purpose: reversing it changes
-// the decision the cutover PR documents and needs an aiRetry.POLICIES row, so it
-// belongs to the flip PR, together with the DO-NOT-FLIP-YET warning on the
-// `battlecard` entry in models.js. Do not read this block as a settled verdict
-// for the Claude path.
+// WRONG for Claude. `battlecard` is in models.FLIP_BLOCKED because of it, so the
+// router refuses the flip rather than merely advising against it.
+//
+// AND THE OBVIOUS REMEDY DOES NOT WORK, which is the part worth carrying into
+// the flip PR, because it fails GREEN. Wrapping this call in
+// aiRetry.forLabel(...) retries the malformation ZERO times: aiCall stamps the
+// SyntaxError `provider: 'anthropic'`, and classify()'s Anthropic branch is
+// `transient: !perDay && !sdkRetried && status === 429` — a parse error carries
+// no status. Add a POLICIES row, wrap the call, watch a retry test go green, and
+// ship the same ~30% rate. What actually has to change is classify() treating an
+// anthropic-stamped parse error as transient, and/or reshaping BATTLECARD_SCHEMA
+// so it stops happening.
+//
+// Two corollaries. (1) The wrapper extractCompetitiveAssessment keeps is worth
+// nothing against this failure mode on Claude either — it protects the GEMINI
+// branch, where parse errors are unstamped and message-scraped. (2) Any retry
+// added here has to fit nginx's 180s proxy_read_timeout: 3 attempts at
+// ANTHROPIC_TIMEOUT_MS (120s) plus 2s+4s backoff is 366s, which turns this
+// call site's clean 502 into a 504 while the handler is still writing.
 //
 // ONE PRICED SIDE EFFECT of the move, the same one relevance.js documents: the
 // JSON.parse now happens INSIDE aiCall, i.e. inside withRetry, where it used to
-// sit outside. A Gemini answer whose first ten characters match
+// sit outside. WORST CASE, a Gemini answer whose first ten characters match
 // GEMINI_TRANSIENT_RE (V8 quotes exactly ten, so `overloaded…` matches and
-// `The model is overloaded.` does not) therefore costs three metered
-// generations instead of one. Kept, because on Gemini a regenerate can
-// genuinely fix malformed JSON; the Claude side pays nothing, because aiCall
-// stamps its parse errors and classify() never scrapes a stamped one.
+// `The model is overloaded.` does not) costs three metered generations instead
+// of one. Worst case, not typical: the realistic Gemini malformation is a
+// budget-truncated answer, whose `Unterminated string in JSON at position …`
+// matches nothing and costs exactly one. Kept, because on Gemini a regenerate
+// can genuinely fix malformed JSON.
+//
+// The Claude side pays nothing — but the REASON is not "classify() never
+// scrapes a stamped error", which is false: it scrapes everything not stamped
+// `anthropic` or `aiCall`, including our own `gemini` stamps. It is that the
+// Anthropic branch decides on `status`, and a parse error has none. Same
+// conclusion, different mechanism — and the mechanism is what the paragraph
+// above needs, so it is worth being exact about.
 const aiRetry = require('../aiRetry');
 const withRetry = aiRetry.forLabel('assessment');
 
@@ -673,13 +710,13 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
     //
     // THIS IS THE SAMPLING-SENSITIVE BRANCH. Everything below is derived from
     // numbers the model chose, and `weightedAdvantage` leaves this function as
-    // the lead/trail % on the competitor page (web/admin/admin.js), the Market
-    // Map node verdict, and the ±5 threshold in renderAssessmentText — none of
-    // which show that the figure came from inline scoring rather than from
-    // evidence. On Claude this call site's temperature is dropped (Sonnet 5),
-    // so on that provider the branch runs with no determinism control; see the
-    // header. 1 of 4 production battlecards with a model stamped is on this
-    // path today.
+    // the competitor page's lead/trail figure, its offering-node chips, the
+    // History drawer's per-version figure, and the Markdown snapshot that is
+    // written BACK into the KB as a document — none of which show that the
+    // figure came from inline scoring rather than from evidence. On Claude this
+    // call site's temperature is dropped (Sonnet 5), so the branch runs with no
+    // determinism control there; see the header for the full map. 1 of 4
+    // production battlecards with a model stamped is on this path today.
     let axes = aggregated.axes;
     let weightedAdvantage = aggregated.weightedAdvantage;
     const hasAggregate = Object.values(aggregated.axes).some((a) => (a.weight || 0) > 0);

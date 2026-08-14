@@ -37,8 +37,15 @@ const db = require('../db');
 // this task is an env change rather than a code change.
 //
 // ON CLAUDE THIS TASK IS FLASH, NOT LITE (models.js `anthropicTier`), because
-// COMPANY_ANALYSIS_SCHEMA asks for judgment — differentiator, ICP, pricing
-// posture — not extraction (ADR-0006 §4.1). Two consequences at these call
+// two of its three call sites ask for judgment rather than extraction (ADR-0006
+// §4.1): COMPANY_ANALYSIS_SCHEMA wants `differentiator` and
+// `idealCustomerProfile`, PRODUCT_ANALYSIS_SCHEMA wants `pricingPosture`,
+// `whoBuysIt` and `competingProducts`. (`pricingPosture` is in the PRODUCT
+// schema; §4.1 and models.js both attributed it to the COMPANY one, which
+// understated the case — it is two schemas, not one.) The third site,
+// `kb.keypoints`, is plain extraction on every ingested document and is carried
+// UP with them, because a tier is per key; see the bend note in models.js.
+// Two consequences at these call
 // sites: Sonnet 5 is in anthropic.js's NO_TEMPERATURE list, so the
 // `temperature: 0.3` below is dropped with a warning once per model+site after
 // a flip (determinism has to come from the prompt there); and the Gemini tier is
@@ -51,10 +58,24 @@ const CONTEXT_CAP = parseInt(process.env.KB_KEYPOINTS_CONTEXT_CAP || '5000', 10)
 // Which provider produced a failure, for the three warn lines below. Same idiom
 // and the same default as relevance.js / preview.js / companyBrief.js in group
 // 1, and 'unknown' rather than a vendor name for the same reason: two providers
-// serve these paths now, so a line naming one is a guess printed as a fact, and
-// all three of these failures are swallowed (extraction returns empty / null and
-// ingest proceeds) — the log line is the ONLY evidence there was one. An honest
-// 'unknown' also makes a missing stamp greppable instead of misattributed.
+// serve these paths now, so a line naming one is a guess printed as a fact.
+//
+// WHAT A FAILURE COSTS DEPENDS ON THE CALLER, and "all three are swallowed, so
+// the log line is the only evidence" — the first version of this note — is false
+// in the dangerous direction. Three different outcomes reach a user:
+//
+//   ingest (knowledge/service.js)      swallowed. The document indexes with no
+//                                      key points / analysis and nothing says so.
+//   regenerate (service.js)            WORSE THAN SWALLOWED: the route answers
+//                                      { ok: true } and the `else delete
+//                                      md.companyAnalysis` branch DELETES the
+//                                      analysis that was already stored. A
+//                                      failure here destroys data.
+//   company-profile draft (portfolio)  a 502 the user sees. The only loud one.
+//
+// So the log line is the only evidence for the first, is contradicted by the
+// second, and is redundant for the third. Naming only the swallowed case is the
+// same over-narrow reading PR #54 fixed one file over.
 const providerOf = (err) => (err && err.provider) || 'unknown';
 
 // ── boilerplate stripping ─────────────────────────────────────────────────
