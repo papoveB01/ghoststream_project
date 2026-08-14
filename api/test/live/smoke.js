@@ -496,7 +496,15 @@ async function main() {
       // to turn a schema check into a rate-limit check.
       const r = await checkOne(entry, provider, opts);
       results.push(r);
-      const tag = { OK: 'ok      ', DEGRADED: 'DEGRADED', REJECTED: 'REJECTED', ERROR: 'ERROR   ' }[r.status];
+      // A harness-bug row has status ERROR but must not PRINT as one. The
+      // summary already separates the two; the BODY did not, so the observed
+      // failure was four lines reading `ERROR kb.battlecard … setup: the router
+      // refused the dispatch`, and anyone grepping the log rather than reading
+      // the last block still counted four provider errors. That is the exact
+      // misreading, still available one screen up from where it was fixed.
+      const tag = r.harnessBug
+        ? 'HARNESS!'
+        : { OK: 'ok      ', DEGRADED: 'DEGRADED', REJECTED: 'REJECTED', ERROR: 'ERROR   ' }[r.status];
       console.log(`  ${tag} ${entry.site.padEnd(34)} ${String(r.model).padEnd(22)} ${r.detail}`);
       for (const w of r.warnings || []) console.log(`         ! ${w}`);
     }
