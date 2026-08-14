@@ -1294,13 +1294,27 @@ decomposition exists so that per-file spokes stay tractable.
    because it has one.
 
    **✅ Group 2 shipped 2026-08-14** — `keypoints` + `assessment` +
-   `battlecard`, branch `feat/adr-0006-cutover-group-2`. Six call sites moved
-   onto `aiCall.generateStructured`: `knowledge/keypoints.js` ×3
+   `battlecard`, branch `feat/adr-0006-cutover-group-2`. **Five** call sites
+   moved onto `aiCall.generateStructured`: `knowledge/keypoints.js` ×3
    (`kb.keypoints`, `kb.companyAnalysis`, `kb.productAnalysis`, all resolving the
    one `keypoints` key) and `knowledge/assessment.js` ×2 (`kb.assessment` →
    `assessment`, `kb.battlecard` → `battlecard`). All three keys joined
-   `DISPATCH_READY` in the same PR, which is now six wide. Membership is
-   eligibility, not activation — every task still resolves to Gemini.
+   `DISPATCH_READY` in the same PR, which is now six keys and **nine** seam call
+   sites wide (four from group 1). Membership is eligibility, not activation —
+   every task still resolves to Gemini.
+
+   *(The count is worth stating carefully because three separate comments got it
+   wrong in the first cut, each in a different direction — "six call sites",
+   "eleven in total" — from counting the functions that had to be edited rather
+   than the `generateStructured` calls that resulted. `keypoints.js` is one key
+   over three call sites, which is exactly where the two counts diverge. PR #54
+   existed solely to repair drifted prose of this kind.)*
+
+   > **⚠ SHIPPED ≠ FLIP-READY, and `battlecard` is the case in point.** The key
+   > is eligible, so one env var moves it — and moving it today is measurably an
+   > outage. See "The finding that stops `battlecard` flipping" below. Nothing in
+   > this entry, and nothing in the smoke check, licenses setting
+   > `AI_PROVIDER_BATTLECARD=anthropic`.
 
    - **The retry answer is the one this item predicted, on both sides, and it is
      now asserted rather than commented.** `extractCompetitiveAssessment` KEEPS
@@ -1332,6 +1346,21 @@ decomposition exists so that per-file spokes stay tractable.
      after a flip their `temperature: 0.3` is dropped — with the
      once-per-model+site warning, not silently — while `assessment`'s `0.25`
      survives on Haiku 4.5. Determinism on those two has to come from the prompt.
+
+     **That drop has a named consumer, so it is not only a prose-quality
+     question.** When a competitor's docs carry no per-doc assessment,
+     `extractBattlecard`'s `!hasAggregate` branch takes `weightedAdvantage` from
+     `parsed.axesScored` — numbers the model *samples* out of
+     `BATTLECARD_SCHEMA`. That figure leaves the function as the lead/trail
+     percentage on the competitor page (`web/admin/admin.js:4648`, `:4192`), the
+     Market Map node verdict, and the ±5 threshold in `renderAssessmentText`,
+     and none of those surfaces show that it came from inline scoring rather
+     than from evidence. Measured 2026-08-14: **1 of the 4 production
+     battlecards that carry a model stamp is on that path** (`nightout`, which
+     renders "+60%"). So on Sonnet 5 a rep-facing percentage would be produced
+     with no determinism control at all. Recorded here and at the branch itself
+     so the flip decision is made with this in view, not after someone asks why
+     a competitor's lead moved.
    - **Existing rows: nothing to migrate, and the one field that can change is
      display-only.** No schema object changed, so every stored payload keeps its
      shape. The only value that moves is the `model` string stamped onto
@@ -1340,12 +1369,26 @@ decomposition exists so that per-file spokes stay tractable.
      rather than a boot-time constant. All five readers render it as text and
      none branch on it (`web/admin/admin.js` ×4 — the two `ca-meta` lines, the
      Markdown export, the History drawer; `portfolio.js`'s battlecard history
-     route; `watch.js` folds the record into a prompt as prose). Counted
-     2026-08-14 — staging: 3 / 5 / 15 `kb_documents` carrying
-     companyAnalysis / productAnalysis / assessment, 14 competitors with a
-     battlecard; production: 4 / 2 / 16 and 16. Every stored battlecard reads
-     `gemini-2.5-flash-lite` (plus the `null` the no-evidence early return
-     writes), so today's value is unchanged either way.
+     route; `watch.js` folds the record into a prompt as prose).
+
+     **Three tables carry that field, not one** — the first cut of this entry
+     named only `competitors.battlecard` and missed `competitor_battlecards` and
+     `competitor_battlecard_history`, which store the same payload. Counted
+     2026-08-14:
+
+     | | staging | production |
+     | --- | --- | --- |
+     | `kb_documents` w/ companyAnalysis / productAnalysis / assessment | 3 / 5 / 15 | 4 / 2 / 16 |
+     | `competitors` w/ a battlecard (of which `model: null`) | 14 (11) | 16 (12) |
+     | `competitor_battlecards` | 2 | 2 |
+     | `competitor_battlecard_history` | 5 | 6 |
+
+     **And the stored values are already heterogeneous**, which strengthens the
+     conclusion rather than weakening it: staging holds `gemini-2.5-flash-lite`,
+     `gemini-2.5-flash` **and** `null` across those three tables — three distinct
+     values coexisting today, with no reader branching on any of them. A fourth
+     (a Claude id) is the same kind of value, not a new kind. The `null`s are
+     the no-evidence early return, which has always written one.
    - Suite **349/349**, from **341** on `main` (+8), with **fourteen** deliberate
      mutations of `src/` — the dropped key, a colliding telemetry label, each
      budget and temperature, the half-done cutover (`extractBattlecard` resolving
@@ -1379,6 +1422,83 @@ decomposition exists so that per-file spokes stay tractable.
      touches no schema object — and running it twice is what makes the sentence
      evidence instead of an assumption. The 28/29 whole-registry figure above is
      unchanged; these five are five of the 28.
+
+     **What that green does NOT say, and this entry originally invited the wrong
+     reading of it.** `smoke.js` sends `effort: 'low'`, `max_tokens: 800`, no
+     temperature, and **one sample per schema**. The production call sites send
+     `effort: 'medium'`, their own budgets (2600 on the battlecard) and a
+     temperature. Against a defect that appears ~30% of the time, a single
+     sample passes ~70% of the time — so "5/5 accepted" means *the provider
+     accepted the schema*, which is what item 3 was built to check, and says
+     nothing about whether responses to the real request are usable. Read it as
+     schema acceptance, never as flip-readiness.
+
+   ### The finding that stops `battlecard` flipping (2026-08-14, integration pass)
+
+   Driving the **exact production request shape** — `claude-sonnet-5`,
+   `effort: 'medium'`, `temperature: 0.3`, `max_tokens: 2600`, the real
+   `BATTLECARD_SCHEMA` — against the live API, **3 of 10 responses were
+   unparseable JSON**:
+
+   | schema | shape sent | unparseable |
+   | --- | --- | --- |
+   | `BATTLECARD_SCHEMA` (4048 chars translated) | production | **3 / 10** |
+   | `ASSESSMENT_SCHEMA` | production | 0 / 10 |
+   | `KEYPOINTS_SCHEMA` | production | 0 / 10 |
+   | `COMPANY_ANALYSIS_SCHEMA` | production | 0 / 10 |
+   | `PRODUCT_ANALYSIS_SCHEMA` | production | 0 / 10 |
+
+   - **`stop_reason: end_turn`, not truncation** — so it is not a `max_tokens`
+     sizing problem and raising the budget does not address it. The malformation
+     is a **trailing comma inside an `objections` item** (`…"},]}]` at position
+     2620).
+   - **Not a `schemaCompat` bug.** The translated schema contains no construct
+     Anthropic rejects — the provider accepts it, which is precisely why the
+     smoke check is green. It is the **largest** translated schema in the group
+     misbehaving under constrained decoding.
+   - **It lands on the one site with no retry**, and that site is synchronous
+     behind the rep-facing `POST
+     /portfolio/competitors/:id/battlecard/regenerate`. A flip today means
+     roughly **one regeneration in three 502s**, per rep, per click, with no
+     second attempt and a `[battlecard] synthesis failed on anthropic` line as
+     the only trace.
+
+   **This undercuts the stated basis of the no-retry decision, not the decision
+   as shipped.** That argument was made against transient 503s — "a fast 502
+   beats three attempts with backoff while a rep waits" — and it remains right
+   for Gemini, which serves 100% of this traffic. The dominant Claude-side
+   failure is a **stochastic malformed answer**, which a retry demonstrably
+   fixes, and `assessment.js` already concedes exactly that for the Gemini side
+   in its note on the parse moving inside `withRetry`. So the asymmetry is
+   probably wrong for Claude and must be re-argued against *this* failure mode
+   rather than re-quoted from the ADR.
+
+   **Deferred to the flip PR, deliberately, and not to a backlog:** adding
+   `aiRetry.POLICIES.battlecard` plus a wrapper, and/or reshaping
+   `BATTLECARD_SCHEMA` (§4.7 already establishes that this provider's structured
+   output has schema-size failure modes nothing on the Gemini side bounds — this
+   is a second, *softer* one: accepted, then unreliable). Doing it in the cutover
+   PR would reverse the decision that PR documents and add a second reviewable
+   concern to it. The gate lives where an operator will actually hit it: a ⚠
+   block on the `battlecard` entry in `models.js` and a second on
+   `DISPATCH_READY` itself, both naming the 3-in-10 number and the 502.
+
+   **Method note for later groups, which is the transferable part:** this was
+   found by sending the real request shape n=10, not by reading a diff and not by
+   the smoke check. Item 3's registry is a *schema acceptance* harness by
+   construction (one sample, minimal shape). Any group whose schemas are large,
+   or whose call site is synchronous and un-retried, needs the production shape
+   sampled repeatedly before its flip — and `proposals` (§4.7) is the next one
+   that fits that description.
+
+   **One inherited defect left alone, recorded so it is not re-found as new.**
+   The `providerOf(err) → 'unknown'` idiom (group 1's, now in five more places)
+   claims that `unknown` means "a missing stamp to go and add". On today's
+   100%-Gemini traffic it is the *common* case instead: raw `@google/genai`
+   errors carry no `provider`, so a genuine Gemini outage logs `failed on
+   unknown` and the comment reads backwards. It is group 1's to fix — stamping
+   at the Gemini branch of `aiCall`, one line — and it is a separate PR because
+   it changes the log line on every migrated fail-open path at once.
 
    Every group's schemas are already proven acceptable by item 3 — **except
    `proposals`, which carries the §4.7 reshape and is the reason that group is

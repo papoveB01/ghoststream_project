@@ -274,8 +274,11 @@ async function extractKeyPoints({ scope, text, tenantId = null, title = null } =
 //                          (e.g. "Lead with this in a CFO discovery call to
 //                          counter the 'AI tools don't move the number' objection")
 //
-// All fields are optional inside the schema — Gemini drops what's not in
-// the doc rather than inventing. Empty arrays / null are acceptable.
+// All fields are optional inside the schema — the model drops what's not in
+// the doc rather than inventing. Empty arrays / null are acceptable. (Named by
+// vendor until group 2; this task can resolve to either provider now, and the
+// `nullable` semantics differ between them — ADR-0006 §4.6 is why schemaCompat
+// translates rather than each schema being hand-written twice.)
 
 const COMPANY_ANALYSIS_SCHEMA = {
   type: 'object',

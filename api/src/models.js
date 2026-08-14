@@ -115,6 +115,14 @@ const DEFAULT_PROVIDER = 'gemini';
 // and providerFor() additionally refuses to dispatch when the target provider's
 // key is not configured.
 //
+// ⚠ ELIGIBLE IS NOT THE SAME AS READY TO FLIP, and `battlecard` is the standing
+// proof: it is in this set, one env var moves it, and moving it today 502s
+// roughly one rep-facing regenerate in three on a measured schema-conformance
+// defect. Read the ⚠ block on the `battlecard` entry in TASKS below BEFORE
+// setting any AI_PROVIDER_* here. Nothing in this set — and nothing in the
+// live-schema smoke check, which samples each schema once — asserts that a task
+// is safe to serve on Claude.
+//
 // EDITING THE LINE BELOW ALSO INVALIDATES PROSE. Four comment blocks assert what
 // is in this set and go stale with it: anthropic.js (header), aiCall.js
 // (header), gemini.js (assertGeminiModel) and aiContext.js ("It does not flip
@@ -155,7 +163,9 @@ const DISPATCH_READY = new Set([
 //
 // DONE as of group 2's cutover PR (ADR-0006 §9 item 5, `keypoints` +
 // `assessment` + `battlecard`): all three keys are in DISPATCH_READY above and
-// all six of their call sites dispatch through aiCall. What that changed is
+// all FIVE of their call sites dispatch through aiCall — three in keypoints.js
+// under the one `keypoints` key, two in assessment.js under two keys. What
+// that changed is
 // ELIGIBILITY only — AI_PROVIDER / AI_PROVIDER_<TASK> still default to gemini,
 // so the provider serving 100% of this traffic is unmoved and every `tier` below
 // is still the one it was.
@@ -186,6 +196,33 @@ const TASKS = {
   // and production `dsp-api` both pass it through empty), so nothing moves —
   // but an operator pinning the battlecard must now use
   // `GEMINI_BATTLECARD_MODEL`.
+  //
+  // ⚠ DO NOT SET `AI_PROVIDER_BATTLECARD=anthropic` YET. This key is in
+  // DISPATCH_READY, so the router will honour that variable — and it is
+  // currently the wrong thing to do. Measured live 2026-08-14 by the group-2
+  // cutover's integration pass, sending THIS call site's real request shape
+  // (`claude-sonnet-5`, effort 'medium', temperature 0.3, max_tokens 2600, the
+  // real BATTLECARD_SCHEMA): **3 of 10 responses were unparseable JSON**, with
+  // `stop_reason: end_turn` — not truncation — from a trailing comma inside an
+  // `objections` item. 0 of 10 on the other four group-2 schemas, so it is this
+  // schema (the largest translated one, 4048 chars) misbehaving under
+  // constrained decoding, not a schemaCompat bug.
+  //
+  // WHY THAT IS AN OUTAGE HERE SPECIFICALLY: extractBattlecard is the one
+  // migrated call site with NO retry wrapper, and it is synchronous behind the
+  // rep-facing POST /portfolio/competitors/:id/battlecard/regenerate. So a flip
+  // today means roughly ONE IN THREE REGENERATIONS 502s, per rep, per click,
+  // with no second attempt.
+  //
+  // The live-schema smoke check does NOT cover this and reports green over it:
+  // it sends effort 'low', max_tokens 800, no temperature, and ONE sample per
+  // schema, so a ~30% stochastic malformation passes it ~70% of the time.
+  // "5/5 accepted" is schema acceptance, not flip-readiness.
+  //
+  // Fixing it — a retry wrapper (which needs an aiRetry.POLICIES.battlecard row)
+  // or reshaping BATTLECARD_SCHEMA — is deliberately NOT part of the cutover PR:
+  // it changes the retry decision that PR documents, and it belongs with the
+  // flip. ADR-0006 §9 item 5 carries the full measurement.
   battlecard:   { tier: 'lite',    env: 'GEMINI_BATTLECARD_MODEL',   anthropicEnv: 'ANTHROPIC_BATTLECARD_MODEL', anthropicTier: 'flash' },
   companyBrief: { tier: 'lite',    env: 'GEMINI_COMPANYBRIEF_MODEL', anthropicEnv: 'ANTHROPIC_COMPANYBRIEF_MODEL' },
   preview:      { tier: 'lite',    env: 'GEMINI_PREVIEW_MODEL',      anthropicEnv: 'ANTHROPIC_PREVIEW_MODEL' },

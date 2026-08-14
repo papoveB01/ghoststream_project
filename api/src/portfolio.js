@@ -582,7 +582,10 @@ router.get('/competitors/:id/battlecards/summary', async (req, res, next) => {
 });
 
 // POST /portfolio/competitors/:id/battlecard/regenerate[?product=<id>] — runs
-// the Gemini synthesis + persists. Keeps any existing manualEdits intact.
+// the battlecard synthesis + persists. Keeps any existing manualEdits intact.
+// Not "the Gemini synthesis" any more: `battlecard` is a dispatch-ready task
+// (ADR-0006 §9 item 5 group 2), so which vendor answers is an env var, and this
+// is the SYNCHRONOUS, un-retried path that decision is weighed against.
 // Body (optional): { market } — a region/country/city; the card is then judged
 // for that market specifically (and records it in battlecard.market).
 router.post('/competitors/:id/battlecard/regenerate', async (req, res, next) => {

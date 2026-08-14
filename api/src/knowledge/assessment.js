@@ -51,6 +51,16 @@ const db = require('../db');
 // warning after a flip, while the scorer's `0.25` survives on Haiku 4.5. The
 // Gemini tier of both keys is deliberately unchanged, so nothing about a Gemini
 // request moves in this PR.
+//
+// THAT DROP HAS A NAMED CONSUMER, so it is not only a prose-quality question.
+// When a competitor's docs carry no per-doc assessment, the `!hasAggregate`
+// branch below takes `weightedAdvantage` from `parsed.axesScored` — a NUMBER the
+// model samples out of BATTLECARD_SCHEMA — and that number is the lead/trail %
+// on the competitor page, the Market Map node verdict, and the ±5 threshold in
+// renderAssessmentText. On Sonnet 5 that number is produced with no temperature
+// control at all. It is a live path, not a corner: measured 2026-08-14, 1 of the
+// 4 production battlecards that have a model stamped took it (`nightout`, which
+// renders "+60%").
 const aiCall = require('../aiCall');
 
 // Shared retry helper (ADR-0006 §7). Bound here with this module's label so
@@ -78,6 +88,20 @@ const aiCall = require('../aiCall');
 //
 // So aiRetry.POLICIES still needs no `battlecard` row. forLabel() throws on an
 // unknown label, which is what keeps adding one a deliberate act.
+//
+// ⚠ THAT ARGUMENT IS ABOUT 503s, AND IT IS NOT THE FAILURE MODE CLAUDE ACTUALLY
+// HAS HERE. Measured live 2026-08-14 with this call site's real request shape:
+// 3 of 10 `claude-sonnet-5` responses were unparseable JSON — `stop_reason:
+// end_turn`, a trailing comma inside an `objections` item, not truncation — and
+// 0 of 10 on the other four group-2 schemas. A retry demonstrably fixes a
+// stochastic malformation, which is exactly what the note above the aiCall
+// binding already concedes for the Gemini side. So the asymmetry as it stands is
+// right for the provider serving 100% of this traffic today and is very likely
+// WRONG for Claude. It is left unchanged here on purpose: reversing it changes
+// the decision the cutover PR documents and needs an aiRetry.POLICIES row, so it
+// belongs to the flip PR, together with the DO-NOT-FLIP-YET warning on the
+// `battlecard` entry in models.js. Do not read this block as a settled verdict
+// for the Claude path.
 //
 // ONE PRICED SIDE EFFECT of the move, the same one relevance.js documents: the
 // JSON.parse now happens INSIDE aiCall, i.e. inside withRetry, where it used to
@@ -646,6 +670,16 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
 
     // If we have no per-doc aggregate (all axes weight=0), use the model's
     // inline scoring as the matrix. Otherwise the aggregate wins.
+    //
+    // THIS IS THE SAMPLING-SENSITIVE BRANCH. Everything below is derived from
+    // numbers the model chose, and `weightedAdvantage` leaves this function as
+    // the lead/trail % on the competitor page (web/admin/admin.js), the Market
+    // Map node verdict, and the ±5 threshold in renderAssessmentText — none of
+    // which show that the figure came from inline scoring rather than from
+    // evidence. On Claude this call site's temperature is dropped (Sonnet 5),
+    // so on that provider the branch runs with no determinism control; see the
+    // header. 1 of 4 production battlecards with a model stamped is on this
+    // path today.
     let axes = aggregated.axes;
     let weightedAdvantage = aggregated.weightedAdvantage;
     const hasAggregate = Object.values(aggregated.axes).some((a) => (a.weight || 0) > 0);

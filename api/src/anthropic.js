@@ -8,8 +8,11 @@
 // at all. That is an environment change, not a code change.
 //
 //   group 1  relevance, preview, companyBrief
-//   group 2  keypoints, assessment, battlecard — eleven call sites in total now,
-//            and the group-2 three are the first to reach a NON-Haiku tier:
+//   group 2  keypoints, assessment, battlecard — NINE seam call sites in total
+//            now (four in group 1, five in group 2; count the
+//            generateStructured calls, not the functions holding them —
+//            knowledge/keypoints.js is one key over three of them), and the
+//            group-2 three are the first to reach a NON-Haiku tier:
 //            `keypoints` and `battlecard` carry anthropicTier 'flash', so they
 //            land on claude-sonnet-5, which is in NO_TEMPERATURE below. Their
 //            call sites still pass temperature (0.3), so a flip drops it here
