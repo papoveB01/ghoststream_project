@@ -160,8 +160,10 @@ const withRetry = aiRetry.forLabel('assessment');
 
 // Which provider produced a failure. Same idiom and the same 'unknown' default
 // as relevance.js / preview.js / companyBrief.js in group 1: two providers serve
-// these paths now, so naming one is a guess printed as a fact — and the scorer's
-// failure is swallowed into a null return, so this line is the only evidence.
+// these paths now, so naming one is a guess printed as a fact. On the INGEST
+// path the scorer's failure is swallowed into a null return and this line is the
+// only evidence; the REGENERATE path calls the Strict form below and logs its
+// own line, because there a null would have overwritten a stored scoreboard.
 const providerOf = (err) => (err && err.provider) || 'unknown';
 
 const INPUT_CAP = parseInt(process.env.KB_ASSESSMENT_INPUT_CAP || '16000', 10);
@@ -287,14 +289,19 @@ function normalize(raw) {
   };
 }
 
-// extractCompetitiveAssessment({ text, tenantId?, title?, competitorName?, appliesProductNames? })
+// extractCompetitiveAssessmentStrict({ text, tenantId?, title?, competitorName?, appliesProductNames? })
 //   → { summary, axes[8], topImprovements[≤3], weightedAdvantage, axesSpec, version, generatedAt }
 // `appliesProductNames` — names of OUR products this battlecard applies to. Empty
 // array (or null) is interpreted as "all our products" and the model scores
 // against the full portfolio. Non-empty narrows the lens so a "Fraud Solution
 // vs Acme" card doesn't get scored on irrelevant payment-gateway features.
-// Never throws — returns null on any failure so ingest proceeds.
-async function extractCompetitiveAssessment({ text, tenantId = null, title = null, competitorName = null, appliesProductNames = [] } = {}) {
+//
+// `null` means the document is too thin to score, and nothing else. A failed
+// call throws, as does a scoreboard with nothing in it — see the note on the
+// return below. For callers that overwrite a stored scoreboard and so cannot
+// read a failure as "this doc scores nothing"; the never-throws wrapper is
+// below it. See the two-forms note in keypoints.js.
+async function extractCompetitiveAssessmentStrict({ text, tenantId = null, title = null, competitorName = null, appliesProductNames = [] } = {}) {
   const body = keypoints.stripBoilerplate(String(text || ''));
   if (body.length < 80) return null;
 
@@ -305,26 +312,64 @@ async function extractCompetitiveAssessment({ text, tenantId = null, title = nul
     ? `This battlecard scores OUR offering on these specific products: ${appliesProductNames.join(', ')}. Restrict ourScore reasoning to these — ignore unrelated parts of our portfolio.`
     : `This battlecard scores OUR full portfolio against the competitor (no product restriction was set).`;
 
+  const axesBlock = AXES.map((a) => `- ${a.key} (${a.label}): ${a.hint}`).join('\n');
+  const prompt =
+    `${PROMPT}\n\n` +
+    `===THE 8 FIXED AXES===\n${axesBlock}\n\n` +
+    `===SCOPE===\n${scope}\n\n` +
+    (context
+      ? `===OUR COMPANY (portfolio & objectives)===\n${context}\n\n`
+      : `===OUR COMPANY===\n(No portfolio on file — score ourScore conservatively and call this out in the summary.)\n\n`) +
+    `===COMPETITOR${competitorName ? `: ${competitorName}` : ''}${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
+  const { parsed, provider } = await withRetry(() => aiCall.generateStructured({
+    task: 'assessment',
+    prompt,
+    responseSchema: ASSESSMENT_SCHEMA,
+    maxTokens: 2400,
+    temperature: 0.25,
+    tenantId,
+    site: 'kb.assessment',
+  }));
+  const scoreboard = normalize(parsed);
+  // A DEGENERATE SUCCESS IS A FAILURE. normalize() cannot return null and cannot
+  // throw — by design, because the UI wants a stable 8-axis shape — so `{}` from
+  // a malformed answer comes back as a *complete-looking* scoreboard: 8 axes at
+  // weight 0 / winner 'unknown', empty summary, weightedAdvantage 0. Written
+  // over a good stored scoreboard by the refresh path that is a silent loss with
+  // `refreshFailures: []`, and it propagates: extractBattlecard averages these
+  // per-doc scoreboards, so one blanked doc can push the card onto its
+  // `!hasAggregate` inline branch, which is what the competitor page, the
+  // History drawer and the Markdown snapshot render.
+  //
+  // The signature is narrow on purpose: not one axis carries a verdict AND there
+  // is no summary. `summary` is `required` in ASSESSMENT_SCHEMA, so a real "the
+  // doc has no evidence" answer still says so in prose and is kept; the floor
+  // above already handles a document too thin to score at all.
+  const scored = scoreboard.axes.some((a) => a.winner !== 'unknown');
+  if (!scored && !scoreboard.summary) {
+    const err = new Error('competitive assessment scored no axis and returned no summary');
+    // Ours, not a raw SDK throw, so it can always name the serving provider.
+    if (provider) err.provider = provider;
+    throw err;
+  }
+  return scoreboard;
+}
+
+// extractCompetitiveAssessment(...) — the never-throws form: returns null on any
+// failure so ingest proceeds. Only callers that are not overwriting a stored
+// scoreboard may use it.
+//
+// ONE CONSEQUENCE REACHES INGEST, and it is worth naming rather than claiming
+// this half is untouched: a degenerate answer used to be stored as a blank
+// all-unknown scoreboard on the new row, and now stores nothing at all
+// (`...(scoreboard ? { assessment } : {})` in service.js). That is the better of
+// the two — extractBattlecard averages per-doc scoreboards, and a fake all-zero
+// card dragged the aggregate toward a verdict nobody made — but it IS a change,
+// and nothing else about ingest moves: the swallow, the fail-open and every
+// other return value are what they were.
+async function extractCompetitiveAssessment(opts = {}) {
   try {
-    const axesBlock = AXES.map((a) => `- ${a.key} (${a.label}): ${a.hint}`).join('\n');
-    const prompt =
-      `${PROMPT}\n\n` +
-      `===THE 8 FIXED AXES===\n${axesBlock}\n\n` +
-      `===SCOPE===\n${scope}\n\n` +
-      (context
-        ? `===OUR COMPANY (portfolio & objectives)===\n${context}\n\n`
-        : `===OUR COMPANY===\n(No portfolio on file — score ourScore conservatively and call this out in the summary.)\n\n`) +
-      `===COMPETITOR${competitorName ? `: ${competitorName}` : ''}${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
-    const { parsed } = await withRetry(() => aiCall.generateStructured({
-      task: 'assessment',
-      prompt,
-      responseSchema: ASSESSMENT_SCHEMA,
-      maxTokens: 2400,
-      temperature: 0.25,
-      tenantId,
-      site: 'kb.assessment',
-    }));
-    return normalize(parsed);
+    return await extractCompetitiveAssessmentStrict(opts);
   } catch (err) {
     console.warn(`[assessment] extraction failed on ${providerOf(err)}:`, err.message);
     return null;
@@ -813,6 +858,7 @@ function mergeBattlecard(stored) {
 // so that the guard's file::expr key cannot be satisfied by a second, unrelated
 // `responseSchema: SCHEMA` added later in the same file.
 module.exports = {
-  extractCompetitiveAssessment, renderAssessmentText, AXES, AXIS_KEYS, extractBattlecard, mergeBattlecard,
+  extractCompetitiveAssessment, extractCompetitiveAssessmentStrict,
+  renderAssessmentText, AXES, AXIS_KEYS, extractBattlecard, mergeBattlecard,
   ASSESSMENT_SCHEMA, BATTLECARD_SCHEMA,
 };

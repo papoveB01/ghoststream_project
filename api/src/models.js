@@ -235,25 +235,36 @@ const FLIP_BLOCKED = new Map([
   // end_turn, peak 1,871 of 2,200, which is close enough that "safe" would be
   // the wrong word for it.
   //
-  // WHY THAT IS DATA LOSS AND NOT AN ERROR, observed end to end and not
-  // inferred: driving the real knowledge/service.js -> keypoints.js -> aiCall ->
-  // anthropic path against the live API on that document, the route answered
-  // { ok: true } while the stored 4,297-char companyAnalysis was DELETED — the
-  // same figure as above, which this line used to give as 4,209. BOTH COUNTS
-  // ARE REAL, and the reason is that the field is a jsonb OBJECT (9 top-level
-  // keys), not a string: Postgres pads a space after each of its 88 structural
-  // `:`/`,` separators and Node's JSON.stringify does not, so 4,297 - 4,209 = 88
+  // THE DATA LOSS THIS ENTRY WAS FIRST WRITTEN ON IS FIXED; THE TRUNCATION IS
+  // NOT, and the entry stays for the second half. As first measured, driving the
+  // real knowledge/service.js -> keypoints.js -> aiCall -> anthropic path against
+  // the live API on that document, the route answered { ok: true } while the
+  // stored 4,297-char companyAnalysis was DELETED. (That figure appeared here as
+  // 4,209 once. BOTH COUNTS ARE REAL: the field is a jsonb OBJECT of 9 top-level
+  // keys, not a string, so Postgres pads a space after each of its 88 structural
+  // `:`/`,` separators and Node's JSON.stringify does not — 4,297 - 4,209 = 88
   // exactly. One measurement, two serializations. 4,297 is the DB's own
   // `length(metadata->>'companyAnalysis')` and is what ADR-0006's table quotes,
   // so it is the figure both places use — but "for the same stored string" was
-  // the wrong explanation and is what made the discrepancy look like drift.
-  // stop_reason 'max_tokens' with allowTruncation unset (these call sites pass
-  // nothing) throws in anthropic.js; extractCompanyAnalysis catches it and
-  // returns null; and the regenerate path is `if (analysis) md.companyAnalysis
-  // = analysis; else delete md.companyAnalysis`. On the ingest path it is simply
-  // never written; portfolio.js's company-profile draft 502s instead.
+  // the wrong explanation and is what made the discrepancy look like drift.)
   //
-  // TO DELETE THIS ENTRY: live kb.companyAnalysis calls at maxTokens 2200
+  // The deletion was not the truncation; it was `if (analysis) md.companyAnalysis
+  // = analysis; else delete md.companyAnalysis` reading a swallowed error as
+  // "this document has none". regenerateKeyPoints now calls the *Strict
+  // extractors, keeps the stored value on a failed call, and reports the field in
+  // the route's `refreshFailures` — so a truncated refresh no longer destroys
+  // anything, on Gemini today or on Claude after a flip.
+  //
+  // WHAT IS LEFT, AND WHY IT STILL BLOCKS: stop_reason 'max_tokens' with
+  // allowTruncation unset (these call sites pass nothing) still throws in
+  // anthropic.js, so a flip would make companyAnalysis refreshes on bodies of
+  // this size fail 5 times out of 5 — the rep presses "refresh analysis", the
+  // stored analysis survives but never updates, and the only correction is a
+  // warning after the fact. On the ingest path the field is simply never
+  // written; portfolio.js's company-profile draft 502s instead.
+  //
+  // TO DELETE THIS ENTRY: unchanged, because what it measures is the truncation
+  // and only the severity moved. Live kb.companyAnalysis calls at maxTokens 2200
   // against document 91bfba3e-a001-451e-87df-985a6a468395 — the one that
   // reproduces — showing stop_reason 'end_turn'. Repeated, not one: the current
   // measurement is 5 of 5, so a single end_turn is not evidence the budget is
@@ -266,8 +277,11 @@ const FLIP_BLOCKED = new Map([
   ['keypoints',
     'the 2200-token budgets at kb.companyAnalysis / kb.productAnalysis are Gemini-sized and ' +
     'truncate on claude-sonnet-5 (measured 5 of 5 stop_reason max_tokens on staging document ' +
-    '91bfba3e, a 10,685-char body); a truncated ' +
-    "answer DELETES the stored analysis via service.js's regenerate path. See ADR-0006 §9 item 5."],
+    '91bfba3e, a 10,685-char body), so a flip makes the refresh of an analysis that size fail ' +
+    'every time: the rep presses refresh, the stored analysis survives untouched and never ' +
+    'updates, and the only correction is the warning after the fact. It no longer DESTROYS ' +
+    'the stored analysis, and it is no longer SILENT — that half was service.js\'s ' +
+    '`else delete`, and is fixed. See ADR-0006 §9 item 5.'],
 ]);
 
 // task → { tier, env(legacy per-task override), anthropicEnv, anthropicTier }

@@ -805,6 +805,11 @@ router.delete('/competitors/:id/offerings/:offeringId', async (req, res, next) =
     if (!exists.rows[0]) return res.status(404).json({ error: 'not found' });
     let movedDocs = 0;
     await db.withTx(async (client) => {
+      // This one is correct — an atomic per-key jsonb minus that touches nothing
+      // else. It is still losable, because knowledge/service.js's two writers
+      // rewrite the WHOLE metadata column from a snapshot taken up to four model
+      // calls earlier, so a refresh in flight puts this key straight back and the
+      // doc becomes invisible to the gate that filters on it. ADR-0006 §10.
       const upd = await client.query(
         `UPDATE kb_documents d
             SET metadata = d.metadata - 'competitorProductId', updated_at = now()

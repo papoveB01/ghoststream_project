@@ -193,8 +193,9 @@ test('all three keypoints call sites go through the seam as ONE task, with their
     assert.deepStrictEqual(calls.map((c) => c.effort), [undefined, undefined, undefined],
       'these call sites take the seam default; passing one here would decouple them from it');
     assert.deepStrictEqual(calls.map((c) => c.allowTruncation), [undefined, undefined, undefined],
-      'a truncated analysis must throw, not be parsed — service.js DELETES the stored ' +
-      'payload when extraction returns null, so a half-answer accepted here is worse');
+      'a truncated analysis must throw, not be parsed — a half-answer accepted here would be ' +
+      'STORED as the analysis, and the regenerate path can no longer tell it from a good one ' +
+      '(a thrown failure it now handles: it keeps the stored value and reports the field)');
     // Identity, not shape: `responseSchema` keeps Gemini's spelling so
     // liveSchemaCoverage.test.js's scan for the literal token still finds these.
     assert.strictEqual(calls[0].responseSchema, keypoints.KEYPOINTS_SCHEMA);
