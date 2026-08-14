@@ -550,8 +550,24 @@ async function main() {
   // Listing it twice is how "4 errored" gets read as four flaky provider calls
   // — which is exactly the misreading that let the FLIP_BLOCKED regression sit.
   const errored = by('ERROR').filter((r) => !r.harnessBug);
-  const flipBlockedRows = results.filter(
-    (r) => r.provider === 'anthropic' && isFlipBlocked(r.entry.task));
+  // ACCEPTED flip-blocked rows, not merely flip-blocked ones. The footnote says
+  // "the provider accepted the schema", and filtering on task membership alone
+  // said it about rows nothing was ever sent for. Observed: `0/5 accepted,
+  // 1 REJECTED, 4 HARNESS BUG` printed directly above "4 of those row(s) are
+  // [flip-blocked]: the provider accepted the schema…" — an acceptance claim for
+  // four rows that never reached a provider, in the one paragraph whose entire
+  // job is to stop a count being over-read. A --dry-run makes the same claim for
+  // every row, which is why opts.dryRun is checked here too rather than left to
+  // the [DRY RUN] marker four screens up.
+  //
+  // DEGRADED counts as accepted, deliberately: the provider did read the schema
+  // and take it, and a degraded flip-blocked row is exactly as quotable as an
+  // `ok` one. What is excluded is REJECTED, ERROR and HARNESS BUG.
+  const flipBlockedRows = opts.dryRun ? [] : results.filter(
+    (r) => r.provider === 'anthropic'
+      && isFlipBlocked(r.entry.task)
+      && !r.harnessBug
+      && (r.status === 'OK' || r.status === 'DEGRADED'));
 
   console.log(
     `\n${by('OK').length}/${results.length} accepted` +
@@ -567,7 +583,7 @@ async function main() {
   // because the count is what gets pasted into a PR body.
   if (flipBlockedRows.length) {
     console.log(
-      `\n${flipBlockedRows.length} of those row(s) are [flip-blocked]: the provider accepted the schema and ` +
+      `\n${flipBlockedRows.length} of the ACCEPTED row(s) are [flip-blocked]: the provider took the schema and ` +
       'production still\nrefuses to route the task there (models.FLIP_BLOCKED). This run measures SCHEMA ' +
       'ACCEPTANCE\nat one sample, effort=low and max_tokens=' + `${opts.maxTokens}` +
       '; it is not evidence about the real request\nshape, and it is not flip readiness.'
