@@ -472,10 +472,13 @@ async function main() {
 
   const by = (s) => results.filter((r) => r.status === s);
   const rejected = by('REJECTED');
-  const errored = by('ERROR');
   const degraded = by('DEGRADED');
   const warned = results.filter((r) => (r.warnings || []).length);
   const bugs = results.filter((r) => r.harnessBug);
+  // A harness bug is reported in its own block below and NOT also as an error.
+  // Listing it twice is how "4 errored" gets read as four flaky provider calls
+  // — which is exactly the misreading that let the FLIP_BLOCKED regression sit.
+  const errored = by('ERROR').filter((r) => !r.harnessBug);
 
   console.log(
     `\n${by('OK').length}/${results.length} accepted` +
