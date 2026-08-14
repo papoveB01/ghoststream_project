@@ -63,18 +63,29 @@ const EXPECTATIONS = [
 // omission that made test/live/smoke.js post a Gemini model id to the Anthropic
 // API for four of the five group-2 entries, and the day `personas` acquires a
 // measured flip blocker this file would do it too.
+//
+// EVERY LIFT IS CONDITIONAL, and both restores are conditional on the same flag
+// — `smoke.js:141/145/171` has always been, this file was not. An unconditional
+// `DISPATCH_READY.add` / `.delete` pair does not restore, it DELETES: for a task
+// that is already dispatch-ready (which is what `personas` becomes at the arena
+// cutover, i.e. the first run that is not latent), the first probe removes the
+// membership and the second one runs against a router that has silently fallen
+// back to Gemini. No live call is needed to see it — the end-of-run diagnostic
+// below prints `gemini/gemini-2.5-flash` and providerFor() emits "its call site
+// cannot dispatch yet" at the end of an otherwise green run.
 function prepareVia(task, model) {
-  models.DISPATCH_READY.add(task);
+  const wasReady = models.DISPATCH_READY.has(task);
+  if (!wasReady) models.DISPATCH_READY.add(task);
   const wasBlocked = models.FLIP_BLOCKED.has(task);
   const blockReason = models.FLIP_BLOCKED.get(task);
-  models.FLIP_BLOCKED.delete(task);
+  if (wasBlocked) models.FLIP_BLOCKED.delete(task);
   const envName = models.providerEnvName(task);
   const saved = process.env[envName];
   process.env[envName] = 'anthropic';
   const savedModel = process.env.ANTHROPIC_PERSONAS_MODEL;
   process.env.ANTHROPIC_PERSONAS_MODEL = model;
   const restore = () => {
-    models.DISPATCH_READY.delete(task);
+    if (!wasReady) models.DISPATCH_READY.delete(task);
     if (wasBlocked) models.FLIP_BLOCKED.set(task, blockReason);
     if (saved === undefined) delete process.env[envName]; else process.env[envName] = saved;
     if (savedModel === undefined) delete process.env.ANTHROPIC_PERSONAS_MODEL;
