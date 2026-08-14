@@ -182,9 +182,11 @@ Two corrections fall out of this and are part of the decision:
   `battlecard`** — the lowercase string is the router key in `models.js` and the
   `AI_PROVIDER_BATTLECARD` / `ANTHROPIC_BATTLECARD_MODEL` /
   `GEMINI_BATTLECARD_MODEL` env names derive from it. *Landed in the router
-  2026-08-07 (PR #53). Both keys stay on Gemini and `battlecard` keeps Gemini
-  tier `lite`, so only the Claude side is re-tiered; the Gemini-side correction,
-  if one is wanted, is a separate decision.*
+  2026-08-07 (PR #53); both call sites landed on the seam 2026-08-14 with §9
+  item 5's group 2, which is when the two keys became eligible for Claude at all.
+  `battlecard` still keeps Gemini tier `lite`, so only the Claude side is
+  re-tiered and no Gemini request moved; the Gemini-side correction, if one is
+  wanted, remains a separate decision.*
 
 **`thinkingBudget: 0` does not map to `thinking: {type:"disabled"}`.** On
 Opus 5 disabled thinking is legal only at effort ≤ `high` and has two
@@ -1290,6 +1292,93 @@ decomposition exists so that per-file spokes stay tractable.
    wrapping it turns a fast 502 into three attempts with backoff while a rep
    waits. Weigh that; don't inherit a wrapper from the sibling call site just
    because it has one.
+
+   **✅ Group 2 shipped 2026-08-14** — `keypoints` + `assessment` +
+   `battlecard`, branch `feat/adr-0006-cutover-group-2`. Six call sites moved
+   onto `aiCall.generateStructured`: `knowledge/keypoints.js` ×3
+   (`kb.keypoints`, `kb.companyAnalysis`, `kb.productAnalysis`, all resolving the
+   one `keypoints` key) and `knowledge/assessment.js` ×2 (`kb.assessment` →
+   `assessment`, `kb.battlecard` → `battlecard`). All three keys joined
+   `DISPATCH_READY` in the same PR, which is now six wide. Membership is
+   eligibility, not activation — every task still resolves to Gemini.
+
+   - **The retry answer is the one this item predicted, on both sides, and it is
+     now asserted rather than commented.** `extractCompetitiveAssessment` KEEPS
+     `forLabel('assessment')`, wrapping the seam the way `relevance.js` does; it
+     runs at ingest, and a transient 503 otherwise costs the document its
+     scoreboard silently — the doc still ingests, `metadata.assessment` is simply
+     absent. `extractBattlecard` still has **no** wrapper, so `aiRetry.POLICIES`
+     gained no row. A test drives one transient failure through each and asserts
+     2 attempts for the scorer and exactly 1 for the synthesis, because "we chose
+     not to wrap it" is precisely the kind of claim this ADR has twice found
+     living only in a comment.
+   - **The three require-time `modelFor()` constants are gone**, not moved —
+     `keypoints.js`'s `MODEL` and `assessment.js`'s `MODEL` /
+     `BATTLECARD_MODEL`, the same freeze §9 item 4 fixed in `personas.js`.
+     Pinned behaviourally: `GEMINI_KEYPOINTS_MODEL` is set *after* the module is
+     required and the fake Gemini client is asserted to receive it.
+   - **Nothing about a Gemini request moved**, which is the property the
+     `anthropicTier` overrides exist to protect and the one a per-file diff
+     cannot show, because the request is now assembled in `aiCall.js` from
+     arguments spread across two other files. Asserted by driving the REAL seam
+     into a fake Gemini client and comparing the whole `config` object per call
+     site (`test/cutoverGroup2.test.js`, `[GEMINI-PARITY]`): same model, same
+     `maxOutputTokens`, same `temperature`, same `thinkingConfig`, same schema
+     object identity, for all five.
+   - **Group 2 is the first cutover to put call sites on a NON-Haiku Claude
+     tier**, and that has a consequence later groups should not rediscover:
+     `keypoints` and `battlecard` carry `anthropicTier: 'flash'` →
+     `claude-sonnet-5`, which is in `anthropic.js`'s `NO_TEMPERATURE` list. So
+     after a flip their `temperature: 0.3` is dropped — with the
+     once-per-model+site warning, not silently — while `assessment`'s `0.25`
+     survives on Haiku 4.5. Determinism on those two has to come from the prompt.
+   - **Existing rows: nothing to migrate, and the one field that can change is
+     display-only.** No schema object changed, so every stored payload keeps its
+     shape. The only value that moves is the `model` string stamped onto
+     `kb_documents.metadata.companyAnalysis` / `.productAnalysis` and
+     `competitors.battlecard`, which is now the SERVING model from the seam
+     rather than a boot-time constant. All five readers render it as text and
+     none branch on it (`web/admin/admin.js` ×4 — the two `ca-meta` lines, the
+     Markdown export, the History drawer; `portfolio.js`'s battlecard history
+     route; `watch.js` folds the record into a prompt as prose). Counted
+     2026-08-14 — staging: 3 / 5 / 15 `kb_documents` carrying
+     companyAnalysis / productAnalysis / assessment, 14 competitors with a
+     battlecard; production: 4 / 2 / 16 and 16. Every stored battlecard reads
+     `gemini-2.5-flash-lite` (plus the `null` the no-evidence early return
+     writes), so today's value is unchanged either way.
+   - Suite **349/349**, from **341** on `main` (+8), with **fourteen** deliberate
+     mutations of `src/` — the dropped key, a colliding telemetry label, each
+     budget and temperature, the half-done cutover (`extractBattlecard` resolving
+     `assessment`), the override that stops reaching the wire, both retry answers
+     inverted, the constant-stamped model, both un-attributed failure lines,
+     thinking turned back on, and the lost `anthropicTier` — each confirmed to
+     fail the assertion it targets.
+   - **Live-schema check, before and after**, per this item's runbook. Both
+     clusters are named because `kb.battlecard` deliberately stays in the
+     `assessment` cluster (see `test/live/schemas.js`), so `--cluster=assessment`
+     is what the runbook tells this group to run:
+
+     ```
+     $ docker compose run --rm --no-deps -v "$PWD/api":/app -w /app \
+         api node test/live/smoke.js --cluster=keypoints,assessment
+     live-schema smoke: 5 schema(s) × anthropic
+
+       ── assessment ────────────────────────────── [anthropic]
+       ok       kb.assessment                      claude-haiku-4-5       accepted, output parses
+       ok       kb.battlecard                      claude-sonnet-5        accepted, output parses
+       ── keypoints ─────────────────────────────── [anthropic]
+       ok       kb.keypoints                       claude-sonnet-5        accepted, output parses
+       ok       kb.companyAnalysis                 claude-sonnet-5        accepted, output parses
+       ok       kb.productAnalysis                 claude-sonnet-5        accepted, output parses
+
+     5/5 accepted
+     ```
+
+     Byte-identical on `main` (before) and on the branch (after), exit 0 both
+     times. That is the expected result rather than a coincidence — this PR
+     touches no schema object — and running it twice is what makes the sentence
+     evidence instead of an assumption. The 28/29 whole-registry figure above is
+     unchanged; these five are five of the 28.
 
    Every group's schemas are already proven acceptable by item 3 — **except
    `proposals`, which carries the §4.7 reshape and is the reason that group is
