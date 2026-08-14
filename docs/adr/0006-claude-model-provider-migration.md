@@ -1663,7 +1663,7 @@ decomposition exists so that per-file spokes stay tractable.
    | document | body | call site | n | result |
    | --- | --- | --- | --- | --- |
    | `91bfba3e-a001-451e-87df-985a6a468395` "Wibmo — homepage" (stored `companyAnalysis` 4,297 chars) | 10,685 | `kb.companyAnalysis` | 5 | **5/5 `max_tokens` → throws → `null`** |
-   | `b89b311f…` "[Trend] CBN MFA mandate" | 3,262 | `kb.companyAnalysis` | 3 | 3/3 `end_turn`, 1,145–1,175 tok |
+   | `b89b311f…` "[Trend] CBN MFA mandate" | 3,263 | `kb.companyAnalysis` | 3 | 3/3 `end_turn`, 1,145–1,175 tok |
    | `e58527cc…` "Wibmo_Payment gateway" | 14,244 | `kb.productAnalysis` | 3 | 3/3 `end_turn`, 1,576–1,871 tok |
 
    **⚠ AMENDMENT (2026-08-14, confidence pass): the evidence this entry was first
@@ -1686,8 +1686,12 @@ decomposition exists so that per-file spokes stay tractable.
    not inferred. Driving the real `knowledge/service.js` → `keypoints.js` →
    `aiCall` → `anthropic` path against the live API on `91bfba3e…` (only `db.js`
    and `redis.js` faked, seeded from the real staging row, nothing written back):
-   the route answered **`{ ok: true }`** while the stored **4,209-char**
+   the route answered **`{ ok: true }`** while the stored **4,297-char**
    `companyAnalysis` was **deleted**. The mechanism:
+   *(This paragraph said 4,209 and the table above says 4,297, for the same
+   stored string — a difference of how it was counted, not of what was deleted.
+   Re-read from the live staging row: `length(metadata->>'companyAnalysis')` is
+   **4,297**, so that is the figure both places now use.)*
 
    `stop_reason: 'max_tokens'` with `allowTruncation` unset (these call sites
    pass nothing) → `anthropic.generate` throws → `extractCompanyAnalysis`

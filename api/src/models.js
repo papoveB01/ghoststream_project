@@ -238,7 +238,9 @@ const FLIP_BLOCKED = new Map([
   // WHY THAT IS DATA LOSS AND NOT AN ERROR, observed end to end and not
   // inferred: driving the real knowledge/service.js -> keypoints.js -> aiCall ->
   // anthropic path against the live API on that document, the route answered
-  // { ok: true } while the stored 4,209-char companyAnalysis was DELETED.
+  // { ok: true } while the stored 4,297-char companyAnalysis was DELETED — the
+  // same figure as above, which this line used to give as 4,209 for the same
+  // string. Two numbers for one measurement is how one of them goes stale.
   // stop_reason 'max_tokens' with allowTruncation unset (these call sites pass
   // nothing) throws in anthropic.js; extractCompanyAnalysis catches it and
   // returns null; and the regenerate path is `if (analysis) md.companyAnalysis
