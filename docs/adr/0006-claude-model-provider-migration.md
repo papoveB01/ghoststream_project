@@ -1438,8 +1438,10 @@ decomposition exists so that per-file spokes stay tractable.
      values coexisting today, with no reader branching on any of them. A fourth
      (a Claude id) is the same kind of value, not a new kind. The `null`s are
      the no-evidence early return, which has always written one.
-   - Suite **349/349**, from **341** on `main` (+8), with **fourteen** deliberate
-     mutations of `src/` — the dropped key, a colliding telemetry label, each
+   - Suite **357/357**, from **341** on `main` (+16 — 8 in the cutover file as
+     first written, 8 more added across three review rounds), with **fourteen**
+     deliberate mutations of `src/` — the dropped key, a colliding telemetry
+     label, each
      budget and temperature, the half-done cutover (`extractBattlecard` resolving
      `assessment`), the override that stops reaching the wire, both retry answers
      inverted, the constant-stamped model, both un-attributed failure lines,
@@ -1471,6 +1473,25 @@ decomposition exists so that per-file spokes stay tractable.
      touches no schema object — and running it twice is what makes the sentence
      evidence instead of an assumption. The 28/29 whole-registry figure above is
      unchanged; these five are five of the 28.
+
+     **⚠ That "after" run was taken before `FLIP_BLOCKED` existed, and adding the
+     gate broke the harness.** `smoke.js`'s `resolveFor()` lifted
+     `DISPATCH_READY` for the task under test but not `FLIP_BLOCKED`, which
+     `providerFor()` consults immediately afterwards — so the branch resolved
+     four of these five entries back to `gemini-2.5-flash-lite` and **posted a
+     Gemini model id to the Anthropic API**: `1/5 accepted, 4 errored`, four
+     404s, exit 4, against `main`'s exit 0. Nothing in the output said "harness";
+     it read as a provider outage. Two things are worth carrying forward from it.
+     **First, the shape of the bug: a flip gate that disables the very check a
+     flip PR must run to clear it** — and not only for this cluster, since a
+     whole-registry run errored on all four for every future group. **Second, the
+     process fact: the run was quoted from before the gate landed and nobody
+     re-ran it**, which is the same "a fix is a claim until it is re-verified"
+     failure the passes exist to catch. Fixed in round 3: both gates are lifted
+     and restored, and a resolved model whose id family does not match the
+     provider asked for now aborts as a **harness bug** (exit 2, nothing sent)
+     rather than being sent and blamed on the provider. The block above is the
+     re-run after that fix.
 
      **What that green does NOT say, and this entry originally invited the wrong
      reading of it.** `smoke.js` sends `effort: 'low'`, `max_tokens: 800` and
