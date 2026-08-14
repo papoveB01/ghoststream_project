@@ -497,13 +497,11 @@ test('one field failing neither aborts the request nor discards the field that s
 
 // ── 5. the failure has to reach a human ─────────────────────────────────────
 //
-// Both guards below replace source-scraping ones that could not fail. The route
-// guard read a window that ended before the line it was checking (the first
-// `});` in the handler is the one inside res.json), so deleting `refreshFailures`
-// from the RESPONSE left it green; it now invokes the handler and reads what was
-// emitted. The SPA guard counted occurrences of an identifier, so moving the call
-// into the catch — where it gets an Error, can never see a 200 body and can never
-// fire — kept the count at 3; it now checks WHERE the call is.
+// The guard below, and the ones in §5b, all replace source-scraping guards that
+// could not fail. This one read a window that ended before the line it was
+// checking (the first `});` in the handler is the one inside res.json), so
+// deleting `refreshFailures` from the RESPONSE left it green; it now invokes the
+// handler and reads what was emitted.
 
 test('the route emits refreshFailures in the body, not merely in its destructuring', async () => {
   // Invoked, not read. The handler needs no auth, tenancy or multer — those are
@@ -520,20 +518,30 @@ test('the route emits refreshFailures in the body, not merely in its destructuri
     document: { id: DOC_ID, metadata: { keyPoints: STORED_KEYPOINTS } },
     refreshFailures: FAILURES,
   });
-  let sent = null;
+  // Only the LAST layer. The earlier ones are express middleware — the sibling
+  // PATCH /documents/:id/tags already carries express.json() — and driving those
+  // with a plain object for `req` throws for reasons that have nothing to do
+  // with what this guard is about. Adding a body parser here must not red it.
+  const handler = layer.route.stack[layer.route.stack.length - 1].handle;
+
+  // Every body, not the last one: a handler that answers twice (a second
+  // res.json from an error path, say) would otherwise be judged on the body the
+  // client never sees — real Express sends the FIRST and only warns about the
+  // second. So a double-send with the lossy body first has to be a failure here.
+  const bodies = [];
   let failedNext = null;
   try {
-    for (const s of layer.route.stack) {
-      await s.handle(
-        { tenantId: TENANT, params: { id: DOC_ID }, body: {}, query: {} },
-        { json: (b) => { sent = b; }, status() { return this; } },
-        (err) => { failedNext = err || new Error('next() called with no error'); }
-      );
-    }
+    await handler(
+      { tenantId: TENANT, params: { id: DOC_ID }, body: {}, query: {} },
+      { json: (b) => { bodies.push(b); }, status() { return this; } },
+      (err) => { failedNext = err || new Error('next() called with no error'); }
+    );
   } finally { service.regenerateKeyPoints = realRegen; }
 
   assert.ifError(failedNext);
-  assert.ok(sent, 'the handler answered nothing at all');
+  assert.strictEqual(bodies.length, 1,
+    `the handler must answer exactly once; it answered ${bodies.length} time(s)`);
+  const sent = bodies[0];
   assert.strictEqual(sent.ok, true);
   assert.deepStrictEqual(sent.refreshFailures, FAILURES,
     'the EMITTED body must carry refreshFailures — destructuring it out of the service result ' +
@@ -542,15 +550,262 @@ test('the route emits refreshFailures in the body, not merely in its destructuri
   assert.strictEqual(sent.document.id, DOC_ID, 'and the document still comes back');
 });
 
-test('both admin SPA call sites warn on the SUCCESS path, not from a catch', async () => {
-  // Scoped to each handler rather than counted across the file: a count is
-  // satisfied by a call in the catch block (which receives an Error, never a 200
-  // body, and can never fire), and is broken by a harmless rename or a
-  // legitimate third call site. What has to be true is positional — the warning
-  // runs after the response is known good and before anything that can throw.
-  const admin = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'admin', 'admin.js'), 'utf8');
-  assert.ok(admin.includes('function warnPartialKeypointsRefresh'),
-    'web/admin/admin.js lost the partial-refresh warning helper');
+// ── 5b. what the rep is actually shown ───────────────────────────────────────
+//
+// EXECUTED, not read. Every guard this file has had over the SPA warning was a
+// string search across admin.js, and each one pinned a property nobody cares
+// about. The first counted occurrences of an identifier, so moving the call into
+// the catch — where it gets an Error and can never fire — kept the count at 3.
+// Its replacement checked WHERE the identifier appears, which is stronger and
+// still the wrong method: `warnPartialKeypointsRefresh(r)` instead of `(body)`
+// leaves the position untouched, makes the warning permanently dead, and stays
+// green. Neither an occurrence count nor a position is a property that can see
+// it. And the helper's actual output — the label map, the kept-vs-still-empty
+// split — had no coverage at all.
+//
+// So both are sliced out of admin.js and RUN, with their globals injected:
+// `warnPartialKeypointsRefresh` (pure — a response body in, one alert string
+// out) and `kbRegenKeyPoints`, the ↻ refresh handler that calls it. admin.js
+// cannot be required (one ~12k-line IIFE against a live DOM), and a copy of
+// either pasted into this file would pass happily against an admin.js that had
+// stopped resembling it.
+
+const ADMIN_JS = path.join(__dirname, '..', '..', 'web', 'admin', 'admin.js');
+
+// Brace-matched rather than line-matched so a reindent or a reflow does not fail
+// this file for a non-reason — the lesson of the guard this replaces, which went
+// red on a no-op `if (!r.ok) throw` → `if (!r.ok) { throw }`.
+function sliceFn(src, header, from = 0) {
+  const fnAt = src.indexOf(header, from);
+  assert.notStrictEqual(fnAt, -1, `web/admin/admin.js no longer contains \`${header}\``);
+  let depth = 0;
+  for (let i = src.indexOf('{', fnAt); i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) return { start: fnAt, end: i + 1 };
+  }
+  return assert.fail(`could not find the end of \`${header}\``);
+}
+
+// A mis-extraction that swallowed half the SPA would still "run", and would then
+// be measuring something else entirely. Make it loud instead.
+function checkSlice(slice, mustContain, limit, what) {
+  assert.ok(slice.includes(mustContain),
+    `the extracted ${what} does not contain \`${mustContain}\``);
+  assert.ok(slice.length < limit, `extracted ${slice.length} chars for ${what}; the slice is wrong`);
+  return slice;
+}
+
+// The label map plus the helper. Exactly one binding is injected, so a helper
+// that started reaching for `document`, `fetch` or any other SPA global fails
+// here loudly rather than quietly picking up a Node one.
+function loadWarnHelper(src) {
+  const admin = src || fs.readFileSync(ADMIN_JS, 'utf8');
+  const labelsAt = admin.indexOf('const KB_REFRESH_FIELD_LABELS');
+  assert.notStrictEqual(labelsAt, -1, 'web/admin/admin.js lost KB_REFRESH_FIELD_LABELS — the ' +
+    'refresh failures are back to being shown to a sales rep as raw api metadata keys');
+  const { end } = sliceFn(admin, 'function warnPartialKeypointsRefresh(', labelsAt);
+  const slice = checkSlice(admin.slice(labelsAt, end), 'alert(', 4000, 'the warning helper');
+  const alerts = [];
+  // eslint-disable-next-line no-new-func
+  const factory = new Function('alert', `${slice}\nreturn warnPartialKeypointsRefresh;`);
+  return { warn: factory((m) => alerts.push(String(m))), alerts };
+}
+
+// The ↻ refresh handler itself, with every global it touches injected and
+// recorded. This is what no string search can do: it sees which VALUE reaches
+// the warning and in what ORDER relative to the reload — the two things the
+// previous guards' green runs were hiding.
+function loadRegenHandler({ response, jsonBody, reloadThrows }) {
+  const admin = fs.readFileSync(ADMIN_JS, 'utf8');
+  const { start, end } = sliceFn(admin, 'async function kbRegenKeyPoints(');
+  const slice = checkSlice(admin.slice(start, end), 'warnPartialKeypointsRefresh(', 4000,
+    'the refresh handler');
+
+  const log = [];
+  const alerts = [];
+  const warnArgs = [];
+  const btn = { disabled: false, textContent: '↻ refresh analysis' };
+  const env = {
+    fetch: async () => ({ ...response, json: async () => jsonBody }),
+    alert: (m) => { alerts.push(String(m)); },
+    warnPartialKeypointsRefresh: (b) => { log.push('warn'); warnArgs.push(b); },
+    loadKbLibrary: async () => {
+      log.push('reload');
+      if (reloadThrows) throw new Error(reloadThrows);
+    },
+  };
+  const names = Object.keys(env);
+  // eslint-disable-next-line no-new-func
+  const factory = new Function(...names, `${slice}\nreturn kbRegenKeyPoints;`);
+  const kbRegenKeyPoints = factory(...names.map((n) => env[n]));
+  return { run: () => kbRegenKeyPoints(DOC_ID, btn), log, alerts, warnArgs, btn };
+}
+
+test('a mixed failure names the kept field and the still-empty one, in the rep\'s words', () => {
+  const { warn, alerts } = loadWarnHelper();
+  warn({
+    document: { id: DOC_ID, metadata: { keyPoints: STORED_KEYPOINTS } },
+    refreshFailures: [{ field: 'keyPoints', provider: 'gemini' }, { field: 'companyAnalysis', provider: 'gemini' }],
+  });
+
+  assert.strictEqual(alerts.length, 1, 'a partial failure must produce exactly one warning');
+  const msg = alerts[0];
+  assert.match(msg, /Kept what you already had: Key points\./,
+    `the field that still holds its stored value must be reported as kept: ${msg}`);
+  assert.match(msg, /Still empty[^\n]*: Company analysis\./,
+    `the field that has nothing must NOT be reported as kept: ${msg}`);
+  assert.match(msg, /Nothing you had was lost/, msg);
+  assert.ok(!/keyPoints|companyAnalysis/.test(msg),
+    `raw api metadata keys reached the rep: ${msg} — every other surface in this SPA labels these`);
+});
+
+test('when every failed field was already stored, nothing claims a count it does not have', () => {
+  const { warn, alerts } = loadWarnHelper();
+  warn({
+    document: { id: DOC_ID, metadata: { keyPoints: STORED_KEYPOINTS, assessment: STORED_ASSESSMENT } },
+    refreshFailures: [{ field: 'keyPoints', provider: 'gemini' }, { field: 'assessment', provider: 'gemini' }],
+  });
+
+  const msg = alerts[0];
+  assert.match(msg, /Kept what you already had: Key points, Competitive scoreboard\./, msg);
+  assert.ok(!/Still empty/.test(msg), `nothing was empty here: ${msg}`);
+  assert.ok(!/partly/i.test(msg),
+    `"partly" is unknowable from this response — it lists which fields FAILED, never how many ` +
+    `were attempted — and is plainly false when every one of them failed: ${msg}`);
+});
+
+test('a first-ever generate does not tell the rep it kept a version that never existed', () => {
+  // The round-1 falsehood, and the reason the wording is read off the document
+  // rather than off the failure list: click "generate analysis" on a doc that
+  // has none while the provider is down, and `md` is `{}`.
+  const { warn, alerts } = loadWarnHelper();
+  warn({
+    document: { id: DOC_ID, metadata: {} },
+    refreshFailures: [{ field: 'keyPoints', provider: 'gemini' }, { field: 'assessment', provider: 'gemini' }],
+  });
+
+  const msg = alerts[0];
+  assert.match(msg, /Still empty[^\n]*: Key points, Competitive scoreboard\./, msg);
+  assert.ok(!/Kept what you already had/.test(msg),
+    `nothing was kept — there was no previous version to keep: ${msg}`);
+  assert.ok(!/previous version/i.test(msg),
+    `the warning asserts a previous version that does not exist: ${msg}`);
+});
+
+test('an unrecognised field is reported by its raw key rather than dropped', () => {
+  const { warn, alerts } = loadWarnHelper();
+  warn({
+    document: { id: DOC_ID, metadata: {} },
+    refreshFailures: [{ field: 'sentimentAnalysis', provider: 'gemini' }],
+  });
+
+  assert.strictEqual(alerts.length, 1);
+  assert.match(alerts[0], /sentimentAnalysis/,
+    'a field the label map does not know must still be named — dropping it is a failure the ' +
+    'rep is never told about, which is the silence this PR exists to remove');
+});
+
+test('with no document in the response, the warning does not invent kept-or-empty', () => {
+  // A concurrent delete between the write and the re-read, or an older API
+  // build. `md` falls back to `{}`, which would report every preserved field as
+  // "still empty — nothing had been generated yet": round 1's falsehood again,
+  // pointing the other way.
+  const { warn, alerts } = loadWarnHelper();
+  warn({ refreshFailures: [{ field: 'keyPoints', provider: 'gemini' }, { field: 'assessment', provider: 'gemini' }] });
+
+  const msg = alerts[0];
+  assert.match(msg, /Couldn't be regenerated: Key points, Competitive scoreboard\./, msg);
+  assert.ok(!/Still empty/.test(msg), `it cannot know these were empty: ${msg}`);
+  assert.ok(!/Kept what you already had/.test(msg), `nor that they were kept: ${msg}`);
+});
+
+test('a response with no refreshFailures warns about nothing', () => {
+  // Deploy skew is the case that matters: `refreshFailures` is absent from an
+  // older api build, and silence is that build's correct, pre-existing
+  // behaviour. A helper that warned here would fire on every clean refresh.
+  const { warn, alerts } = loadWarnHelper();
+  const quiet = [
+    undefined,
+    null,
+    {},
+    { document: { id: DOC_ID, metadata: { keyPoints: STORED_KEYPOINTS } } },
+    { document: { id: DOC_ID, metadata: {} }, refreshFailures: [] },
+    { document: { id: DOC_ID, metadata: {} }, refreshFailures: 'assessment' },
+    // Entries with no `field`: nothing nameable, so a headline naming nothing
+    // would be worse than silence.
+    { document: { id: DOC_ID, metadata: {} }, refreshFailures: [{ provider: 'gemini' }] },
+  ];
+  for (const body of quiet) warn(body);
+
+  assert.deepStrictEqual(alerts, [],
+    'a clean refresh, and an older API build that has no refreshFailures at all, must be silent');
+});
+
+// ── 5c. the ↻ refresh handler, executed ──────────────────────────────────────
+
+test('the refresh handler hands the warning the PARSED BODY, before the reload runs', async () => {
+  // What every string search over this file has missed. `warnPartialKeypointsRefresh(r)`
+  // instead of `(body)` passes the fetch Response — no `refreshFailures` on it,
+  // ever — so the warning is permanently dead while its position, its name and
+  // its occurrence count are all untouched. Only running it can see that.
+  const body = {
+    ok: true,
+    document: { id: DOC_ID, metadata: { assessment: STORED_ASSESSMENT } },
+    refreshFailures: [{ field: 'assessment', provider: 'gemini' }],
+  };
+  const h = loadRegenHandler({ response: { ok: true, status: 200 }, jsonBody: body });
+  await h.run();
+
+  assert.deepStrictEqual(h.warnArgs, [body],
+    'the warning must be given the parsed response body — anything else (the Response, the ' +
+    'document alone) has no refreshFailures on it and can never fire');
+  assert.deepStrictEqual(h.log, ['warn', 'reload'],
+    'the warning must run BEFORE the re-render, not after it');
+});
+
+test('a reload that throws still shows the warning, and blames the reload, not the generate', async () => {
+  // The measured defect: integration hit `DSText is not defined` out of
+  // loadKbLibrary on a 200 whose document was written. With the reload inside
+  // the same try the rep was told "Couldn't generate key points: DSText is not
+  // defined" — wrong twice — and the partial-refresh warning was swallowed.
+  const body = { ok: true, document: { id: DOC_ID, metadata: {} }, refreshFailures: [{ field: 'keyPoints', provider: 'gemini' }] };
+  const h = loadRegenHandler({
+    response: { ok: true, status: 200 }, jsonBody: body, reloadThrows: 'DSText is not defined',
+  });
+  await h.run();
+
+  assert.deepStrictEqual(h.warnArgs, [body], 'a failing reload must not swallow the warning');
+  assert.deepStrictEqual(h.log, ['warn', 'reload']);
+  assert.strictEqual(h.alerts.length, 1);
+  assert.match(h.alerts[0], /list couldn't be refreshed: DSText is not defined/,
+    `a render failure must say it is a render failure: ${h.alerts[0]}`);
+  assert.ok(!/Couldn't generate key points/.test(h.alerts[0]),
+    `the refresh succeeded and its document was written; saying it failed is a second wrong ` +
+    `signal from one unrelated throw: ${h.alerts[0]}`);
+});
+
+test('a non-200 warns about nothing and restores the button\'s own label', async () => {
+  const h = loadRegenHandler({ response: { ok: false, status: 503 }, jsonBody: { error: 'upstream unavailable' } });
+  await h.run();
+
+  assert.deepStrictEqual(h.log, [],
+    'nothing may warn or re-render on a response that is not a 200');
+  assert.deepStrictEqual(h.alerts, ["Couldn't generate key points: upstream unavailable"]);
+  assert.strictEqual(h.btn.disabled, false, 'the button must be usable again');
+  assert.strictEqual(h.btn.textContent, '↻ refresh analysis',
+    'the label is captured, not assumed — the same button reads "generate analysis" on a ' +
+    'document that has no analysis yet, and a hard-coded restore relabels it');
+});
+
+test('both admin SPA call sites warn on the success path, before anything re-renders', () => {
+  // The one property execution cannot see: WHERE the call sits. Everything the
+  // helper does is pinned above by running it; what is left is ordering, and the
+  // ordering is the defect this PR fixed twice — a throw out of the re-render
+  // lands in the catch, reports "Couldn't generate key points: <unrelated
+  // message>" on a 200 whose document was written, and swallows the warning.
+  // Deliberately kept small: a string search is a bad instrument and every extra
+  // thing it pins is a future false red.
+  const admin = fs.readFileSync(ADMIN_JS, 'utf8');
 
   const sites = [];
   for (let i = admin.indexOf('/keypoints`'); i !== -1; i = admin.indexOf('/keypoints`', i + 1)) sites.push(i);
@@ -560,18 +815,51 @@ test('both admin SPA call sites warn on the SUCCESS path, not from a catch', asy
 
   for (const at of sites) {
     const after = admin.slice(at);
-    const okCheck = after.indexOf('if (!r.ok) throw');
+    // `if (!r.ok)`, not `if (!r.ok) throw`: bracing the throw is a no-op and
+    // must not fail this test.
+    const okCheck = after.indexOf('if (!r.ok)');
     const endOfTry = after.indexOf('} catch');   // NOT `.catch(` — a block, not a method
     const warnAt = after.indexOf('warnPartialKeypointsRefresh(');
     const where = `admin.js offset ${at}`;
-    assert.ok(okCheck !== -1, `${where}: no \`if (!r.ok) throw\` — the success path is not identifiable`);
+    assert.ok(okCheck !== -1, `${where}: no \`if (!r.ok)\` — the success path is not identifiable`);
+    assert.ok(warnAt !== -1, `${where}: this call site does not warn at all`);
     assert.ok(endOfTry > okCheck, `${where}: no catch closing the try that holds the fetch`);
     assert.ok(warnAt > okCheck,
-      `${where}: warnPartialKeypointsRefresh must run AFTER the !r.ok throw, or it is warning ` +
+      `${where}: warnPartialKeypointsRefresh must run AFTER the !r.ok check, or it is warning ` +
       'about a body it has not established is a 200');
     assert.ok(warnAt < endOfTry,
       `${where}: warnPartialKeypointsRefresh is outside the try — in the catch it receives an ` +
       'Error and can never fire, and after the catch a re-render that throws swallows it. The ' +
       'rep gets a 200, a document that looks refreshed, and the silence this PR removed');
+
+    // Nothing that re-renders may run between the 200 and the warning. Written
+    // as "not in the window" rather than "warnAt < indexOf(x)" because neither
+    // call site contains both names, and an absent name would otherwise pass or
+    // fail by accident depending on what happens to sit further down the file.
+    //
+    // Comments come out first: both call sites carry a comment EXPLAINING this
+    // ordering, and both name the very calls being looked for. Reading those as
+    // code is how a guard fails for editing the prose that documents it.
+    const beforeWarn = after.slice(okCheck, warnAt)
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/\/\/[^\n]*/g, ' ');
+    for (const rerender of ['loadKbLibrary', 'closeIntelDocModal', 'onChange(']) {
+      assert.ok(!beforeWarn.includes(rerender),
+        `${where}: ${rerender} runs before warnPartialKeypointsRefresh. A throw out of it lands ` +
+        'in the catch, tells the rep the generate failed on a 200 that wrote the document, and ' +
+        'the partial-refresh warning — the only signal there is — is never shown');
+    }
+
+    // And that it is handed the PARSED BODY. §5c proves this by execution for
+    // kbRegenKeyPoints; the modal's handler is a listener nested inside a
+    // ~200-line builder that cannot be sliced out and run, so for that one site
+    // this stays textual — matched against whatever `await r.json()` was
+    // assigned to, so a rename is fine and passing `r` is not.
+    const parsed = /(?:const|let|var)\s+(\w+)\s*=\s*await\s+r\.json\(\)/.exec(after);
+    assert.ok(parsed, `${where}: no \`await r.json()\` — cannot tell what the warning is given`);
+    assert.ok(after.startsWith(`warnPartialKeypointsRefresh(${parsed[1]})`, warnAt),
+      `${where}: the warning is not given \`${parsed[1]}\`, the parsed response body. Handed the ` +
+      'Response, or the document alone, it never sees refreshFailures and can never fire — with ' +
+      'its name, its position and its occurrence count all still exactly right');
   }
 });
