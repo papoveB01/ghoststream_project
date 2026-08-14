@@ -268,7 +268,7 @@ test('a migrated but BLOCKED task refuses the flip instead of merely warning', (
   try {
     withEnv({ AI_PROVIDER_BATTLECARD: 'anthropic' }, () => {
       assert.strictEqual(models.resolve('battlecard').provider, 'gemini',
-        '3 of 10 live responses to this schema were unparseable, on the one call site with no retry');
+        '2 of 80 live responses at this call site were unparseable, on the one call site with no retry');
       assert.match(models.resolve('battlecard').model, /^gemini-/,
         'and the model must match the provider it fell back to');
     });
@@ -276,7 +276,12 @@ test('a migrated but BLOCKED task refuses the flip instead of merely warning', (
   const line = warnings.find((w) => w.includes('battlecard'));
   assert.ok(line, 'a silent refusal is worse than the flip — the operator would think it landed');
   assert.match(line, /BLOCKED/);
-  assert.match(line, /3 of 10/, 'carry the measurement, not just the verdict — a bare "blocked" gets argued with');
+  // The measurement, not just the verdict — a bare "blocked" gets argued with.
+  // Re-pointed from /3 of 10/ in round 3: that figure was three probes pooled
+  // against a 302-char synthetic prompt and did not reproduce. This assertion is
+  // the reason the number cannot be corrected in a comment and forgotten in the
+  // operator-facing string, so it is deliberately literal.
+  assert.match(line, /2 of 80/, 'carry the measurement, not just the verdict');
   assert.ok(!/migrate the call site/.test(line),
     'that is the OTHER gate\'s advice and is wrong here: this call site is migrated, so ' +
     'following it would send someone to re-do work that is already done');

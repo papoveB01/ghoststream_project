@@ -423,7 +423,8 @@ test('the MEASURED battlecard malformation: 502, attributed, and NOT retried', a
   // the SyntaxError `provider: 'anthropic'`, and classify()'s anthropic branch
   // is `transient: !perDay && !sdkRetried && status === 429` — a parse error has
   // no status. So wrapping this call in aiRetry would retry it ZERO times and a
-  // retry test would go green over an unchanged ~30% failure rate.
+  // retry test would go green over an unchanged 2.5% failure rate (measured
+  // 2 unparseable in 80 live extractBattlecard calls — ADR-0006 §9 item 5).
   const parseErr = await withAnthropic({
     tasks: ['battlecard'],
     impl: () => ({ text: MALFORMED, usage: null, stopReason: 'end_turn', model: 'claude-sonnet-5' }),

@@ -107,13 +107,20 @@ const aiCall = require('../aiCall');
 // unknown label, which is what keeps adding one a deliberate act.
 //
 // ⚠ THAT ARGUMENT IS ABOUT 503s, AND IT IS NOT THE FAILURE MODE CLAUDE ACTUALLY
-// HAS HERE. Measured live 2026-08-14 with this call site's real request shape:
-// 3 of 10 `claude-sonnet-5` responses were unparseable JSON — `stop_reason:
-// end_turn`, a trailing comma inside an `objections` item, not truncation — and
-// 0 of 10 on the other four group-2 schemas. So the asymmetry as it stands is
-// right for the provider serving 100% of this traffic today and is very likely
-// WRONG for Claude. `battlecard` is in models.FLIP_BLOCKED because of it, so the
-// router refuses the flip rather than merely advising against it.
+// HAS HERE. Measured live 2026-08-14 by driving THIS FUNCTION against the API
+// (80 calls, 3 competitors, 2 tenants): 2 of 80 `claude-sonnet-5` responses were
+// unparseable JSON — 2.5%, 95% CI 0.3-8.7%, `stop_reason: end_turn` with a stray
+// token mid-object, not truncation. So the asymmetry as it stands is right for
+// the provider serving 100% of this traffic today and is very likely WRONG for
+// Claude: 2.5% of a button a rep presses repeatedly, un-retried, is a defect.
+// `battlecard` is in models.FLIP_BLOCKED because of it, so the router refuses
+// the flip rather than merely advising against it.
+//
+// The figure this comment carried first — "3 of 10 at the real request shape" —
+// was neither. It pooled three probes that each called `anthropic.generate()`
+// directly with a 302-char synthetic prompt (the real one is 7,546-10,755
+// chars), and it does not reproduce even at that shape. Cited here because a
+// flip PR sizing a retry against 30% would size it against nothing.
 //
 // AND THE OBVIOUS REMEDY DOES NOT WORK, which is the part worth carrying into
 // the flip PR, because it fails GREEN. Wrapping this call in
@@ -121,7 +128,7 @@ const aiCall = require('../aiCall');
 // SyntaxError `provider: 'anthropic'`, and classify()'s Anthropic branch is
 // `transient: !perDay && !sdkRetried && status === 429` — a parse error carries
 // no status. Add a POLICIES row, wrap the call, watch a retry test go green, and
-// ship the same ~30% rate. What actually has to change is classify() treating an
+// ship the same 2.5% rate. What actually has to change is classify() treating an
 // anthropic-stamped parse error as transient, and/or reshaping BATTLECARD_SCHEMA
 // so it stops happening.
 //

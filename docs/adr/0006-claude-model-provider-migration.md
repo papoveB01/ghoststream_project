@@ -1473,36 +1473,45 @@ decomposition exists so that per-file spokes stay tractable.
      unchanged; these five are five of the 28.
 
      **What that green does NOT say, and this entry originally invited the wrong
-     reading of it.** `smoke.js` sends `effort: 'low'`, `max_tokens: 800`, no
-     temperature, and **one sample per schema**. The production call sites send
-     `effort: 'medium'`, their own budgets (2600 on the battlecard) and a
-     temperature. Against a defect that appears ~30% of the time, a single
-     sample passes ~70% of the time — so "5/5 accepted" means *the provider
-     accepted the schema*, which is what item 3 was built to check, and says
-     nothing about whether responses to the real request are usable. Read it as
-     schema acceptance, never as flip-readiness.
+     reading of it.** `smoke.js` sends `effort: 'low'`, `max_tokens: 800` and
+     **one sample per schema**; the production call sites send `effort: 'medium'`
+     and their own budgets (2600 on the battlecard). Against the defect below —
+     which appears ~2.5% of the time — one sample passes ~97.5% of the time, so
+     "5/5 accepted" means *the provider accepted the schema*, which is what item
+     3 was built to check, and says nothing about whether responses to the real
+     request are usable. Read it as schema acceptance, never as flip-readiness.
+     (This paragraph first said "~30% … a single sample passes ~70%"; the rate
+     was wrong, and the argument it makes is *weaker* at the real rate, not
+     stronger — one sample is even less able to see a 2.5% defect. Neither
+     version sends a temperature: `claude-sonnet-5` is in `NO_TEMPERATURE`, so
+     the production call sites' `0.3` is dropped before the wire in production
+     too.)
 
-   **The finding that stops `battlecard` flipping** (2026-08-14, integration
-   pass). *(A bold lead-in rather than a heading: this sits inside item 5 of an
-   ordered list, and an `h3` here outlines as a peer of §4.1.)*
+   **The finding that stops `battlecard` flipping** (2026-08-14; first recorded
+   by the integration pass, **corrected by the confidence pass — see the
+   amendment below, which supersedes the original figure**). *(A bold lead-in
+   rather than a heading: this sits inside item 5 of an ordered list, and an `h3`
+   here outlines as a peer of §4.1.)*
 
-   Driving the **exact production request shape** — `claude-sonnet-5`,
-   `effort: 'medium'`, `temperature: 0.3`, `max_tokens: 2600`, the real
-   `BATTLECARD_SCHEMA` — against the live API, **3 of 10 responses were
-   unparseable JSON**:
+   Driving `extractBattlecard` itself against the live API — the real call site,
+   through `buildBattlecardPrompt` → `aiCall.generateStructured` →
+   `models.resolve` → `anthropic.generate`, so `claude-sonnet-5`,
+   `effort: 'medium'`, `max_tokens: 2600`, the real `BATTLECARD_SCHEMA` (4048
+   chars translated), across **3 competitors and 2 tenants** — **2 of 80
+   responses were unparseable JSON**:
 
-   | schema | shape sent | unparseable |
-   | --- | --- | --- |
-   | `BATTLECARD_SCHEMA` (4048 chars translated) | production | **3 / 10** |
-   | `ASSESSMENT_SCHEMA` | production | 0 / 10 |
-   | `KEYPOINTS_SCHEMA` | production | 0 / 10 |
-   | `COMPANY_ANALYSIS_SCHEMA` | production | 0 / 10 |
-   | `PRODUCT_ANALYSIS_SCHEMA` | production | 0 / 10 |
+   | measurement | how it was taken | n | unparseable |
+   | --- | --- | --- | --- |
+   | `BATTLECARD_SCHEMA`, production shape | through `extractBattlecard` | **80** | **2 (2.5%)** |
+   | same schema, the original synthetic probe | `anthropic.generate()` direct, 302-char prompt | 19 | 0 |
+
+   95% CI (Clopper–Pearson) on 2/80: **0.30% – 8.74%**.
 
    - **`stop_reason: end_turn`, not truncation** — so it is not a `max_tokens`
      sizing problem and raising the budget does not address it. The malformation
-     is a **trailing comma inside an `objections` item** (`…"},]}]` at position
-     2620).
+     caught at the production shape is a **stray token mid-object**:
+     `output_tokens 2003`, `textLen 5714`, `Expected double-quoted property name
+     in JSON at position 4323`.
    - **Not a `schemaCompat` bug.** The translated schema contains no construct
      Anthropic rejects — the provider accepts it, which is precisely why the
      smoke check is green. It is the **largest** translated schema in the group
@@ -1510,9 +1519,40 @@ decomposition exists so that per-file spokes stay tractable.
    - **It lands on the one site with no retry**, and that site is synchronous
      behind the rep-facing `POST
      /portfolio/competitors/:id/battlecard/regenerate`. A flip today means
-     roughly **one regeneration in three 502s**, per rep, per click, with no
+     roughly **one regeneration in forty 502s**, per rep, per click, with no
      second attempt and a `[battlecard] synthesis failed on anthropic` line as
-     the only trace.
+     the only trace — on a button whose entire purpose is to be pressed again.
+
+   **⚠ AMENDMENT (2026-08-14, confidence pass): the figure this entry first
+   carried — "3 of 10, driving the exact production request shape" — was wrong
+   in both halves, and it is corrected in place above rather than footnoted.**
+   Stating it plainly, because this is the third time in this ADR that prose has
+   been more confident than the code or the measurement underneath it:
+
+   - The "10 calls" was **three separate probes pooled** (1/3, 1/6, 1/1), each
+     calling `anthropic.generate()` **directly** with one hard-coded **302-char
+     synthetic prompt**, a fake `site: 'bc'` label and `costs.js` stubbed out —
+     bypassing `extractBattlecard`, `buildBattlecardPrompt`,
+     `aiCall.generateStructured` and `models.resolve`. The real prompt at this
+     call site is **7,546–10,755 chars**. "The exact production request shape" was
+     therefore false in the dimension that dominates the request.
+   - It **does not reproduce**, at either shape: 2 of 80 through the real seam,
+     and **0 of 19** completed calls on a re-run of the original synthetic probe.
+     `P(≤2 | n=80, p=0.30) = 2.5 × 10⁻¹⁰`; even 10% is rejected (`p = 0.011`).
+   - "**0 of 10** on the other four group-2 schemas" was **13 calls, not 40** —
+     `ASSESSMENT` 4, `COMPANY_ANALYSIS` 4, `PRODUCT_ANALYSIS` 4, `KEYPOINTS` 1.
+     The comparison is still directionally right; it was never the sample it
+     claimed.
+   - `temperature: 0.3` was cited as part of the shape, and is **never sent** on
+     `claude-sonnet-5` — `NO_TEMPERATURE` drops it, in that probe and in
+     production alike.
+
+   **The block stands.** What was re-measured is the *rate*, not the *defect*:
+   the character of the malformation is exactly as described (`end_turn`, mid-
+   object, not truncation), and ~2.5% of regenerates returning a 502 on an
+   un-retried, synchronous, rep-facing route is still a defect that should not
+   ship. The "obvious remediation is inert" argument below is independently
+   verified and unaffected.
 
    **This undercuts the stated basis of the no-retry decision, not the decision
    as shipped.** That argument was made against transient 503s — "a fast 502
@@ -1532,7 +1572,7 @@ decomposition exists so that per-file spokes stay tractable.
    `classify()` takes the Anthropic branch → `transient: !perDay && !sdkRetried
    && status === 429` → a parse error has no `status` → **`transient: false`, one
    attempt.** So a flip PR that follows that plan adds a row, wraps the call,
-   watches a retry test go green, and ships the same ~30% rate.
+   watches a retry test go green, and ships the same 2.5% rate.
 
    Two corollaries that have to travel with it:
 
@@ -1559,16 +1599,34 @@ decomposition exists so that per-file spokes stay tractable.
    reviewable concern to it. And the deferral is enforced rather than advised:
    `battlecard` is in **`models.FLIP_BLOCKED`**, so `providerFor()` refuses
    `AI_PROVIDER_BATTLECARD=anthropic`, falls back to Gemini and warns with the
-   3-in-10 number. A warning alone would not have been a gate — an operator
+   2-in-80 number. A warning alone would not have been a gate — an operator
    following the runbook sets the variable and moves on.
 
-   **Method note for later groups, which is the transferable part:** this was
-   found by sending the real request shape n=10, not by reading a diff and not by
-   the smoke check. Item 3's registry is a *schema acceptance* harness by
-   construction (one sample, minimal shape). Any group whose schemas are large,
-   or whose call site is synchronous and un-retried, needs the production shape
-   sampled repeatedly before its flip — and `proposals` (§4.7) is the next one
-   that fits that description.
+   **To clear the block:** a fix, *and* **0 unparseable in ≥100 calls driven
+   through `extractBattlecard`** at this shape. Not n=10 — n=10 cannot tell 2.5%
+   from 0 (it passes 77% of the time at the measured rate), which is precisely
+   how the original figure came to be believed and then disbelieved.
+
+   **Method note for later groups, which is the transferable part** — and it is
+   the *corrected* method, because the first version of this note generalised the
+   one that failed here:
+
+   - **Drive the real call site through the seam, not the SDK.** The original
+     probe called `anthropic.generate()` directly with a 302-char prompt and
+     reported it as "the exact production request shape"; the real prompt was
+     ~25–35× longer, and the rate it produced was off by ~12×. Everything between
+     the call site and the wire — prompt assembly, `models.resolve`, the seam's
+     own defaults — is part of the shape.
+   - **Size the sample to the rate you need to distinguish**, and say which rate
+     that is. A one-in-forty defect is invisible at n=10 and unmistakable at
+     n≥100; quoting a proportion whose denominator is smaller than 1/rate is
+     quoting noise. Pool nothing across probes without saying so.
+   - Item 3's registry remains a *schema acceptance* harness by construction (one
+     sample, minimal shape) and cannot substitute for either of the above.
+
+   Any group whose schemas are large, or whose call site is synchronous and
+   un-retried, needs the production shape sampled this way before its flip — and
+   `proposals` (§4.7) is the next one that fits that description.
 
    **A second flip blocker, on the sibling key** (2026-08-14, per-file review).
    `keypoints` is blocked too, for an unrelated and previously unseen reason:

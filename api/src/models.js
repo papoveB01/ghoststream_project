@@ -172,32 +172,48 @@ const DISPATCH_READY = new Set([
 // migrated: it looks like progress and is a silent regression. Each entry below
 // therefore states what would have to be true to delete it.
 const FLIP_BLOCKED = new Map([
-  // Measured 2026-08-14 (group 2's integration pass), sending this call site's
-  // real request shape — claude-sonnet-5, effort 'medium', temperature 0.3,
-  // max_tokens 2600, the real BATTLECARD_SCHEMA: 3 OF 10 RESPONSES WERE
-  // UNPARSEABLE JSON. stop_reason 'end_turn', not truncation — a trailing comma
-  // inside an `objections` item. 0 of 10 on the other four group-2 schemas, so
-  // it is the largest translated schema (4048 chars) misbehaving under
-  // constrained decoding, not a schemaCompat bug: the provider ACCEPTS this
-  // schema, which is why the live smoke check is green over it.
+  // Measured 2026-08-14 (group 2's confidence pass), driving extractBattlecard
+  // ITSELF against the live API — buildBattlecardPrompt, aiCall.generateStructured,
+  // models.resolve and anthropic.generate, nothing bypassed — across 3
+  // competitors and 2 tenants: 2 OF 80 RESPONSES WERE UNPARSEABLE JSON. 2.5%,
+  // 95% CI (Clopper-Pearson) 0.30%-8.74%. stop_reason 'end_turn', not
+  // truncation: a stray token mid-object (output_tokens 2003, textLen 5714,
+  // parse failure at position 4323). Not a schemaCompat bug — the provider
+  // ACCEPTS this schema, which is why the live smoke check is green over it.
   //
-  // extractBattlecard is the one migrated call site with no retry, synchronous
-  // behind the rep-facing POST /portfolio/competitors/:id/battlecard/regenerate.
-  // So flipping it is ~1 regeneration in 3 returning 502, per rep, per click.
+  // AN EARLIER VERSION OF THIS COMMENT SAID "3 of 10 at the real request
+  // shape", AND THAT WAS WRONG IN BOTH HALVES. It pooled three probes (1/3, 1/6,
+  // 1/1) that each called anthropic.generate() DIRECTLY with one hard-coded
+  // 302-char synthetic prompt — the real prompt is 7,546-10,755 chars — and it
+  // does not reproduce: 0 of 19 completed calls on a re-run of that same
+  // synthetic shape. The companion "0 of 10 on the other four group-2 schemas"
+  // was 13 calls, not 40. What survived re-measurement is the DEFECT and its
+  // character, not the rate; the rate is 2.5%, and 30% is rejected at
+  // P(<=2 | n=80, p=0.30) = 2.5e-10. This is the third time in ADR-0006 that
+  // prose ran ahead of the measurement, which is why the method is stated here
+  // rather than left to be inferred.
   //
-  // TO DELETE THIS ENTRY you need BOTH a fix and a re-measurement, and the
-  // obvious fix does not work: wrapping the call in aiRetry does NOT retry this.
-  // aiCall stamps the SyntaxError `provider: 'anthropic'`, and classify()'s
-  // Anthropic branch is `transient: !perDay && !sdkRetried && status === 429` —
-  // a parse error carries no status, so it is one attempt. The real change is
-  // classify() treating an anthropic-stamped parse error as transient, and/or
-  // reshaping BATTLECARD_SCHEMA — and any retry here must fit inside nginx's
-  // 180s proxy_read_timeout, which 3 x ANTHROPIC_TIMEOUT_MS (120s) + 2s + 4s
-  // does not: that turns a 502 into a 504 mid-write.
+  // 2.5% IS STILL A BLOCK. extractBattlecard is the one migrated call site with
+  // no retry, synchronous behind the rep-facing POST
+  // /portfolio/competitors/:id/battlecard/regenerate, so a flip today means
+  // roughly 1 regeneration in 40 returning a 502 the rep sees, with no second
+  // attempt — on a button whose whole purpose is to be pressed again.
+  //
+  // TO DELETE THIS ENTRY you need BOTH a fix and a re-measurement AT THIS SHAPE:
+  // 0 unparseable in >=100 calls driven through extractBattlecard (n=10 cannot
+  // distinguish 2.5% from 0 — that is how the first figure came to be believed).
+  // And the obvious fix does not work: wrapping the call in aiRetry does NOT
+  // retry this. aiCall stamps the SyntaxError `provider: 'anthropic'`, and
+  // classify()'s Anthropic branch is `transient: !perDay && !sdkRetried &&
+  // status === 429` — a parse error carries no status, so it is one attempt.
+  // The real change is classify() treating an anthropic-stamped parse error as
+  // transient, and/or reshaping BATTLECARD_SCHEMA — and any retry here must fit
+  // inside nginx's 180s proxy_read_timeout, which 3 x ANTHROPIC_TIMEOUT_MS
+  // (120s) + 2s + 4s does not: that turns a 502 into a 504 mid-write.
   ['battlecard',
-    '3 of 10 live claude-sonnet-5 responses to the real BATTLECARD_SCHEMA request were ' +
-    'unparseable JSON (measured 2026-08-14), on the one call site with no retry, behind a ' +
-    'synchronous rep-facing regenerate. See ADR-0006 §9 item 5.'],
+    '2 of 80 live claude-sonnet-5 responses were unparseable JSON when extractBattlecard itself was ' +
+    'driven against the live API (2.5%, 95% CI 0.3-8.7%; measured 2026-08-14), on the one call site ' +
+    'with no retry, behind a synchronous rep-facing regenerate. See ADR-0006 §9 item 5.'],
 
   // Measured 2026-08-14 (group 2's per-file review): the 2200-token output
   // budgets at extractCompanyAnalysis and extractProductAnalysis are GEMINI-
