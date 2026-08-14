@@ -769,10 +769,9 @@ test('an unrecognised field is reported by its raw key rather than dropped', () 
 });
 
 test('with no document in the response, the warning does not invent kept-or-empty', () => {
-  // A concurrent delete between the write and the re-read, or an older API
-  // build. `md` falls back to `{}`, which would report every preserved field as
-  // "still empty — nothing had been generated yet": round 1's falsehood again,
-  // pointing the other way.
+  // A concurrent delete between the write and the re-read. `md` falls back to
+  // `{}`, which would report every preserved field as "still empty — nothing had
+  // been generated yet": round 1's falsehood again, pointing the other way.
   const { warn, alerts } = loadWarnHelper();
   warn({ refreshFailures: [{ field: 'keyPoints', provider: 'gemini' }, { field: 'assessment', provider: 'gemini' }] });
 
@@ -780,6 +779,9 @@ test('with no document in the response, the warning does not invent kept-or-empt
   assert.match(msg, /Couldn't be regenerated: Key points, Competitive scoreboard\./, msg);
   assert.ok(!/Still empty/.test(msg), `it cannot know these were empty: ${msg}`);
   assert.ok(!/Kept what you already had/.test(msg), `nor that they were kept: ${msg}`);
+  assert.ok(!/Nothing you had was lost/.test(msg),
+    `nor that nothing was lost — this branch exists BECAUSE the document's state is unknowable ` +
+    `from here, so a reassurance about it is the same invention the two lines above forbid: ${msg}`);
 });
 
 test('a response with no refreshFailures warns about nothing', () => {

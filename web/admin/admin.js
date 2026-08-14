@@ -8790,16 +8790,18 @@
     const lines = ["This analysis couldn't be fully regenerated just now."];
     if (!doc) {
       // No document came back — the row was deleted between the write and the
-      // re-read, or an older API build answered with the failure list alone.
-      // Which fields kept a stored value is then unknowable, and the `|| {}`
-      // above would report every one of them as "still empty": the same
-      // falsehood this helper was fixed for, pointing the other way.
+      // re-read. Which fields kept a stored value is then unknowable, and the
+      // `|| {}` above would report every one of them as "still empty": the same
+      // falsehood this helper was fixed for, pointing the other way. For the
+      // same reason this branch does not go on to promise nothing was lost —
+      // the branch exists precisely because we cannot see what is there.
       lines.push(`Couldn't be regenerated: ${all.join(', ')}.`);
+      lines.push('Try again in a moment.');
     } else {
       if (kept.length) lines.push(`Kept what you already had: ${kept.join(', ')}.`);
       if (empty.length) lines.push(`Still empty — nothing had been generated yet: ${empty.join(', ')}.`);
+      lines.push('Nothing you had was lost. Try again in a moment.');
     }
-    lines.push('Nothing you had was lost. Try again in a moment.');
     alert(lines.join('\n'));
   }
 
