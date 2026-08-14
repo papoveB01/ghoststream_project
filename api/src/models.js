@@ -121,14 +121,19 @@ const DEFAULT_PROVIDER = 'gemini';
 // is a good idea is a property of measurements against a live provider, changes
 // without a code change, and lives in FLIP_BLOCKED.
 //
-// EDITING THE LINE BELOW ALSO INVALIDATES PROSE. FIVE blocks assert what is in
+// EDITING THE LINE BELOW ALSO INVALIDATES PROSE. SIX blocks assert what is in
 // this set and go stale with it: anthropic.js (header), aiCall.js (header),
-// gemini.js (assertGeminiModel), aiContext.js ("It does not flip any task") —
-// and `.env.example`'s "Provider routing" section, which is the only one an
+// gemini.js (assertGeminiModel), aiContext.js ("It does not flip any task"),
+// test/live/contextSeam.js (prepareVia's note on why it opens the task) — and
+// `.env.example`'s "Provider routing" section, which is the only one an
 // OPERATOR reads and the one that drifts hardest, because nothing in a code
 // review naturally opens it. It was already listed as a P1 fix in group 1's
 // review round (e69eb88, "four stale comments and .env.example") and drifted
 // again within one group, which is why it is named here rather than remembered.
+// contextSeam.js is the SIXTH, added in group 2's third review round: it had
+// said "DISPATCH_READY is empty by design" since before group 1 landed, and was
+// missed by every pass precisely because a live-probe script is not where
+// anyone greps for a claim about a router set.
 //
 // The pins in providerRouter.test.js and aiCall.test.js carry the same list in
 // their failure messages — but a message is only read on a red run, and the PR

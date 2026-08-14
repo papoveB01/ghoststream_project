@@ -238,8 +238,9 @@ test('the shipped set survives the only test that rewrites the whole set', () =>
     ['assessment', 'battlecard', 'companyBrief', 'keypoints', 'preview', 'relevance'],
     'changing this set also invalidates prose that asserts what is in it: ' +
     'anthropic.js (header), aiCall.js (header), gemini.js (assertGeminiModel), ' +
-    'aiContext.js ("It does not flip any task") and .env.example\'s "Provider ' +
-    'routing" section — FIVE, and .env.example is the one an OPERATOR reads, the ' +
+    'aiContext.js ("It does not flip any task"), test/live/contextSeam.js ' +
+    '(prepareVia) and .env.example\'s "Provider ' +
+    'routing" section — SIX, and .env.example is the one an OPERATOR reads, the ' +
     'one no code review naturally opens, and the one already listed as a P1 fix in ' +
     "group 1's review round (e69eb88) that drifted again anyway. PR #54 existed " +
     'because #52 changed the set and left the code-side four stale.');
