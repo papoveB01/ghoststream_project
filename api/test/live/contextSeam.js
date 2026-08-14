@@ -91,6 +91,46 @@ function prepareVia(task, model) {
     if (savedModel === undefined) delete process.env.ANTHROPIC_PERSONAS_MODEL;
     else process.env.ANTHROPIC_PERSONAS_MODEL = savedModel;
   };
+  // CHECK BEFORE SEND, not after. The post-prepare() check below says "Nothing
+  // was sent", and until this block existed that sentence was false on the
+  // branch that prints it: if the router refuses, prepare() takes its GEMINI
+  // leg (aiContext.js:170) into gemini.getOrCreateCache(), which writes the
+  // shared registry key `gemini:cache:persona:skeptical-cfo` and calls
+  // caches.create against the live API — a cachedContent resource nothing here
+  // ever discards, since probe() never calls aiContext.discard.
+  //
+  // MEASURED, because the two review passes disagreed about it and the
+  // difference is environmental, not logical: with a warm registry entry whose
+  // contentHash matches (`f2b543ce…`), getOrCreateCache returns the stored
+  // record and touches no network — which is the state one pass happened to run
+  // in, and why it reported the mutant firing at zero cost. With that one key
+  // deleted, the same call created `cachedContents/1729vf…` (displayName
+  // `persona:skeptical-cfo`), which then had to be deleted by hand. So the old
+  // ordering was not free, it was free ON A WARM CACHE — and a cutover runs on
+  // whatever Redis it finds.
+  //
+  // resolve() is the same question prepare() asks, minus the side effect, so
+  // asking it here makes the claim true by construction rather than by luck.
+  // The gates are already lifted at this point; a refusal now means a gate this
+  // function does not know about, or no ANTHROPIC_API_KEY in the environment.
+  try {
+    const resolved = models.resolve(task);
+    if (resolved.provider !== 'anthropic' || resolved.model !== model) {
+      const err = new Error(
+        `HARNESS BUG — the router refused the dispatch: resolve("${task}") is ` +
+        `${resolved.provider}/${resolved.model}, asked for anthropic/${model}. NOTHING WAS SENT. ` +
+        'prepareVia() lifts DISPATCH_READY and FLIP_BLOCKED, so a gate added to models.js since ' +
+        'then has to be lifted there too — or ANTHROPIC_API_KEY is not set in this process ' +
+        '(providerFor() refuses an unconfigured provider the same way it refuses a blocked one).'
+      );
+      err.harnessBug = true;
+      throw err;
+    }
+  } catch (err) {
+    restore();
+    throw err;
+  }
+
   return aiContext.prepare({
     task,
     name: 'persona:skeptical-cfo',
@@ -101,15 +141,17 @@ function prepareVia(task, model) {
 
 async function probe(model) {
   const record = await prepareVia('personas', model);
-  // A mismatch here is a bug in THIS FILE, not in the seam: the router refused
-  // the dispatch and prepareVia() failed to lift the refusal. Say so, rather
-  // than leaving the next reader to conclude aiContext.prepare() is broken.
+  // A cheap second belt. prepareVia() has already proven the router resolves
+  // the way we asked BEFORE anything was sent; this catches the narrower case
+  // of prepare() returning a record that disagrees with its own resolve().
   if (record.provider !== 'anthropic' || record.model !== model) {
-    throw new Error(
-      `HARNESS BUG — prepare() returned ${record.provider}/${record.model}, expected anthropic/${model}. ` +
-      'The router refused the dispatch; prepareVia() lifts DISPATCH_READY and FLIP_BLOCKED, so a gate ' +
-      'added to models.js since then has to be lifted there too. Nothing was sent.'
+    const err = new Error(
+      `HARNESS BUG — prepare() returned ${record.provider}/${record.model}, expected anthropic/${model}, ` +
+      'even though resolve() agreed with us a moment earlier. That is aiContext.prepare() disagreeing ' +
+      'with the router, not a gate this file failed to lift.'
     );
+    err.harnessBug = true;
+    throw err;
   }
 
   // Turn 1: multi-turn conversation on top of the cached prefix.
