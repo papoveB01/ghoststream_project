@@ -309,6 +309,18 @@ test('both blocked keys are blocked, and each carries a reason', () => {
         'carry the measurement, not just the verdict — an operator who is told only "blocked" argues ' +
         'with it, and a figure nothing pins is a figure that drifts (the 5-of-5 truncation on staging ' +
         'document 91bfba3e is also the exit criterion for deleting this entry)');
+      // AND THE BUDGET, separately, because the assertion above only reaches
+      // half the string. `5 of 5` and `91bfba3e` both live in the SECOND and
+      // THIRD concatenated literals; replacing the FIRST one — "the 2200-token
+      // budgets at kb.companyAnalysis / kb.productAnalysis are Gemini-sized" —
+      // with anything at all left this file 27/27 green. That clause is the
+      // half an operator acts on: it names WHICH knob is wrong and at what
+      // value, and 2200 is what a flip PR has to change. The code side is
+      // pinned by test/cutoverGroup2.test.js; this is the operator-facing
+      // prose, which is exactly the surface this ADR keeps losing.
+      assert.match(reason, /2200/,
+        "keypoints' reason no longer names the 2200-token budget — the number an operator has to " +
+        'change is the one thing the reason cannot be allowed to drop');
     }
     const warnings = [];
     const realWarn = console.warn;
