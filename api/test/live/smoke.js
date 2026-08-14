@@ -537,16 +537,29 @@ async function main() {
   return 0;
 }
 
-main()
-  .then(async (code) => {
-    process.exitCode = code;
-    await shutdown();
-  })
-  .catch(async (err) => {
-    console.error(err);
-    // 2, not 1. An unexpected throw out here is this script failing, not a
-    // schema being rejected — and 1 is the code that pages someone about a
-    // rejection.
-    process.exitCode = 2;
-    await shutdown();
-  });
+// Only when RUN, not when required. test/liveHarnessGates.test.js requires this
+// file to exercise resolveFor() for free, in CI, with no network — and without
+// this guard that require would start a paid 26-schema run inside `npm test`.
+if (require.main === module) {
+  main()
+    .then(async (code) => {
+      process.exitCode = code;
+      await shutdown();
+    })
+    .catch(async (err) => {
+      console.error(err);
+      // 2, not 1. An unexpected throw out here is this script failing, not a
+      // schema being rejected — and 1 is the code that pages someone about a
+      // rejection.
+      process.exitCode = 2;
+      await shutdown();
+    });
+}
+
+// resolveFor is the only export, and it is exported for ONE reason: nothing in
+// `npm test` could reach it, so the gate-lifting defect that made this harness
+// post a Gemini model id to the Anthropic API was catchable only by spending
+// money. test/live/ is outside `npm test` and CI merely `node --check`s it
+// (.github/workflows/ci.yml:60), so the runtime backstop above is the last line
+// of defence and it fires only after the run has already been paid for.
+module.exports = { resolveFor };
