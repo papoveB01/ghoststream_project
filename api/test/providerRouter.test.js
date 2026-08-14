@@ -298,6 +298,18 @@ test('both blocked keys are blocked, and each carries a reason', () => {
       `${task} is blocked from flipping but not migrated — that is DISPATCH_READY's job, not this set's`);
     assert.ok(reason && reason.length > 40, `${task} needs a reason an operator can act on`);
     assert.match(reason, /ADR-0006/, `${task}'s reason must name where the measurement lives`);
+    // AND THE MEASUREMENT ITSELF, per key. `length > 40` plus /ADR-0006/ pins
+    // the SHAPE of a reason, not its content: measured on this tree, replacing
+    // keypoints' whole string with "blocked. See ADR-0006 §9 item 5 for the
+    // measurement." left this file 27/27 green. battlecard's figure is pinned in
+    // the test above (/2 of 80/) precisely because it drifted for two rounds
+    // while every check here stayed green; keypoints' had nothing holding it.
+    if (task === 'keypoints') {
+      assert.match(reason, /5 of 5|91bfba3e/,
+        'carry the measurement, not just the verdict — an operator who is told only "blocked" argues ' +
+        'with it, and a figure nothing pins is a figure that drifts (the 5-of-5 truncation on staging ' +
+        'document 91bfba3e is also the exit criterion for deleting this entry)');
+    }
     const warnings = [];
     const realWarn = console.warn;
     console.warn = (m) => warnings.push(String(m));
