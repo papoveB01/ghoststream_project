@@ -505,7 +505,18 @@ async function main() {
       const tag = r.harnessBug
         ? 'HARNESS!'
         : { OK: 'ok      ', DEGRADED: 'DEGRADED', REJECTED: 'REJECTED', ERROR: 'ERROR   ' }[r.status];
-      console.log(`  ${tag} ${entry.site.padEnd(34)} ${String(r.model).padEnd(22)} ${r.detail}`);
+      // MARK THE ROWS PRODUCTION REFUSES TO SEND. `resolveFor()` lifts
+      // FLIP_BLOCKED for the duration of the call — that is the whole point, it
+      // is how a blocked task's schema gets checked at all — so an `ok` here is
+      // a true statement about a dispatch the router will NOT make today. On the
+      // group-2 cluster 4 of the 5 rows are keypoints/battlecard, and "5/5
+      // accepted" over them is the sentence a flip PR is most likely to quote as
+      // readiness. The mark makes that impossible to do by accident.
+      const flipBlocked = provider === 'anthropic' && models.FLIP_BLOCKED.has(entry.task);
+      console.log(
+        `  ${tag} ${entry.site.padEnd(34)} ${String(r.model).padEnd(22)}` +
+        `${flipBlocked ? ' [flip-blocked]' : ''} ${r.detail}`
+      );
       for (const w of r.warnings || []) console.log(`         ! ${w}`);
     }
   }
@@ -519,6 +530,8 @@ async function main() {
   // Listing it twice is how "4 errored" gets read as four flaky provider calls
   // — which is exactly the misreading that let the FLIP_BLOCKED regression sit.
   const errored = by('ERROR').filter((r) => !r.harnessBug);
+  const flipBlockedRows = results.filter(
+    (r) => r.provider === 'anthropic' && models.FLIP_BLOCKED.has(r.entry.task));
 
   console.log(
     `\n${by('OK').length}/${results.length} accepted` +
@@ -528,6 +541,18 @@ async function main() {
     (bugs.length ? `, ${bugs.length} HARNESS BUG` : '') +
     (warned.length ? `, ${warned.length} with translation warnings` : '')
   );
+
+  // The footnote that keeps the number above from being quoted as readiness.
+  // ADR-0006 §9 item 5 makes the argument at length; the one-liner is here
+  // because the count is what gets pasted into a PR body.
+  if (flipBlockedRows.length) {
+    console.log(
+      `\n${flipBlockedRows.length} of those row(s) are [flip-blocked]: the provider accepted the schema and ` +
+      'production still\nrefuses to route the task there (models.FLIP_BLOCKED). This run measures SCHEMA ' +
+      'ACCEPTANCE\nat one sample, effort=low and max_tokens=' + `${opts.maxTokens}` +
+      '; it is not evidence about the real request\nshape, and it is not flip readiness.'
+    );
+  }
 
   if (bugs.length) {
     console.log('\nHARNESS BUG — this script, not the provider and not the schema. Nothing was sent:');
