@@ -29,6 +29,7 @@ const assert = require('node:assert');
 
 const models = require('./../src/models');
 const smoke = require('./live/smoke.js');
+const { ENTRIES } = require('./live/schemas.js');
 
 // SNAPSHOTTED AT REQUIRE TIME, before any test has had a chance to call into the
 // harness. Reading the live sets inside each test looks equivalent and is not:
@@ -41,12 +42,31 @@ const smoke = require('./live/smoke.js');
 const READY_AT_LOAD = [...models.DISPATCH_READY].sort();
 const BLOCKED_AT_LOAD = [...models.FLIP_BLOCKED.entries()].sort();
 
-// The tasks the harness must be able to reach: every task the router will let a
-// call site dispatch, plus every task it currently REFUSES to flip. The second
-// half is the load-bearing one — a task in FLIP_BLOCKED is exactly the task
-// whose flip PR has to run this harness, which is when a gate it does not lift
-// disables the check precisely where it matters.
-const GATED_TASKS = [...new Set([...READY_AT_LOAD, ...BLOCKED_AT_LOAD.map(([t]) => t)])].sort();
+// THE TASKS THE HARNESS MUST BE ABLE TO REACH, and the third source here is the
+// one that makes this test cover what smoke.js actually does. The two router
+// sets between them name 6 tasks; a run resolves EVERY entry in the schema
+// registry, which is 15 distinct tasks. Built from the two sets alone, this test
+// left 9 of them — callAnalysis, callEntities, compare, content, discovery,
+// marketWatch, personas, proposal, research — with no coverage at all, so a
+// THIRD gate landing on any of those was silent here.
+//
+// Measured, with a hypothetical third Set gate added to providerFor() in
+// FLIP_BLOCKED's shape: a gate on `assessment` (in both router sets) was 0/2,
+// caught; the same gate on `discovery` (registry only) was 2/2, green. A
+// --provider=both run would then have posted a Gemini id to the Anthropic API
+// for that cluster, 404, exit 4, and read as a provider outage — this file's
+// whole reason for existing, with CI green over it. `personas` is on that
+// uncovered list and is the next cutover.
+//
+// FLIP_BLOCKED is still called out separately even though its keys are a subset
+// of DISPATCH_READY today, because it is the load-bearing half: a task in
+// FLIP_BLOCKED is exactly the task whose flip PR has to run this harness, which
+// is when a gate it does not lift disables the check precisely where it matters.
+const GATED_TASKS = [...new Set([
+  ...READY_AT_LOAD,
+  ...BLOCKED_AT_LOAD.map(([t]) => t),
+  ...ENTRIES.map((e) => e.task),
+])].sort();
 
 // resolveFor() consults isProviderConfigured('anthropic'), which reads the env
 // on every call — an unset key is a REFUSAL, so without this the test would pass
@@ -65,8 +85,18 @@ function withDummyKey(fn) {
 }
 
 test('smoke.js resolveFor() lifts every gate the router consults', () => {
-  assert.ok(GATED_TASKS.length >= 6,
-    'the gated task list went empty — this test would then prove nothing');
+  // A FLOOR, NOT A COUNT, and deliberately placed at 10 rather than at today's
+  // 15. Its job is to prove the loop below is not vacuous, and specifically that
+  // the REGISTRY half is contributing: the two router sets alone supply 6, so
+  // any value above 6 fails if `ENTRIES` stops being reachable (a renamed
+  // export "fixed" with `|| []`, a registry that stops carrying `task`). Pinned
+  // at 15 it would instead fail on an ordinary registry edit, with a message
+  // that says "went empty" and is false — and set membership for the two router
+  // sets is already pinned by set equality in test/providerRouter.test.js,
+  // which is where a change to them is supposed to be argued.
+  assert.ok(GATED_TASKS.length >= 10,
+    `only ${GATED_TASKS.length} gated task(s) — the schema registry is no longer contributing to this ` +
+    'list (the two router sets alone give 6), so this test now proves far less than it reads as proving');
   withDummyKey(() => {
     for (const task of GATED_TASKS) {
       const resolved = smoke.resolveFor('anthropic', task);
