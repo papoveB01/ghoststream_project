@@ -264,9 +264,11 @@ async function tenantContextText(tenantId) {
 // and `null` / `[]` means THE DOCUMENT GENUINELY HAS NONE — only that. Anything
 // that overwrites stored data must call the strict form; keep it that way.
 
-// extractKeyPoints({ scope, text, tenantId?, title? }) → { kind, points: [...] }
-// Never throws — returns { kind, points: [] } on any failure so ingest can proceed.
-// `extractKeyPointsStrict` is the same call without the swallow.
+// extractKeyPointsStrict({ scope, text, tenantId?, title? }) → { kind, points: [...] }
+// `points: []` means the document genuinely has none — it is under the 80-char
+// floor, or the model returned an empty list — and nothing else. A failed call
+// throws, as does an answer with no `points` array at all. Same contract as the
+// two sibling strict extractors below; see the two-forms note above.
 async function extractKeyPointsStrict({ scope, text, tenantId = null, title = null } = {}) {
   const kind = kindFor(scope);
   const body = stripBoilerplate(text);
@@ -280,7 +282,7 @@ async function extractKeyPointsStrict({ scope, text, tenantId = null, title = nu
     `${promptFor(kind, !!context)}\n\n` +
     (context ? `===OUR COMPANY (portfolio & objectives)===\n${context}\n\n` : '') +
     `===${subjectLabel}${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
-  const { parsed } = await aiCall.generateStructured({
+  const { parsed, provider } = await aiCall.generateStructured({
     task: 'keypoints',
     prompt,
     responseSchema: KEYPOINTS_SCHEMA,
@@ -289,13 +291,33 @@ async function extractKeyPointsStrict({ scope, text, tenantId = null, title = nu
     tenantId,
     site: 'kb.keypoints',
   });
-  const points = (Array.isArray(parsed.points) ? parsed.points : [])
+  // A DEGENERATE SUCCESS IS A FAILURE, not an empty document. `points` is
+  // `required` in KEYPOINTS_SCHEMA, so an answer that parsed but has no array
+  // there did not come back the way the schema says it must — a repaired
+  // truncation, a provider shape change, a stubbed-out response. Coercing that
+  // to `[]` would hand the destructive caller (service.js#regenerateKeyPoints)
+  // exactly the value that means "this document genuinely has none", and it
+  // would delete a good stored list behind a 200 with `refreshFailures: []` —
+  // the same swallow the two forms of this extractor exist to end, arriving by
+  // the other door. The wrapper below is still free to turn this into `[]`,
+  // because for ingest that is correct.
+  if (!Array.isArray(parsed && parsed.points)) {
+    const err = new Error('key-point extraction returned no points array (schema requires one)');
+    // Stamped from the seam's own answer, not guessed: this error is ours, so
+    // unlike a raw SDK throw it can always name the provider that produced it.
+    if (provider) err.provider = provider;
+    throw err;
+  }
+  const points = parsed.points
     .map((p) => String(p || '').replace(/^[-*•\s]+/, '').trim())
     .filter(Boolean)
     .slice(0, 7);
   return { kind, points };
 }
 
+// extractKeyPoints({ scope, text, tenantId?, title? }) → { kind, points: [...] }
+// Never throws — returns { kind, points: [] } on any failure so ingest can
+// proceed. Only callers that are not overwriting stored data may use this form.
 async function extractKeyPoints(opts = {}) {
   try {
     return await extractKeyPointsStrict(opts);

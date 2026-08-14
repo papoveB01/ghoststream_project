@@ -236,7 +236,11 @@ test('a SUCCESSFUL extraction that finds nothing still clears the stored value',
     scope: 'COMPETITOR', category: 'ORG_INTELLIGENCE',
     metadata: { keyPoints: STORED_KEYPOINTS, keyPointsKind: 'competitive', assessment: STORED_ASSESSMENT },
   });
-  const out = await withSeam(answer({ points: [], summary: '', axes: [], topImprovements: [] }),
+  // `summary` is what makes the scoreboard half of this answer a real "nothing
+  // to score" rather than a blank one: an answer with no scored axis AND no
+  // summary is a degenerate success and now throws (see the two tests below).
+  const out = await withSeam(
+    answer({ points: [], summary: 'The doc has no evidence about this competitor.', axes: [], topImprovements: [] }),
     () => service.regenerateKeyPoints(TENANT, DOC_ID));
 
   assert.ok(!('keyPoints' in persisted), 'an empty successful extraction must still clear keyPoints');
@@ -256,6 +260,75 @@ test('a document too thin to analyse clears the analysis, because that is not a 
 
   assert.ok(!('companyAnalysis' in persisted),
     'a doc with nothing in it must lose its stale analysis — only a FAILED call preserves');
+  assert.deepStrictEqual(out.refreshFailures, []);
+});
+
+// ── 2b. a DEGENERATE success is a failure, not an empty document ────────────
+//
+// The other door into the same outcome. The fix above closed "the call threw →
+// delete"; these two close "the call returned 200 with nothing usable in it →
+// overwrite". Both end at a good stored analysis replaced by nothing, behind a
+// 200 with `refreshFailures: []` — which is worse than the throw case, because
+// nothing anywhere records that it happened.
+
+test('an answer with no points array is a failed call, not a document with no points', async () => {
+  // `points` is required in KEYPOINTS_SCHEMA. An answer that parses but omits it
+  // did not come back the way the schema says it must — a repaired truncation, a
+  // provider shape change. Coerced to [] (as it was until 2026-08-14) it reads
+  // as "this document genuinely has none" and the stored list is deleted.
+  seed({
+    scope: 'COMPETITOR', category: 'ORG_INTELLIGENCE',
+    metadata: { keyPoints: STORED_KEYPOINTS, keyPointsKind: 'competitive' },
+  });
+  const out = await withSeam(answer({ summary: 'x', axes: [], topImprovements: [] }),
+    () => service.regenerateKeyPoints(TENANT, DOC_ID));
+
+  assert.deepStrictEqual(persisted.keyPoints, STORED_KEYPOINTS,
+    'a malformed answer must preserve, not delete — this is the throw case wearing a 200');
+  assert.deepStrictEqual(out.refreshFailures.map((f) => f.field), ['keyPoints'],
+    'and it must be REPORTED: a preserve nobody is told about is the silence this PR removed');
+  assert.strictEqual(out.refreshFailures[0].provider, 'anthropic',
+    'the error is ours, so it can name the serving provider from the answer itself');
+});
+
+test('a scoreboard that scores no axis and has no summary is a failed call', async () => {
+  // assessment.normalize() cannot return null and cannot throw — it fills all 8
+  // axes with unknown/0 placeholders so the UI shape is stable. So `{}` from the
+  // model comes back looking like a complete, confident, all-zero scoreboard,
+  // and writing it over a good one is a silent loss that also degrades the
+  // battlecard, which averages these per-doc scoreboards.
+  seed({
+    scope: 'COMPETITOR', category: 'BATTLECARDS', competitorIds: ['comp-1'],
+    metadata: { assessment: STORED_ASSESSMENT, keyPoints: STORED_KEYPOINTS },
+  });
+  const out = await withSeam((args) => {
+    if (args.task === 'assessment') return answer({})();
+    return answer({ points: ['still fine'] })();
+  }, () => service.regenerateKeyPoints(TENANT, DOC_ID));
+
+  assert.deepStrictEqual(persisted.assessment, STORED_ASSESSMENT,
+    'an all-unknown, summary-less scoreboard must not overwrite a real one');
+  assert.deepStrictEqual(out.refreshFailures.map((f) => f.field), ['assessment']);
+  assert.deepStrictEqual(persisted.keyPoints, ['still fine'],
+    'and the sibling call that answered properly is still written');
+});
+
+test('a scoreboard that scores nothing but SAYS SO is a real answer and is stored', async () => {
+  // The boundary of the rule above, and the reason it is not "any all-unknown
+  // scoreboard is a failure": `summary` is required in ASSESSMENT_SCHEMA, so a
+  // model that read the doc and honestly found no basis for a verdict still
+  // writes the sentence. That is a judgement, and it must replace the stored one
+  // — otherwise a doc that has genuinely stopped being about this competitor
+  // keeps a favourable scoreboard from its previous life forever.
+  seed({
+    scope: 'COMPETITOR', category: 'BATTLECARDS', competitorIds: ['comp-1'],
+    metadata: { assessment: STORED_ASSESSMENT },
+  });
+  const out = await withSeam(answer({ summary: 'Nothing in this doc supports a verdict.', axes: [], topImprovements: [], points: [] }),
+    () => service.regenerateKeyPoints(TENANT, DOC_ID));
+
+  assert.strictEqual(persisted.assessment.summary, 'Nothing in this doc supports a verdict.',
+    'an honest no-verdict answer is a successful extraction and overwrites');
   assert.deepStrictEqual(out.refreshFailures, []);
 });
 

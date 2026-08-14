@@ -289,16 +289,18 @@ function normalize(raw) {
   };
 }
 
-// extractCompetitiveAssessment({ text, tenantId?, title?, competitorName?, appliesProductNames? })
+// extractCompetitiveAssessmentStrict({ text, tenantId?, title?, competitorName?, appliesProductNames? })
 //   → { summary, axes[8], topImprovements[≤3], weightedAdvantage, axesSpec, version, generatedAt }
 // `appliesProductNames` — names of OUR products this battlecard applies to. Empty
 // array (or null) is interpreted as "all our products" and the model scores
 // against the full portfolio. Non-empty narrows the lens so a "Fraud Solution
 // vs Acme" card doesn't get scored on irrelevant payment-gateway features.
-// Never throws — returns null on any failure so ingest proceeds.
-// `extractCompetitiveAssessmentStrict` is the same call WITHOUT the swallow, for
-// callers that overwrite a stored scoreboard and so cannot read a failure as
-// "this doc scores nothing" — see the two-forms note in keypoints.js.
+//
+// `null` means the document is too thin to score, and nothing else. A failed
+// call throws, as does a scoreboard with nothing in it — see the note on the
+// return below. For callers that overwrite a stored scoreboard and so cannot
+// read a failure as "this doc scores nothing"; the never-throws wrapper is
+// below it. See the two-forms note in keypoints.js.
 async function extractCompetitiveAssessmentStrict({ text, tenantId = null, title = null, competitorName = null, appliesProductNames = [] } = {}) {
   const body = keypoints.stripBoilerplate(String(text || ''));
   if (body.length < 80) return null;
@@ -319,7 +321,7 @@ async function extractCompetitiveAssessmentStrict({ text, tenantId = null, title
       ? `===OUR COMPANY (portfolio & objectives)===\n${context}\n\n`
       : `===OUR COMPANY===\n(No portfolio on file — score ourScore conservatively and call this out in the summary.)\n\n`) +
     `===COMPETITOR${competitorName ? `: ${competitorName}` : ''}${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
-  const { parsed } = await withRetry(() => aiCall.generateStructured({
+  const { parsed, provider } = await withRetry(() => aiCall.generateStructured({
     task: 'assessment',
     prompt,
     responseSchema: ASSESSMENT_SCHEMA,
@@ -328,9 +330,34 @@ async function extractCompetitiveAssessmentStrict({ text, tenantId = null, title
     tenantId,
     site: 'kb.assessment',
   }));
-  return normalize(parsed);
+  const scoreboard = normalize(parsed);
+  // A DEGENERATE SUCCESS IS A FAILURE. normalize() cannot return null and cannot
+  // throw — by design, because the UI wants a stable 8-axis shape — so `{}` from
+  // a malformed answer comes back as a *complete-looking* scoreboard: 8 axes at
+  // weight 0 / winner 'unknown', empty summary, weightedAdvantage 0. Written
+  // over a good stored scoreboard by the refresh path that is a silent loss with
+  // `refreshFailures: []`, and it propagates: extractBattlecard averages these
+  // per-doc scoreboards, so one blanked doc can push the card onto its
+  // `!hasAggregate` inline branch, which is what the competitor page, the
+  // History drawer and the Markdown snapshot render.
+  //
+  // The signature is narrow on purpose: not one axis carries a verdict AND there
+  // is no summary. `summary` is `required` in ASSESSMENT_SCHEMA, so a real "the
+  // doc has no evidence" answer still says so in prose and is kept; the floor
+  // above already handles a document too thin to score at all.
+  const scored = scoreboard.axes.some((a) => a.winner !== 'unknown');
+  if (!scored && !scoreboard.summary) {
+    const err = new Error('competitive assessment scored no axis and returned no summary');
+    // Ours, not a raw SDK throw, so it can always name the serving provider.
+    if (provider) err.provider = provider;
+    throw err;
+  }
+  return scoreboard;
 }
 
+// extractCompetitiveAssessment(...) — the never-throws form: returns null on any
+// failure so ingest proceeds. Only callers that are not overwriting a stored
+// scoreboard may use it.
 async function extractCompetitiveAssessment(opts = {}) {
   try {
     return await extractCompetitiveAssessmentStrict(opts);
