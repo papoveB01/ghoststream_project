@@ -759,9 +759,29 @@ async function regenerateKeyPoints(tenantId, documentId) {
           [tenantId, doc.competitor_ids]
         )).rows.map((r) => r.name).join(' / ')
       : null;
+    // THE REFRESH MUST SCORE THROUGH THE SAME LENS INGEST DID. `appliesProductNames`
+    // restricts ourScore to the products this battlecard is filed against;
+    // ingest resolves it from metadata.appliesToProductIds (see the identical
+    // query in the ingest path above) and passes it. This path never read it, so
+    // it defaulted to [] — "scores OUR full portfolio against the competitor" —
+    // and one click on ↻ refresh analysis replaced a product-scoped scoreboard
+    // with a portfolio-wide one. Silently: 200, refreshFailures [], and
+    // metadata.appliesToProductIds untouched, so the UI still labels the card
+    // product-scoped while the axes underneath it are no longer.
+    const appliesIds = Array.isArray(md.appliesToProductIds)
+      ? [...new Set(md.appliesToProductIds.filter((v) => typeof v === 'string' && v.length > 0))]
+      : [];
+    let appliesProductNames = [];
+    if (appliesIds.length) {
+      const pr = await db.query(
+        `SELECT name FROM products WHERE tenant_id = $1 AND id = ANY($2)`,
+        [tenantId, appliesIds]
+      );
+      appliesProductNames = pr.rows.map((r) => r.name);
+    }
     await attempt('assessment', async () => {
       const scoreboard = await assessment.extractCompetitiveAssessmentStrict({
-        text, tenantId, title: doc.title, competitorName,
+        text, tenantId, title: doc.title, competitorName, appliesProductNames,
       });
       if (scoreboard) md.assessment = scoreboard;
       else delete md.assessment;

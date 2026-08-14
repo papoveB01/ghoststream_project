@@ -79,6 +79,10 @@ const TENANT = 'tenant-1';
 const DOC_ID = 'doc-1';
 let docRow = null;
 let persisted = null;
+// Names the id-lookup in the assessment branch resolves metadata.appliesToProductIds
+// to. Only that one query — matched on its exact text, because tenantContextText
+// also reads `products` and must keep getting nothing.
+let appliesProductRows = [];
 
 stub('db.js', {
   query: async (sql, params) => {
@@ -91,6 +95,9 @@ stub('db.js', {
     if (s.includes('FROM kb_chunks')) return { rows: [{ body: docRow.body }] };
     if (s.includes('FROM kb_documents d')) return { rows: [docRow] };
     if (s.includes('FROM competitors')) return { rows: [{ name: 'Acme' }] };
+    if (s.includes('FROM products WHERE tenant_id = $1 AND id = ANY($2)')) {
+      return { rows: appliesProductRows.map((name) => ({ name })) };
+    }
     // products (product-analysis prompt header) and every tenantContextText
     // query: empty is fine, they only shape prompt context.
     return { rows: [] };
@@ -112,8 +119,9 @@ const STORED_COMPANY = { executiveSummary: 'We sell sales intelligence.', servic
 const STORED_PRODUCT = { executiveSummary: 'Our gateway does X.', capabilities: [] };
 const STORED_ASSESSMENT = { summary: 'we lead', axes: [], topImprovements: [], weightedAdvantage: 12 };
 
-function seed({ scope, category, metadata, productIds = [], competitorIds = [] }) {
+function seed({ scope, category, metadata, productIds = [], competitorIds = [], appliesProductNames = [] }) {
   persisted = null;
+  appliesProductRows = appliesProductNames;
   docRow = {
     id: DOC_ID, tenant_id: TENANT, scope, category, title: 'Fixture doc',
     metadata, product_ids: productIds, competitor_ids: competitorIds,
@@ -330,6 +338,48 @@ test('a scoreboard that scores nothing but SAYS SO is a real answer and is store
   assert.strictEqual(persisted.assessment.summary, 'Nothing in this doc supports a verdict.',
     'an honest no-verdict answer is a successful extraction and overwrites');
   assert.deepStrictEqual(out.refreshFailures, []);
+});
+
+// ── 2c. the refresh scores the same document ingest scored ──────────────────
+
+test('the refresh applies the card\'s product scope, the way ingest does', async () => {
+  // metadata.appliesToProductIds is what makes a battlecard "Fraud Solution vs
+  // Acme" rather than "us vs Acme". ingest resolves it to names and passes them,
+  // which restricts ourScore to those products; this path never read it, so one
+  // click on ↻ refresh analysis silently replaced the product-scoped axes with
+  // portfolio-wide ones — 200, refreshFailures [], and the metadata (and so the
+  // UI's label) still saying product-scoped.
+  seed({
+    scope: 'COMPETITOR', category: 'BATTLECARDS', competitorIds: ['comp-1'],
+    metadata: { assessment: STORED_ASSESSMENT, appliesToProductIds: ['prod-9'] },
+    appliesProductNames: ['Fraud Solution'],
+  });
+  const sent = await withSeam(answer({ summary: 'ok', axes: [], topImprovements: [], points: [] }),
+    async (calls) => {
+      await service.regenerateKeyPoints(TENANT, DOC_ID);
+      return calls.find((c) => c.task === 'assessment');
+    });
+
+  assert.match(sent.prompt, /specific products: Fraud Solution/,
+    'the scoring lens must name the products this card is filed against');
+  assert.ok(!/full portfolio/.test(sent.prompt),
+    'and must NOT fall back to the portfolio-wide lens for a product-scoped card');
+});
+
+test('a card with no product scope still scores the full portfolio', async () => {
+  // The other half: absent metadata means "all our products", and reading it
+  // must not turn an unscoped card into a scoped one.
+  seed({
+    scope: 'COMPETITOR', category: 'BATTLECARDS', competitorIds: ['comp-1'],
+    metadata: { assessment: STORED_ASSESSMENT },
+  });
+  const sent = await withSeam(answer({ summary: 'ok', axes: [], topImprovements: [], points: [] }),
+    async (calls) => {
+      await service.regenerateKeyPoints(TENANT, DOC_ID);
+      return calls.find((c) => c.task === 'assessment');
+    });
+
+  assert.match(sent.prompt, /full portfolio/);
 });
 
 // ── 3. the scope/category clears are not model results ──────────────────────
