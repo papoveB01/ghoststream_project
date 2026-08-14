@@ -596,9 +596,15 @@ function checkSlice(slice, mustContain, limit, what) {
   return slice;
 }
 
-// The label map plus the helper. Exactly one binding is injected, so a helper
-// that started reaching for `document`, `fetch` or any other SPA global fails
-// here loudly rather than quietly picking up a Node one.
+// The label map plus the helper, with `alert` as the only injected binding.
+// That is not a sandbox, and it is worth being exact about what it does and does
+// not catch, in a file about false confidence. `new Function` runs against
+// Node's globals, and measured on the api image's Node 22 (v22.23.2) `fetch`,
+// `console`, `navigator`, `structuredClone`, `URL`, `crypto` and `setTimeout`
+// are all defined in here — a helper that started using one would quietly pick
+// up the Node one and nothing would say so. What this does catch is the
+// browser-only set: `document`, `window`, `confirm` and `localStorage` are
+// undefined in this process, so a helper that reached for the DOM throws.
 function loadWarnHelper(src) {
   const admin = src || fs.readFileSync(ADMIN_JS, 'utf8');
   const labelsAt = admin.indexOf('const KB_REFRESH_FIELD_LABELS');
