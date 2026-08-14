@@ -289,7 +289,8 @@ async function ingest({
   const vectors = await embeddings.embedAll(chunks.map((c) => c.text));
 
   // 4b. Key points — "competitive points" for COMPETITOR docs, "opportunity
-  // points" for PROSPECT docs — extracted by Gemini and stored on the document's
+  // points" for PROSPECT docs — extracted by the `keypoints` task (either
+  // provider, ADR-0006 §9 item 5) and stored on the document's
   // metadata so the Library can render them without re-calling the model on
   // every page load. Best-effort (never blocks ingest), and skipped for
   // transient mission-prep docs and individual social posts (too thin).

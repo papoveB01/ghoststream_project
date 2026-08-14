@@ -37,7 +37,8 @@
 // EXIT CODES — distinct so an alert can say which thing happened:
 //   0  everything accepted
 //   1  a schema was REJECTED — the finding this script exists to report
-//   2  bad invocation, or this script itself crashed (never a rejection)
+//   2  bad invocation, or this script itself is broken (never a rejection) —
+//      including the router refusing a dispatch resolveFor() failed to lift
 //   3  accepted, but a field lost its ability to be null
 //   4  errors only — nothing was judged, re-run before concluding anything
 //
@@ -122,19 +123,108 @@ function usage() {
 // than passing silently. The per-task env var is the highest-precedence knob,
 // so setting it beats any AI_PROVIDER_* an operator already has in .env;
 // DISPATCH_READY is what the router consults before honouring it at all.
+//
+// EVERY ROUTER GATE HAS TO BE LIFTED HERE, NOT JUST DISPATCH_READY. `models.js`
+// grew a second one — FLIP_BLOCKED — in group 2's cutover, consulted right
+// after dispatch-readiness and falling back to Gemini in exactly the same way.
+// With only the first lifted, this function returned `gemini-2.5-flash-lite`
+// for four of the five group-2 entries and the harness posted a GEMINI model id
+// to the Anthropic API: 4 × 404, `1/5 accepted, 4 errored`, exit 4, where the
+// same command on `main` was 5/5 and exit 0. Nothing said "harness" — it read
+// as a provider outage. That is this check disabling itself precisely for the
+// tasks whose flip PR is required to run it (rules/commands.md: "the only thing
+// that catches a schema the provider rejects"). Mirrors the save/lift/restore
+// in test/cutoverGroup2.test.js's withAnthropic().
+//
+// THE WHOLE BODY IS INSIDE THE try, including the reads of the two gate
+// exports. models.js:168 explicitly anticipates a key LEAVING FLIP_BLOCKED, and
+// the set itself going away with the migration is the natural end state — at
+// which point `models.FLIP_BLOCKED.has(...)` is a TypeError. Read outside the
+// try, that throw carries no `harnessBug` tag, reports as an ordinary setup
+// ERROR and exits 4, "re-run" — for a script that will fail identically forever.
+// Tagging every throw from in here is right rather than over-broad: nothing in
+// this function talks to a provider, so anything it throws is this file or this
+// environment, and NOTHING WAS SENT is true of all of it.
 function resolveFor(provider, task) {
-  const envName = models.providerEnvName(task);
-  const prevEnv = process.env[envName];
-  const wasReady = models.DISPATCH_READY.has(task);
-  process.env[envName] = provider;
-  if (!wasReady) models.DISPATCH_READY.add(task);
+  let envName;
+  let prevEnv;
+  // Initialised to "nothing to undo", not to false/false. If a throw lands
+  // between here and the lift, the finally must not delete a membership this
+  // call never added — which is the unconditional-restore defect one line over,
+  // reached by a different route.
+  let wasReady = true;
+  let wasBlocked = false;
+  let blockReason;
   try {
-    return models.resolve(task);
+    envName = models.providerEnvName(task);
+    prevEnv = process.env[envName];
+    wasReady = models.DISPATCH_READY.has(task);
+    wasBlocked = models.FLIP_BLOCKED.has(task);
+    blockReason = models.FLIP_BLOCKED.get(task);
+    process.env[envName] = provider;
+    if (!wasReady) models.DISPATCH_READY.add(task);
+    if (wasBlocked) models.FLIP_BLOCKED.delete(task);
+    const resolved = models.resolve(task);
+    // The backstop. A model that does not belong to the provider we asked for is
+    // a bug in THIS FILE — the router refused the dispatch and we failed to lift
+    // the refusal — and sending it produces a 404 that names the model and
+    // blames the provider. Checked on the id family as well as
+    // `resolved.provider`, so a stray GEMINI_*_MODEL / ANTHROPIC_*_MODEL
+    // override pointing at the wrong family is caught too. providerOfModel()
+    // returns null for ids it does not know, which is deliberately not a
+    // failure: a newly released model or a custom endpoint id must keep working
+    // without an edit here.
+    //
+    // WHAT IT DOES NOT COVER, and this is narrower than "a THIRD gate cannot
+    // repeat the above silently", which is what it used to claim. It catches a
+    // gate that changes the PROVIDER. A gate that keeps the provider and
+    // downgrades the MODEL passes both checks in silence — and that shape is not
+    // hypothetical: `anthropicTier` (models.js:323) already re-tiers keypoints
+    // and battlecard for Claude only, so a future gate written in its image
+    // would leave this run reporting a green over a model production would not
+    // use. test/liveHarnessGates.test.js pins the provider half for free, on
+    // every push; the model half has nothing behind it but this comment.
+    const family = models.providerOfModel(resolved.model);
+    if (resolved.provider !== provider || (family && family !== provider)) {
+      throw new Error(
+        `the router refused the dispatch — asked for ${provider}, resolved ${resolved.provider}/` +
+        `${resolved.model}. NOTHING WAS SENT. This is a harness bug, not a provider or schema ` +
+        'fault: smoke.js lifts DISPATCH_READY and FLIP_BLOCKED for the task under test, so a gate ' +
+        'added to models.js since then has to be lifted in resolveFor() too.'
+      );
+    }
+    return resolved;
+  } catch (err) {
+    err.harnessBug = true;
+    throw err;
   } finally {
     if (!wasReady) models.DISPATCH_READY.delete(task);
-    if (prevEnv === undefined) delete process.env[envName];
-    else process.env[envName] = prevEnv;
+    if (wasBlocked) models.FLIP_BLOCKED.set(task, blockReason);
+    if (envName !== undefined) {
+      if (prevEnv === undefined) delete process.env[envName];
+      else process.env[envName] = prevEnv;
+    }
   }
+}
+
+// Same hazard as the reads inside resolveFor(), one scope out and with a worse
+// blast radius. models.js:168 anticipates a key LEAVING FLIP_BLOCKED, and the
+// set going away with the migration is the natural end state — at which point
+// `models.FLIP_BLOCKED.has(...)` is a TypeError. resolveFor() reads it inside a
+// try for exactly that reason; the two [flip-blocked] read sites in main() sat
+// outside one, where a throw escapes to main().catch and takes the WHOLE summary
+// with it — every result already paid for on the run, and the HARNESS BUG block
+// that would have said what happened. Measured with FLIP_BLOCKED removed from
+// models.js's exports: a plain `--dry-run` run died on the FIRST row with a raw
+// `TypeError: Cannot read properties of undefined (reading 'has')` and exit 2,
+// no findings, no summary. It survived a review round because the call site's
+// `&&` short-circuits unless the provider is anthropic.
+//
+// Absent set → nothing is blocked → no mark and no footnote, which is the
+// truthful reading: the mark exists to say the ROUTER refuses this dispatch, and
+// a router with no such set refuses nothing.
+function isFlipBlocked(task) {
+  try { return models.FLIP_BLOCKED.has(task); } catch { return false; }
 }
 
 // ── the calls ───────────────────────────────────────────────────────────────
@@ -308,8 +398,13 @@ async function checkOne(entry, provider, opts) {
   } catch (err) {
     // Usually a renamed/removed export, or a module that will not load (a
     // missing JWT_SECRET takes out every router-bearing module at once). Not a
-    // schema rejection — nothing was sent.
-    return { entry, provider, status: 'ERROR', model: planned, detail: `setup: ${err.message}`, warnings };
+    // schema rejection — nothing was sent. `harnessBug` is carried through so
+    // the summary can separate "this script is broken" from "the provider or
+    // the environment misbehaved"; they need different readers.
+    return {
+      entry, provider, status: 'ERROR', model: planned, warnings,
+      detail: `setup: ${err.message}`, harnessBug: Boolean(err.harnessBug),
+    };
   }
 
   if (opts.dryRun) {
@@ -421,25 +516,88 @@ async function main() {
       // to turn a schema check into a rate-limit check.
       const r = await checkOne(entry, provider, opts);
       results.push(r);
-      const tag = { OK: 'ok      ', DEGRADED: 'DEGRADED', REJECTED: 'REJECTED', ERROR: 'ERROR   ' }[r.status];
-      console.log(`  ${tag} ${entry.site.padEnd(34)} ${String(r.model).padEnd(22)} ${r.detail}`);
+      // A harness-bug row has status ERROR but must not PRINT as one. The
+      // summary already separates the two; the BODY did not, so the observed
+      // failure was four lines reading `ERROR kb.battlecard … setup: the router
+      // refused the dispatch`, and anyone grepping the log rather than reading
+      // the last block still counted four provider errors. That is the exact
+      // misreading, still available one screen up from where it was fixed.
+      const tag = r.harnessBug
+        ? 'HARNESS!'
+        : { OK: 'ok      ', DEGRADED: 'DEGRADED', REJECTED: 'REJECTED', ERROR: 'ERROR   ' }[r.status];
+      // MARK THE ROWS PRODUCTION REFUSES TO SEND. `resolveFor()` lifts
+      // FLIP_BLOCKED for the duration of the call — that is the whole point, it
+      // is how a blocked task's schema gets checked at all — so an `ok` here is
+      // a true statement about a dispatch the router will NOT make today. On the
+      // group-2 cluster 4 of the 5 rows are keypoints/battlecard, and "5/5
+      // accepted" over them is the sentence a flip PR is most likely to quote as
+      // readiness. The mark makes that impossible to do by accident.
+      const flipBlocked = provider === 'anthropic' && isFlipBlocked(entry.task);
+      console.log(
+        `  ${tag} ${entry.site.padEnd(34)} ${String(r.model).padEnd(22)}` +
+        `${flipBlocked ? ' [flip-blocked]' : ''} ${r.detail}`
+      );
       for (const w of r.warnings || []) console.log(`         ! ${w}`);
     }
   }
 
   const by = (s) => results.filter((r) => r.status === s);
   const rejected = by('REJECTED');
-  const errored = by('ERROR');
   const degraded = by('DEGRADED');
   const warned = results.filter((r) => (r.warnings || []).length);
+  const bugs = results.filter((r) => r.harnessBug);
+  // A harness bug is reported in its own block below and NOT also as an error.
+  // Listing it twice is how "4 errored" gets read as four flaky provider calls
+  // — which is exactly the misreading that let the FLIP_BLOCKED regression sit.
+  const errored = by('ERROR').filter((r) => !r.harnessBug);
+  // ACCEPTED flip-blocked rows, not merely flip-blocked ones. The footnote says
+  // "the provider accepted the schema", and filtering on task membership alone
+  // said it about rows nothing was ever sent for. Observed: `0/5 accepted,
+  // 1 REJECTED, 4 HARNESS BUG` printed directly above "4 of those row(s) are
+  // [flip-blocked]: the provider accepted the schema…" — an acceptance claim for
+  // four rows that never reached a provider, in the one paragraph whose entire
+  // job is to stop a count being over-read. A --dry-run makes the same claim for
+  // every row, which is why opts.dryRun is checked here too rather than left to
+  // the [DRY RUN] marker four screens up.
+  //
+  // DEGRADED counts as accepted, deliberately: the provider did read the schema
+  // and take it, and a degraded flip-blocked row is exactly as quotable as an
+  // `ok` one. What is excluded is REJECTED, ERROR and HARNESS BUG.
+  const flipBlockedRows = opts.dryRun ? [] : results.filter(
+    (r) => r.provider === 'anthropic'
+      && isFlipBlocked(r.entry.task)
+      && !r.harnessBug
+      && (r.status === 'OK' || r.status === 'DEGRADED'));
 
   console.log(
     `\n${by('OK').length}/${results.length} accepted` +
     (degraded.length ? `, ${degraded.length} degraded` : '') +
     (rejected.length ? `, ${rejected.length} REJECTED` : '') +
     (errored.length ? `, ${errored.length} errored` : '') +
+    (bugs.length ? `, ${bugs.length} HARNESS BUG` : '') +
     (warned.length ? `, ${warned.length} with translation warnings` : '')
   );
+
+  // The footnote that keeps the number above from being quoted as readiness.
+  // ADR-0006 §9 item 5 makes the argument at length; the one-liner is here
+  // because the count is what gets pasted into a PR body.
+  if (flipBlockedRows.length) {
+    console.log(
+      `\n${flipBlockedRows.length} of the ACCEPTED row(s) are [flip-blocked]: the provider took the schema and ` +
+      'production still\nrefuses to route the task there (models.FLIP_BLOCKED). This run measures SCHEMA ' +
+      'ACCEPTANCE\nat one sample, effort=low and max_tokens=' + `${opts.maxTokens}` +
+      '; it is not evidence about the real request\nshape, and it is not flip readiness.'
+    );
+  }
+
+  if (bugs.length) {
+    console.log('\nHARNESS BUG — this script, not the provider and not the schema. Nothing was sent:');
+    for (const r of bugs) console.log(`  ${r.provider} ${r.entry.site}: ${r.detail}`);
+    console.log(
+      '\nThese entries were never judged and this run says nothing about them. Fix\n' +
+      'test/live/smoke.js and re-run before flipping anything.'
+    );
+  }
 
   if (rejected.length) {
     console.log('\nREJECTED — the provider read the schema and refused it:');
@@ -466,24 +624,43 @@ async function main() {
 
   // Distinct codes so a cron alert can say which of the three happened rather
   // than treating a rate-limit blip as "the schema is broken".
-  //   1 = a schema was rejected      2 = bad invocation
+  //   1 = a schema was rejected      2 = bad invocation / this script is broken
   //   3 = degraded semantics only    4 = errors only, nothing judged
+  //
+  // A rejection still outranks a harness bug. The bug means those entries were
+  // never judged; it does not un-observe a refusal that WAS observed on another
+  // entry, and 1 is the only code that pages anyone. The HARNESS BUG block above
+  // prints either way.
   if (rejected.length) return 1;
+  if (bugs.length) return 2;
   if (degraded.length || warned.length) return 3;
   if (errored.length) return 4;
   return 0;
 }
 
-main()
-  .then(async (code) => {
-    process.exitCode = code;
-    await shutdown();
-  })
-  .catch(async (err) => {
-    console.error(err);
-    // 2, not 1. An unexpected throw out here is this script failing, not a
-    // schema being rejected — and 1 is the code that pages someone about a
-    // rejection.
-    process.exitCode = 2;
-    await shutdown();
-  });
+// Only when RUN, not when required. test/liveHarnessGates.test.js requires this
+// file to exercise resolveFor() for free, in CI, with no network — and without
+// this guard that require would start a paid 26-schema run inside `npm test`.
+if (require.main === module) {
+  main()
+    .then(async (code) => {
+      process.exitCode = code;
+      await shutdown();
+    })
+    .catch(async (err) => {
+      console.error(err);
+      // 2, not 1. An unexpected throw out here is this script failing, not a
+      // schema being rejected — and 1 is the code that pages someone about a
+      // rejection.
+      process.exitCode = 2;
+      await shutdown();
+    });
+}
+
+// resolveFor is the only export, and it is exported for ONE reason: nothing in
+// `npm test` could reach it, so the gate-lifting defect that made this harness
+// post a Gemini model id to the Anthropic API was catchable only by spending
+// money. test/live/ is outside `npm test` and CI merely `node --check`s it
+// (.github/workflows/ci.yml:60), so the runtime backstop above is the last line
+// of defence and it fires only after the run has already been paid for.
+module.exports = { resolveFor };

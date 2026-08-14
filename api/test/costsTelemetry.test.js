@@ -231,6 +231,61 @@ test('[TEXTUAL] the recorded site labels are unique and namespaced', () => {
     'two call sites sharing a label make their costs indistinguishable in the rollup');
 });
 
+test('[TEXTUAL] the number of seam call sites is pinned, so prose has something to disagree with', () => {
+  // ADR-0006's migration is described in prose that COUNTS call sites —
+  // anthropic.js's header, models.js's DISPATCH_READY block, the ADR's §9 item
+  // 5 register, the PR bodies. Group 2 shipped with three of those disagreeing
+  // with the code and with each other ("six call sites", "eleven in total"),
+  // from counting the functions that had to be edited rather than the
+  // generateStructured calls that resulted.
+  //
+  // The existing tripwire for that class — providerRouter.test.js's set-equality
+  // pin — cannot catch it: it is a failure MESSAGE listing the dependent prose,
+  // and a message is only ever read on a red run. Verified by rewriting
+  // anthropic.js's header to claim "group 2 (nothing yet) — FOUR seam call
+  // sites": the suite stayed green. A count needs a number to contradict.
+  //
+  // The number, not the labels, because the labels are already pinned above and
+  // a task can legitimately serve several sites (`keypoints` serves three). When
+  // this fails, the next cutover PR is telling you which comments to re-read.
+  let sites = 0;
+  for (const file of walkJs(SRC)) {
+    sites += seamSiteLabels(stripComments(fs.readFileSync(file, 'utf8'))).length;
+  }
+  assert.strictEqual(sites, 9,
+    `${sites} aiCall.generateStructured call sites in src/, pinned at 9 (group 1: relevance x2, ` +
+    'preview, companyBrief; group 2: keypoints x3, assessment, battlecard). If you added or ' +
+    "moved one, update this number AND the prose that quotes it: anthropic.js's header, " +
+    "models.js's DISPATCH_READY / group lists, and ADR-0006 §9 item 5.");
+
+  // …AND the number the prose actually quotes, read out of anthropic.js.
+  //
+  // Pinning only the code count catches a call site being added or deleted, and
+  // is blind to the drift that actually happened — a comment claiming a
+  // different number while the code is unchanged. Verified: rewriting this
+  // sentence to "group 2 (nothing yet) — FOUR seam call sites" left the count
+  // above green, because nothing in src/ had moved. Two numbers that must agree
+  // is the only shape that catches both directions.
+  //
+  // Deliberately ONE canonical prose site rather than every place a number
+  // appears: a guard that greps the whole tree for digits fails on the next
+  // unrelated sentence and gets deleted. anthropic.js's header is the canonical
+  // one, and its failure message names the others.
+  const WORDS = { four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+  const header = fs.readFileSync(path.join(SRC, 'anthropic.js'), 'utf8');
+  const quoted = header.match(/(\w+) seam call sites in total/i);
+  assert.ok(quoted,
+    "anthropic.js's header no longer says '<N> seam call sites in total'. That sentence is the " +
+    'canonical prose copy of the count this test pins; if it was reworded, re-point this match ' +
+    'at the new wording rather than deleting the check — the drift it exists to catch (a comment ' +
+    'claiming a count the code contradicts) is one this repo has now paid for twice.');
+  const claimed = WORDS[quoted[1].toLowerCase()] ?? Number(quoted[1]);
+  assert.strictEqual(claimed, sites,
+    `anthropic.js's header claims ${quoted[1]} seam call sites; src/ has ${sites}. ` +
+    "Fix whichever is wrong, then check the same number in models.js's DISPATCH_READY block " +
+    'and ADR-0006 §9 item 5 — those three drifted apart in group 2 and had to be repaired by hand.');
+});
+
 // ── 2. Claude usage accounting ──────────────────────────────────────────────
 
 test('recordClaude bills fresh, cache-write and cache-read input at their own rates', async () => {

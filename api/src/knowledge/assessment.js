@@ -4,7 +4,7 @@
 // BATTLECARDS doc) is ingested. Produces a per-axis weighted scoreboard, an
 // overall verdict, and the top improvements we'd need to make to flip the
 // matchup. Stored on metadata.assessment so the Library can render it
-// without re-calling Gemini, and folded into the global cache text body
+// without re-calling the model, and folded into the global cache text body
 // so the Arena AI uses it when roleplaying a prospect.
 //
 // Honesty discipline: the prompt forces the model to (a) base every score
@@ -17,41 +17,152 @@
 // proposes weights per card (sum=100), reflecting what matters most in
 // THIS matchup.
 
-const gemini = require('../gemini');
-const costs = require('../costs');
 const keypoints = require('./keypoints');
 const db = require('../db');
 
-// Two tasks, not one. `assessment` is the per-document competitive scorer
-// (extractCompetitiveAssessment) — genuinely extraction-shaped, LITE. The
-// battlecard synthesis below is judgment over up to 20 dossiers and takes its
-// own key, so it can be tiered independently (ADR-0006 §4.1). On Gemini both
-// resolve to the same model today — both are tier `lite` — unless the legacy
-// GEMINI_ASSESSMENT_MODEL override is set, which now steers only the scorer
-// (see the note on `battlecard` in models.js). On Claude `battlecard` is FLASH.
+// One-shot provider seam (ADR-0006 §9 item 5, cutover group 2).
 //
-// Both are still resolved at REQUIRE time, which is the hazard ADR-0006 §9
-// item 4 fixed in personas.js: an env change is not seen until the process
-// restarts. Left as-is on purpose — converting these to per-call resolution is
-// part of group 2's cutover (§9 item 5), which is also what makes the provider
-// actually able to vary at run time. Doing it here would change behaviour in a
-// PR whose whole point is that it does not.
-const MODEL = require('../models').modelFor('assessment');
-const BATTLECARD_MODEL = require('../models').modelFor('battlecard');
+// TWO TASKS IN ONE FILE, AND THEY FLIP TOGETHER. `assessment` is the
+// per-document competitive scorer (extractCompetitiveAssessment) — genuinely
+// extraction-shaped, LITE. The battlecard synthesis below is judgment over up to
+// 20 dossiers and carries its own key since PR #53, so it can be tiered
+// independently (ADR-0006 §4.1): on Claude `battlecard` is FLASH and
+// `assessment` is LITE. On Gemini both still resolve to the same `lite` model,
+// unless the legacy GEMINI_ASSESSMENT_MODEL override is set, which after the
+// split steers only the scorer (see the note on `battlecard` in models.js).
+//
+// Migrating one of them alone is the failure mode §9 item 5 calls out by name:
+// NOTHING ERRORS. The un-migrated half keeps calling the Gemini SDK with a
+// Gemini model id and returns a normal battlecard, so the only symptom is that
+// §6's margin table prices a task that never moved and the cutover looks
+// complete when it is half done. Both call sites are on the seam here, and both
+// keys join models.DISPATCH_READY in this same PR.
+//
+// The require-time `modelFor()` constants that used to sit here are GONE. They
+// froze the model at boot behind a routing decision — the personas.js hazard §9
+// item 4 fixed — so the id could outlive the provider choice that produced it.
+// aiCall resolves provider and model per call as a matched pair, fail-closed
+// fallback included. Not restart-free: AI_PROVIDER_* is container env, so a flip
+// means `docker compose up -d` either way. What it buys is that the pair can
+// never disagree, and that a flip or a rollback is an env change, not a commit.
+//
+// ON CLAUDE, `battlecard` RESOLVES TO SONNET 5, which is in anthropic.js's
+// NO_TEMPERATURE list — so the synthesis's `temperature: 0.3` is dropped with a
+// warning after a flip, while the scorer's `0.25` survives on Haiku 4.5. The
+// Gemini tier of both keys is deliberately unchanged, so nothing about a Gemini
+// request moves in this PR.
+//
+// THAT DROP HAS NAMED CONSUMERS, so it is not only a prose-quality question.
+// When a competitor's docs carry no per-doc assessment, the `!hasAggregate`
+// branch below takes `weightedAdvantage` from `parsed.axesScored` — a NUMBER the
+// model samples out of BATTLECARD_SCHEMA. On Sonnet 5 that number is produced
+// with no temperature control at all, and it surfaces in four places:
+//
+//   - the competitor detail page's lead/trail figure, thresholded at ±5 by the
+//     FRONTEND (web/admin/admin.js) — not by renderAssessmentText below, whose
+//     own ±5 reads d.metadata.assessment, the PER-DOC scoreboard from the
+//     `assessment` task, which keeps its temperature on Haiku;
+//   - `verdictByNode`, the offering-node chips on that same page;
+//   - the per-version figure in the battlecard History drawer, served by
+//     portfolio.js's history route;
+//   - the Markdown snapshot export — which persists "We lead by 60%" back into
+//     the KB as a battlecard document. That is the one worth pausing on: a
+//     sampling-derived number re-entering the corpus as evidence, where a later
+//     synthesis reads it as a fact about the matchup.
+//
+// NOT the Market Map: its colouring comes from GET /portfolio/competitors/
+// threats, which regex-parses "Competing-threat level: N/5" out of intel text
+// and never sees this number. (An earlier version of this comment claimed it did
+// and omitted the drawer and the export — an inaccurate blast-radius map is a
+// defect in its own right here, because documentation IS the mitigation.)
+//
+// It is a live path, not a corner: measured 2026-08-14, 1 of the 4 production
+// battlecards that carry a model stamp took it (`nightout`, rendering "+60%").
+const aiCall = require('../aiCall');
 
 // Shared retry helper (ADR-0006 §7). Bound here with this module's label so
 // every call site below is unchanged; the classification that used to live in
 // a local copy of this function now happens once, in aiRetry.classify().
 //
-// Only ONE call site in this file retries: extractCompetitiveAssessment. The
-// battlecard synthesis has never been wrapped — it is synchronous behind
-// POST /portfolio/competitors/:id/battlecard/regenerate and turns any failure
-// into a 502 a rep sees immediately. So the `battlecard` task split below adds
-// no retry label, and aiRetry.POLICIES needs no new row; forLabel() throws on
-// an unknown label, so a future wrapper here has to add one deliberately —
-// which is the point of that throw.
+// STILL ONLY ONE CALL SITE IN THIS FILE RETRIES, and the migration is where that
+// was re-decided rather than inherited. The seam does not retry — §9 item 5 is
+// explicit that every forLabel() binding lives in a caller — so moving both call
+// sites onto it made the wrapper a live choice for each, not a property of the
+// code they replaced.
+//
+//   extractCompetitiveAssessment  KEEPS it. It runs at ingest, behind the
+//     document pipeline rather than a waiting rep, and returning null on a
+//     transient 503 costs the document its scoreboard silently — the doc still
+//     ingests, metadata.assessment is simply absent, and nothing in the UI says
+//     why. Dropping the wrapper would also be a live regression on Gemini, which
+//     serves 100% of this traffic today.
+//   extractBattlecard             STILL HAS NONE, deliberately. It is synchronous
+//     behind POST /portfolio/competitors/:id/battlecard/regenerate and turns any
+//     failure into a 502 the rep sees immediately; wrapping it would turn a fast
+//     failure into three attempts with backoff while they wait. ADR-0006 §9 item
+//     5 reaches the same answer ("the answer here is probably no") and warns
+//     against inheriting a wrapper from the sibling call site by reflex.
+//
+// So aiRetry.POLICIES still needs no `battlecard` row. forLabel() throws on an
+// unknown label, which is what keeps adding one a deliberate act.
+//
+// ⚠ THAT ARGUMENT IS ABOUT 503s, AND IT IS NOT THE FAILURE MODE CLAUDE ACTUALLY
+// HAS HERE. Measured live 2026-08-14 by driving THIS FUNCTION against the API
+// (80 calls, 3 competitors, 2 tenants): 2 of 80 `claude-sonnet-5` responses were
+// unparseable JSON — 2.5%, 95% CI 0.3-8.7%, `stop_reason: end_turn` with a stray
+// token mid-object, not truncation. So the asymmetry as it stands is right for
+// the provider serving 100% of this traffic today and is very likely WRONG for
+// Claude: 2.5% of a button a rep presses repeatedly, un-retried, is a defect.
+// `battlecard` is in models.FLIP_BLOCKED because of it, so the router refuses
+// the flip rather than merely advising against it.
+//
+// The figure this comment carried first — "3 of 10 at the real request shape" —
+// was neither. It pooled three probes that each called `anthropic.generate()`
+// directly with a 302-char synthetic prompt (the real one is 7,546-10,755
+// chars), and it does not reproduce even at that shape. Cited here because a
+// flip PR sizing a retry against 30% would size it against nothing.
+//
+// AND THE OBVIOUS REMEDY DOES NOT WORK, which is the part worth carrying into
+// the flip PR, because it fails GREEN. Wrapping this call in
+// aiRetry.forLabel(...) retries the malformation ZERO times: aiCall stamps the
+// SyntaxError `provider: 'anthropic'`, and classify()'s Anthropic branch is
+// `transient: !perDay && !sdkRetried && status === 429` — a parse error carries
+// no status. Add a POLICIES row, wrap the call, watch a retry test go green, and
+// ship the same 2.5% rate. What actually has to change is classify() treating an
+// anthropic-stamped parse error as transient, and/or reshaping BATTLECARD_SCHEMA
+// so it stops happening.
+//
+// Two corollaries. (1) The wrapper extractCompetitiveAssessment keeps is worth
+// nothing against this failure mode on Claude either — it protects the GEMINI
+// branch, where parse errors are unstamped and message-scraped. (2) Any retry
+// added here has to fit nginx's 180s proxy_read_timeout: 3 attempts at
+// ANTHROPIC_TIMEOUT_MS (120s) plus 2s+4s backoff is 366s, which turns this
+// call site's clean 502 into a 504 while the handler is still writing.
+//
+// ONE PRICED SIDE EFFECT of the move, the same one relevance.js documents: the
+// JSON.parse now happens INSIDE aiCall, i.e. inside withRetry, where it used to
+// sit outside. WORST CASE, a Gemini answer whose first ten characters match
+// GEMINI_TRANSIENT_RE (V8 quotes exactly ten, so `overloaded…` matches and
+// `The model is overloaded.` does not) costs three metered generations instead
+// of one. Worst case, not typical: the realistic Gemini malformation is a
+// budget-truncated answer, whose `Unterminated string in JSON at position …`
+// matches nothing and costs exactly one. Kept, because on Gemini a regenerate
+// can genuinely fix malformed JSON.
+//
+// The Claude side pays nothing — but the REASON is not "classify() never
+// scrapes a stamped error", which is false: it scrapes everything not stamped
+// `anthropic` or `aiCall`, including our own `gemini` stamps. It is that the
+// Anthropic branch decides on `status`, and a parse error has none. Same
+// conclusion, different mechanism — and the mechanism is what the paragraph
+// above needs, so it is worth being exact about.
 const aiRetry = require('../aiRetry');
 const withRetry = aiRetry.forLabel('assessment');
+
+// Which provider produced a failure. Same idiom and the same 'unknown' default
+// as relevance.js / preview.js / companyBrief.js in group 1: two providers serve
+// these paths now, so naming one is a guess printed as a fact — and the scorer's
+// failure is swallowed into a null return, so this line is the only evidence.
+const providerOf = (err) => (err && err.provider) || 'unknown';
 
 const INPUT_CAP = parseInt(process.env.KB_ASSESSMENT_INPUT_CAP || '16000', 10);
 
@@ -195,7 +306,6 @@ async function extractCompetitiveAssessment({ text, tenantId = null, title = nul
     : `This battlecard scores OUR full portfolio against the competitor (no product restriction was set).`;
 
   try {
-    const ai = gemini.getClient();
     const axesBlock = AXES.map((a) => `- ${a.key} (${a.label}): ${a.hint}`).join('\n');
     const prompt =
       `${PROMPT}\n\n` +
@@ -205,22 +315,18 @@ async function extractCompetitiveAssessment({ text, tenantId = null, title = nul
         ? `===OUR COMPANY (portfolio & objectives)===\n${context}\n\n`
         : `===OUR COMPANY===\n(No portfolio on file — score ourScore conservatively and call this out in the summary.)\n\n`) +
       `===COMPETITOR${competitorName ? `: ${competitorName}` : ''}${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
-    const resp = await withRetry(() => ai.models.generateContent({
-      model: MODEL,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.25,
-        maxOutputTokens: 2400,
-        responseMimeType: 'application/json',
-        responseSchema: ASSESSMENT_SCHEMA,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+    const { parsed } = await withRetry(() => aiCall.generateStructured({
+      task: 'assessment',
+      prompt,
+      responseSchema: ASSESSMENT_SCHEMA,
+      maxTokens: 2400,
+      temperature: 0.25,
+      tenantId,
+      site: 'kb.assessment',
     }));
-    costs.recordGemini(tenantId, 'kb.assessment', MODEL, resp.usageMetadata);
-    const parsed = JSON.parse(resp.text);
     return normalize(parsed);
   } catch (err) {
-    console.warn('[assessment] extraction failed:', err.message);
+    console.warn(`[assessment] extraction failed on ${providerOf(err)}:`, err.message);
     return null;
   }
 }
@@ -557,7 +663,7 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
   const themEvidence = evidenceParts.join('\n\n---\n\n');
   // Bail only when there's literally no source material. Per-doc assessments
   // are PREFERRED evidence (they pre-score the matchup), but raw doc bodies
-  // are perfectly usable on their own — Gemini scores the axes inline from
+  // are perfectly usable on their own — the model scores the axes inline from
   // the text when nothing is pre-aggregated.
   if (!themEvidence) {
     return {
@@ -595,23 +701,29 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
   });
 
   try {
-    const ai = gemini.getClient();
-    const resp = await ai.models.generateContent({
-      model: BATTLECARD_MODEL,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.3,
-        maxOutputTokens: 2600,
-        responseMimeType: 'application/json',
-        responseSchema: BATTLECARD_SCHEMA,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+    // NO withRetry, deliberately — see the note above the aiRetry binding.
+    const { parsed, model } = await aiCall.generateStructured({
+      task: 'battlecard',
+      prompt,
+      responseSchema: BATTLECARD_SCHEMA,
+      maxTokens: 2600,
+      temperature: 0.3,
+      tenantId,
+      site: 'kb.battlecard',
     });
-    costs.recordGemini(tenantId, 'kb.battlecard', BATTLECARD_MODEL, resp.usageMetadata);
-    const parsed = JSON.parse(resp.text);
 
-    // If we have no per-doc aggregate (all axes weight=0), use Gemini's
+    // If we have no per-doc aggregate (all axes weight=0), use the model's
     // inline scoring as the matrix. Otherwise the aggregate wins.
+    //
+    // THIS IS THE SAMPLING-SENSITIVE BRANCH. Everything below is derived from
+    // numbers the model chose, and `weightedAdvantage` leaves this function as
+    // the competitor page's lead/trail figure, its offering-node chips, the
+    // History drawer's per-version figure, and the Markdown snapshot that is
+    // written BACK into the KB as a document — none of which show that the
+    // figure came from inline scoring rather than from evidence. On Claude this
+    // call site's temperature is dropped (Sonnet 5), so the branch runs with no
+    // determinism control there; see the header for the full map. 1 of 4
+    // production battlecards with a model stamped is on this path today.
     let axes = aggregated.axes;
     let weightedAdvantage = aggregated.weightedAdvantage;
     const hasAggregate = Object.values(aggregated.axes).some((a) => (a.weight || 0) > 0);
@@ -652,20 +764,24 @@ async function extractBattlecard(tenantId, competitorId, productId = null, compe
       // produces the AI fields; the route stitches them with stored edits.
       lastRefreshedAt: new Date().toISOString(),
       // Persisted onto competitors.battlecard. It must name the model that
-      // produced THIS card, not the model some other call site uses.
+      // produced THIS card, not the model some other call site uses — and it is
+      // now the SERVING model the seam reports back, which after a flip is the
+      // one the provider actually answered with (server-side fallbacks included)
+      // rather than the one we asked for.
       //
       // Five places read it back and none BRANCH on it, so re-pointing it is
       // safe and stored rows keep whatever they were stamped with (the value is
-      // identical today anyway): web/admin/admin.js renders it in the card's
-      // meta line, in the Markdown export and per-version in the History
-      // drawer; portfolio.js returns it from the battlecard history route; and
-      // watch.js folds the whole battlecard record into a Market Watch prompt,
-      // where it is prose the model reads. Adding a reader that branches on it
-      // would change that — this list is what such a change has to update.
-      model: BATTLECARD_MODEL,
+      // identical today anyway, since `battlecard` still resolves to Gemini):
+      // web/admin/admin.js renders it in the card's meta line, in the Markdown
+      // export and per-version in the History drawer; portfolio.js returns it
+      // from the battlecard history route; and watch.js folds the whole
+      // battlecard record into a Market Watch prompt, where it is prose the
+      // model reads. Adding a reader that branches on it would change that —
+      // this list is what such a change has to update.
+      model,
     };
   } catch (err) {
-    console.warn('[battlecard] synthesis failed:', err.message);
+    console.warn(`[battlecard] synthesis failed on ${providerOf(err)}:`, err.message);
     const e = new Error(`battlecard synthesis failed: ${err.message}`);
     e.status = 502;
     throw e;

@@ -20,6 +20,7 @@
 const path = require('node:path');
 const { test } = require('node:test');
 const assert = require('node:assert');
+const { execFileSync } = require('node:child_process');
 
 const SRC = path.join(__dirname, '..', 'src');
 const models = require(path.join(SRC, 'models.js'));
@@ -29,6 +30,8 @@ const models = require(path.join(SRC, 'models.js'));
 // fake one — so anything asserting on its CONTENTS has to compare against this,
 // or against a set that has been restored to it.
 const SHIPPED_DISPATCH_READY = new Set(models.DISPATCH_READY);
+// Same reasoning for the flip gate: helpers below lift entries out of it.
+const SHIPPED_FLIP_BLOCKED = new Set(models.FLIP_BLOCKED.keys());
 
 // ANTHROPIC_API_KEY defaults to a placeholder, and a caller that names it wins.
 //
@@ -90,6 +93,20 @@ function asDispatchReady(task, fn) {
     if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = savedKey;
   }
+}
+
+// Lift a FLIP_BLOCKED entry for the duration of a test.
+//
+// Needed because two facts now gate a flip and most tests below are about only
+// one of them. A tiering assertion ("battlecard is FLASH on claude") is about
+// the TIER TABLE; it must not silently become an assertion about the block, and
+// it must not be deleted because the block exists. Restores the reason string,
+// not just membership, so a test cannot quietly rewrite why a key is blocked.
+function asFlipUnblocked(task, fn) {
+  const had = models.FLIP_BLOCKED.has(task);
+  const reason = models.FLIP_BLOCKED.get(task);
+  models.FLIP_BLOCKED.delete(task);
+  try { return fn(); } finally { if (had) models.FLIP_BLOCKED.set(task, reason); }
 }
 
 test('a task that cannot dispatch yet stays on gemini and says so', () => {
@@ -204,7 +221,7 @@ test('claude tiers follow ADR-0006 §4.1', () => {
   }
 });
 
-test('group 1 survives the only test that rewrites the whole set', () => {
+test('the shipped set survives the only test that rewrites the whole set', () => {
   // Placed immediately after that test on purpose: it is the tripwire for a
   // helper that mutates the exported Set without restoring it. `clear()` in the
   // tiering test above used to make this fail.
@@ -218,11 +235,150 @@ test('group 1 survives the only test that rewrites the whole set', () => {
   // contents and deliberately does not repeat this list: one copy, so the
   // reminder cannot drift the way its subject did.
   assert.deepStrictEqual([...models.DISPATCH_READY].sort(),
-    ['companyBrief', 'preview', 'relevance'],
+    ['assessment', 'battlecard', 'companyBrief', 'keypoints', 'preview', 'relevance'],
     'changing this set also invalidates prose that asserts what is in it: ' +
-    'anthropic.js (header), aiCall.js (header), gemini.js (assertGeminiModel) ' +
-    'and aiContext.js ("It does not flip any task") — PR #54 existed because ' +
-    '#52 changed the set and left all four stale');
+    'anthropic.js (header), aiCall.js (header), gemini.js (assertGeminiModel), ' +
+    'aiContext.js ("It does not flip any task"), test/live/contextSeam.js ' +
+    '(prepareVia) and .env.example\'s "Provider ' +
+    'routing" section — SIX, and .env.example is the one an OPERATOR reads, the ' +
+    'one no code review naturally opens, and the one already listed as a P1 fix in ' +
+    "group 1's review round (e69eb88) that drifted again anyway. PR #54 existed " +
+    'because #52 changed the set and left the code-side four stale.');
+});
+
+// ── the flip gate (FLIP_BLOCKED) ────────────────────────────────────────────
+//
+// A SECOND gate, deliberately not folded into DISPATCH_READY. That set is a
+// claim about the code — "this call site reads resolve().provider and branches"
+// — verifiable by reading the file and pinned above. This one is a claim about a
+// MEASUREMENT against a live provider, which can stop being true with no code
+// change at all. Merging them would make membership mean two things and leave
+// neither statable.
+
+test('a migrated but BLOCKED task refuses the flip instead of merely warning', () => {
+  // The distinction that matters: an operator who follows the runbook sets the
+  // variable and moves on. A warning they never read is not a gate, so the
+  // router has to actually not do it.
+  assert.ok(models.DISPATCH_READY.has('battlecard'),
+    'this test is about a task whose call site IS migrated — otherwise it is just the ' +
+    'dispatch-readiness test again, and would keep passing for the wrong reason');
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (m) => warnings.push(String(m));
+  try {
+    withEnv({ AI_PROVIDER_BATTLECARD: 'anthropic' }, () => {
+      assert.strictEqual(models.resolve('battlecard').provider, 'gemini',
+        '2 of 80 live responses at this call site were unparseable, on the one call site with no retry');
+      assert.match(models.resolve('battlecard').model, /^gemini-/,
+        'and the model must match the provider it fell back to');
+    });
+  } finally { console.warn = realWarn; }
+  const line = warnings.find((w) => w.includes('battlecard'));
+  assert.ok(line, 'a silent refusal is worse than the flip — the operator would think it landed');
+  assert.match(line, /BLOCKED/);
+  // The measurement, not just the verdict — a bare "blocked" gets argued with.
+  // Re-pointed from /3 of 10/ in round 3: that figure was three probes pooled
+  // against a 302-char synthetic prompt and did not reproduce. This assertion is
+  // the reason the number cannot be corrected in a comment and forgotten in the
+  // operator-facing string, so it is deliberately literal.
+  assert.match(line, /2 of 80/, 'carry the measurement, not just the verdict');
+  assert.ok(!/migrate the call site/.test(line),
+    'that is the OTHER gate\'s advice and is wrong here: this call site is migrated, so ' +
+    'following it would send someone to re-do work that is already done');
+});
+
+test('both blocked keys are blocked, and each carries a reason', () => {
+  // keypoints is the one nothing else in this file would catch: its call sites
+  // are migrated, its schemas pass the smoke check, and the defect is an output
+  // BUDGET that truncates on Sonnet — where a truncated answer deletes the
+  // stored analysis rather than erroring.
+  assert.deepStrictEqual([...models.FLIP_BLOCKED.keys()].sort(), ['battlecard', 'keypoints']);
+  for (const [task, reason] of models.FLIP_BLOCKED) {
+    assert.ok(models.DISPATCH_READY.has(task),
+      `${task} is blocked from flipping but not migrated — that is DISPATCH_READY's job, not this set's`);
+    assert.ok(reason && reason.length > 40, `${task} needs a reason an operator can act on`);
+    assert.match(reason, /ADR-0006/, `${task}'s reason must name where the measurement lives`);
+    // AND THE MEASUREMENT ITSELF, per key. `length > 40` plus /ADR-0006/ pins
+    // the SHAPE of a reason, not its content: measured on this tree, replacing
+    // keypoints' whole string with "blocked. See ADR-0006 §9 item 5 for the
+    // measurement." left this file 27/27 green. battlecard's figure is pinned in
+    // the test above (/2 of 80/) precisely because it drifted for two rounds
+    // while every check here stayed green; keypoints' had nothing holding it.
+    if (task === 'keypoints') {
+      assert.match(reason, /5 of 5|91bfba3e/,
+        'carry the measurement, not just the verdict — an operator who is told only "blocked" argues ' +
+        'with it, and a figure nothing pins is a figure that drifts (the 5-of-5 truncation on staging ' +
+        'document 91bfba3e is also the exit criterion for deleting this entry)');
+      // AND THE BUDGET, separately, because the assertion above only reaches
+      // half the string. `5 of 5` and `91bfba3e` both live in the SECOND and
+      // THIRD concatenated literals; replacing the FIRST one — "the 2200-token
+      // budgets at kb.companyAnalysis / kb.productAnalysis are Gemini-sized" —
+      // with anything at all left this file 27/27 green. That clause is the
+      // half an operator acts on: it names WHICH knob is wrong and at what
+      // value, and 2200 is what a flip PR has to change. The code side is
+      // pinned by test/cutoverGroup2.test.js; this is the operator-facing
+      // prose, which is exactly the surface this ADR keeps losing.
+      assert.match(reason, /2200/,
+        "keypoints' reason no longer names the 2200-token budget — the number an operator has to " +
+        'change is the one thing the reason cannot be allowed to drop');
+    }
+    const warnings = [];
+    const realWarn = console.warn;
+    console.warn = (m) => warnings.push(String(m));
+    try {
+      withEnv({ [models.providerEnvName(task)]: 'anthropic' }, () => {
+        assert.strictEqual(models.resolve(task).provider, 'gemini', task);
+      });
+    } finally { console.warn = realWarn; }
+  }
+});
+
+test('blocking is per key — an unblocked sibling still flips', () => {
+  // Otherwise the gate would be indistinguishable from "group 2 cannot flip",
+  // which is not what was measured: `assessment` is migrated, unblocked, and its
+  // schema came back 0/10 malformed.
+  assert.ok(!models.FLIP_BLOCKED.has('assessment'));
+  withEnv({ AI_PROVIDER_ASSESSMENT: 'anthropic' }, () => {
+    assert.strictEqual(models.resolve('assessment').provider, 'anthropic');
+    assert.strictEqual(models.resolve('assessment').model, 'claude-haiku-4-5');
+  });
+});
+
+test('the flip gate is SILENT on the default path', () => {
+  // A gate that changes behaviour for anyone who has NOT asked to flip is a
+  // regression on 100% of traffic — and the resolved provider cannot detect it,
+  // which is the trap. Dropping the `p !== DEFAULT_PROVIDER` guard makes the
+  // branch fire on every ordinary gemini resolve and STILL RETURN gemini,
+  // because that is what fallbackToDefault returns. The only observable is the
+  // log line.
+  //
+  // IN A FRESH PROCESS, and that part is not incidental. warnOnce dedupes on
+  // task+provider for the life of the process, and the very first test in this
+  // file resolves every task on the gemini path — so in-process the mutant's
+  // extra warning is emitted long before this test runs and asserting on
+  // console.warn here sees silence either way. Measured: the in-process version
+  // of this test passed against the mutation it was written for. A guard whose
+  // subject is "warns once" cannot be tested by a second observer in the same
+  // process.
+  const child = execFileSync(process.execPath, ['-e', `
+    const models = require(${JSON.stringify(path.join(SRC, 'models.js'))});
+    const out = [];
+    console.warn = (m) => out.push(String(m));
+    for (const task of models.FLIP_BLOCKED.keys()) {
+      const r = models.resolve(task);
+      if (r.provider !== 'gemini') out.push('RESOLVED_WRONG:' + task + ':' + r.provider);
+      if (!/^gemini-/.test(r.model)) out.push('MODEL_WRONG:' + task + ':' + r.model);
+    }
+    process.stdout.write(JSON.stringify(out));
+  `], {
+    encoding: 'utf8',
+    // Scrubbed, so an ambient AI_PROVIDER_* in a developer's shell cannot turn
+    // this into a test of the flip path by accident.
+    env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AI_PROVIDER'))),
+  });
+  assert.deepStrictEqual(JSON.parse(child), [],
+    'nobody asked to flip anything, so the gate must resolve gemini and say NOTHING — ' +
+    'a blocked key is still the default path for every tenant');
 });
 
 test('the fail-closed fallback escalates when the fallback provider is unconfigured too', () => {
@@ -252,10 +408,14 @@ test('keypoints is re-tiered for claude only, leaving gemini untouched', () => {
   // change in a PR that is meant to change nothing.
   assert.strictEqual(models.resolve('keypoints').model, 'gemini-2.5-flash-lite',
     'the gemini path must still resolve to exactly the model it did before');
-  asDispatchReady('keypoints', () => withEnv({ AI_PROVIDER: 'anthropic' }, () => {
+  // asFlipUnblocked: `keypoints` is in FLIP_BLOCKED (its 2200-token budgets are
+  // Gemini-sized and truncate on Sonnet), and this is a TIER assertion. The two
+  // gates are separate on purpose, so a tier stays testable while a flip is
+  // barred — see the flip-gate block above.
+  asFlipUnblocked('keypoints', () => asDispatchReady('keypoints', () => withEnv({ AI_PROVIDER: 'anthropic' }, () => {
     assert.strictEqual(models.resolve('keypoints').model, 'claude-sonnet-5',
       'on claude it takes the flash tier, not lite');
-  }));
+  })));
 });
 
 // ── the assessment split (ADR-0006 §4.1) ────────────────────────────────────
@@ -285,32 +445,37 @@ test('battlecard resolves to the same gemini model assessment does', () => {
 });
 
 test('battlecard takes the flash tier on claude while assessment stays lite', () => {
-  asDispatchReady('battlecard', () => withEnv({ AI_PROVIDER: 'anthropic' }, () => {
+  // asFlipUnblocked because this is a TIER assertion, not a gate one: the tier
+  // table has to keep being testable while the key is blocked from flipping.
+  asFlipUnblocked('battlecard', () => asDispatchReady('battlecard', () => withEnv({ AI_PROVIDER: 'anthropic' }, () => {
     assert.strictEqual(models.resolve('battlecard').model, 'claude-sonnet-5',
       'BATTLECARD_SCHEMA is synthesis over up to 20 dossiers; Haiku regresses it silently');
-  }));
+  })));
   asDispatchReady('assessment', () => withEnv({ AI_PROVIDER: 'anthropic' }, () => {
     assert.strictEqual(models.resolve('assessment').model, 'claude-haiku-4-5',
       'per-document scoring is the genuinely LITE half — the split exists so it can stay there');
   }));
 });
 
-test('battlecard is not dispatch-ready, so flipping it warns and stays on gemini', () => {
-  assert.strictEqual(SHIPPED_DISPATCH_READY.has('battlecard'), false,
-    'this PR splits the key; the call site still speaks only to the Gemini SDK');
-  assert.strictEqual(models.DISPATCH_READY.has('battlecard'), false,
-    'and no earlier test may have left it in the live set');
-  const warnings = [];
-  const realWarn = console.warn;
-  console.warn = (m) => warnings.push(String(m));
-  try {
-    withEnv({ AI_PROVIDER_BATTLECARD: 'anthropic' }, () => {
-      assert.strictEqual(models.resolve('battlecard').provider, 'gemini');
-      assert.match(models.resolve('battlecard').model, /^gemini-/);
-    });
-  } finally { console.warn = realWarn; }
-  assert.ok(warnings.some((w) => w.includes('battlecard') && w.includes('cannot dispatch yet')),
-    'an operator following the runbook early must get a loud no-op, not silence');
+// Was "battlecard is not dispatch-ready, so flipping it warns and stays on
+// gemini" — the PR #53 invariant, which group 2 is the PR that retires. The
+// still-unmigrated case is covered above by `discovery`, which is the right
+// place for it: a test that asserts un-readiness about a key being migrated
+// keeps passing for the wrong reason right up until it has to be deleted.
+test('battlecard flips ALONE — its sibling in the same file does not follow it', () => {
+  assert.strictEqual(SHIPPED_DISPATCH_READY.has('battlecard'), true,
+    'group 2 migrated extractBattlecard onto the seam, so the key is eligible now');
+  asFlipUnblocked('battlecard', () => withEnv({ AI_PROVIDER_BATTLECARD: 'anthropic', GEMINI_ASSESSMENT_MODEL: undefined }, () => {
+    const b = models.resolve('battlecard');
+    assert.strictEqual(b.provider, 'anthropic');
+    assert.strictEqual(b.model, 'claude-sonnet-5', 'FLASH on claude, per the §4.1 split');
+    // knowledge/assessment.js holds both call sites. Per-task env vars are the
+    // unit of rollback, so one of them moving must not drag the other across —
+    // and the scorer is the half that fails into a null scoreboard nobody sees.
+    const a = models.resolve('assessment');
+    assert.strictEqual(a.provider, 'gemini', 'AI_PROVIDER_BATTLECARD names one key, not one file');
+    assert.strictEqual(a.model, 'gemini-2.5-flash-lite');
+  }));
 });
 
 test('the battlecard env overrides are the names compose passes', () => {
@@ -322,10 +487,24 @@ test('the battlecard env overrides are the names compose passes', () => {
       // the point of the split.
       assert.strictEqual(models.resolve('assessment').model, 'gemini-2.5-flash-lite');
     });
-    asDispatchReady('battlecard', () => withEnv({ AI_PROVIDER: 'anthropic', ANTHROPIC_BATTLECARD_MODEL: 'claude-battlecard-custom' }, () => {
+    asFlipUnblocked('battlecard', () => asDispatchReady('battlecard', () => withEnv({ AI_PROVIDER: 'anthropic', ANTHROPIC_BATTLECARD_MODEL: 'claude-battlecard-custom' }, () => {
       assert.strictEqual(models.resolve('battlecard').model, 'claude-battlecard-custom');
-    }));
+    })));
   });
+});
+
+test('[HYGIENE] the exported sets are exactly as models.js ships them', () => {
+  // Placed AFTER the asDispatchReady / asFlipUnblocked users, as a second
+  // checkpoint to the one at the top of the tiering block. Both sets are LIVE
+  // EXPORTED collections with no seam for a fake, so every helper here mutates
+  // the real thing and restores in a finally. A helper that leaks only the keys
+  // it touched would slip past the set pin above — that pin runs earlier — and
+  // then silently widen what a later test believes ships.
+  assert.deepStrictEqual([...models.DISPATCH_READY].sort(), [...SHIPPED_DISPATCH_READY].sort(),
+    'a helper above added a task to DISPATCH_READY and did not restore it');
+  assert.deepStrictEqual([...models.FLIP_BLOCKED.keys()].sort(), [...SHIPPED_FLIP_BLOCKED].sort(),
+    'a helper above lifted a FLIP_BLOCKED entry and did not restore it — every later ' +
+    'assertion about a blocked key would then be testing an unblocked one');
 });
 
 test('a per-task model override wins over the tier, per provider', () => {

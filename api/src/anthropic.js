@@ -1,11 +1,23 @@
 // Anthropic client wrapper — the Claude half of the ADR-0006 provider migration.
 //
-// THIS MODULE CAN NOW MOVE REAL TRAFFIC. relevance, preview and companyBrief are
-// in models.DISPATCH_READY (ADR-0006 §9 item 5) and their call sites dispatch
-// through aiCall.js, so AI_PROVIDER_RELEVANCE=anthropic routes BOTH relevance
-// call sites into this file — checkDocRelevance, on every competitor document,
-// and checkOfferingPlausibility, a product-name plausibility check with no
-// document at all. That is an environment change, not a code change.
+// THIS MODULE CAN NOW MOVE REAL TRAFFIC. Six tasks are in models.DISPATCH_READY
+// (ADR-0006 §9 item 5) and every one of their call sites dispatches through
+// aiCall.js, so AI_PROVIDER_RELEVANCE=anthropic routes BOTH relevance call sites
+// into this file — checkDocRelevance, on every competitor document, and
+// checkOfferingPlausibility, a product-name plausibility check with no document
+// at all. That is an environment change, not a code change.
+//
+//   group 1  relevance, preview, companyBrief
+//   group 2  keypoints, assessment, battlecard — NINE seam call sites in total
+//            now (four in group 1, five in group 2; count the
+//            generateStructured calls, not the functions holding them —
+//            knowledge/keypoints.js is one key over three of them), and the
+//            group-2 three are the first to reach a NON-Haiku tier:
+//            `keypoints` and `battlecard` carry anthropicTier 'flash', so they
+//            land on claude-sonnet-5, which is in NO_TEMPERATURE below. Their
+//            call sites still pass temperature (0.3), so a flip drops it here
+//            with the warning rather than 400ing — which is the whole reason
+//            that list is per-model and lives in this file.
 //
 // TWO env gates, not one — the shorthand "one env var away" is true only while
 // the key happens to be set. providerFor() falls back to Gemini and warns unless
