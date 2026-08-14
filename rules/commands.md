@@ -34,9 +34,17 @@ docker compose run --rm --no-deps -v "$PWD/api":/app -w /app \
   Postgres, so its own `usage_costs` rows are silently lost.
 - The volume mount is required: the api image's runtime stage ships only `src/` and
   `db/`, so `docker compose exec api node test/live/smoke.js` is `MODULE_NOT_FOUND`.
-- Exit codes are distinct — `1` a schema was rejected, `2` bad invocation, `3` accepted
-  but a field lost its ability to be null, `4` errors only (nothing judged, re-run).
-  A transient 429/529 is an **error**, never a rejection.
+- Exit codes are distinct — `1` a schema was rejected, `2` bad invocation, **or the
+  harness itself is broken** (e.g. a router gate `resolveFor()` fails to lift — nothing
+  was sent; read the `HARNESS BUG` block it prints and fix `smoke.js`, don't re-run),
+  `3` accepted but a field lost its ability to be null, `4` errors only (nothing judged,
+  re-run). A transient 429/529 is an **error**, never a rejection.
+- A run can exit `1` with harness bugs also present: a rejection outranks them, because
+  a schema that *was* judged and refused is the finding, while the bugged entries were
+  simply never judged. The `HARNESS BUG` block prints either way, so read the body, not
+  only the exit code.
+- `api/test/live/contextSeam.js` (the grounded-context probe, §9 item 4) carries the same
+  contract, minus `3`.
 
 **The temperature probe** (`api/test/live/temperature.js`) is the same shape, for a
 different capability: `temperature` was removed in the Claude 4.7 generation, so
