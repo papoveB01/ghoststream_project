@@ -634,7 +634,39 @@ async function updateTags(tenantId, documentId, { productIds, personaIds, compet
 
 // Re-run AI key-point extraction on an existing document and persist the result
 // onto its metadata (keyPoints / keyPointsKind). Used to backfill docs ingested
-// before key points existed, or to refresh them. Returns the updated document.
+// before key points existed, or to refresh them.
+//
+// Returns { document, refreshFailures } — not a bare document, because unlike
+// ingest this function OVERWRITES data that is already stored, and the caller
+// has to be able to tell a clean refresh from a partial one.
+//
+// TWO OUTCOMES THAT USED TO BE ONE. Each field below is its own model call, and
+// each can come back empty for two entirely different reasons:
+//
+//   the call FAILED (503, rate limit, truncation, parse error)
+//       → KEEP whatever is stored and record the failure. Until 2026-08-14 the
+//         extractors returned null/[] from their own catch, `else delete`
+//         believed it, and one transient provider error permanently destroyed a
+//         good stored analysis while the route answered 200 — measured end to
+//         end on a 4,297-char companyAnalysis (ADR-0006 §9 item 5).
+//   the call SUCCEEDED and the document genuinely has none
+//       → CLEAR the key. Deliberate and kept: it is how a doc re-tagged from
+//         product-scope to company-wide (or out of competitive scope) sheds a
+//         stale key from its previous life.
+//
+// The `*Strict` extractors are what make the two distinguishable: they throw on
+// failure and reserve null/[] for a genuinely empty document. Anything here that
+// deletes must be driven by one of those two, never by a swallowed error.
+//
+// The clears that are NOT model results — the cross-clear between company and
+// product analysis, the non-TENANT branch, the non-competitive branch — are
+// driven by the document's own scope/category and stay unconditional. They are
+// the re-tagging behaviour above and a failed call must not suppress them.
+//
+// PARTIAL FAILURE IS THE NORMAL CASE: keyPoints and companyAnalysis are separate
+// calls, so one can fail while the other succeeds. Each is attempted
+// independently — a failure neither aborts the request nor discards the fields
+// that did succeed.
 async function regenerateKeyPoints(tenantId, documentId) {
   const doc = await getDocument(tenantId, documentId);
   if (!doc) { const err = new Error('document not found'); err.status = 404; throw err; }
@@ -643,12 +675,36 @@ async function regenerateKeyPoints(tenantId, documentId) {
     [documentId]
   );
   const text = (r.rows[0] && r.rows[0].body) || '';
-  const { kind, points } = await keypoints.extractKeyPoints({
-    scope: doc.scope, text, tenantId, title: doc.title,
-  });
   const md = { ...(doc.metadata || {}) };
-  if (points.length) { md.keyPoints = points; md.keyPointsKind = kind; }
-  else { delete md.keyPoints; delete md.keyPointsKind; }
+
+  // A silent preserve would be its own bug: the rep would see a 200, a document
+  // that looks refreshed, and re-click into the same silence. So the failure is
+  // logged with the field, the provider and the document, AND handed back to the
+  // route (see knowledge/index.js) for the UI to show.
+  const refreshFailures = [];
+  const attempt = async (field, run) => {
+    try {
+      await run();
+    } catch (err) {
+      // Same idiom as keypoints.js/assessment.js: two providers serve this path,
+      // so naming one by default would print a guess as a fact.
+      const provider = (err && err.provider) || 'unknown';
+      refreshFailures.push({ field, provider, message: err.message });
+      console.warn(
+        `[knowledge] keypoints refresh: ${field} failed on ${provider} for document ${documentId} ` +
+        `(tenant ${tenantId}) — KEEPING the stored value:`,
+        err.message
+      );
+    }
+  };
+
+  await attempt('keyPoints', async () => {
+    const { kind, points } = await keypoints.extractKeyPointsStrict({
+      scope: doc.scope, text, tenantId, title: doc.title,
+    });
+    if (points.length) { md.keyPoints = points; md.keyPointsKind = kind; }
+    else { delete md.keyPoints; delete md.keyPointsKind; }
+  });
 
   // TENANT-scope docs get a parallel refresh, branched by category:
   // PRODUCT_INTEL → productAnalysis; ORG_INTELLIGENCE → companyAnalysis.
@@ -659,14 +715,21 @@ async function regenerateKeyPoints(tenantId, documentId) {
       ? doc.product_ids.find((p) => typeof p === 'string' && p.length > 0) || null
       : null;
     if (doc.category === 'PRODUCT_INTEL' && firstProductId) {
-      const analysis = await keypoints.extractProductAnalysis({ text, tenantId, productId: firstProductId, title: doc.title });
-      if (analysis) md.productAnalysis = analysis;
-      else delete md.productAnalysis;
+      await attempt('productAnalysis', async () => {
+        const analysis = await keypoints.extractProductAnalysisStrict({ text, tenantId, productId: firstProductId, title: doc.title });
+        if (analysis) md.productAnalysis = analysis;
+        else delete md.productAnalysis;
+      });
+      // Category-driven, not model-driven: this doc is filed under a product
+      // line now, so a company-wide analysis from its previous life is stale
+      // whether or not the product call succeeded.
       delete md.companyAnalysis;
     } else {
-      const analysis = await keypoints.extractCompanyAnalysis({ text, tenantId, title: doc.title });
-      if (analysis) md.companyAnalysis = analysis;
-      else delete md.companyAnalysis;
+      await attempt('companyAnalysis', async () => {
+        const analysis = await keypoints.extractCompanyAnalysisStrict({ text, tenantId, title: doc.title });
+        if (analysis) md.companyAnalysis = analysis;
+        else delete md.companyAnalysis;
+      });
       delete md.productAnalysis;
     }
   } else {
@@ -685,11 +748,13 @@ async function regenerateKeyPoints(tenantId, documentId) {
           [tenantId, doc.competitor_ids]
         )).rows.map((r) => r.name).join(' / ')
       : null;
-    const scoreboard = await assessment.extractCompetitiveAssessment({
-      text, tenantId, title: doc.title, competitorName,
+    await attempt('assessment', async () => {
+      const scoreboard = await assessment.extractCompetitiveAssessmentStrict({
+        text, tenantId, title: doc.title, competitorName,
+      });
+      if (scoreboard) md.assessment = scoreboard;
+      else delete md.assessment;
     });
-    if (scoreboard) md.assessment = scoreboard;
-    else delete md.assessment;
   } else {
     delete md.assessment;
   }
@@ -703,7 +768,7 @@ async function regenerateKeyPoints(tenantId, documentId) {
   if (doc.category === 'BATTLECARDS') {
     await maybeRebuildGlobalCache(doc.category, tenantId);
   }
-  return getDocument(tenantId, documentId);
+  return { document: await getDocument(tenantId, documentId), refreshFailures };
 }
 
 // Lift a quarantine: a rep has reviewed a doc the relevance check flagged and

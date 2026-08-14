@@ -192,10 +192,17 @@ router.patch('/documents/:id/tags', express.json(), async (req, res, next) => {
 // POST /knowledge/documents/:id/keypoints — (re)run AI key-point extraction on
 // this document and persist it onto the doc's metadata. Used to backfill docs
 // that predate the feature, or to refresh the points.
+//
+// `refreshFailures` is [] on a clean refresh, and otherwise carries one
+// { field, provider, message } per field whose model call failed. Those fields
+// KEPT their previously stored value instead of being cleared — the document is
+// intact, which is why this is still a 200 — but the rep has to be told the
+// refresh was partial or they re-click into the same silence. Callers that
+// ignore the array see exactly the response they saw before.
 router.post('/documents/:id/keypoints', async (req, res, next) => {
   try {
-    const doc = await service.regenerateKeyPoints(req.tenantId, req.params.id);
-    res.json({ ok: true, document: doc });
+    const { document, refreshFailures } = await service.regenerateKeyPoints(req.tenantId, req.params.id);
+    res.json({ ok: true, document, refreshFailures });
   } catch (err) { next(err); }
 });
 

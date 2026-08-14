@@ -61,21 +61,27 @@ const CONTEXT_CAP = parseInt(process.env.KB_KEYPOINTS_CONTEXT_CAP || '5000', 10)
 // serve these paths now, so a line naming one is a guess printed as a fact.
 //
 // WHAT A FAILURE COSTS DEPENDS ON THE CALLER, and "all three are swallowed, so
-// the log line is the only evidence" — the first version of this note — is false
-// in the dangerous direction. Three different outcomes reach a user:
+// the log line is the only evidence" — the first version of this note — is false.
+// Three different outcomes reach a user:
 //
 //   ingest (knowledge/service.js)      swallowed. The document indexes with no
-//                                      key points / analysis and nothing says so.
-//   regenerate (service.js)            WORSE THAN SWALLOWED: the route answers
-//                                      { ok: true } and the `else delete
-//                                      md.companyAnalysis` branch DELETES the
-//                                      analysis that was already stored. A
-//                                      failure here destroys data.
+//                                      key points / analysis and nothing says so,
+//                                      so here the log line really is the only
+//                                      evidence.
+//   regenerate (service.js)            does NOT come through these lines at all
+//                                      any more — it calls the `*Strict` forms
+//                                      below and logs its own line naming the
+//                                      field and the document, because it
+//                                      overwrites stored data. Until 2026-08-14
+//                                      it went through here and the `else delete`
+//                                      branch DESTROYED the stored analysis
+//                                      behind a { ok: true }; that is fixed, and
+//                                      the two-forms note below is why.
 //   company-profile draft (portfolio)  a 502 the user sees. The only loud one.
 //
-// So the log line is the only evidence for the first, is contradicted by the
-// second, and is redundant for the third. Naming only the swallowed case is the
-// same over-narrow reading PR #54 fixed one file over.
+// So the log line is the only evidence for the first, is duplicated with more
+// context by the second, and is redundant for the third. Naming only the
+// swallowed case is the same over-narrow reading PR #54 fixed one file over.
 const providerOf = (err) => (err && err.provider) || 'unknown';
 
 // ── boilerplate stripping ─────────────────────────────────────────────────
@@ -235,9 +241,33 @@ async function tenantContextText(tenantId) {
   }
 }
 
+// ── two forms of every extractor, and why ─────────────────────────────────
+//
+// Each extractor below exists twice: a `*Strict` form that THROWS when the model
+// call fails, and the historical never-throws form that catches, logs, and
+// returns the same empty value it returns for a document with nothing in it.
+//
+// The empty value has to mean two different things to two different callers, and
+// only one of them can be told from the outside:
+//
+//   ingest (service.js)      fail-open by design. Nothing is stored yet, so a
+//                            swallowed failure costs a missing field on a new
+//                            row and `...(x ? { x } : {})` is exactly right.
+//   regenerate (service.js)  OVERWRITES what is already stored. There, a
+//                            swallowed failure is indistinguishable from "this
+//                            doc has none", and `else delete` believed it: a
+//                            transient 503 permanently destroyed a good stored
+//                            analysis behind a 200 (ADR-0006 §9 item 5).
+//
+// So the swallow stays where it is correct and the strict form is what the
+// destructive caller uses. From a `*Strict` call, a throw means THE CALL FAILED
+// and `null` / `[]` means THE DOCUMENT GENUINELY HAS NONE — only that. Anything
+// that overwrites stored data must call the strict form; keep it that way.
+
 // extractKeyPoints({ scope, text, tenantId?, title? }) → { kind, points: [...] }
 // Never throws — returns { kind, points: [] } on any failure so ingest can proceed.
-async function extractKeyPoints({ scope, text, tenantId = null, title = null } = {}) {
+// `extractKeyPointsStrict` is the same call without the swallow.
+async function extractKeyPointsStrict({ scope, text, tenantId = null, title = null } = {}) {
   const kind = kindFor(scope);
   const body = stripBoilerplate(text);
   if (body.length < 80) return { kind, points: [] };
@@ -245,29 +275,33 @@ async function extractKeyPoints({ scope, text, tenantId = null, title = null } =
   let context = '';
   if (kind === 'competitive' || kind === 'opportunity') context = await tenantContextText(tenantId);
 
+  const subjectLabel = kind === 'competitive' ? 'COMPETITOR' : kind === 'opportunity' ? 'PROSPECT' : 'CONTENT';
+  const prompt =
+    `${promptFor(kind, !!context)}\n\n` +
+    (context ? `===OUR COMPANY (portfolio & objectives)===\n${context}\n\n` : '') +
+    `===${subjectLabel}${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
+  const { parsed } = await aiCall.generateStructured({
+    task: 'keypoints',
+    prompt,
+    responseSchema: KEYPOINTS_SCHEMA,
+    maxTokens: 900,
+    temperature: 0.3,
+    tenantId,
+    site: 'kb.keypoints',
+  });
+  const points = (Array.isArray(parsed.points) ? parsed.points : [])
+    .map((p) => String(p || '').replace(/^[-*•\s]+/, '').trim())
+    .filter(Boolean)
+    .slice(0, 7);
+  return { kind, points };
+}
+
+async function extractKeyPoints(opts = {}) {
   try {
-    const subjectLabel = kind === 'competitive' ? 'COMPETITOR' : kind === 'opportunity' ? 'PROSPECT' : 'CONTENT';
-    const prompt =
-      `${promptFor(kind, !!context)}\n\n` +
-      (context ? `===OUR COMPANY (portfolio & objectives)===\n${context}\n\n` : '') +
-      `===${subjectLabel}${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
-    const { parsed } = await aiCall.generateStructured({
-      task: 'keypoints',
-      prompt,
-      responseSchema: KEYPOINTS_SCHEMA,
-      maxTokens: 900,
-      temperature: 0.3,
-      tenantId,
-      site: 'kb.keypoints',
-    });
-    const points = (Array.isArray(parsed.points) ? parsed.points : [])
-      .map((p) => String(p || '').replace(/^[-*•\s]+/, '').trim())
-      .filter(Boolean)
-      .slice(0, 7);
-    return { kind, points };
+    return await extractKeyPointsStrict(opts);
   } catch (err) {
     console.warn(`[keypoints] extraction failed on ${providerOf(err)}:`, err.message);
-    return { kind, points: [] };
+    return { kind: kindFor(opts && opts.scope), points: [] };
   }
 }
 
@@ -381,47 +415,53 @@ const COMPANY_ANALYSIS_PROMPT =
   'Be honest — name actual differentiators not marketing fluff, real gaps in this doc, real competitors a buyer would name. Quote evidence verbatim for strengths. Skip fields when the doc doesn\'t cover them. ' +
   IGNORE_CLAUSE;
 
-async function extractCompanyAnalysis({ text, tenantId = null, title = null } = {}) {
+// `null` from the strict form means the document is too thin to analyse and
+// nothing else; a failed call throws. See the two-forms note above extractKeyPoints.
+async function extractCompanyAnalysisStrict({ text, tenantId = null, title = null } = {}) {
   const body = stripBoilerplate(text);
   if (body.length < 200) return null; // not enough to analyse
+  const context = await tenantContextText(tenantId);
+  const prompt =
+    `${COMPANY_ANALYSIS_PROMPT}\n\n` +
+    (context ? `===OUR COMPANY (portfolio & existing intel)===\n${context}\n\n` : '') +
+    `===NEW DOCUMENT${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
+  const { parsed, model } = await aiCall.generateStructured({
+    task: 'keypoints',
+    prompt,
+    responseSchema: COMPANY_ANALYSIS_SCHEMA,
+    maxTokens: 2200,
+    temperature: 0.3,
+    tenantId,
+    site: 'kb.companyAnalysis',
+  });
+  // Light defensive normalisation — drop empty strings, cap arrays.
+  return {
+    executiveSummary: String(parsed.executiveSummary || '').trim() || null,
+    services:         normaliseArray(parsed.services, 8),
+    strengths:        normaliseArray(parsed.strengths, 5),
+    marketPosition:   parsed.marketPosition ? {
+      category:       String(parsed.marketPosition.category || '').trim() || null,
+      differentiator: String(parsed.marketPosition.differentiator || '').trim() || null,
+      weaknesses:     normaliseArray(parsed.marketPosition.weaknesses, 3),
+    } : null,
+    competitors:           normaliseArray(parsed.competitors, 6),
+    idealCustomerProfile:  String(parsed.idealCustomerProfile || '').trim() || null,
+    salesAngles:           normaliseArray(parsed.salesAngles, 4),
+    generatedAt:           new Date().toISOString(),
+    // The model that ACTUALLY served this call, from the seam's matched pair —
+    // not a require-time constant that a provider flip would leave lying. It
+    // is display-only in both readers (web/admin/admin.js renders it in the
+    // `ca-meta` line for company analysis and product analysis; nothing else
+    // reads it and nothing branches on it), so stored rows keep whatever they
+    // were stamped with and no backfill is implied. Adding a reader that
+    // branches on it would change that.
+    model,
+  };
+}
+
+async function extractCompanyAnalysis(opts = {}) {
   try {
-    const context = await tenantContextText(tenantId);
-    const prompt =
-      `${COMPANY_ANALYSIS_PROMPT}\n\n` +
-      (context ? `===OUR COMPANY (portfolio & existing intel)===\n${context}\n\n` : '') +
-      `===NEW DOCUMENT${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
-    const { parsed, model } = await aiCall.generateStructured({
-      task: 'keypoints',
-      prompt,
-      responseSchema: COMPANY_ANALYSIS_SCHEMA,
-      maxTokens: 2200,
-      temperature: 0.3,
-      tenantId,
-      site: 'kb.companyAnalysis',
-    });
-    // Light defensive normalisation — drop empty strings, cap arrays.
-    return {
-      executiveSummary: String(parsed.executiveSummary || '').trim() || null,
-      services:         normaliseArray(parsed.services, 8),
-      strengths:        normaliseArray(parsed.strengths, 5),
-      marketPosition:   parsed.marketPosition ? {
-        category:       String(parsed.marketPosition.category || '').trim() || null,
-        differentiator: String(parsed.marketPosition.differentiator || '').trim() || null,
-        weaknesses:     normaliseArray(parsed.marketPosition.weaknesses, 3),
-      } : null,
-      competitors:           normaliseArray(parsed.competitors, 6),
-      idealCustomerProfile:  String(parsed.idealCustomerProfile || '').trim() || null,
-      salesAngles:           normaliseArray(parsed.salesAngles, 4),
-      generatedAt:           new Date().toISOString(),
-      // The model that ACTUALLY served this call, from the seam's matched pair —
-      // not a require-time constant that a provider flip would leave lying. It
-      // is display-only in both readers (web/admin/admin.js renders it in the
-      // `ca-meta` line for company analysis and product analysis; nothing else
-      // reads it and nothing branches on it), so stored rows keep whatever they
-      // were stamped with and no backfill is implied. Adding a reader that
-      // branches on it would change that.
-      model,
-    };
+    return await extractCompanyAnalysisStrict(opts);
   } catch (err) {
     console.warn(`[company-analysis] extraction failed on ${providerOf(err)}:`, err.message);
     return null;
@@ -505,55 +545,61 @@ const PRODUCT_ANALYSIS_PROMPT_HEADER =
   'Be honest: name real competing products by name (not "legacy vendors"), name actual integrations, name the actual buyer role. Skip fields if the doc is silent on them. ' +
   IGNORE_CLAUSE;
 
-async function extractProductAnalysis({ text, tenantId = null, productId = null, title = null } = {}) {
+// `null` from the strict form means the doc is too thin, and nothing else; a
+// failed call throws. See the two-forms note above extractKeyPoints.
+async function extractProductAnalysisStrict({ text, tenantId = null, productId = null, title = null } = {}) {
   const body = stripBoilerplate(text);
   if (body.length < 200) return null;
+  const context = await tenantContextText(tenantId);
+  // Look up the named product so the prompt can refer to it explicitly.
+  let productHeader = '';
+  if (productId) {
+    try {
+      const r = await db.query(
+        `SELECT name, description FROM products WHERE tenant_id = $1 AND id = $2 LIMIT 1`,
+        [tenantId, productId]
+      );
+      if (r.rows[0]) {
+        productHeader = `===THE PRODUCT THIS DOC IS ABOUT===\n` +
+          `Name: ${r.rows[0].name}` +
+          (r.rows[0].description ? `\nWhat we know about it already: ${r.rows[0].description}` : '') +
+          `\n`;
+      }
+    } catch { /* non-fatal */ }
+  }
+  const prompt =
+    `${PRODUCT_ANALYSIS_PROMPT_HEADER}\n\n` +
+    (context ? `===OUR COMPANY (portfolio & existing intel)===\n${context}\n\n` : '') +
+    (productHeader ? `${productHeader}\n` : '') +
+    `===NEW DOCUMENT${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
+  const { parsed, model } = await aiCall.generateStructured({
+    task: 'keypoints',
+    prompt,
+    responseSchema: PRODUCT_ANALYSIS_SCHEMA,
+    maxTokens: 2200,
+    temperature: 0.3,
+    tenantId,
+    site: 'kb.productAnalysis',
+  });
+  return {
+    executiveSummary:  String(parsed.executiveSummary || '').trim() || null,
+    capabilities:      normaliseArray(parsed.capabilities, 8),
+    problemsSolved:    normaliseArray(parsed.problemsSolved, 5),
+    whoBuysIt:         String(parsed.whoBuysIt || '').trim() || null,
+    integrations:      normaliseArray(parsed.integrations, 8),
+    pricingPosture:    String(parsed.pricingPosture || '').trim() || null,
+    competingProducts: normaliseArray(parsed.competingProducts, 6),
+    pitchAngles:       normaliseArray(parsed.pitchAngles, 4),
+    productId,
+    generatedAt:       new Date().toISOString(),
+    // The serving model, as in extractCompanyAnalysis above — display-only.
+    model,
+  };
+}
+
+async function extractProductAnalysis(opts = {}) {
   try {
-    const context = await tenantContextText(tenantId);
-    // Look up the named product so the prompt can refer to it explicitly.
-    let productHeader = '';
-    if (productId) {
-      try {
-        const r = await db.query(
-          `SELECT name, description FROM products WHERE tenant_id = $1 AND id = $2 LIMIT 1`,
-          [tenantId, productId]
-        );
-        if (r.rows[0]) {
-          productHeader = `===THE PRODUCT THIS DOC IS ABOUT===\n` +
-            `Name: ${r.rows[0].name}` +
-            (r.rows[0].description ? `\nWhat we know about it already: ${r.rows[0].description}` : '') +
-            `\n`;
-        }
-      } catch { /* non-fatal */ }
-    }
-    const prompt =
-      `${PRODUCT_ANALYSIS_PROMPT_HEADER}\n\n` +
-      (context ? `===OUR COMPANY (portfolio & existing intel)===\n${context}\n\n` : '') +
-      (productHeader ? `${productHeader}\n` : '') +
-      `===NEW DOCUMENT${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
-    const { parsed, model } = await aiCall.generateStructured({
-      task: 'keypoints',
-      prompt,
-      responseSchema: PRODUCT_ANALYSIS_SCHEMA,
-      maxTokens: 2200,
-      temperature: 0.3,
-      tenantId,
-      site: 'kb.productAnalysis',
-    });
-    return {
-      executiveSummary:  String(parsed.executiveSummary || '').trim() || null,
-      capabilities:      normaliseArray(parsed.capabilities, 8),
-      problemsSolved:    normaliseArray(parsed.problemsSolved, 5),
-      whoBuysIt:         String(parsed.whoBuysIt || '').trim() || null,
-      integrations:      normaliseArray(parsed.integrations, 8),
-      pricingPosture:    String(parsed.pricingPosture || '').trim() || null,
-      competingProducts: normaliseArray(parsed.competingProducts, 6),
-      pitchAngles:       normaliseArray(parsed.pitchAngles, 4),
-      productId,
-      generatedAt:       new Date().toISOString(),
-      // The serving model, as in extractCompanyAnalysis above — display-only.
-      model,
-    };
+    return await extractProductAnalysisStrict(opts);
   } catch (err) {
     console.warn(`[product-analysis] extraction failed on ${providerOf(err)}:`, err.message);
     return null;
@@ -565,5 +611,9 @@ async function extractProductAnalysis({ text, tenantId = null, productId = null,
 // file::expr key stays unique to this call site.
 module.exports = {
   extractKeyPoints, extractCompanyAnalysis, extractProductAnalysis, kindFor, stripBoilerplate, tenantContextText,
+  // The throwing forms — for callers that OVERWRITE stored data and therefore
+  // must not read a failure as "this document has none". See the note above
+  // extractKeyPoints.
+  extractKeyPointsStrict, extractCompanyAnalysisStrict, extractProductAnalysisStrict,
   KEYPOINTS_SCHEMA, COMPANY_ANALYSIS_SCHEMA, PRODUCT_ANALYSIS_SCHEMA,
 };

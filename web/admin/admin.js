@@ -8406,12 +8406,11 @@
       b.disabled = true; const orig = b.textContent; b.textContent = '… analyzing';
       try {
         const r = await fetch(`/api/knowledge/documents/${encodeURIComponent(doc.id)}/keypoints`, { method: 'POST', credentials: 'include' });
-        if (!r.ok) {
-          const j = await r.json().catch(() => ({}));
-          throw new Error(j.error || `HTTP ${r.status}`);
-        }
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
         if (typeof onChange === 'function') onChange();
         closeIntelDocModal();
+        warnPartialKeypointsRefresh(j);
       } catch (err) {
         alert(`Couldn't generate key points: ${err.message}`);
         b.disabled = false; b.textContent = orig;
@@ -8740,6 +8739,22 @@
       </details>`;
   }
 
+  // A refresh where some fields' model calls failed answers 200 with the
+  // document intact — those fields KEPT what was stored rather than being
+  // wiped — so neither call site can treat it as an error. But it must not read
+  // as a clean refresh either, or the rep re-clicks into the same silence.
+  // `refreshFailures` is absent on older API builds, so no warning is the
+  // pre-existing behaviour.
+  function warnPartialKeypointsRefresh(body) {
+    const failed = (body && Array.isArray(body.refreshFailures)) ? body.refreshFailures : [];
+    if (!failed.length) return;
+    const fields = failed.map((f) => f && f.field).filter(Boolean).join(', ');
+    alert(
+      `Analysis partly refreshed. These parts couldn't be regenerated just now and kept their ` +
+      `previous version: ${fields || 'some fields'}. Nothing was lost — try again in a moment.`
+    );
+  }
+
   async function kbRegenKeyPoints(id, btn) {
     if (btn) { btn.disabled = true; btn.textContent = '… analyzing'; }
     try {
@@ -8749,6 +8764,7 @@
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
       await loadKbLibrary(); // re-renders the card with the fresh points
+      warnPartialKeypointsRefresh(body);
     } catch (err) {
       alert(`Couldn't generate key points: ${err.message}`);
       if (btn) btn.disabled = false;

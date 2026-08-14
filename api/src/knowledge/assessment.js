@@ -160,8 +160,10 @@ const withRetry = aiRetry.forLabel('assessment');
 
 // Which provider produced a failure. Same idiom and the same 'unknown' default
 // as relevance.js / preview.js / companyBrief.js in group 1: two providers serve
-// these paths now, so naming one is a guess printed as a fact — and the scorer's
-// failure is swallowed into a null return, so this line is the only evidence.
+// these paths now, so naming one is a guess printed as a fact. On the INGEST
+// path the scorer's failure is swallowed into a null return and this line is the
+// only evidence; the REGENERATE path calls the Strict form below and logs its
+// own line, because there a null would have overwritten a stored scoreboard.
 const providerOf = (err) => (err && err.provider) || 'unknown';
 
 const INPUT_CAP = parseInt(process.env.KB_ASSESSMENT_INPUT_CAP || '16000', 10);
@@ -294,7 +296,10 @@ function normalize(raw) {
 // against the full portfolio. Non-empty narrows the lens so a "Fraud Solution
 // vs Acme" card doesn't get scored on irrelevant payment-gateway features.
 // Never throws — returns null on any failure so ingest proceeds.
-async function extractCompetitiveAssessment({ text, tenantId = null, title = null, competitorName = null, appliesProductNames = [] } = {}) {
+// `extractCompetitiveAssessmentStrict` is the same call WITHOUT the swallow, for
+// callers that overwrite a stored scoreboard and so cannot read a failure as
+// "this doc scores nothing" — see the two-forms note in keypoints.js.
+async function extractCompetitiveAssessmentStrict({ text, tenantId = null, title = null, competitorName = null, appliesProductNames = [] } = {}) {
   const body = keypoints.stripBoilerplate(String(text || ''));
   if (body.length < 80) return null;
 
@@ -305,26 +310,30 @@ async function extractCompetitiveAssessment({ text, tenantId = null, title = nul
     ? `This battlecard scores OUR offering on these specific products: ${appliesProductNames.join(', ')}. Restrict ourScore reasoning to these — ignore unrelated parts of our portfolio.`
     : `This battlecard scores OUR full portfolio against the competitor (no product restriction was set).`;
 
+  const axesBlock = AXES.map((a) => `- ${a.key} (${a.label}): ${a.hint}`).join('\n');
+  const prompt =
+    `${PROMPT}\n\n` +
+    `===THE 8 FIXED AXES===\n${axesBlock}\n\n` +
+    `===SCOPE===\n${scope}\n\n` +
+    (context
+      ? `===OUR COMPANY (portfolio & objectives)===\n${context}\n\n`
+      : `===OUR COMPANY===\n(No portfolio on file — score ourScore conservatively and call this out in the summary.)\n\n`) +
+    `===COMPETITOR${competitorName ? `: ${competitorName}` : ''}${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
+  const { parsed } = await withRetry(() => aiCall.generateStructured({
+    task: 'assessment',
+    prompt,
+    responseSchema: ASSESSMENT_SCHEMA,
+    maxTokens: 2400,
+    temperature: 0.25,
+    tenantId,
+    site: 'kb.assessment',
+  }));
+  return normalize(parsed);
+}
+
+async function extractCompetitiveAssessment(opts = {}) {
   try {
-    const axesBlock = AXES.map((a) => `- ${a.key} (${a.label}): ${a.hint}`).join('\n');
-    const prompt =
-      `${PROMPT}\n\n` +
-      `===THE 8 FIXED AXES===\n${axesBlock}\n\n` +
-      `===SCOPE===\n${scope}\n\n` +
-      (context
-        ? `===OUR COMPANY (portfolio & objectives)===\n${context}\n\n`
-        : `===OUR COMPANY===\n(No portfolio on file — score ourScore conservatively and call this out in the summary.)\n\n`) +
-      `===COMPETITOR${competitorName ? `: ${competitorName}` : ''}${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
-    const { parsed } = await withRetry(() => aiCall.generateStructured({
-      task: 'assessment',
-      prompt,
-      responseSchema: ASSESSMENT_SCHEMA,
-      maxTokens: 2400,
-      temperature: 0.25,
-      tenantId,
-      site: 'kb.assessment',
-    }));
-    return normalize(parsed);
+    return await extractCompetitiveAssessmentStrict(opts);
   } catch (err) {
     console.warn(`[assessment] extraction failed on ${providerOf(err)}:`, err.message);
     return null;
@@ -813,6 +822,7 @@ function mergeBattlecard(stored) {
 // so that the guard's file::expr key cannot be satisfied by a second, unrelated
 // `responseSchema: SCHEMA` added later in the same file.
 module.exports = {
-  extractCompetitiveAssessment, renderAssessmentText, AXES, AXIS_KEYS, extractBattlecard, mergeBattlecard,
+  extractCompetitiveAssessment, extractCompetitiveAssessmentStrict,
+  renderAssessmentText, AXES, AXIS_KEYS, extractBattlecard, mergeBattlecard,
   ASSESSMENT_SCHEMA, BATTLECARD_SCHEMA,
 };
