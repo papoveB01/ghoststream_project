@@ -53,8 +53,8 @@ const DEFAULT_PROVIDER = 'gemini';
 
 // Tasks whose CALL SITE can actually dispatch to a non-Gemini provider.
 //
-// Grows as call sites migrate — not one task per PR; group 1 added three at
-// once, and §9 item 5's later groups are up to four keys that must flip
+// Grows as call sites migrate — not one task per PR; groups 1 and 2 added three
+// keys each, and §9 item 5's later groups are up to four keys that must flip
 // together. It is NOT empty. Until a task's call site reads
 // resolve().provider and branches, asking for anthropic would hand a
 // Claude model id to the Gemini SDK — a 404 on every call. For `relevance` that
@@ -70,9 +70,11 @@ const DEFAULT_PROVIDER = 'gemini';
 // on the line below would have sent BATTLECARD_SCHEMA synthesis to Haiku. That
 // specific hazard is gone — the synthesis has its own `battlecard` key now —
 // but the shape of the mistake is not. The "all of them" half bites separately
-// where one FILE carries call sites for two keys (`preview.js` holds `preview`
-// and `compare`): migrate only the key you are adding, and see the GROUP 1
-// list below for how that is meant to look.
+// where one FILE carries call sites for two keys: `preview.js` holds `preview`
+// and `compare` and is the case where you migrate only the key you are adding,
+// while `assessment.js` holds `assessment` and `battlecard` and is the case
+// where you must add BOTH, because leaving one behind does not error — it just
+// never moves. See the GROUP 1 and GROUP 2 lists below for how each looks.
 //
 // A task joins this set in the same PR that migrates its call site. Until then
 // the router honours the env var by warning and staying put, so an operator who
@@ -87,6 +89,27 @@ const DEFAULT_PROVIDER = 'gemini';
 //                 Gemini call until its own cutover.
 //   companyBrief  companyBrief.js
 //
+// GROUP 2 (ADR-0006 §9 item 5), likewise migrated onto the seam:
+//   keypoints     knowledge/keypoints.js  — ALL THREE call sites (kb.keypoints,
+//                 kb.companyAnalysis, kb.productAnalysis). One key, three sites,
+//                 one flip; the require-time modelFor() constant is gone.
+//   assessment    knowledge/assessment.js — extractCompetitiveAssessment, the
+//                 per-document scorer. Keeps its aiRetry('assessment') wrapper,
+//                 now around the seam call.
+//   battlecard    knowledge/assessment.js — extractBattlecard, the synthesis.
+//                 Deliberately UNWRAPPED: it is synchronous behind a rep-facing
+//                 regenerate, so retry would turn a fast 502 into three attempts
+//                 with backoff while they wait.
+//
+// THE THREE GROUP-2 KEYS HAD TO LAND TOGETHER, and `battlecard` is the reason.
+// assessment.js holds two call sites resolving two different keys since PR #53.
+// Adding `assessment` alone leaves extractBattlecard on the Gemini SDK — and
+// NOTHING ERRORS, because it keeps sending a Gemini model id and returns a
+// normal battlecard, so the only symptom is §6's margin table pricing a task
+// that never moved. Adding `battlecard` without migrating its call site is the
+// inverse and is loud: a Claude model id posted to the Gemini SDK, a 404 on
+// every regenerate. Both halves are why this is one PR.
+//
 // Membership alone changes nothing — it makes a task ELIGIBLE. The provider is
 // still chosen by AI_PROVIDER / AI_PROVIDER_<TASK>, which default to gemini,
 // and providerFor() additionally refuses to dispatch when the target provider's
@@ -100,7 +123,10 @@ const DEFAULT_PROVIDER = 'gemini';
 // is only read on a red run, and the PR that changes this set deliberately greps
 // for it, fixes both pins in the same pass and goes green first try, never
 // seeing either one. That PR is the reader this note is for.
-const DISPATCH_READY = new Set(['relevance', 'preview', 'companyBrief']);
+const DISPATCH_READY = new Set([
+  'relevance', 'preview', 'companyBrief',      // group 1
+  'keypoints', 'assessment', 'battlecard',     // group 2
+]);
 
 // task → { tier, env(legacy per-task override), anthropicEnv, anthropicTier }
 //
@@ -127,12 +153,18 @@ const DISPATCH_READY = new Set(['relevance', 'preview', 'companyBrief']);
 // now, and only because the split happened: battlecard no longer resolves
 // through `assessment` at all, so `assessment` cannot carry it to Haiku.
 //
-// What is still NOT done, and is deliberately not done here: neither
-// `assessment` nor `battlecard` is in DISPATCH_READY, and neither of their call
-// sites can dispatch to Claude yet. Both of those keys move in group 2's
-// cutover PR (ADR-0006 §9 item 5, `keypoints` + `assessment` + `battlecard`) —
-// this is a router-only change, so it flips no traffic and re-tiers nothing on
-// the provider currently serving 100% of it.
+// DONE as of group 2's cutover PR (ADR-0006 §9 item 5, `keypoints` +
+// `assessment` + `battlecard`): all three keys are in DISPATCH_READY above and
+// all six of their call sites dispatch through aiCall. What that changed is
+// ELIGIBILITY only — AI_PROVIDER / AI_PROVIDER_<TASK> still default to gemini,
+// so the provider serving 100% of this traffic is unmoved and every `tier` below
+// is still the one it was.
+//
+// The `anthropicTier` overrides on `keypoints` and `battlecard` are what keep
+// that true. They exist precisely so a Claude re-tier costs the Gemini path
+// nothing: both keys stay tier `lite` on Gemini and get FLASH only on Claude. A
+// later PR that "tidies" either tier field is not tidying — it is a live
+// quality-and-cost change to whichever provider is serving at the time.
 const TASKS = {
   // LITE — high-volume, structured/extraction
   relevance:    { tier: 'lite',    env: 'GEMINI_RELEVANCE_MODEL',    anthropicEnv: 'ANTHROPIC_RELEVANCE_MODEL' },

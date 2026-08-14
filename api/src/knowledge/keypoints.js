@@ -18,13 +18,44 @@
 //     stripped before extraction AND the prompt is told to ignore it. If little
 //     of substance remains, the model returns few or no points (no padding).
 
-const gemini = require('../gemini');
-const costs = require('../costs');
 const db = require('../db');
 
-const MODEL = require('../models').modelFor('keypoints');
+// One-shot provider seam (ADR-0006 §9 item 5, cutover group 2). All THREE call
+// sites below resolve the task `keypoints`, and they all move together — a file
+// that keeps one direct Gemini call is the shape preview.js deliberately has
+// (two tasks, two groups) and this file deliberately does not (one task, three
+// call sites, one flip).
+//
+// The require-time `modelFor('keypoints')` constant that used to live here is
+// GONE, not moved. It froze the model at boot behind a routing decision — the
+// same hazard ADR-0006 §9 item 4 fixed in personas.js — so the id could outlive
+// the provider choice that produced it. aiCall resolves provider and model per
+// call, as a matched pair (fail-closed fallback to Gemini included). That is not
+// a restart-free flip: AI_PROVIDER_* is container env (docker-compose.yml), so
+// setting one means `docker compose up -d` and a fresh process either way. What
+// it buys is that the pair can never disagree, and that flipping or rolling back
+// this task is an env change rather than a code change.
+//
+// ON CLAUDE THIS TASK IS FLASH, NOT LITE (models.js `anthropicTier`), because
+// COMPANY_ANALYSIS_SCHEMA asks for judgment — differentiator, ICP, pricing
+// posture — not extraction (ADR-0006 §4.1). Two consequences at these call
+// sites: Sonnet 5 is in anthropic.js's NO_TEMPERATURE list, so the
+// `temperature: 0.3` below is dropped with a warning once per model+site after
+// a flip (determinism has to come from the prompt there); and the Gemini tier is
+// deliberately left at `lite`, so nothing about the Gemini request changes.
+const aiCall = require('../aiCall');
+
 const INPUT_CAP   = parseInt(process.env.KB_KEYPOINTS_INPUT_CAP || '16000', 10);
 const CONTEXT_CAP = parseInt(process.env.KB_KEYPOINTS_CONTEXT_CAP || '5000', 10);
+
+// Which provider produced a failure, for the three warn lines below. Same idiom
+// and the same default as relevance.js / preview.js / companyBrief.js in group
+// 1, and 'unknown' rather than a vendor name for the same reason: two providers
+// serve these paths now, so a line naming one is a guess printed as a fact, and
+// all three of these failures are swallowed (extraction returns empty / null and
+// ingest proceeds) — the log line is the ONLY evidence there was one. An honest
+// 'unknown' also makes a missing stamp greppable instead of misattributed.
+const providerOf = (err) => (err && err.provider) || 'unknown';
 
 // ── boilerplate stripping ─────────────────────────────────────────────────
 // Web scrapes (esp. of corporate / banking sites) drag in cookie & consent
@@ -194,32 +225,27 @@ async function extractKeyPoints({ scope, text, tenantId = null, title = null } =
   if (kind === 'competitive' || kind === 'opportunity') context = await tenantContextText(tenantId);
 
   try {
-    const ai = gemini.getClient();
     const subjectLabel = kind === 'competitive' ? 'COMPETITOR' : kind === 'opportunity' ? 'PROSPECT' : 'CONTENT';
     const prompt =
       `${promptFor(kind, !!context)}\n\n` +
       (context ? `===OUR COMPANY (portfolio & objectives)===\n${context}\n\n` : '') +
       `===${subjectLabel}${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
-    const resp = await ai.models.generateContent({
-      model: MODEL,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.3,
-        maxOutputTokens: 900,
-        responseMimeType: 'application/json',
-        responseSchema: KEYPOINTS_SCHEMA,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+    const { parsed } = await aiCall.generateStructured({
+      task: 'keypoints',
+      prompt,
+      responseSchema: KEYPOINTS_SCHEMA,
+      maxTokens: 900,
+      temperature: 0.3,
+      tenantId,
+      site: 'kb.keypoints',
     });
-    costs.recordGemini(tenantId, 'kb.keypoints', MODEL, resp.usageMetadata);
-    const parsed = JSON.parse(resp.text);
     const points = (Array.isArray(parsed.points) ? parsed.points : [])
       .map((p) => String(p || '').replace(/^[-*•\s]+/, '').trim())
       .filter(Boolean)
       .slice(0, 7);
     return { kind, points };
   } catch (err) {
-    console.warn('[keypoints] extraction failed:', err.message);
+    console.warn(`[keypoints] extraction failed on ${providerOf(err)}:`, err.message);
     return { kind, points: [] };
   }
 }
@@ -335,25 +361,20 @@ async function extractCompanyAnalysis({ text, tenantId = null, title = null } = 
   const body = stripBoilerplate(text);
   if (body.length < 200) return null; // not enough to analyse
   try {
-    const ai = gemini.getClient();
     const context = await tenantContextText(tenantId);
     const prompt =
       `${COMPANY_ANALYSIS_PROMPT}\n\n` +
       (context ? `===OUR COMPANY (portfolio & existing intel)===\n${context}\n\n` : '') +
       `===NEW DOCUMENT${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
-    const resp = await ai.models.generateContent({
-      model: MODEL,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.3,
-        maxOutputTokens: 2200,
-        responseMimeType: 'application/json',
-        responseSchema: COMPANY_ANALYSIS_SCHEMA,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+    const { parsed, model } = await aiCall.generateStructured({
+      task: 'keypoints',
+      prompt,
+      responseSchema: COMPANY_ANALYSIS_SCHEMA,
+      maxTokens: 2200,
+      temperature: 0.3,
+      tenantId,
+      site: 'kb.companyAnalysis',
     });
-    costs.recordGemini(tenantId, 'kb.companyAnalysis', MODEL, resp.usageMetadata);
-    const parsed = JSON.parse(resp.text);
     // Light defensive normalisation — drop empty strings, cap arrays.
     return {
       executiveSummary: String(parsed.executiveSummary || '').trim() || null,
@@ -368,10 +389,17 @@ async function extractCompanyAnalysis({ text, tenantId = null, title = null } = 
       idealCustomerProfile:  String(parsed.idealCustomerProfile || '').trim() || null,
       salesAngles:           normaliseArray(parsed.salesAngles, 4),
       generatedAt:           new Date().toISOString(),
-      model:                 MODEL,
+      // The model that ACTUALLY served this call, from the seam's matched pair —
+      // not a require-time constant that a provider flip would leave lying. It
+      // is display-only in both readers (web/admin/admin.js renders it in the
+      // `ca-meta` line for company analysis and product analysis; nothing else
+      // reads it and nothing branches on it), so stored rows keep whatever they
+      // were stamped with and no backfill is implied. Adding a reader that
+      // branches on it would change that.
+      model,
     };
   } catch (err) {
-    console.warn('[company-analysis] extraction failed:', err.message);
+    console.warn(`[company-analysis] extraction failed on ${providerOf(err)}:`, err.message);
     return null;
   }
 }
@@ -457,7 +485,6 @@ async function extractProductAnalysis({ text, tenantId = null, productId = null,
   const body = stripBoilerplate(text);
   if (body.length < 200) return null;
   try {
-    const ai = gemini.getClient();
     const context = await tenantContextText(tenantId);
     // Look up the named product so the prompt can refer to it explicitly.
     let productHeader = '';
@@ -480,19 +507,15 @@ async function extractProductAnalysis({ text, tenantId = null, productId = null,
       (context ? `===OUR COMPANY (portfolio & existing intel)===\n${context}\n\n` : '') +
       (productHeader ? `${productHeader}\n` : '') +
       `===NEW DOCUMENT${title ? ` — ${title}` : ''}===\n${body.slice(0, INPUT_CAP)}`;
-    const resp = await ai.models.generateContent({
-      model: MODEL,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.3,
-        maxOutputTokens: 2200,
-        responseMimeType: 'application/json',
-        responseSchema: PRODUCT_ANALYSIS_SCHEMA,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+    const { parsed, model } = await aiCall.generateStructured({
+      task: 'keypoints',
+      prompt,
+      responseSchema: PRODUCT_ANALYSIS_SCHEMA,
+      maxTokens: 2200,
+      temperature: 0.3,
+      tenantId,
+      site: 'kb.productAnalysis',
     });
-    costs.recordGemini(tenantId, 'kb.productAnalysis', MODEL, resp.usageMetadata);
-    const parsed = JSON.parse(resp.text);
     return {
       executiveSummary:  String(parsed.executiveSummary || '').trim() || null,
       capabilities:      normaliseArray(parsed.capabilities, 8),
@@ -504,10 +527,11 @@ async function extractProductAnalysis({ text, tenantId = null, productId = null,
       pitchAngles:       normaliseArray(parsed.pitchAngles, 4),
       productId,
       generatedAt:       new Date().toISOString(),
-      model:             MODEL,
+      // The serving model, as in extractCompanyAnalysis above — display-only.
+      model,
     };
   } catch (err) {
-    console.warn('[product-analysis] extraction failed:', err.message);
+    console.warn(`[product-analysis] extraction failed on ${providerOf(err)}:`, err.message);
     return null;
   }
 }

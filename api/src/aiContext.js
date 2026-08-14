@@ -37,8 +37,9 @@
 //   - It does not flip any task — but the three exported functions are held
 //     back by three DIFFERENT mechanisms, which lift at different times. Do not
 //     collapse them, and do not reach for "DISPATCH_READY is empty": it is not
-//     (relevance, preview and companyBrief joined it in group 1, ADR-0006 §9
-//     item 5). Check the premise that matches the branch you are touching.
+//     (relevance, preview and companyBrief joined it in group 1 and keypoints,
+//     assessment and battlecard in group 2, ADR-0006 §9 item 5). Check the
+//     premise that matches the branch you are touching.
 //
 //     prepare()   HELD BY THE ROUTER. Its only production caller is
 //                 knowledge/globalCache.js, which pins CACHE_TASK = 'personas',

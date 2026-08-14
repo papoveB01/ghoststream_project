@@ -11,15 +11,22 @@
 // retryDelay parser) was invisible precisely because it lived in one line of
 // one module nobody diffed against the other five.
 //
-// THIS MODULE CAN NOW MOVE REAL TRAFFIC. relevance, preview and companyBrief
-// are in models.DISPATCH_READY (ADR-0006 §9 item 5) and their call sites
-// dispatch through here, so AI_PROVIDER_RELEVANCE=anthropic routes BOTH
-// relevance call sites into the anthropic branch below — checkDocRelevance,
-// reached from knowledge/service.js on every competitor document, and
-// checkOfferingPlausibility, a product-name plausibility check with no document
-// at all, reached from portfolio.js:763 and never from ingest. The older
-// shorthand here — "every competitor-document ingest" — named only the first of
-// those two and quietly scoped the second out of view.
+// THIS MODULE CAN NOW MOVE REAL TRAFFIC. Six tasks are in
+// models.DISPATCH_READY (ADR-0006 §9 item 5) and their call sites dispatch
+// through here — relevance, preview and companyBrief in group 1, keypoints,
+// assessment and battlecard in group 2 — so AI_PROVIDER_RELEVANCE=anthropic
+// routes BOTH relevance call sites into the anthropic branch below:
+// checkDocRelevance, reached from knowledge/service.js on every competitor
+// document, and checkOfferingPlausibility, a product-name plausibility check
+// with no document at all, reached from portfolio.js:763 and never from ingest.
+// The older shorthand here — "every competitor-document ingest" — named only the
+// first of those two and quietly scoped the second out of view.
+//
+// Group 2 adds five more call sites of its own, and one of them is the first to
+// reach this seam from a SYNCHRONOUS, rep-facing route: extractBattlecard, behind
+// POST /portfolio/competitors/:id/battlecard/regenerate. It is deliberately not
+// wrapped in aiRetry — the seam does not retry, and its caller decided not to —
+// so a failure here becomes a 502 at once rather than after two backoffs.
 //
 // TWO env gates, not one: the shorthand "one env var away" is true only while
 // ANTHROPIC_API_KEY happens to be set, because providerFor() falls back to
@@ -36,11 +43,15 @@
 //                 the other per-model capability lists (NO_EFFORT,
 //                 NO_ADAPTIVE_THINKING). Live-probed 2026-08-06:
 //                 claude-haiku-4-5 — the LITE tier serving all three group-1
-//                 tasks — returns 200 with temperature 0.1, while Opus 5 /
-//                 Sonnet 5 / Opus 4.8 / Opus 4.7 / Fable 5 return 400. The seam
-//                 dropping it unconditionally was therefore a real determinism
-//                 loss on exactly the tier being migrated, on a judge whose
-//                 confidence is thresholded at 0.4.
+//                 tasks and group 2's `assessment` — returns 200 with
+//                 temperature 0.1, while Opus 5 / Sonnet 5 / Opus 4.8 / Opus 4.7
+//                 / Fable 5 return 400. The seam dropping it unconditionally was
+//                 therefore a real determinism loss on exactly the tier being
+//                 migrated, on a judge whose confidence is thresholded at 0.4.
+//                 Group 2's other two keys (`keypoints`, `battlecard`) resolve
+//                 to Sonnet 5, where it IS dropped — with anthropic.js's
+//                 once-per-model+site warning, not silently, which is the
+//                 difference that matters.
 //   effort        Claude only. Validated here against anthropic.js's own set so
 //                 a bad value fails at the seam on either provider rather than
 //                 passing silently on Gemini and 400ing after the flip — see
@@ -246,7 +257,9 @@ async function generateStructured({
     // server-side fallbacks that can differ from the one we asked for.
     // temperature goes THROUGH: the wrapper drops it per model (NO_TEMPERATURE
     // there), which keeps it on claude-haiku-4-5 — the tier every group-1 task
-    // resolves to, and the one that accepts it.
+    // and group 2's `assessment` resolve to, and the one that accepts it — and
+    // drops it, loudly, on the claude-sonnet-5 that `keypoints` and `battlecard`
+    // resolve to.
     const r = await anthropic.generate({
       model, prompt, system, schema: responseSchema, maxTokens, effort, thinking,
       temperature, allowTruncation, tenantId, site: label, signal,

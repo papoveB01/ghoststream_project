@@ -204,7 +204,7 @@ test('claude tiers follow ADR-0006 §4.1', () => {
   }
 });
 
-test('group 1 survives the only test that rewrites the whole set', () => {
+test('the shipped set survives the only test that rewrites the whole set', () => {
   // Placed immediately after that test on purpose: it is the tripwire for a
   // helper that mutates the exported Set without restoring it. `clear()` in the
   // tiering test above used to make this fail.
@@ -218,7 +218,7 @@ test('group 1 survives the only test that rewrites the whole set', () => {
   // contents and deliberately does not repeat this list: one copy, so the
   // reminder cannot drift the way its subject did.
   assert.deepStrictEqual([...models.DISPATCH_READY].sort(),
-    ['companyBrief', 'preview', 'relevance'],
+    ['assessment', 'battlecard', 'companyBrief', 'keypoints', 'preview', 'relevance'],
     'changing this set also invalidates prose that asserts what is in it: ' +
     'anthropic.js (header), aiCall.js (header), gemini.js (assertGeminiModel) ' +
     'and aiContext.js ("It does not flip any task") — PR #54 existed because ' +
@@ -295,22 +295,25 @@ test('battlecard takes the flash tier on claude while assessment stays lite', ()
   }));
 });
 
-test('battlecard is not dispatch-ready, so flipping it warns and stays on gemini', () => {
-  assert.strictEqual(SHIPPED_DISPATCH_READY.has('battlecard'), false,
-    'this PR splits the key; the call site still speaks only to the Gemini SDK');
-  assert.strictEqual(models.DISPATCH_READY.has('battlecard'), false,
-    'and no earlier test may have left it in the live set');
-  const warnings = [];
-  const realWarn = console.warn;
-  console.warn = (m) => warnings.push(String(m));
-  try {
-    withEnv({ AI_PROVIDER_BATTLECARD: 'anthropic' }, () => {
-      assert.strictEqual(models.resolve('battlecard').provider, 'gemini');
-      assert.match(models.resolve('battlecard').model, /^gemini-/);
-    });
-  } finally { console.warn = realWarn; }
-  assert.ok(warnings.some((w) => w.includes('battlecard') && w.includes('cannot dispatch yet')),
-    'an operator following the runbook early must get a loud no-op, not silence');
+// Was "battlecard is not dispatch-ready, so flipping it warns and stays on
+// gemini" — the PR #53 invariant, which group 2 is the PR that retires. The
+// still-unmigrated case is covered above by `discovery`, which is the right
+// place for it: a test that asserts un-readiness about a key being migrated
+// keeps passing for the wrong reason right up until it has to be deleted.
+test('battlecard flips ALONE — its sibling in the same file does not follow it', () => {
+  assert.strictEqual(SHIPPED_DISPATCH_READY.has('battlecard'), true,
+    'group 2 migrated extractBattlecard onto the seam, so the key is eligible now');
+  withEnv({ AI_PROVIDER_BATTLECARD: 'anthropic', GEMINI_ASSESSMENT_MODEL: undefined }, () => {
+    const b = models.resolve('battlecard');
+    assert.strictEqual(b.provider, 'anthropic');
+    assert.strictEqual(b.model, 'claude-sonnet-5', 'FLASH on claude, per the §4.1 split');
+    // knowledge/assessment.js holds both call sites. Per-task env vars are the
+    // unit of rollback, so one of them moving must not drag the other across —
+    // and the scorer is the half that fails into a null scoreboard nobody sees.
+    const a = models.resolve('assessment');
+    assert.strictEqual(a.provider, 'gemini', 'AI_PROVIDER_BATTLECARD names one key, not one file');
+    assert.strictEqual(a.model, 'gemini-2.5-flash-lite');
+  });
 });
 
 test('the battlecard env overrides are the names compose passes', () => {
