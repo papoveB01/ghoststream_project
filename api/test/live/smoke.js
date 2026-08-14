@@ -135,43 +135,75 @@ function usage() {
 // tasks whose flip PR is required to run it (rules/commands.md: "the only thing
 // that catches a schema the provider rejects"). Mirrors the save/lift/restore
 // in test/cutoverGroup2.test.js's withAnthropic().
+//
+// THE WHOLE BODY IS INSIDE THE try, including the reads of the two gate
+// exports. models.js:168 explicitly anticipates a key LEAVING FLIP_BLOCKED, and
+// the set itself going away with the migration is the natural end state — at
+// which point `models.FLIP_BLOCKED.has(...)` is a TypeError. Read outside the
+// try, that throw carries no `harnessBug` tag, reports as an ordinary setup
+// ERROR and exits 4, "re-run" — for a script that will fail identically forever.
+// Tagging every throw from in here is right rather than over-broad: nothing in
+// this function talks to a provider, so anything it throws is this file or this
+// environment, and NOTHING WAS SENT is true of all of it.
 function resolveFor(provider, task) {
-  const envName = models.providerEnvName(task);
-  const prevEnv = process.env[envName];
-  const wasReady = models.DISPATCH_READY.has(task);
-  const wasBlocked = models.FLIP_BLOCKED.has(task);
-  const blockReason = models.FLIP_BLOCKED.get(task);
-  process.env[envName] = provider;
-  if (!wasReady) models.DISPATCH_READY.add(task);
-  if (wasBlocked) models.FLIP_BLOCKED.delete(task);
+  let envName;
+  let prevEnv;
+  // Initialised to "nothing to undo", not to false/false. If a throw lands
+  // between here and the lift, the finally must not delete a membership this
+  // call never added — which is the unconditional-restore defect one line over,
+  // reached by a different route.
+  let wasReady = true;
+  let wasBlocked = false;
+  let blockReason;
   try {
+    envName = models.providerEnvName(task);
+    prevEnv = process.env[envName];
+    wasReady = models.DISPATCH_READY.has(task);
+    wasBlocked = models.FLIP_BLOCKED.has(task);
+    blockReason = models.FLIP_BLOCKED.get(task);
+    process.env[envName] = provider;
+    if (!wasReady) models.DISPATCH_READY.add(task);
+    if (wasBlocked) models.FLIP_BLOCKED.delete(task);
     const resolved = models.resolve(task);
-    // The backstop, so a THIRD gate cannot repeat the above silently. A model
-    // that does not belong to the provider we asked for is a bug in THIS FILE —
-    // the router refused the dispatch and we failed to lift the refusal — and
-    // sending it produces a 404 that names the model and blames the provider.
-    // Checked on the id family as well as `resolved.provider`, so a stray
-    // GEMINI_*_MODEL / ANTHROPIC_*_MODEL override pointing at the wrong family
-    // is caught too. providerOfModel() returns null for ids it does not know,
-    // which is deliberately not a failure: a newly released model or a custom
-    // endpoint id must keep working without an edit here.
+    // The backstop. A model that does not belong to the provider we asked for is
+    // a bug in THIS FILE — the router refused the dispatch and we failed to lift
+    // the refusal — and sending it produces a 404 that names the model and
+    // blames the provider. Checked on the id family as well as
+    // `resolved.provider`, so a stray GEMINI_*_MODEL / ANTHROPIC_*_MODEL
+    // override pointing at the wrong family is caught too. providerOfModel()
+    // returns null for ids it does not know, which is deliberately not a
+    // failure: a newly released model or a custom endpoint id must keep working
+    // without an edit here.
+    //
+    // WHAT IT DOES NOT COVER, and this is narrower than "a THIRD gate cannot
+    // repeat the above silently", which is what it used to claim. It catches a
+    // gate that changes the PROVIDER. A gate that keeps the provider and
+    // downgrades the MODEL passes both checks in silence — and that shape is not
+    // hypothetical: `anthropicTier` (models.js:323) already re-tiers keypoints
+    // and battlecard for Claude only, so a future gate written in its image
+    // would leave this run reporting a green over a model production would not
+    // use. test/liveHarnessGates.test.js pins the provider half for free, on
+    // every push; the model half has nothing behind it but this comment.
     const family = models.providerOfModel(resolved.model);
     if (resolved.provider !== provider || (family && family !== provider)) {
-      const err = new Error(
+      throw new Error(
         `the router refused the dispatch — asked for ${provider}, resolved ${resolved.provider}/` +
         `${resolved.model}. NOTHING WAS SENT. This is a harness bug, not a provider or schema ` +
         'fault: smoke.js lifts DISPATCH_READY and FLIP_BLOCKED for the task under test, so a gate ' +
         'added to models.js since then has to be lifted in resolveFor() too.'
       );
-      err.harnessBug = true;
-      throw err;
     }
     return resolved;
+  } catch (err) {
+    err.harnessBug = true;
+    throw err;
   } finally {
     if (!wasReady) models.DISPATCH_READY.delete(task);
     if (wasBlocked) models.FLIP_BLOCKED.set(task, blockReason);
-    if (prevEnv === undefined) delete process.env[envName];
-    else process.env[envName] = prevEnv;
+    if (envName !== undefined) {
+      if (prevEnv === undefined) delete process.env[envName];
+      else process.env[envName] = prevEnv;
+    }
   }
 }
 
