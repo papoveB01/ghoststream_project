@@ -1438,8 +1438,9 @@ decomposition exists so that per-file spokes stay tractable.
      values coexisting today, with no reader branching on any of them. A fourth
      (a Claude id) is the same kind of value, not a new kind. The `null`s are
      the no-evidence early return, which has always written one.
-   - Suite **357/357**, from **341** on `main` (+16 — 8 in the cutover file as
-     first written, 8 more added across three review rounds), with **fourteen**
+   - Suite **359/359**, from **341** on `main` (+18 — 8 in the cutover file as
+     first written, 10 more added across five review rounds; round 4 added
+     `test/liveHarnessGates.test.js` ×2), with **fourteen**
      deliberate mutations of `src/` — the dropped key, a colliding telemetry
      label, each
      budget and temperature, the half-done cutover (`extractBattlecard` resolving
@@ -1509,6 +1510,37 @@ decomposition exists so that per-file spokes stay tractable.
      version sends a temperature: `claude-sonnet-5` is in `NO_TEMPERATURE`, so
      the production call sites' `0.3` is dropped before the wire in production
      too.)
+
+   - **The live harness's own gate coverage, closed in round 5.**
+     `test/liveHarnessGates.test.js` proves `smoke.js`'s `resolveFor()` lifts
+     every router gate — but it was built from `DISPATCH_READY ∪ FLIP_BLOCKED`,
+     6 tasks, while a run resolves every entry in `test/live/schemas.js`, **15
+     distinct tasks**. Measured with a hypothetical third gate added to
+     `providerFor()`: on `assessment` it was 0/2 and caught, on `discovery`
+     2/2 and silent — and `personas`, the next cutover, was on the silent side.
+     The list is now built from the schema registry as well. Two sibling
+     defects fell out of re-running the mutants: `contextSeam.js`'s
+     `prepareVia()` read the same gates *outside* its `try` (exit 4, "re-run",
+     with `personas` left in `DISPATCH_READY` — where `smoke.js` under the
+     identical mutation exits 2, "fix the script"), and `smoke.js`'s own
+     `[flip-blocked]` marking called `FLIP_BLOCKED.has()` in `main()`, so the
+     set going away — which the note at `models.js:168` explicitly anticipates
+     — killed the whole run with a raw `TypeError` and lost every result
+     already paid for.
+   - **⚠ Known residual, for a follow-up PR: the exit-code contract has four
+     prose homes and nothing pins them to each other or to `main()`.**
+     `smoke.js`'s header, `contextSeam.js`'s header, `rules/commands.md`'s
+     table, and this ADR — plus an inline restatement inside `smoke.js`'s own
+     `main()`. It has already drifted once (`2` lost "or the harness itself is
+     broken" for a round). A trip-wire was scoped in round 5 and **deliberately
+     not built**: the three homes deliberately list *different* subsets
+     (`commands.md` omits `0`, `contextSeam.js` omits `3`), and `main()` exits
+     via a mix of `return N` and `process.exit(2)`, so any assertion needs a
+     per-home expectation table hard-coded in the test — a **fourth home** of
+     the same knowledge — behind regexes over comment formatting and source
+     indentation. That is precisely the `[TEXTUAL]` guard class this repo has
+     already watched be defeated twice by ordinary edits. Left as a known
+     residual rather than shipped as a guard that reads stronger than it is.
 
    **The finding that stops `battlecard` flipping** (2026-08-14; first recorded
    by the integration pass, **corrected by the confidence pass — see the
