@@ -8408,9 +8408,13 @@
         const r = await fetch(`/api/knowledge/documents/${encodeURIComponent(doc.id)}/keypoints`, { method: 'POST', credentials: 'include' });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        // Before anything that re-renders, for the reason spelled out on the
+        // other call site: a throw out of onChange() or the close would land in
+        // the catch below as "Couldn't generate key points" on a 200 that wrote
+        // the document, and the partial-refresh warning would never be shown.
+        warnPartialKeypointsRefresh(j);
         if (typeof onChange === 'function') onChange();
         closeIntelDocModal();
-        warnPartialKeypointsRefresh(j);
       } catch (err) {
         alert(`Couldn't generate key points: ${err.message}`);
         b.disabled = false; b.textContent = orig;
@@ -8739,23 +8743,58 @@
       </details>`;
   }
 
+  // The rep's names for the metadata keys the refresh reports. The raw keys are
+  // an api-internal vocabulary and no other surface in this SPA shows them to a
+  // sales rep; the fallback keeps an unknown key readable rather than dropping
+  // it, since a dropped field is a failure the rep is never told about.
+  const KB_REFRESH_FIELD_LABELS = {
+    keyPoints: 'Key points',
+    companyAnalysis: 'Company analysis',
+    productAnalysis: 'Product analysis',
+    assessment: 'Competitive scoreboard',
+  };
+
   // A refresh where some fields' model calls failed answers 200 with the
   // document intact — those fields KEPT what was stored rather than being
   // wiped — so neither call site can treat it as an error. But it must not read
   // as a clean refresh either, or the rep re-clicks into the same silence.
   // `refreshFailures` is absent on older API builds, so no warning is the
   // pre-existing behaviour.
+  //
+  // The wording is read off the DOCUMENT'S ACTUAL STATE, not off the failure
+  // list. "Kept their previous version. Nothing was lost" is a claim, and on a
+  // first-ever "generate analysis" against a provider that is down it is a false
+  // one: nothing was kept, because there was no previous version. So each failed
+  // field is checked against the returned metadata and reported as kept or as
+  // still-empty. For the same reason the headline does not say "partly": this
+  // response says which fields FAILED, never how many were attempted, so
+  // "partly" is unknowable from here and is wrong whenever all of them failed.
   function warnPartialKeypointsRefresh(body) {
     const failed = (body && Array.isArray(body.refreshFailures)) ? body.refreshFailures : [];
     if (!failed.length) return;
-    const fields = failed.map((f) => f && f.field).filter(Boolean).join(', ');
-    alert(
-      `Analysis partly refreshed. These parts couldn't be regenerated just now and kept their ` +
-      `previous version: ${fields || 'some fields'}. Nothing was lost — try again in a moment.`
-    );
+    const md = (body && body.document && body.document.metadata) || {};
+    const kept = [];
+    const empty = [];
+    for (const f of failed) {
+      const key = f && f.field;
+      if (!key) continue;
+      const label = KB_REFRESH_FIELD_LABELS[key] || key;
+      const stored = md[key];
+      const has = Array.isArray(stored) ? stored.length > 0 : (stored !== null && stored !== undefined);
+      (has ? kept : empty).push(label);
+    }
+    if (!kept.length && !empty.length) return;
+    const lines = ["This analysis couldn't be fully regenerated just now."];
+    if (kept.length) lines.push(`Kept what you already had: ${kept.join(', ')}.`);
+    if (empty.length) lines.push(`Still empty — nothing had been generated yet: ${empty.join(', ')}.`);
+    lines.push('Nothing you had was lost. Try again in a moment.');
+    alert(lines.join('\n'));
   }
 
   async function kbRegenKeyPoints(id, btn) {
+    // Captured, not hard-coded on the way back: this button reads "generate
+    // analysis" on a doc that has none and "↻ refresh analysis" on one that does.
+    const origLabel = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '… analyzing'; }
     try {
       const r = await fetch(`/api/knowledge/documents/${encodeURIComponent(id)}/keypoints`, {
@@ -8763,11 +8802,26 @@
       });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
-      await loadKbLibrary(); // re-renders the card with the fresh points
+      // WARN BEFORE THE RELOAD, and keep the reload out of this try. With the
+      // reload inside it and the warning after, a throw from loadKbLibrary — a
+      // render bug, a deploy-skew ReferenceError, anything — landed in the catch
+      // below and told the rep "Couldn't generate key points: <unrelated
+      // message>" on a 200 whose document was written, while swallowing the
+      // partial-refresh warning entirely. That is two wrong signals from one
+      // unrelated failure, and the warning is the only signal there is.
       warnPartialKeypointsRefresh(body);
     } catch (err) {
       alert(`Couldn't generate key points: ${err.message}`);
-      if (btn) btn.disabled = false;
+      if (btn) { btn.disabled = false; btn.textContent = origLabel; }
+      return;
+    }
+    // The refresh itself succeeded and is stored. A failure re-rendering the
+    // library is a different failure and says so.
+    try {
+      await loadKbLibrary(); // re-renders the card with the fresh points
+    } catch (err) {
+      alert(`The analysis was updated, but the list couldn't be refreshed: ${err.message}`);
+      if (btn) { btn.disabled = false; btn.textContent = origLabel; }
     }
   }
 
