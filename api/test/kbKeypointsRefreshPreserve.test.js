@@ -615,7 +615,7 @@ function loadWarnHelper(src) {
 // recorded. This is what no string search can do: it sees which VALUE reaches
 // the warning and in what ORDER relative to the reload — the two things the
 // previous guards' green runs were hiding.
-function loadRegenHandler({ response, jsonBody, reloadThrows }) {
+function loadRegenHandler({ response, jsonBody, reloadThrows, label = 'Generate analysis' }) {
   const admin = fs.readFileSync(ADMIN_JS, 'utf8');
   const { start, end } = sliceFn(admin, 'async function kbRegenKeyPoints(');
   const slice = checkSlice(admin.slice(start, end), 'warnPartialKeypointsRefresh(', 4000,
@@ -624,7 +624,10 @@ function loadRegenHandler({ response, jsonBody, reloadThrows }) {
   const log = [];
   const alerts = [];
   const warnArgs = [];
-  const btn = { disabled: false, textContent: '↻ refresh analysis' };
+  // The caller chooses the seeded label, because a fixture that seeds the same
+  // literal admin.js contains cannot see a hard-coded restore. See the non-200
+  // test below, which runs both of the labels this button really carries.
+  const btn = { disabled: false, textContent: label };
   const env = {
     fetch: async () => ({ ...response, json: async () => jsonBody }),
     alert: (m) => { alerts.push(String(m)); },
@@ -785,16 +788,27 @@ test('a reload that throws still shows the warning, and blames the reload, not t
 });
 
 test('a non-200 warns about nothing and restores the button\'s own label', async () => {
-  const h = loadRegenHandler({ response: { ok: false, status: 503 }, jsonBody: { error: 'upstream unavailable' } });
-  await h.run();
+  // BOTH labels, because one of them is not a test. Seeding the fixture with the
+  // literal that also sits in admin.js means `btn.textContent = '↻ Refresh
+  // analysis'` in place of the captured `origLabel` restores the right string by
+  // accident — measured: that mutation left this file green. The button really
+  // carries two labels ("Generate analysis" on a document with no analysis yet,
+  // "↻ Refresh analysis" on one that has), so running both makes any hard-coded
+  // literal wrong for one of them.
+  for (const label of ['Generate analysis', '↻ Refresh analysis']) {
+    const h = loadRegenHandler({
+      response: { ok: false, status: 503 }, jsonBody: { error: 'upstream unavailable' }, label,
+    });
+    await h.run();
 
-  assert.deepStrictEqual(h.log, [],
-    'nothing may warn or re-render on a response that is not a 200');
-  assert.deepStrictEqual(h.alerts, ["Couldn't generate key points: upstream unavailable"]);
-  assert.strictEqual(h.btn.disabled, false, 'the button must be usable again');
-  assert.strictEqual(h.btn.textContent, '↻ refresh analysis',
-    'the label is captured, not assumed — the same button reads "generate analysis" on a ' +
-    'document that has no analysis yet, and a hard-coded restore relabels it');
+    assert.deepStrictEqual(h.log, [],
+      'nothing may warn or re-render on a response that is not a 200');
+    assert.deepStrictEqual(h.alerts, ["Couldn't generate key points: upstream unavailable"]);
+    assert.strictEqual(h.btn.disabled, false, 'the button must be usable again');
+    assert.strictEqual(h.btn.textContent, label,
+      `the label must be captured, not assumed: seeded "${label}" and got back ` +
+      `"${h.btn.textContent}" — a hard-coded restore relabels the button`);
+  }
 });
 
 test('both admin SPA call sites warn on the success path, before anything re-renders', () => {
