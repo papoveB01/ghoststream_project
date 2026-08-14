@@ -1715,13 +1715,14 @@ decomposition exists so that per-file spokes stay tractable.
 
    **The failure path used to delete stored intelligence rather than erroring** —
    observed end to end, not inferred, and **fixed on 2026-08-14 in
-   `fix/kb-keypoints-refresh-data-loss`, which is a separate concern from this
-   migration and shipped as its own PR.** Driving the real
+   `fix/kb-keypoints-refresh-data-loss` (PR #57), which is a separate concern
+   from this migration and is therefore a separate PR rather than part of a
+   cutover.** Driving the real
    `knowledge/service.js` → `keypoints.js` → `aiCall` → `anthropic` path against
    the live API on `91bfba3e…` (only `db.js` and `redis.js` faked, seeded from
    the real staging row, nothing written back): the route answered
    **`{ ok: true }`** while the stored **4,297-char** `companyAnalysis` was
-   **deleted**. The mechanism, as it then was:
+   **deleted**.
    *(This paragraph said 4,209 and the table above says 4,297. **Both counts are
    real**, and the earlier note here — "for the same stored string" — had the
    explanation wrong, which is what made the discrepancy read as drift.
@@ -1732,13 +1733,15 @@ decomposition exists so that per-file spokes stay tractable.
    figure both places use is **4,297**, the DB's own
    `length(metadata->>'companyAnalysis')`, which is what the table above quotes.)*
 
-   `stop_reason: 'max_tokens'` with `allowTruncation` unset (these call sites
-   pass nothing) → `anthropic.generate` throws → `extractCompanyAnalysis`
-   catches and returns `null` → `knowledge/service.js`'s regenerate path is
+   **The mechanism, as it then was — none of the arrows below is current, and the
+   last two no longer exist:** `stop_reason: 'max_tokens'` with `allowTruncation`
+   unset (these call sites passed nothing) → `anthropic.generate` threw →
+   `extractCompanyAnalysis` caught it and returned `null` →
+   `knowledge/service.js`'s regenerate path **was**
    `if (analysis) md.companyAnalysis = analysis; else delete md.companyAnalysis`
-   → **the good stored analysis is deleted and the route still answers
-   `{ ok: true }`.** On ingest it is simply never written; `portfolio.js`'s
-   company-profile draft 502s instead.
+   → **the good stored analysis was deleted and the route still answered
+   `{ ok: true }`.** On ingest it was simply never written; `portfolio.js`'s
+   company-profile draft 502'd instead — that half is unchanged, and correct.
 
    **What the fix changed, and what it deliberately did not.** The deletion was
    never the truncation — it was the last arrow: `else delete` reading a
@@ -1758,8 +1761,36 @@ decomposition exists so that per-file spokes stay tractable.
    the rep can do nothing with it, and the response is rendered in a browser. It
    goes to the api log instead. **The scope/category-driven clears were kept
    untouched** — they are how a re-tagged doc sheds a stale key and are not model
-   results. Nothing about what either provider receives moved: no prompt, schema,
-   `maxTokens` or temperature change, so §9 item 5's Gemini-parity property holds.
+   results.
+
+   **The same defect class, arriving as a success.** Review of the fix found the
+   overwrite still open in three places where the call returns 200 with nothing
+   usable in it — worse than the throw case, because `refreshFailures` is `[]`
+   and nothing records it. All three are closed **in the strict forms only**, so
+   ingest still swallows, which is correct where nothing is stored yet:
+   `extractKeyPointsStrict` throws when the answer carries no `points` array
+   (`required` in the schema, and it was coerced to `[]` — the exact value that
+   means "this document genuinely has none"); `extractCompetitiveAssessmentStrict`
+   throws when `normalize()` produced a scoreboard with no axis scored *and* no
+   summary, which it cannot signal itself because it fills all 8 axes with
+   unknown/0 placeholders for UI shape stability and so returns a
+   complete-*looking*, confident, all-zero card — and `extractBattlecard`
+   averages these per-doc, so one blanked doc degrades the battlecard too.
+
+   **One prompt DID move, deliberately.** `regenerateKeyPoints` never read
+   `metadata.appliesToProductIds`, which ingest resolves to product names and
+   passes as `appliesProductNames` to restrict `ourScore` to the products a
+   battlecard is filed against. So a rep clicking *↻ refresh analysis* on a
+   product-scoped card had its axes silently replaced with portfolio-wide ones,
+   with the metadata — and the label built on it — still saying product-scoped.
+   Refresh now resolves it with the same query ingest uses. **Gemini parity is
+   unaffected**: ingest is untouched, and the refresh path's prompt changes only
+   for product-scoped battlecards, and changes to what that same document already
+   receives on ingest. Nothing else about what either provider receives moved: no
+   schema, `maxTokens` or temperature change anywhere.
+
+   **Deferred, and recorded rather than fixed:** the concurrent whole-column
+   read-modify-write these writers share — §10.
 
    **This entry stays.** What is left after the fix is still a block: a flip makes
    `kb.companyAnalysis` refreshes on a body this size fail **5 times out of 5**,
@@ -1821,6 +1852,35 @@ Not in scope for any PR above: embeddings (§4.2), `capture/`, `mcp/`, any
 `plans.js` cap or price change (§10), any Stripe price ID work.
 
 ## 10. Open questions / follow-ups
+
+- **`kb_documents.metadata` is written as a whole column by three writers that
+  each snapshot it first** (raised 2026-08-14, PR #57 review; **deliberately not
+  fixed there** — that PR is a data-loss fix, and this is a concurrency
+  redesign). `knowledge/service.js#regenerateKeyPoints` reads `metadata`, makes
+  up to **four model calls** — tens of seconds — and writes the whole object
+  back; `#confirmRelevance` does the same read-modify-write; `portfolio.js:808`
+  does an atomic `metadata - 'competitorProductId'` in SQL. Last writer wins on
+  the *whole column*, so a concurrent write to an unrelated key is reverted.
+  Two concrete one-rep losses, both silent:
+  - a refresh started before a `confirmRelevance` finishes reinstates
+    `relevanceVerified: false` — the doc drops back into quarantine and out of
+    the main-intel gate and battlecard synthesis, with nothing said;
+  - a refresh that started before an offering was deleted resurrects the
+    `competitorProductId` that `portfolio.js`'s jsonb-minus just removed, and
+    the doc becomes invisible to the gate that filters on it.
+  A double-click on refresh can also let the older run's analysis land on top of
+  the newer one's. The real fix is `SELECT … FOR UPDATE` inside a transaction
+  around read-and-write, or a targeted per-key jsonb merge (`metadata ||
+  jsonb_build_object(...)` plus explicit `-` for the clears) so each writer only
+  touches its own keys. The three call sites carry a comment pointing here.
+- **Two more from the same PR #57 review, neither in scope there:**
+  `knowledge/research.js:579` — `effectiveDossier` swallows a KB read failure and
+  returns the bare dossier, so a **genuinely successful** synthesis on thinner
+  input overwrites good stored research: degradation-by-swallow, the same
+  200-and-data-gone outcome as the defect that PR fixed, one layer up. And
+  `knowledge/index.js`'s `POST /documents/:id/keypoints` is **unmetered and
+  unrestricted** while triggering up to four model calls per click, unlike every
+  other rep-facing generate path.
 
 - **Measure the engagement path's real prompt mix, per leg** (raised
   2026-08-05 — the highest-value measurement left, ahead of the output question

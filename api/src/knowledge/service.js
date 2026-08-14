@@ -677,6 +677,14 @@ async function regenerateKeyPoints(tenantId, documentId) {
     [documentId]
   );
   const text = (r.rows[0] && r.rows[0].body) || '';
+  // KNOWN, DEFERRED: this snapshots the WHOLE metadata column, then makes up to
+  // four model calls — tens of seconds — before writing the whole thing back, so
+  // any concurrent write to an unrelated key is reverted. confirmRelevance below
+  // does the same read-modify-write and portfolio.js:808 does an atomic jsonb
+  // minus, so a refresh in flight can silently re-quarantine a doc a rep just
+  // confirmed, or resurrect a competitorProductId that was just deleted. Fixing
+  // it is `SELECT … FOR UPDATE` or a per-key jsonb merge — a concurrency
+  // redesign across three writers, not a data-loss fix. ADR-0006 §10.
   const md = { ...(doc.metadata || {}) };
 
   // A silent preserve would be its own bug: the rep would see a 200, a document
@@ -808,6 +816,9 @@ async function regenerateKeyPoints(tenantId, documentId) {
 async function confirmRelevance(tenantId, documentId) {
   const doc = await getDocument(tenantId, documentId);
   if (!doc) { const err = new Error('document not found'); err.status = 404; throw err; }
+  // Same whole-column read-modify-write hazard as regenerateKeyPoints — this one
+  // is short, but it is the loser when a refresh started before it lands after
+  // it, which puts the doc straight back into quarantine. ADR-0006 §10.
   const md = { ...(doc.metadata || {}) };
   md.relevanceVerified = true;
   delete md.relevanceReason;
