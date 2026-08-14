@@ -20,6 +20,7 @@
 const path = require('node:path');
 const { test } = require('node:test');
 const assert = require('node:assert');
+const { execFileSync } = require('node:child_process');
 
 const SRC = path.join(__dirname, '..', 'src');
 const models = require(path.join(SRC, 'models.js'));
@@ -313,15 +314,41 @@ test('blocking is per key — an unblocked sibling still flips', () => {
   });
 });
 
-test('the flip gate does not disturb the default path', () => {
+test('the flip gate is SILENT on the default path', () => {
   // A gate that changes behaviour for anyone who has NOT asked to flip is a
-  // regression on 100% of traffic. Blocked keys must resolve exactly as before.
-  withEnv({ AI_PROVIDER: undefined }, () => {
+  // regression on 100% of traffic — and the resolved provider cannot detect it,
+  // which is the trap. Dropping the `p !== DEFAULT_PROVIDER` guard makes the
+  // branch fire on every ordinary gemini resolve and STILL RETURN gemini,
+  // because that is what fallbackToDefault returns. The only observable is the
+  // log line.
+  //
+  // IN A FRESH PROCESS, and that part is not incidental. warnOnce dedupes on
+  // task+provider for the life of the process, and the very first test in this
+  // file resolves every task on the gemini path — so in-process the mutant's
+  // extra warning is emitted long before this test runs and asserting on
+  // console.warn here sees silence either way. Measured: the in-process version
+  // of this test passed against the mutation it was written for. A guard whose
+  // subject is "warns once" cannot be tested by a second observer in the same
+  // process.
+  const child = execFileSync(process.execPath, ['-e', `
+    const models = require(${JSON.stringify(path.join(SRC, 'models.js'))});
+    const out = [];
+    console.warn = (m) => out.push(String(m));
     for (const task of models.FLIP_BLOCKED.keys()) {
-      assert.strictEqual(models.resolve(task).provider, 'gemini', task);
-      assert.match(models.resolve(task).model, /^gemini-/, task);
+      const r = models.resolve(task);
+      if (r.provider !== 'gemini') out.push('RESOLVED_WRONG:' + task + ':' + r.provider);
+      if (!/^gemini-/.test(r.model)) out.push('MODEL_WRONG:' + task + ':' + r.model);
     }
+    process.stdout.write(JSON.stringify(out));
+  `], {
+    encoding: 'utf8',
+    // Scrubbed, so an ambient AI_PROVIDER_* in a developer's shell cannot turn
+    // this into a test of the flip path by accident.
+    env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AI_PROVIDER'))),
   });
+  assert.deepStrictEqual(JSON.parse(child), [],
+    'nobody asked to flip anything, so the gate must resolve gemini and say NOTHING — ' +
+    'a blocked key is still the default path for every tenant');
 });
 
 test('the fail-closed fallback escalates when the fallback provider is unconfigured too', () => {
