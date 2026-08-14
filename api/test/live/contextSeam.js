@@ -27,7 +27,15 @@
 // Exit codes match test/live/smoke.js's contract:
 //   0  every model met its expectation
 //   1  an expectation was not met (a real regression)
+//   2  THIS SCRIPT is broken — a router gate prepareVia() fails to lift, or no
+//      ANTHROPIC_API_KEY. Nothing was sent; re-running reproduces it forever
 //   4  errors only — nothing was judged, re-run
+//
+// 2 and 4 are separated for the reason smoke.js:478-482 separates them: a
+// harness bug counted as an error prints "1 model(s) errored; the rest met
+// expectations", which reads as a transient, and re-running a harness bug is
+// not a strategy. A failed expectation still outranks it — a bug on one model
+// does not un-observe a regression seen on the other.
 //
 // Run from the repo root:
 //   docker compose run --rm --no-deps -v "$PWD/api":/app -w /app \
@@ -117,7 +125,7 @@ function prepareVia(task, model) {
     const resolved = models.resolve(task);
     if (resolved.provider !== 'anthropic' || resolved.model !== model) {
       const err = new Error(
-        `HARNESS BUG — the router refused the dispatch: resolve("${task}") is ` +
+        `the router refused the dispatch: resolve("${task}") is ` +
         `${resolved.provider}/${resolved.model}, asked for anthropic/${model}. NOTHING WAS SENT. ` +
         'prepareVia() lifts DISPATCH_READY and FLIP_BLOCKED, so a gate added to models.js since ' +
         'then has to be lifted there too — or ANTHROPIC_API_KEY is not set in this process ' +
@@ -146,7 +154,7 @@ async function probe(model) {
   // of prepare() returning a record that disagrees with its own resolve().
   if (record.provider !== 'anthropic' || record.model !== model) {
     const err = new Error(
-      `HARNESS BUG — prepare() returned ${record.provider}/${record.model}, expected anthropic/${model}, ` +
+      `prepare() returned ${record.provider}/${record.model}, expected anthropic/${model}, ` +
       'even though resolve() agreed with us a moment earlier. That is aiContext.prepare() disagreeing ' +
       'with the router, not a gate this file failed to lift.'
     );
@@ -221,18 +229,25 @@ async function probe(model) {
         && readBack === exp.mustCache;
       results.push({ ...exp, met, answered, engaged, wrote, readBack });
     } catch (err) {
-      console.log('  ERROR:', err.message);
-      results.push({ ...exp, error: err.message });
+      // `harnessBug` rides along so the summary can separate "this script is
+      // broken" from "the provider or the environment misbehaved". They need
+      // different readers and different exit codes.
+      console.log(`  ${err.harnessBug ? 'HARNESS BUG' : 'ERROR'}:`, err.message);
+      results.push({ ...exp, error: err.message, harnessBug: Boolean(err.harnessBug) });
     }
   }
 
   console.log('\n── verdict ──');
   let failed = 0;
   let errored = 0;
+  const bugs = results.filter((r) => r.harnessBug);
   for (const r of results) {
     if (r.error) {
-      errored += 1;
-      console.log(`  ✗ ${r.model}: ERROR — ${r.error}`);
+      // A harness bug is reported in its own block below and NOT also as an
+      // error, for the reason smoke.js:478-482 gives: listed twice, it prints
+      // as "1 model(s) errored; the rest met expectations" and gets re-run.
+      if (!r.harnessBug) errored += 1;
+      console.log(`  ✗ ${r.model}: ${r.harnessBug ? 'HARNESS BUG' : 'ERROR'} — ${r.error}`);
       continue;
     }
     if (r.met) {
@@ -252,7 +267,20 @@ async function probe(model) {
 
   console.log(`\n  (router state after the run: personas resolves to ${JSON.stringify(models.resolve('personas'))})`);
 
+  if (bugs.length) {
+    console.log('\nHARNESS BUG — this script, not the seam and not the provider. Nothing was sent:');
+    for (const r of bugs) console.log(`  ${r.model}: ${r.error}`);
+    console.log(
+      '\nThese models were never judged and this run says nothing about them. Fix\n' +
+      'test/live/contextSeam.js and re-run — re-running as-is reproduces it forever.'
+    );
+  }
+
+  // A failed expectation still outranks a harness bug: the bug means those
+  // models were never judged, it does not un-observe a regression that WAS
+  // observed on another one, and 1 is the code that pages someone.
   if (failed > 0) { console.log(`\n${failed} expectation(s) not met.`); process.exit(1); }
+  if (bugs.length) { process.exit(2); }
   if (errored === results.length) { console.log('\nErrors only — nothing judged, re-run.'); process.exit(4); }
   if (errored > 0) { console.log(`\n${errored} model(s) errored; the rest met expectations.`); process.exit(4); }
   process.exit(0);
