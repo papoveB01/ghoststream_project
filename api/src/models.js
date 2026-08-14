@@ -278,8 +278,10 @@ const FLIP_BLOCKED = new Map([
     'the 2200-token budgets at kb.companyAnalysis / kb.productAnalysis are Gemini-sized and ' +
     'truncate on claude-sonnet-5 (measured 5 of 5 stop_reason max_tokens on staging document ' +
     '91bfba3e, a 10,685-char body), so a flip makes the refresh of an analysis that size fail ' +
-    'every time and silently never update. It no longer DESTROYS the stored analysis — that ' +
-    "half was service.js's `else delete` and is fixed. See ADR-0006 §9 item 5."],
+    'every time: the rep presses refresh, the stored analysis survives untouched and never ' +
+    'updates, and the only correction is the warning after the fact. It no longer DESTROYS ' +
+    'the stored analysis, and it is no longer SILENT — that half was service.js\'s ' +
+    '`else delete`, and is fixed. See ADR-0006 §9 item 5.'],
 ]);
 
 // task → { tier, env(legacy per-task override), anthropicEnv, anthropicTier }
