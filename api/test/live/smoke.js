@@ -207,6 +207,26 @@ function resolveFor(provider, task) {
   }
 }
 
+// Same hazard as the reads inside resolveFor(), one scope out and with a worse
+// blast radius. models.js:168 anticipates a key LEAVING FLIP_BLOCKED, and the
+// set going away with the migration is the natural end state — at which point
+// `models.FLIP_BLOCKED.has(...)` is a TypeError. resolveFor() reads it inside a
+// try for exactly that reason; the two [flip-blocked] read sites in main() sat
+// outside one, where a throw escapes to main().catch and takes the WHOLE summary
+// with it — every result already paid for on the run, and the HARNESS BUG block
+// that would have said what happened. Measured with FLIP_BLOCKED removed from
+// models.js's exports: a plain `--dry-run` run died on the FIRST row with a raw
+// `TypeError: Cannot read properties of undefined (reading 'has')` and exit 2,
+// no findings, no summary. It survived a review round because the call site's
+// `&&` short-circuits unless the provider is anthropic.
+//
+// Absent set → nothing is blocked → no mark and no footnote, which is the
+// truthful reading: the mark exists to say the ROUTER refuses this dispatch, and
+// a router with no such set refuses nothing.
+function isFlipBlocked(task) {
+  try { return models.FLIP_BLOCKED.has(task); } catch { return false; }
+}
+
 // ── the calls ───────────────────────────────────────────────────────────────
 
 // Deliberately content-free. The check is "does this schema survive the
@@ -512,7 +532,7 @@ async function main() {
       // group-2 cluster 4 of the 5 rows are keypoints/battlecard, and "5/5
       // accepted" over them is the sentence a flip PR is most likely to quote as
       // readiness. The mark makes that impossible to do by accident.
-      const flipBlocked = provider === 'anthropic' && models.FLIP_BLOCKED.has(entry.task);
+      const flipBlocked = provider === 'anthropic' && isFlipBlocked(entry.task);
       console.log(
         `  ${tag} ${entry.site.padEnd(34)} ${String(r.model).padEnd(22)}` +
         `${flipBlocked ? ' [flip-blocked]' : ''} ${r.detail}`
@@ -531,7 +551,7 @@ async function main() {
   // — which is exactly the misreading that let the FLIP_BLOCKED regression sit.
   const errored = by('ERROR').filter((r) => !r.harnessBug);
   const flipBlockedRows = results.filter(
-    (r) => r.provider === 'anthropic' && models.FLIP_BLOCKED.has(r.entry.task));
+    (r) => r.provider === 'anthropic' && isFlipBlocked(r.entry.task));
 
   console.log(
     `\n${by('OK').length}/${results.length} accepted` +
