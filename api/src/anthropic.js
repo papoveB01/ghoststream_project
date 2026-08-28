@@ -1,6 +1,6 @@
 // Anthropic client wrapper — the Claude half of the ADR-0006 provider migration.
 //
-// THIS MODULE CAN NOW MOVE REAL TRAFFIC. Six tasks are in models.DISPATCH_READY
+// THIS MODULE CAN NOW MOVE REAL TRAFFIC. Seven tasks are in models.DISPATCH_READY
 // (ADR-0006 §9 item 5) and every one of their call sites dispatches through
 // aiCall.js, so AI_PROVIDER_RELEVANCE=anthropic routes BOTH relevance call sites
 // into this file — checkDocRelevance, on every competitor document, and
@@ -8,16 +8,22 @@
 // at all. That is an environment change, not a code change.
 //
 //   group 1  relevance, preview, companyBrief
-//   group 2  keypoints, assessment, battlecard — NINE seam call sites in total
-//            now (four in group 1, five in group 2; count the
-//            generateStructured calls, not the functions holding them —
-//            knowledge/keypoints.js is one key over three of them), and the
-//            group-2 three are the first to reach a NON-Haiku tier:
-//            `keypoints` and `battlecard` carry anthropicTier 'flash', so they
-//            land on claude-sonnet-5, which is in NO_TEMPERATURE below. Their
-//            call sites still pass temperature (0.3), so a flip drops it here
-//            with the warning rather than 400ing — which is the whole reason
-//            that list is per-model and lives in this file.
+//   group 2  keypoints, assessment, battlecard
+//   group 3  research (the `ocr` half of that group is deferred to its own
+//            decision PR — see models.js)
+//
+//            TEN seam call sites in total now — four in group 1, five in group
+//            2, one in group 3. Count the generateStructured calls, not the
+//            functions holding them: knowledge/keypoints.js is one key over
+//            three of them, and knowledge/research.js is one key over one.
+//
+//            FOUR OF THE SEVEN LAND ON claude-sonnet-5, which is in
+//            NO_TEMPERATURE below — the group-2 pair `keypoints` and
+//            `battlecard` by way of an anthropicTier override, and group 3's
+//            `research` because tier `flash` already resolves there on both
+//            providers. All of them still pass temperature (0.3), so a flip
+//            drops it here with the warning rather than 400ing — which is the
+//            whole reason that list is per-model and lives in this file.
 //
 // TWO env gates, not one — the shorthand "one env var away" is true only while
 // the key happens to be set. providerFor() falls back to Gemini and warns unless

@@ -235,7 +235,7 @@ test('the shipped set survives the only test that rewrites the whole set', () =>
   // contents and deliberately does not repeat this list: one copy, so the
   // reminder cannot drift the way its subject did.
   assert.deepStrictEqual([...models.DISPATCH_READY].sort(),
-    ['assessment', 'battlecard', 'companyBrief', 'keypoints', 'preview', 'relevance'],
+    ['assessment', 'battlecard', 'companyBrief', 'keypoints', 'preview', 'relevance', 'research'],
     'changing this set also invalidates prose that asserts what is in it: ' +
     'anthropic.js (header), aiCall.js (header), gemini.js (assertGeminiModel), ' +
     'aiContext.js ("It does not flip any task"), test/live/contextSeam.js ' +

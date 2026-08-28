@@ -11,10 +11,11 @@
 // retryDelay parser) was invisible precisely because it lived in one line of
 // one module nobody diffed against the other five.
 //
-// THIS MODULE CAN NOW MOVE REAL TRAFFIC. Six tasks are in
+// THIS MODULE CAN NOW MOVE REAL TRAFFIC. Seven tasks are in
 // models.DISPATCH_READY (ADR-0006 §9 item 5) and their call sites dispatch
 // through here — relevance, preview and companyBrief in group 1, keypoints,
-// assessment and battlecard in group 2 — so AI_PROVIDER_RELEVANCE=anthropic
+// assessment and battlecard in group 2, research in group 3 — so
+// AI_PROVIDER_RELEVANCE=anthropic
 // routes BOTH relevance call sites into the anthropic branch below:
 // checkDocRelevance, reached from knowledge/service.js on every competitor
 // document, and checkOfferingPlausibility, a product-name plausibility check
@@ -27,6 +28,15 @@
 // POST /portfolio/competitors/:id/battlecard/regenerate. It is deliberately not
 // wrapped in aiRetry — the seam does not retry, and its caller decided not to —
 // so a failure here becomes a 502 at once rather than after two backoffs.
+//
+// Group 3 adds ONE more, and it is the first where the caller's retry decision
+// has to answer to TWO routes at once: knowledge/research.js's analyze() is
+// reached from a fire-and-forget 202 AND from a synchronous rep-facing
+// reanalyze behind nginx's 180s window, under one aiRetry label. The decision
+// and the live latency numbers it rests on are at that call site. Nothing about
+// it is visible here — this seam still makes exactly one request per
+// invocation — which is the point: retry belongs to the caller, and what the
+// caller has to fit is its tightest route.
 //
 // TWO env gates, not one: the shorthand "one env var away" is true only while
 // ANTHROPIC_API_KEY happens to be set, because providerFor() falls back to

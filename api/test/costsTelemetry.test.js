@@ -252,9 +252,10 @@ test('[TEXTUAL] the number of seam call sites is pinned, so prose has something 
   for (const file of walkJs(SRC)) {
     sites += seamSiteLabels(stripComments(fs.readFileSync(file, 'utf8'))).length;
   }
-  assert.strictEqual(sites, 9,
-    `${sites} aiCall.generateStructured call sites in src/, pinned at 9 (group 1: relevance x2, ` +
-    'preview, companyBrief; group 2: keypoints x3, assessment, battlecard). If you added or ' +
+  assert.strictEqual(sites, 10,
+    `${sites} aiCall.generateStructured call sites in src/, pinned at 10 (group 1: relevance x2, ` +
+    'preview, companyBrief; group 2: keypoints x3, assessment, battlecard; group 3: research). ' +
+    'If you added or ' +
     "moved one, update this number AND the prose that quotes it: anthropic.js's header, " +
     "models.js's DISPATCH_READY / group lists, and ADR-0006 §9 item 5.");
 

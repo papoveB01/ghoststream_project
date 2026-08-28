@@ -101,6 +101,23 @@ const DEFAULT_PROVIDER = 'gemini';
 //                 regenerate, so retry would turn a fast 502 into three attempts
 //                 with backoff while they wait.
 //
+// GROUP 3 (ADR-0006 §9 item 5), the `research` half only:
+//   research      knowledge/research.js — analyze(), the ONE model call in that
+//                 file. KEEPS its aiRetry('research') wrapper on the default
+//                 policy, re-argued rather than inherited: analyze() serves BOTH
+//                 a fire-and-forget 202 and a SYNCHRONOUS rep-facing reanalyze
+//                 behind nginx's 180s proxy_read_timeout, and one label covers
+//                 both. Measured live before keeping it — the reasoning and the
+//                 latencies are at the call site.
+//
+// THE `ocr` HALF OF GROUP 3 IS DEFERRED to its own decision PR, and the split is
+// deliberate rather than an omission. knowledge/ocr.js has no task key in TASKS
+// below at all, pins its Gemini tier by hand, is FREE TEXT rather than
+// structured output (so neither aiCall.generateStructured nor the live schema
+// harness can cover it), and reaches Gemini through the Files API, which
+// anthropic.js has no equivalent for. The likely outcome is the one §4.2 records
+// for embeddings — it stays on Gemini — and that is a decision, not a cutover.
+//
 // THE THREE GROUP-2 KEYS HAD TO LAND TOGETHER, and `battlecard` is the reason.
 // assessment.js holds two call sites resolving two different keys since PR #53.
 // Adding `assessment` alone leaves extractBattlecard on the Gemini SDK — and
@@ -145,6 +162,7 @@ const DEFAULT_PROVIDER = 'gemini';
 const DISPATCH_READY = new Set([
   'relevance', 'preview', 'companyBrief',      // group 1
   'keypoints', 'assessment', 'battlecard',     // group 2
+  'research',                                  // group 3 (the `ocr` half is deferred)
 ]);
 
 // Tasks whose call site CAN dispatch but which must not be flipped yet, because
@@ -372,6 +390,13 @@ const TASKS = {
   preview:      { tier: 'lite',    env: 'GEMINI_PREVIEW_MODEL',      anthropicEnv: 'ANTHROPIC_PREVIEW_MODEL' },
   callEntities: { tier: 'lite',    env: 'GEMINI_ENTITY_MODEL',       anthropicEnv: 'ANTHROPIC_ENTITY_MODEL' },
   // FLASH — reasoning / synthesis
+  // MIGRATED in group 3 and deliberately NOT in FLIP_BLOCKED — the one output
+  // budget in that group was measured at the call site rather than assumed
+  // (n=141 live claude-sonnet-5 calls through knowledge/research.js's analyze(),
+  // 0 truncations, peak 2,406 of 2,600 tokens). No anthropicTier override: tier
+  // `flash` already resolves to claude-sonnet-5, which is the tier §4.1 assigns
+  // this task, so the Claude side needed no correction and the Gemini side did
+  // not move.
   research:     { tier: 'flash',   env: 'GEMINI_RESEARCH_MODEL',     anthropicEnv: 'ANTHROPIC_RESEARCH_MODEL' },
   discovery:    { tier: 'flash',   env: 'GEMINI_DISCOVERY_MODEL',    anthropicEnv: 'ANTHROPIC_DISCOVERY_MODEL' },
   marketWatch:  { tier: 'flash',   env: 'GEMINI_MARKETWATCH_MODEL',  anthropicEnv: 'ANTHROPIC_MARKETWATCH_MODEL' },

@@ -433,12 +433,12 @@ test('generateStructured() with no argument throws a stamped seam error', async 
 });
 
 test('membership in DISPATCH_READY is eligibility, not a flip', () => {
-  // Groups 1 and 2 are migrated and eligible, but with no AI_PROVIDER_* set every
+  // Groups 1, 2 and 3 are migrated and eligible, but with no AI_PROVIDER_* set every
   // task — ready or not — still resolves to Gemini. Eligibility and activation are
   // separate on purpose: merging the code must not move traffic, so the flip is
   // an env change an operator makes deliberately and can reverse.
   assert.deepStrictEqual([...models.DISPATCH_READY].sort(),
-    ['assessment', 'battlecard', 'companyBrief', 'keypoints', 'preview', 'relevance'],
+    ['assessment', 'battlecard', 'companyBrief', 'keypoints', 'preview', 'relevance', 'research'],
     'a task joins this set in the same PR that migrates its call site');
   for (const task of Object.keys(models.TASKS)) {
     assert.strictEqual(models.resolve(task).provider, 'gemini', task);
