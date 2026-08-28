@@ -475,7 +475,11 @@ forward-compatible with Founders-only data.
 - `api/src/analysis.js` — drop the `FOUNDERS_TENANT_ID` default
   argument in `runPipeline`; make `tenantId` required.
 - `api/src/index.js` `/first-loop` — keeps `FOUNDERS_TENANT_ID`
-  explicitly (it's a demo endpoint hard-wired to Founders).
+  explicitly (it's a demo endpoint hard-wired to Founders); since
+  PR #55 (2026-08-08) it is also `auth.requireSuperadmin`, because
+  a hard-wired foreign tenant id is only safe while the route is
+  unreachable by that foreign tenant — §4.2 layer 1 has to do that,
+  not RLS.
 - One-shot data backfill: any meeting row missing
   `meta.tenantId` gets it derived from the linked mission (already
   carries `tenant_id`); the few that have no mission default to
