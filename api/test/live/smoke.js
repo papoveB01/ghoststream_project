@@ -137,7 +137,8 @@ function usage() {
 // in test/cutoverGroup2.test.js's withAnthropic().
 //
 // THE WHOLE BODY IS INSIDE THE try, including the reads of the two gate
-// exports. models.js:168 explicitly anticipates a key LEAVING FLIP_BLOCKED, and
+// exports. models.js's "A KEY LEAVES THIS SET" note explicitly anticipates a key
+// LEAVING FLIP_BLOCKED, and
 // the set itself going away with the migration is the natural end state — at
 // which point `models.FLIP_BLOCKED.has(...)` is a TypeError. Read outside the
 // try, that throw carries no `harnessBug` tag, reports as an ordinary setup
@@ -208,7 +209,8 @@ function resolveFor(provider, task) {
 }
 
 // Same hazard as the reads inside resolveFor(), one scope out and with a worse
-// blast radius. models.js:168 anticipates a key LEAVING FLIP_BLOCKED, and the
+// blast radius. models.js's "A KEY LEAVES THIS SET" note anticipates a key
+// LEAVING FLIP_BLOCKED, and the
 // set going away with the migration is the natural end state — at which point
 // `models.FLIP_BLOCKED.has(...)` is a TypeError. resolveFor() reads it inside a
 // try for exactly that reason; the two [flip-blocked] read sites in main() sat

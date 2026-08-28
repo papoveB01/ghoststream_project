@@ -33,10 +33,16 @@
 // has to answer to TWO routes at once: knowledge/research.js's analyze() is
 // reached from a fire-and-forget 202 AND from a synchronous rep-facing
 // reanalyze behind nginx's 180s window, under one aiRetry label. The decision
-// and the live latency numbers it rests on are at that call site. Nothing about
-// it is visible here — this seam still makes exactly one request per
-// invocation — which is the point: retry belongs to the caller, and what the
-// caller has to fit is its tightest route.
+// and the live latency numbers it rests on are at that call site.
+//
+// THIS SEAM ADDS NO RETRY LOOP OF ITS OWN — which is NOT the same as "one
+// request per invocation", the sentence that first stood here and was wrong.
+// One `anthropic.generate()` is up to `1 + ANTHROPIC_MAX_RETRIES` upstream POSTs
+// (3 at the defaults), because the SDK client retries inside that single call,
+// and one `generateContent()` is one. So a caller sizing a wall-clock budget
+// must multiply its own `tries` by the CLIENT's attempts, not by one. Retry
+// belongs to the caller; the client's own retries live inside the single call
+// the caller makes.
 //
 // TWO env gates, not one: the shorthand "one env var away" is true only while
 // ANTHROPIC_API_KEY happens to be set, because providerFor() falls back to
@@ -58,10 +64,17 @@
 //                 / Fable 5 return 400. The seam dropping it unconditionally was
 //                 therefore a real determinism loss on exactly the tier being
 //                 migrated, on a judge whose confidence is thresholded at 0.4.
-//                 Group 2's other two keys (`keypoints`, `battlecard`) resolve
-//                 to Sonnet 5, where it IS dropped — with anthropic.js's
-//                 once-per-model+site warning, not silently, which is the
-//                 difference that matters.
+//                 THREE migrated keys resolve to Sonnet 5, where it IS
+//                 dropped — group 2's `keypoints` and `battlecard`, and group
+//                 3's `research`. With anthropic.js's once-per-model+site
+//                 warning, not silently, which is the difference that matters.
+//                 `research` is the one to read this for: the other two are in
+//                 models.FLIP_BLOCKED, so it is the ONLY key an operator can
+//                 actually flip today into a temperature drop. This list said
+//                 `{keypoints, battlecard}` after group 3 landed, which sent
+//                 exactly that operator looking for their key and not finding
+//                 it. The count is now computed from the router in
+//                 costsTelemetry.test.js.
 //   effort        Claude only. Validated here against anthropic.js's own set so
 //                 a bad value fails at the seam on either provider rather than
 //                 passing silently on Gemini and 400ing after the flip — see
@@ -129,19 +142,24 @@ function stamp(err, provider) {
 }
 
 // JSON.parse of a model answer, attributed to the model that produced it.
-// V8's SyntaxError message QUOTES THE FIRST TEN CHARACTERS of the input, so an
-// unstamped Claude answer opening "overloaded…" — measured, not hypothetical —
-// arrives at classify() as `Unexpected token 'o', "overloaded"...`, matches
-// Gemini's transient regex and is retried three times.
+// V8's SyntaxError message QUOTES THE INPUT — the whole of it below a length
+// threshold, and only its first ten characters above that — so an unstamped
+// Claude answer opening "overloaded…" — measured, not hypothetical — arrives at
+// classify() as `Unexpected token 'o', "overloaded"...`, matches Gemini's
+// transient regex and is retried three times.
 //
 // GEMINI'S CLASSIFICATION IS UNCHANGED BY THE STAMP (its branch scrapes either
 // way) BUT ITS COST IS NOT, and the earlier version of this comment claimed
 // otherwise. relevance.js now runs the parse INSIDE withRetry, so a Gemini
-// answer whose first ten characters match GEMINI_TRANSIENT_RE — V8 quotes
-// exactly ten, so `overloaded…` matches and `The model is overloaded.` does not
-// — costs three metered generations instead of one. That is the price of
-// keeping a regenerate able to fix malformed JSON on the provider that serves
-// every task today; it is a trade, not a no-op.
+// answer whose quoted excerpt matches GEMINI_TRANSIENT_RE costs three metered
+// generations instead of one. THE EXPOSURE IS NARROWER THAN IT LOOKS, in both
+// directions, and an earlier wording ("V8 quotes exactly ten") got the rule
+// wrong while getting the conclusion right: on a LONG answer only the first ten
+// characters are quoted, and of GEMINI_TRANSIENT_RE's alternatives only `503`
+// and `overloaded` fit in ten — but a SHORT answer is quoted whole, so more of
+// the regex can match there. Either way it is the price of keeping a regenerate
+// able to fix malformed JSON on the provider that serves every task today; it
+// is a trade, not a no-op.
 //
 // A VALID-JSON NON-OBJECT IS REJECTED HERE, not passed through. `[]`, `5`,
 // `"hi"` and `true` all parse, and every schema in this repo describes an
@@ -272,8 +290,9 @@ async function generateStructured({
     // temperature goes THROUGH: the wrapper drops it per model (NO_TEMPERATURE
     // there), which keeps it on claude-haiku-4-5 — the tier every group-1 task
     // and group 2's `assessment` resolve to, and the one that accepts it — and
-    // drops it, loudly, on the claude-sonnet-5 that `keypoints` and `battlecard`
-    // resolve to.
+    // drops it, loudly, on the claude-sonnet-5 that `keypoints`, `battlecard`
+    // and `research` resolve to. `research` is the only one of those three not
+    // in models.FLIP_BLOCKED, i.e. the only one this can happen to today.
     const r = await anthropic.generate({
       model, prompt, system, schema: responseSchema, maxTokens, effort, thinking,
       temperature, allowTruncation, tenantId, site: label, signal,

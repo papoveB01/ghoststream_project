@@ -358,38 +358,74 @@ const ANALYSIS_PROMPT =
 //   gemini-2.5-flash   p50 5.6s, max 6.0s per attempt (n=10)
 //   claude-sonnet-5    p50 8-22s, max 27.1s per attempt (n=141)
 //
-// So the synchronous route's worst case on the provider serving 100% of this
-// traffic is 3 × 6s of generation plus the sleeps. The sleeps are 2s + 4s
-// normally, and reach the 30s cap only when Gemini's own error body suggests a
-// delay that long (aiRetry's retryDelay parser) — 3 × 6 + 60 = ~78s, inside the
-// 180s window with room. Lowering the cap the way proposals.js did would bound
-// this route AND take the background route's ability to honour a quota hint it
-// has every reason to honour, for a bound that is not being exceeded.
+// THE ~78s FIGURE BELOW IS THE **GEMINI** BOUND, and only that. It is stated
+// first because Gemini serves 100% of this traffic today; it is NOT the bound
+// after a flip, and an earlier version of this note let it read as though it
+// were. The synchronous route's worst case on Gemini is 3 × 6s of generation
+// plus the sleeps. The sleeps are 2s + 4s normally and reach the 30s cap only
+// when Gemini's own error body suggests a delay that long (aiRetry's retryDelay
+// parser) — 3 × 6 + 60 = ~78s, inside the 180s window with room. Lowering the
+// cap the way proposals.js did would bound this route AND take the background
+// route's ability to honour a quota hint it has every reason to honour, for a
+// bound that is not being exceeded.
 //
-// WHAT WOULD CHANGE IT, stated so the next person does not have to re-derive it:
-// a single attempt averaging more than ~40s on Gemini stops fitting at 3 tries
-// with the cap reached twice. The dossier is already at DOSSIER_CAP (40,000
-// chars) on all four measured runs, so the input side is bounded; it is the
-// generation that would have to get slower.
+// WHAT WOULD CHANGE THE GEMINI BOUND: a single attempt averaging more than ~40s
+// stops fitting at 3 tries with the cap reached twice. Note the input side is
+// NOT what bounds it — `DOSSIER_CAP` (40,000 chars) is applied once inside
+// buildDossier, but appendSource concatenates onto dossier_md with no total cap
+// and effectiveDossier then appends up to 20 filed docs × 3,500 chars AFTER it.
+// A fresh run's ceiling is therefore ~111,000 chars, and a rep-augmented one has
+// none at all, against the 45,747-50,939 the 141 live calls actually sampled. An
+// earlier version of this comment said "the input side is bounded"; it is not,
+// and capping it is a follow-up rather than this PR's, because a .slice() here
+// changes what Gemini receives and breaks the parity property.
 //
-// AND THE CLAUDE SIDE DOES NOT MULTIPLY, which is the part that looks alarming
-// and is not: 3 × ANTHROPIC_TIMEOUT_MS (120s) would be 366s, well past 180s —
-// but the app layer does not re-enter generate() on an Anthropic error.
-// classify()'s Anthropic branch is `transient: !perDay && !sdkRetried && status
-// === 429`, and the SDK already retries 429 (stamping sdkRetried), so after a
-// flip this wrapper is effectively one attempt. ADR-0006 §7 records that as
-// closed; the test for this file asserts it rather than quoting it, because a
-// truncated or malformed Claude answer is exactly the error that would have to
-// stay non-transient for the 180s bound to hold.
+// THE CLAUDE BOUND IS DIFFERENT AND IS CONDITIONAL. classify()'s Anthropic
+// branch is `transient: !perDay && !sdkRetried && status === 429`, so a
+// truncation or a malformed answer takes ONE attempt — that part is
+// unconditional, and the test for this file asserts it rather than quoting it.
+// But a 429 is transient here whenever the SDK did not retry it, and there are
+// two ways for that to be true:
+//
+//   ANTHROPIC_MAX_RETRIES=0. anthropic.js gates its `sdkRetried` stamp on
+//     SDK_RETRIES_AT_ALL (= DEFAULT_MAX_RETRIES > 0) — deliberately, so a client
+//     told never to retry does not claim it did. Zero is a permitted value and
+//     anthropic.js's own DEFAULT_TIMEOUT_MS note RECOMMENDS it for user-facing
+//     routes. At 0, every 429 stamps sdkRetried:false, this wrapper takes 3
+//     attempts, and the synchronous route becomes 3 × ANTHROPIC_TIMEOUT_MS
+//     (120s) + 2s + 4s ≈ 366s against nginx's 180s. Measured: unset ⇒ 1 upstream
+//     attempt, =0 ⇒ 3.
+//   A 429 carrying `x-should-retry: false`, at DEFAULT settings. sdkRetriesStatus
+//     subtracts exactly that case from the SDK's retryable set, correctly — so
+//     aiRetry's "the SDK's retryable set is a superset of ours" is false for it,
+//     and it reaches this wrapper as transient.
+//
+// AND THE PER-ATTEMPT BOUND IS NOT 120s EITHER. The SDK's inter-retry sleep
+// takes no signal and parses `retry-after` unclamped, so the composed deadline
+// is only observed at the top of the next attempt: the real bound is
+// `ANTHROPIC_TIMEOUT_MS + maxRetries × retry-after`, unbounded above. Measured
+// on this branch: a 3s budget took 20.059s on a `retry-after: 20`.
+//
+// SO reanalyze IS THE SECOND ROUTE IN THE proposals.js CLASS, not an escapee
+// from it — a synchronous, rep-facing handler that nginx can 504 while it keeps
+// running, billing and writing. It is safe TODAY because Gemini serves it and
+// the Gemini arithmetic above holds. **ANTHROPIC_MAX_RETRIES >= 1 is therefore
+// part of the flip checklist for this task**, alongside AI_PROVIDER_RESEARCH —
+// .env.example and ADR-0006 §9 item 5 say the same, and cutoverGroup3.test.js
+// pins the upstream count at both settings so the precondition is asserted
+// rather than remembered.
 //
 // The retry now also covers the JSON PARSE, because the seam parses inside
 // generateStructured and the wrapper is outside it. That is the same deliberate
 // trade relevance.js made when it moved its parse inside withRetry: on Gemini a
-// malformed answer whose first ten characters happen to match
-// GEMINI_TRANSIENT_RE (V8 quotes exactly ten in a SyntaxError) now costs up to
-// three metered generations instead of one, and in exchange a re-generation can
-// fix malformed JSON — the failure mode that actually happens. On Claude it
-// changes nothing, for the reason in the paragraph above.
+// malformed answer can now cost up to three metered generations instead of one,
+// and in exchange a re-generation can fix malformed JSON — the failure mode that
+// actually happens. The exposure is narrow: V8's SyntaxError quotes the WHOLE
+// input below a length threshold and only the first ten characters above it (the
+// "always exactly ten" rule this comment used to state is not what V8 does), and
+// of GEMINI_TRANSIENT_RE's alternatives only `503` and `overloaded` fit in a
+// ten-character excerpt. On Claude it changes nothing: aiCall stamps the
+// SyntaxError `provider: 'anthropic'`, and a parse error carries no 429.
 async function analyze(tenantId, name, dossier) {
   const context = await keypoints.tenantContextText(tenantId);
   const prompt =
@@ -409,9 +445,11 @@ async function analyze(tenantId, name, dossier) {
   //
   // THE HEADROOM IS THIN AND THAT IS THE PART WORTH CARRYING FORWARD, not the
   // zero: output length is driven by how many opportunities the dossier
-  // supports, and it varies ~20x across four prompts of near-identical size
+  // supports, and it varies 2.8x across four prompts of near-identical size
   // (peak output 861 / 2,041 / 1,138 / 2,406 tokens against the 2,600 budget —
-  // the last is 92.5% of it). A dossier richer than any we have today is the way
+  // 2,406 / 861 = 2.79, and the largest is 92.5% of the budget. This said "~20x",
+  // which the four numbers printed beside it refute; the spread is real and the
+  // multiplier was not). A dossier richer than any we have today is the way
   // this starts truncating, and on Claude a truncation THROWS (allowTruncation
   // is unset, deliberately), so it is a FAILED run on the background route and a
   // 502 on the synchronous one, not a silently short answer.
@@ -518,7 +556,7 @@ async function start(tenantId, companyId) {
 }
 
 // ── Manual additions: append a source (URL or freeform note) to an existing
-// research row, and an explicit re-analyze that re-runs Gemini against the
+// research row, and an explicit re-analyze that re-runs the model against the
 // current dossier (auto sources + any manual additions). Keeps re-analysis
 // cheap and explicit so the rep can stack several adds and click once.
 

@@ -83,7 +83,8 @@ const EXPECTATIONS = [
 // cannot dispatch yet" at the end of an otherwise green run.
 //
 // THE GATE AND ENV READS ARE INSIDE THE try TOO, not just the resolve() check —
-// same correction smoke.js:139 carries, reached by the same route. models.js:168
+// same correction smoke.js:139 carries, reached by the same route. models.js's
+// "A KEY LEAVES THIS SET" note
 // explicitly anticipates a key LEAVING FLIP_BLOCKED, and the set itself going
 // away with the migration is the natural end state, at which point
 // `models.FLIP_BLOCKED.has(...)` is a TypeError. Read outside the try that throw

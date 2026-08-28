@@ -1327,9 +1327,12 @@ decomposition exists so that per-file spokes stay tractable.
    (`kb.keypoints`, `kb.companyAnalysis`, `kb.productAnalysis`, all resolving the
    one `keypoints` key) and `knowledge/assessment.js` ×2 (`kb.assessment` →
    `assessment`, `kb.battlecard` → `battlecard`). All three keys joined
-   `DISPATCH_READY` in the same PR, which is now six keys and **nine** seam call
-   sites wide (four from group 1). Membership is eligibility, not activation —
-   every task still resolves to Gemini.
+   `DISPATCH_READY` in the same PR, which **took the set to** six keys and
+   **nine** seam call sites (four from group 1). *(Past tense deliberately: group
+   3 took it to seven and ten. A "is now" in a shipped entry becomes false the
+   next time anything ships, one screen above the entry that contradicts it.)*
+   Membership is eligibility, not activation — every task still resolves to
+   Gemini.
 
    *(The count is worth stating carefully because three separate comments got it
    wrong in the first cut, each in a different direction — "six call sites",
@@ -1526,7 +1529,7 @@ decomposition exists so that per-file spokes stay tractable.
      with `personas` left in `DISPATCH_READY` — where `smoke.js` under the
      identical mutation exits 2, "fix the script"), and `smoke.js`'s own
      `[flip-blocked]` marking called `FLIP_BLOCKED.has()` in `main()`, so the
-     set going away — which the note at `models.js:168` explicitly anticipates
+     set going away — which `models.js`'s "A KEY LEAVES THIS SET" note explicitly anticipates
      — killed the whole run with a raw `TypeError` and lost every result
      already paid for.
    - **⚠ Known residual, for a follow-up PR: the exit-code contract has four
@@ -1896,44 +1899,100 @@ decomposition exists so that per-file spokes stay tractable.
      backoff cap; `POLICIES.research` is unchanged and still `{}`). What is new
      is the asymmetry this item did not previously record: **one function, one
      label, two opposite latency contracts.** `POST /research/:companyId`
-     (`knowledge/index.js:247`) is fire-and-forget — 202, work in the background,
-     the research unit **pre-charged on admission**, so a transient failure that
-     is not retried spends a metered unit and leaves a `FAILED` row. `POST
-     /research/:companyId/reanalyze` (`:271`) is **SYNCHRONOUS**, rep-facing and
-     un-metered, behind nginx's 180s `proxy_read_timeout` — the shape PR #51
-     found on `proposals.js`.
+     (`knowledge/index.js`, the `requireCapacity('discovery')` mount) is
+     fire-and-forget — 202, work in the background, the research unit
+     **pre-charged on admission**, so a transient failure that is not retried
+     spends a metered unit and leaves a `FAILED` row. `POST
+     /research/:companyId/reanalyze` (the `requireFeature`-only mount) is
+     **SYNCHRONOUS**, rep-facing and un-metered, behind nginx's 180s
+     `proxy_read_timeout` — and it is the **second** route in the `proposals.js`
+     class PR #51 found, not an exception to it. *(Line numbers dropped rather
+     than re-pinned: the first cut said `:271` for a route that is at `:272`, and
+     §4.1's own precedent is that a symbol does not rot.)*
 
      The decision was made against measurement rather than inherited. **Measured
-     2026-08-28, driving this call site end to end:** `gemini-2.5-flash` answers
-     it in p50 **5.6s**, max **6.0s** (n=10) — so the synchronous route's worst
-     case at 3 attempts is 3 × 6s plus the sleeps, and the sleeps are 2s + 4s
-     unless Gemini's own error body suggests a longer delay, in which case the
-     30s cap gives **~78s** total. That fits 180s with room, so lowering the cap
-     the way `proposals.js` did would bound this route *and* cost the background
-     route its ability to honour a quota hint — for a bound that is not being
-     exceeded. **The trigger that would change it is stated at the call site**: a
-     single Gemini attempt averaging more than ~40s stops fitting.
+     2026-08-28, driving this call site end to end — and this is the GEMINI
+     bound, which is the whole of what it is:** `gemini-2.5-flash` answers it in
+     p50 **5.6s**, max **6.0s** (n=10), so the synchronous route's worst case at
+     3 attempts is 3 × 6s plus the sleeps, and the sleeps are 2s + 4s unless
+     Gemini's own error body suggests a longer delay, in which case the 30s cap
+     gives **~78s** total. That fits 180s with room, so lowering the cap the way
+     `proposals.js` did would bound this route *and* cost the background route
+     its ability to honour a quota hint — for a bound that is not being exceeded.
+     **The trigger that would change it**: a single Gemini attempt averaging more
+     than ~40s stops fitting. Gemini serves 100% of this traffic, so this is the
+     bound that is live today; it is **not** the bound after a flip, and the
+     first cut of this entry let it read as though it were.
 
-     **And the Claude side does not multiply, which is the part that looks
-     alarming and is not.** 3 × `ANTHROPIC_TIMEOUT_MS` (120s) would be 366s, well
-     past 180s. It does not happen because `classify()`'s Anthropic branch is
-     `transient: !perDay && !sdkRetried && status === 429`, so after a flip this
-     wrapper is effectively one attempt. §7 records that as closed;
-     `cutoverGroup3.test.js` now **asserts** it, driving both failures this call
-     site can actually produce on Claude — a truncation (502, `truncated`) and a
-     malformed answer (a seam-stamped `SyntaxError`) — through the real seam, and
-     confirming one upstream request each. That is the load-bearing half of the
-     180s argument, and quoting it from prose is exactly what this ADR has twice
-     been burned by.
+     **⚠ THE CLAUDE BOUND IS CONDITIONAL, AND THE FIRST CUT OF THIS ENTRY SAID
+     IT WAS NOT.** It claimed "the Claude side does not multiply … after a flip
+     this wrapper is effectively one attempt", citing §7 as closed. That is true
+     for a truncated or malformed answer — neither carries a 429, so
+     `classify()`'s Anthropic branch (`transient: !perDay && !sdkRetried &&
+     status === 429`) gives them one attempt unconditionally, and
+     `cutoverGroup3.test.js` asserts both through the real seam. **It is false
+     for a 429**, in two measured ways, and each turns the synchronous route into
+     3 × `ANTHROPIC_TIMEOUT_MS` (120s) + backoff ≈ **366s** against a 180s
+     `proxy_read_timeout` — where nginx 504s the rep while the handler keeps
+     generating, billing and writing:
 
-     **One live behaviour change comes free with the seam, and it is on Gemini.**
-     `JSON.parse` used to sit *outside* `withRetry`; the seam parses *inside*
-     `generateStructured`, which is inside the wrapper. So a Gemini answer whose
-     first ten characters match `GEMINI_TRANSIENT_RE` (V8's `SyntaxError` quotes
-     exactly ten) now costs up to three metered generations instead of one, and
-     in exchange a regeneration can fix malformed JSON. It is the same trade
-     `relevance.js` made and `aiCall.js`'s header documents; on Claude it changes
-     nothing.
+     - **`ANTHROPIC_MAX_RETRIES=0`.** `anthropic.js` gates its `sdkRetried` stamp
+       on `SDK_RETRIES_AT_ALL` (`DEFAULT_MAX_RETRIES > 0`) — correctly, so a
+       client told never to retry cannot claim it did — and 0 is a permitted
+       value that the same file's `DEFAULT_TIMEOUT_MS` note actively
+       **recommends** for user-facing routes. Measured: unset ⇒ **1** upstream
+       attempt, `=0` ⇒ **3**.
+     - **A 429 carrying `x-should-retry: false`, at DEFAULT settings.**
+       `sdkRetriesStatus` subtracts exactly that case from the SDK's retryable
+       set, so `aiRetry`'s "the SDK's retryable set is a superset of ours" has an
+       exception, and this one reaches the app layer transient.
+
+     **And the per-attempt bound is not 120s either.** The SDK's inter-retry
+     sleep takes no signal and parses `retry-after` unclamped, so the composed
+     deadline is only observed at the top of the next attempt: the real bound is
+     `ANTHROPIC_TIMEOUT_MS + maxRetries × retry-after`, unbounded above —
+     measured on this branch, a 3s budget took **20.059s** on a `retry-after: 20`.
+     §7 documents this; the group-3 entry had inherited the wrong summary of it.
+
+     So **`ANTHROPIC_MAX_RETRIES >= 1` is a flip precondition for this task**,
+     recorded next to `AI_PROVIDER_RESEARCH` in `.env.example` and at the call
+     site, and **asserted** rather than remembered: `cutoverGroup3.test.js` drives
+     a REAL SDK `RateLimitError` through the REAL `translateError` at both
+     settings plus the `x-should-retry: false` header, and pins the upstream
+     count at 1 / 3 / 3. `anthropic.js`'s own "no outer multiplication left to
+     bound" line is corrected in the same PR, and `aiCall.js`'s header — where
+     group 3 had introduced a NEW false sentence, "this seam still makes exactly
+     one request per invocation" — now says the seam adds no retry LOOP, while
+     the client's own retries (up to `1 + ANTHROPIC_MAX_RETRIES` POSTs) live
+     inside the single call the caller makes.
+
+     **TWO live behaviour changes come free with the seam, both on Gemini, both
+     small and both previously undisclosed.**
+
+     *(a) The parse moved inside the retry.* `JSON.parse` used to sit *outside*
+     `withRetry`; the seam parses *inside* `generateStructured`, which is inside
+     the wrapper. So a Gemini answer whose quoted excerpt matches
+     `GEMINI_TRANSIENT_RE` now costs up to three metered generations instead of
+     one, and in exchange a regeneration can fix malformed JSON. Same trade
+     `relevance.js` made. **The V8 rule this ADR and `aiCall.js` both stated —
+     "the SyntaxError quotes exactly ten characters" — is not what V8 does**: it
+     quotes the whole input below a length threshold and the first ten above it.
+     The operative conclusion survives (on a long answer only `503` and
+     `overloaded` fit in ten characters, so the exposure is narrow), but the rule
+     was wrong and is corrected in both places.
+
+     *(b) A valid-JSON NON-OBJECT answer now throws instead of producing a thin
+     row.* `[]`, `5`, `"hi"` all parse; `aiCall.parseAnswer` rejects them because
+     every schema here describes an object, where the old inline
+     `JSON.parse(resp.text)` passed them straight to `parsed.opportunities`
+     (undefined → `[]`) and wrote a DONE row with no summary and no
+     opportunities. Measured base-vs-head. Throwing is the right answer — a
+     silently empty synthesis is worse than a failure — but it is not free on the
+     PRE-CHARGED `POST /research/:companyId`, where it converts a thin DONE row
+     into a FAILED one with the unit already spent. Near-unreachable in practice
+     (`responseMimeType: 'application/json'` plus an object-typed
+     `responseSchema`), and recorded rather than fixed because the new behaviour
+     is the one we want.
 
    - **The require-time `modelFor()` constant is gone** — `research.js`'s
      `MODEL`, the fourth instance of the freeze §9 item 4 fixed in `personas.js`
@@ -1993,10 +2052,18 @@ decomposition exists so that per-file spokes stay tractable.
      "it's fine".** First, **the headroom is thin**: peak output is 2,406 of
      2,600, i.e. **92.5%** of the budget, and it is 92.5% on a production
      dossier, not a contrived one. Second, **output length is dossier-driven and
-     varies ~20× across four prompts of near-identical size** (861 / 2,041 /
-     1,138 / 2,406) — it tracks how many opportunities the material supports, not
-     how long the material is, which is why the input side being pinned at
-     `DOSSIER_CAP` (40,000 chars) bounds nothing. A richer dossier than any that
+     varies 2.8× across four prompts of near-identical size** (861 / 2,041 /
+     1,138 / 2,406; 2,406 / 861 = 2.79) — it tracks how many opportunities the
+     material supports, not how long the material is. *(This read "~20×" in the
+     first cut, refuted by the four numbers printed in the same parenthesis. The
+     spread is real; the multiplier was invented, and it was the only
+     quantitative claim in the paragraph that carries the flip risk forward.)*
+     And the input side does NOT bound it: `DOSSIER_CAP` (40,000 chars) is
+     applied once inside `buildDossier`, but `appendSource` concatenates onto
+     `dossier_md` with no total cap and `effectiveDossier` then appends up to 20
+     filed docs × 3,500 chars **after** it — a ~111,000-char ceiling on a fresh
+     run and none at all on a rep-augmented one, against the 45.7k–50.9k these
+     141 calls sampled. A richer dossier than any that
      exists today is the way this starts truncating, and on Claude a truncation
      THROWS (`allowTruncation` unset, deliberately): a `FAILED` run with a spent
      pre-charged unit on the background route, a 502 on the synchronous one.
@@ -2031,12 +2098,24 @@ decomposition exists so that per-file spokes stay tractable.
      is why nothing has to migrate. Had the writer been narrowed to just the key
      that changed, that hint would have gone silently missing.
 
-     Counted 2026-08-28: **17 rows on staging, 44 on production**; of those, **1
-     and 3** carry a `models.analysis` stamp (the rest are runs that failed
-     before reaching the model, which have always written a `models` object
-     without one). The only stamp value present in either database is
+     Counted 2026-08-28 and re-verified after the review round: **17 rows on
+     staging, 44 on production**; of those, **1 and 3** carry a
+     `models.analysis` stamp. The only stamp value present in either database is
      `gemini-2.5-flash`. A Claude id after a flip is the same kind of value, not
-     a new kind, and `null`/absent is already a value both readers cope with.
+     a new kind, and absent is already a value the reader copes with
+     (`r.models && r.models.hadPortfolio === false` is simply false).
+
+     **The mechanism behind the unstamped rows was stated wrongly and is
+     corrected here, because a wrong mechanism is how a "safe" conclusion gets
+     re-derived from a premise that was never true.** They are NOT failed runs:
+     there are **zero `FAILED` rows in either database** — every row is `DONE`.
+     They carry the column DEFAULT `'{}'` from `0010_prospect_research.sql`
+     (`models jsonb NOT NULL DEFAULT '{}'::jsonb`) and were never written at all,
+     and the bulk of them come from a **second writer this entry had not
+     accounted for**: `companies.js`'s discover/add path, which inserts a
+     `status: 'DONE'` row with `summary` and `opportunities` and no `models` key.
+     The conclusion survives — nothing to migrate, no reader branches on it —
+     but it now rests on what the rows actually are.
 
      `models.usage` DOES change shape after a flip — Gemini's `usageMetadata`
      (`promptTokenCount` / `candidatesTokenCount`) versus Claude's
@@ -2046,8 +2125,47 @@ decomposition exists so that per-file spokes stay tractable.
      that changed shape and its readers" is precisely what a per-file pass
      cannot see.
 
-   - Suite **399/399**, from **390** on `main` (+9, all in
-     `test/cutoverGroup3.test.js`), with **twenty-two** deliberate mutations of
+   - **A DELIBERATE DEVIATION FROM §4.1's NORMATIVE ROW, recorded as a decision
+     rather than left implicit.** §4.1 assigns the `flash` tier "adaptive,
+     `effort: medium`". This call site takes the seam default `thinking: false`,
+     which `anthropic.generate` sends as `thinking: {type:'disabled'}` — so
+     `research` ships on Sonnet 5 with adaptive thinking OFF, as every migrated
+     call site does. That is not the §4.1 hazard it resembles: the failure modes
+     §4.1 attaches to disabled thinking (a tool call arriving as visible text,
+     `<thinking>` leaking into output) are Opus-5-scoped, and `research` is
+     Sonnet 5 with no tools. And there is a positive reason to keep it off: **the
+     0/141 truncation measurement was taken with thinking off**, and `max_tokens`
+     bounds thinking *plus* text on Claude — so turning on adaptive thinking
+     would spend part of the 2,600 budget on reasoning tokens and invalidate the
+     one number this key's flip-readiness rests on. Turning it on is a per-task
+     decision with its own re-measurement, per §8 Phase 4's `effort` sweep, not
+     something to inherit from the tier table.
+
+   - **What the nine review passes found, 2026-08-28 — none of it in the
+     implementation.** The Gemini path was proven unmoved four independent ways
+     (whole-object `deepStrictEqual`, captured `@google/genai` request objects at
+     both SHAs, a prompt SHA-256 match, and a byte-identical 8,321-byte outbound
+     HTTP body), the live Claude round trip works, all three fail-closed paths
+     hold and both `FLIP_BLOCKED` refusals hold. **Every finding was in the
+     ARGUMENT**: the conditional Claude retry bound above (four passes reproduced
+     it independently), a `[GEMINI-PARITY]` model assertion that compared the wire
+     value against a live re-derivation of the function that produced it — a
+     tautology two different re-tierings walked through green — retry tests that
+     counted seam invocations rather than upstream requests (a loop inside the
+     seam's Gemini branch is 6 metered generations for one logical call and stayed
+     green), `run()` being executed by **no test in the entire suite** (reverting
+     its stamp to a require-time constant stayed green), a stale
+     "nothing in `web/` reads this column" comment sitting directly above the only
+     test covering that write, and the count and figure errors listed above. That
+     distribution is itself the finding: the four passes exist because a diff read
+     finds the wrong class of defect, and here it was prose asserting more than
+     the code did — for the fourth time in this ADR.
+
+   - Suite **403/403** after the fix round, from **390** on `main` (+13 — 12 in
+     the new `test/cutoverGroup3.test.js`, plus a computed Sonnet-count guard in
+     `test/costsTelemetry.test.js`), with `.env` and `ANTHROPIC_API_KEY` both
+     present in the container. **399/399** as first shipped, with **twenty-two**
+     deliberate mutations of
      `src/`, each confirmed to redden the assertion it targets: the dropped
      `DISPATCH_READY` entry, an invented `FLIP_BLOCKED` entry, an `ocr` task key
      appearing, `compare` wrongly declared ready, the wrong task key at the call
@@ -2098,6 +2216,45 @@ Not in scope for any PR above: embeddings (§4.2), `capture/`, `mcp/`, any
 
 ## 10. Open questions / follow-ups
 
+*(The three below were raised by group 3's review round, 2026-08-28, and are
+deliberately NOT fixed in that PR — each is its own reviewable concern and two of
+them change files group 3 does not touch.)*
+
+- **`stop_reason: 'model_context_window_exceeded'` returns a truncated answer as
+  a SUCCESS.** `anthropic.generate` guards `refusal` and `max_tokens` and treats
+  every other stop reason as a complete answer, so this one flows back as a
+  well-formed string that stops mid-object. Verified against a stubbed SDK.
+  **Unreachable for all seven migrated tasks today** — their inputs are hard
+  capped far below Sonnet 5's window (`RESEARCH_DOSSIER_CAP` 40,000 chars, the
+  keypoints/assessment caps 16,000) — so it is a latent defect, not a live one.
+  The real exposure is `aiContext.js`'s Arena transcript path, which has no such
+  cap and is not yet flippable. Worth fixing before the arena group: downstream
+  it surfaces as an **unstamped** `SyntaxError`, which lands in `aiRetry`'s
+  Gemini message-scraping branch and is classified by regexing a V8 message.
+
+- **`ANTHROPIC_API_KEY` is declared TWICE, in `.env.example` and in the live
+  `.env`, with two different valid keys — last wins.** In the deployed file the
+  winner is the Slack-coordinator block's key, not the ADR-0006 engine one, so
+  the seam would dispatch on the coordinator's key and its spend would land
+  there. Group 3 makes this live rather than theoretical, because it puts
+  `AI_PROVIDER_RESEARCH` under `.env.example`'s "FLIPPABLE — MOVES REAL TRAFFIC"
+  heading while the same file promises the router refuses to dispatch without a
+  key — a gate the *wrong* key satisfies. Its own PR: the fix is an env-file
+  de-duplication plus a boot-time warning, and it touches every Claude task at
+  once.
+
+- **"The input side is bounded" was false, and only the comment is fixed.**
+  `DOSSIER_CAP` (40,000 chars) is applied once inside `buildDossier`, but
+  `appendSource` concatenates onto `dossier_md` with no total cap and
+  `effectiveDossier` appends up to 20 filed docs × 3,500 chars *after* it:
+  ~111,000 chars on a fresh run, unbounded on a rep-augmented one, against the
+  45.7k–50.9k the 141 live calls sampled. Group 3 corrects the claim in
+  `knowledge/research.js` (it is a false statement in code that PR touches) and
+  leaves the actual capping to a follow-up, because a `.slice()` there changes
+  what **Gemini** receives and breaks the parity property groups 2 and 3 shipped
+  on. It also means the truncation measurement's headroom is thinner than the
+  input cap suggests.
+
 - **`kb_documents.metadata` is written as a whole column by three writers that
   each snapshot it first** (raised 2026-08-14, PR #57 review; **deliberately not
   fixed there** — that PR is a data-loss fix, and this is a concurrency
@@ -2119,7 +2276,7 @@ Not in scope for any PR above: embeddings (§4.2), `capture/`, `mcp/`, any
   jsonb_build_object(...)` plus explicit `-` for the clears) so each writer only
   touches its own keys. The three call sites carry a comment pointing here.
 - **Two more from the same PR #57 review, neither in scope there:**
-  `knowledge/research.js:579` — `effectiveDossier` swallows a KB read failure and
+  `knowledge/research.js#effectiveDossier` swallows a KB read failure and
   returns the bare dossier, so a **genuinely successful** synthesis on thinner
   input overwrites good stored research: degradation-by-swallow, the same
   200-and-data-gone outcome as the defect that PR fixed, one layer up. And

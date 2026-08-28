@@ -83,6 +83,24 @@ require.cache[redisPath] = {
   },
 };
 
+// knowledge/web.js — Firecrawl. Stubbed so the FIRE-AND-FORGET route can be
+// driven end to end without a network call: `run()` refuses outright unless
+// isConfigured() is true, and then needs gatherSources to produce at least one
+// source or it throws "no public sources found" before ever reaching the model.
+const webPath = require.resolve(path.join(SRC, 'knowledge', 'web.js'));
+require.cache[webPath] = {
+  id: webPath, filename: webPath, loaded: true, children: [], paths: [],
+  exports: {
+    isConfigured: () => true,
+    isBraveConfigured: () => false,
+    mapSite: async () => [],
+    // null markdown → the source is recorded snippet-only, which is enough for
+    // buildDossier and keeps this stub from having to invent page text.
+    scrapeMarkdown: async () => null,
+    search: async () => [{ url: 'https://acme.test/news', title: 'Acme raises', description: 'a signal', publishedTime: null }],
+  },
+};
+
 // knowledge/service.js — required LAZILY by research.js (effectiveDossier and
 // persistSynthesisDoc) to break the service↔web↔research import cycle. Stubbed
 // so no document is listed, nothing is re-ingested, and no embedding is bought.
@@ -95,6 +113,11 @@ require.cache[servicePath] = {
     ingest: async () => ({ id: 'stub' }),
   },
 };
+
+// The real SDK, for its real exception classes: `translateError` branches on
+// `instanceof Anthropic.RateLimitError`, so a hand-built error would take the
+// catch-all and prove nothing about the 429 path.
+const Anthropic = require('@anthropic-ai/sdk');
 
 const aiCall = require(path.join(SRC, 'aiCall.js'));
 const models = require(path.join(SRC, 'models.js'));
@@ -120,12 +143,84 @@ function researchDb() {
   };
 }
 
+// The rows start() → run() reads, in the order it reads them. Deliberately NOT
+// researchDb(): start() short-circuits and returns an existing RUNNING row if
+// one comes back, so a stub that answers every prospect_research SELECT with a
+// row would make this test pass by never running anything.
+function runDb() {
+  return (sql) => {
+    if (sql.includes('FROM companies')) return { rows: [{ id: COMPANY, name: 'Acme', domain: null }] };
+    if (sql.includes("status = 'RUNNING'")) return { rows: [] };                 // no run in flight
+    if (sql.includes('INSERT INTO prospect_research')) return { rows: [{ id: 'r1' }] };
+    if (sql.includes('SELECT opportunities')) return { rows: [] };               // no pins
+    return { rows: [] };
+  };
+}
+
+// Resolve when a recorded write matches — the fire-and-forget route's only
+// observable, since start() returns before run() has done anything.
+function onWrite(predicate, what) {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const tick = () => {
+      const w = dbWrites.find(predicate);
+      if (w) return resolve(w);
+      if (Date.now() - t0 > 20000) return reject(new Error(`timed out waiting for ${what}`));
+      setTimeout(tick, 5);
+    };
+    tick();
+  });
+}
+
 const ANSWER = {
   summary: 'Acme is scaling.',
   opportunities: [
     { title: 'Capacity — Volume surge', analysis: 'They are scaling fast.', products: ['Queue AI'], strength: 'strong', sources: [1] },
   ],
 };
+
+// Re-require anthropic.js under a different ANTHROPIC_MAX_RETRIES and hand the
+// FRESH module to `fn`, then put the original back.
+//
+// It has to be a re-require: SDK_RETRIES_AT_ALL is a module-level const read at
+// load time, so setting the env var afterwards changes nothing. Same technique
+// anthropicRetrySeam.test.js already uses for the same constant.
+//
+// The cache entry is SAVED and RESTORED rather than just deleted: aiCall.js
+// holds a reference to the original module object, and every other test in this
+// file drives that one. Leaving a second instance in the cache would make
+// `withAnthropic`'s stub land on a module nothing calls.
+async function withFreshAnthropic(maxRetries, fn) {
+  const p = require.resolve(path.join(SRC, 'anthropic.js'));
+  const savedMod = require.cache[p];
+  const savedEnv = process.env.ANTHROPIC_MAX_RETRIES;
+  try {
+    if (maxRetries === undefined) delete process.env.ANTHROPIC_MAX_RETRIES;
+    else process.env.ANTHROPIC_MAX_RETRIES = maxRetries;
+    delete require.cache[p];
+    return await fn(require(p));
+  } finally {
+    delete require.cache[p];
+    require.cache[p] = savedMod;
+    if (savedEnv === undefined) delete process.env.ANTHROPIC_MAX_RETRIES;
+    else process.env.ANTHROPIC_MAX_RETRIES = savedEnv;
+  }
+}
+
+// Set env vars for the duration, restoring exactly — including deleting keys
+// that were absent, which a naive save/restore turns into `'undefined'`.
+async function withEnv(vars, fn) {
+  const saved = {};
+  for (const [k, v] of Object.entries(vars)) {
+    saved[k] = process.env[k];
+    if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+  try { return await fn(); } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+}
 
 // Replace the seam itself, for the assertions that are about what the call site
 // ASKS FOR rather than what a provider receives.
@@ -246,14 +341,34 @@ test('[GEMINI-PARITY] research.analyze still sends Gemini exactly what it did be
   // below: an assertion failure here would otherwise leave the next test driving
   // this test's fake responses, and the failure it reported would be the wrong one.
   try {
-    await research.reanalyze(TENANT, COMPANY);
+    // GEMINI_RESEARCH_MODEL cleared for the duration: it is a per-task override
+    // read on every resolve, so an ambient one in a developer's or CI's env
+    // would silently redefine what "unchanged" means. Cleared, an override makes
+    // this a false RED (someone re-reads the pin) rather than a false GREEN.
+    await withEnv({ GEMINI_RESEARCH_MODEL: undefined }, () => research.reanalyze(TENANT, COMPANY));
 
     assert.strictEqual(geminiCalls.length, 1,
       `expected one generateContent for the one call site, got ${geminiCalls.length}`);
     const req = geminiCalls[0];
-    // The model the deleted require-time constant would have held, resolved now.
-    assert.strictEqual(req.model, models.modelFor('research'),
-      'the Gemini branch must still get the `research` task\'s Gemini model');
+    // A LITERAL, not `models.modelFor('research')`. Comparing the wire value
+    // against a live re-derivation of the function that produced it is a
+    // tautology: any change that moves both together is invisible. Two
+    // mutations proved it — re-tiering `research` flash→lite (with
+    // anthropicTier preserving the Claude side) and repointing models.js's
+    // FLASH constant — each moves 100% of today's real traffic and each left
+    // this file green. Every other field here is pinned by a literal; this one
+    // was the odd one out, on the single property the whole staged cutover
+    // rests on. Same shape providerRouter.test.js already uses for `keypoints`
+    // and `battlecard`.
+    //
+    // The residual: TIERS.gemini.flash is `process.env.GEMINI_MODEL ||
+    // 'gemini-2.5-flash'`, captured at models.js require time, so a deployment
+    // that overrides GEMINI_MODEL reds this. That is the safe direction and the
+    // same exposure the two group-2 pins already carry.
+    assert.strictEqual(req.model, 'gemini-2.5-flash',
+      '`research` is tier flash on Gemini and must resolve to exactly the model it did before ' +
+      'this PR — re-tiering it, or repointing the flash tier, is a live change to 100% of this ' +
+      'traffic and is what this literal exists to catch');
     assert.match(req.model, /^gemini-/, 'the Gemini branch must never be handed a Claude id');
     assert.deepStrictEqual(req.config, {
       maxOutputTokens: 2600,
@@ -304,16 +419,28 @@ test('the synchronous reanalyze route retries a transient failure 3 times, delib
   //
   // The arithmetic it rests on, measured 2026-08-28: gemini-2.5-flash answers
   // this call site in max 6.0s (n=10), so 3 attempts plus the worst backoff the
-  // 30s cap allows is ~78s against nginx's 180s proxy_read_timeout.
+  // 30s cap allows is ~78s against nginx's 180s proxy_read_timeout. That is the
+  // GEMINI bound; the Claude one is conditional and is tested separately below.
+  //
+  // COUNTED AT THE WIRE, NOT AT THE SEAM. An earlier version of this test stubbed
+  // aiCall.generateStructured and counted invocations of it, which assumes the
+  // thing it should assert: that one seam call is one upstream generation. A
+  // retry loop added inside the seam's Gemini branch makes it 3 × 2 = SIX
+  // metered generations for one logical call — double the spend and double the
+  // wall clock the 78s figure is computed from — and a seam-level counter
+  // reports 3 and stays green. So the real seam runs, the fake @google/genai
+  // client throws, and `geminiCalls` is what actually went to the provider.
+  // (Test 7 already does this on the Claude side; this is the missing half.)
+  geminiCalls.length = 0;
+  geminiImpl = () => { throw new Error('503 UNAVAILABLE'); };
   dbRows = researchDb();
-  let attempts = 0;
-  await withSeam(async () => { attempts += 1; throw new Error('503 UNAVAILABLE'); }, async () => {
+  try {
     const err = await research.reanalyze(TENANT, COMPANY).then(() => null, (e) => e);
     assert.ok(err, 'a persistent transient must surface, not be swallowed into an empty synthesis');
-  });
-  assert.strictEqual(attempts, aiRetry.DEFAULT_TRIES,
-    'research keeps its aiRetry wrapper on the default policy — and the route it has to fit is ' +
-    'the synchronous one');
+  } finally { geminiImpl = () => ({ text: '{}', usageMetadata: null }); }
+  assert.strictEqual(geminiCalls.length, aiRetry.DEFAULT_TRIES,
+    `research keeps its aiRetry wrapper on the default policy, and each attempt must be exactly ` +
+    `one upstream generation — got ${geminiCalls.length} for ${aiRetry.DEFAULT_TRIES} attempts`);
   assert.strictEqual(aiRetry.DEFAULT_TRIES, 3, 'if this stops being 3 the 180s arithmetic changes');
 });
 
@@ -321,25 +448,36 @@ test('one transient then success costs the reanalyze route one extra attempt, no
   // The wrapper is worth having, not just present: the retried call succeeds and
   // the rep gets their synthesis. On the fire-and-forget route the same retry is
   // what stops a transient 503 spending a PRE-CHARGED research unit on a FAILED row.
+  //
+  // Also counted at the wire, for the reason above.
+  geminiCalls.length = 0;
   dbRows = researchDb();
-  let attempts = 0;
-  await withSeam(async () => {
-    attempts += 1;
-    if (attempts === 1) throw new Error('503 UNAVAILABLE');   // classify() → transient
-    return { parsed: ANSWER, text: JSON.stringify(ANSWER), usage: null, model: 'gemini-2.5-flash', provider: 'gemini' };
-  }, async () => {
+  let n = 0;
+  geminiImpl = () => {
+    n += 1;
+    if (n === 1) throw new Error('503 UNAVAILABLE');   // classify() → transient
+    return { text: JSON.stringify(ANSWER), usageMetadata: null };
+  };
+  try {
     const out = await research.reanalyze(TENANT, COMPANY);
     assert.ok(out !== undefined, 'the retried call must actually produce a result');
-  });
-  assert.strictEqual(attempts, 2);
+  } finally { geminiImpl = () => ({ text: '{}', usageMetadata: null }); }
+  assert.strictEqual(geminiCalls.length, 2,
+    'one retry, one upstream generation each — not one seam call that fans out');
 });
 
-test('after a flip the wrapper does NOT multiply the Anthropic timeout by three', async () => {
-  // THE LOAD-BEARING HALF OF THE 180s ARGUMENT. 3 x ANTHROPIC_TIMEOUT_MS (120s)
-  // plus backoff is 366s, well past nginx's window — the shape §9 item 4 found
-  // on proposals.js. It does not happen, because classify()'s Anthropic branch
-  // is `transient: !perDay && !sdkRetried && status === 429`: a truncated or
-  // malformed answer carries no 429, so the app layer takes one attempt.
+test('after a flip a truncated or malformed answer takes ONE attempt, unconditionally', async () => {
+  // HALF OF THE 180s ARGUMENT, and the unconditional half. 3 ×
+  // ANTHROPIC_TIMEOUT_MS (120s) plus backoff is 366s, well past nginx's window —
+  // the shape §9 item 4 found on proposals.js. It does not happen for these two,
+  // because classify()'s Anthropic branch is `transient: !perDay && !sdkRetried
+  // && status === 429` and neither carries a 429.
+  //
+  // THE OTHER HALF IS CONDITIONAL AND IS THE NEXT TEST. A 429 *is* transient
+  // here whenever the SDK did not retry it, so "the wrapper is effectively one
+  // attempt after a flip" is true only under a precondition. This test used to
+  // be named as though it covered that, while exercising only the two errors
+  // that structurally cannot reach the transient branch.
   //
   // Asserted with the two failures this call site can actually produce on
   // Claude, both driven through the REAL seam so the stamping is real — the
@@ -378,6 +516,72 @@ test('after a flip the wrapper does NOT multiply the Anthropic timeout by three'
   assert.strictEqual(err.provider, 'anthropic',
     'unstamped, this would fall into the Gemini branch and be message-scraped');
   assert.strictEqual(upstream, 1);
+});
+
+test('a 429 IS retried here whenever the SDK did not — ANTHROPIC_MAX_RETRIES >= 1 is a flip precondition', async () => {
+  // THE CONDITIONAL HALF OF THE 180s ARGUMENT, and the one status this branch
+  // actually treats as transient. Nothing exercised it: the test above uses the
+  // two errors that carry no 429, so the claim "effectively one attempt after a
+  // flip" rested on an untested precondition.
+  //
+  // The stamp is produced by the REAL translateError from a REAL SDK
+  // RateLimitError at each setting — not built by hand, which is the shape
+  // ADR-0006 §9 item 5 names as the reason aiRetry.test.js could not fail. Only
+  // the transport is faked.
+  //
+  //   ANTHROPIC_MAX_RETRIES unset (default 2) → the SDK retried, stamp true,
+  //     app layer stands down: 1 attempt. This is the assumed case.
+  //   ANTHROPIC_MAX_RETRIES=0 → a permitted value that anthropic.js's own
+  //     DEFAULT_TIMEOUT_MS note RECOMMENDS for user-facing routes. The stamp is
+  //     honestly false, so the retry moves up a layer: 3 attempts, i.e. 3 ×
+  //     ANTHROPIC_TIMEOUT_MS on a route nginx cuts at 180s.
+  //   `x-should-retry: false` at DEFAULT settings → sdkRetriesStatus subtracts
+  //     exactly this from the SDK's retryable set, correctly. So aiRetry's "the
+  //     SDK's retryable set is a superset of ours" is false for this one case,
+  //     and it reaches the app layer transient: 3 attempts.
+  dbRows = researchDb();
+
+  const rateLimit = (headers) => Anthropic.APIError.generate(
+    429,
+    { error: { type: 'rate_limit_error', message: 'rate limit exceeded' } },
+    'rate limit exceeded',
+    headers,
+  );
+
+  async function attemptsFor({ maxRetries, headers }) {
+    const stamped = await withFreshAnthropic(maxRetries, (fresh) => fresh.translateError(rateLimit(headers)));
+    assert.strictEqual(stamped.status, 429, 'a real RateLimitError must translate to 429');
+    assert.strictEqual(stamped.provider, 'anthropic');
+    let upstream = 0;
+    await withAnthropic({
+      tasks: ['research'],
+      impl: () => { upstream += 1; throw stamped; },
+    }, async () => research.reanalyze(TENANT, COMPANY).then(() => null, (x) => x));
+    return { upstream, stamped };
+  }
+
+  const dflt = await attemptsFor({ maxRetries: undefined, headers: new Headers() });
+  assert.strictEqual(dflt.stamped.sdkRetried, true, 'at the default the client really did retry');
+  assert.strictEqual(dflt.upstream, 1,
+    'the app layer stands down when the client already retried — this is the ONLY configuration ' +
+    'in which the flip-safety argument for the synchronous route holds');
+
+  const zero = await attemptsFor({ maxRetries: '0', headers: new Headers() });
+  assert.strictEqual(zero.stamped.sdkRetried, false,
+    'a client told never to retry must not claim it did');
+  assert.strictEqual(zero.upstream, aiRetry.DEFAULT_TRIES,
+    'at ANTHROPIC_MAX_RETRIES=0 the retry moves up to this wrapper — 3 x ANTHROPIC_TIMEOUT_MS ' +
+    'on a synchronous route behind a 180s proxy_read_timeout. That is why >= 1 is a documented ' +
+    'flip precondition in .env.example and in research.js, and why it is asserted here');
+
+  const noRetryHeader = await attemptsFor({
+    maxRetries: undefined,
+    headers: new Headers({ 'x-should-retry': 'false' }),
+  });
+  assert.strictEqual(noRetryHeader.stamped.sdkRetried, false);
+  assert.strictEqual(noRetryHeader.upstream, aiRetry.DEFAULT_TRIES,
+    'x-should-retry:false reaches the app layer unretried even at default settings, so the ' +
+    '"superset" premise has an exception and the synchronous bound has a second door');
 });
 
 // ── 5. what the CLAUDE branch actually receives ────────────────────────────
@@ -420,10 +624,17 @@ test('a real flip sends claude-sonnet-5 the seam defaults — effort "medium", t
 test('prospect_research.models names the model that SERVED the call, not a constant', async () => {
   // It was a require-time constant, so after a flip every row would have been
   // stamped with the model of whichever provider the process booted against —
-  // and both writers (run() and reanalyze()) used the same one. Nothing in web/
-  // reads this column; it is diagnostic. That is what makes re-pointing it safe
-  // for rows already stored, and it is also why nothing else would catch it
-  // being wrong.
+  // and both writers (run() and reanalyze()) used the same one.
+  //
+  // `web/` DOES read this column — web/admin/admin.js's research panel does
+  // `r.models && r.models.hadPortfolio === false` to render the "no product
+  // portfolio on file" hint. It reads a SIBLING of the key that changed, and the
+  // whole object is still written with the same key set, which is what makes
+  // re-pointing `analysis` safe for rows already stored. It is NOT safe to
+  // narrow this write to the changed key, and an earlier version of this comment
+  // said "nothing in web/ reads this column" — sitting directly above the only
+  // test covering the write, that reads as licence to do exactly that. So
+  // `hadPortfolio` is asserted below rather than merely used as a locator.
   dbRows = researchDb();
   dbWrites.length = 0;
   await withSeam(ok(ANSWER, 'claude-sonnet-5', 'anthropic'), async () => {
@@ -443,4 +654,71 @@ test('prospect_research.models names the model that SERVED the call, not a const
   assert.strictEqual(stamped.analysis, 'claude-sonnet-5',
     'the stamp is the serving model handed back by the seam, not modelFor() at boot');
   assert.strictEqual(stamped.reanalyzed, true);
+  // The sibling key web/admin/admin.js:9725 renders on. It is `!!context`, and
+  // tenantContextText returns '' against this file's empty db — so `false` here
+  // is the value that makes the "no product portfolio on file" hint appear.
+  // Pinned so a later narrowing of this write cannot drop it silently.
+  assert.strictEqual(stamped.hadPortfolio, false,
+    'the research panel reads models.hadPortfolio — narrowing this write to the model stamp ' +
+    'would delete a rendered field with nothing to notice');
+});
+
+// ── 7. the OTHER route: fire-and-forget, metered, and previously untested ──
+
+test('run() — the metered background route — takes its stamp from the seam too', async () => {
+  // NOTHING IN THE SUITE EXECUTED run() BEFORE THIS. Only reanalyze() was
+  // driven, so reverting run()'s stamp to a require-time modelFor('research')
+  // constant — the exact regression this PR exists to remove — stayed green.
+  // It is also the route the retry decision is mostly argued FROM: the research
+  // unit is pre-charged on admission, so an un-retried transient spends it.
+  //
+  // Driven through start(), not by exporting run(): start()'s in-flight check
+  // and its INSERT are on the path, and the whole point is that this is the
+  // route nothing exercised.
+  dbRows = runDb();
+  dbWrites.length = 0;
+  await withEnv({ APOLLO_API_KEY: undefined, NEWSAPI_KEY: undefined }, async () => {
+    await withSeam(ok(ANSWER, 'claude-sonnet-5', 'anthropic'), async (calls) => {
+      const row = await research.start(TENANT, COMPANY);
+      assert.strictEqual(row.id, 'r1', 'start() returns the freshly inserted RUNNING row');
+      const write = await onWrite((w) => w.sql.includes("status = 'DONE'"), 'the DONE write');
+
+      assert.strictEqual(calls.length, 1, 'one model call on the background route as well');
+      assert.strictEqual(calls[0].task, 'research');
+      assert.strictEqual(calls[0].site, 'research.analyze');
+      assert.strictEqual(calls[0].tenantId, TENANT);
+
+      const stamped = write.params
+        .filter((p) => typeof p === 'string' && p.startsWith('{'))
+        .map((p) => { try { return JSON.parse(p); } catch { return null; } })
+        .find((o) => o && Object.prototype.hasOwnProperty.call(o, 'hadPortfolio'));
+      assert.ok(stamped, 'run() must persist the models stamp');
+      assert.strictEqual(stamped.analysis, 'claude-sonnet-5',
+        'run() takes the serving model from the seam, not modelFor() at boot — this is the ' +
+        'assertion that was missing entirely');
+      assert.strictEqual(stamped.reanalyzed, undefined, 'the background route is not a re-analyze');
+      assert.strictEqual(stamped.hadPortfolio, false);
+    });
+  });
+});
+
+test('run() retries a persistent transient DEFAULT_TRIES times, then writes FAILED', async () => {
+  // The other half of the "one policy, two contracts" claim. The failure here is
+  // silent to the rep — no socket is open — so the only evidence is the FAILED
+  // row, and the pre-charged unit is gone either way. That is precisely why the
+  // wrapper is worth its 3 attempts on this route.
+  dbRows = runDb();
+  dbWrites.length = 0;
+  let attempts = 0;
+  await withEnv({ APOLLO_API_KEY: undefined, NEWSAPI_KEY: undefined }, async () => {
+    await withSeam(async () => { attempts += 1; throw new Error('503 UNAVAILABLE'); }, async () => {
+      await research.start(TENANT, COMPANY);
+      const write = await onWrite((w) => w.sql.includes("status = 'FAILED'"), 'the FAILED write');
+      assert.ok(String(write.params[0]).includes('503'),
+        'the FAILED row carries the provider message the rep will be shown');
+    });
+  });
+  assert.strictEqual(attempts, aiRetry.DEFAULT_TRIES,
+    'the background route gets the same budget as the synchronous one — deliberately, and this ' +
+    'is the route where backoff is free');
 });
