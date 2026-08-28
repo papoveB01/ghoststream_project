@@ -2047,8 +2047,8 @@ decomposition exists so that per-file spokes stay tractable.
      cannot see.
 
    - Suite **399/399**, from **390** on `main` (+9, all in
-     `test/cutoverGroup3.test.js`), with **nineteen** deliberate mutations of
-     `src/` each confirmed to redden the assertion it targets: the dropped
+     `test/cutoverGroup3.test.js`), with **twenty-two** deliberate mutations of
+     `src/`, each confirmed to redden the assertion it targets: the dropped
      `DISPATCH_READY` entry, an invented `FLIP_BLOCKED` entry, an `ocr` task key
      appearing, `compare` wrongly declared ready, the wrong task key at the call
      site, a drifted telemetry label, the output budget, the temperature, the
