@@ -1277,7 +1277,9 @@ decomposition exists so that per-file spokes stay tractable.
    because the behaviour "obviously" worked.
 5. **Per-task cutover PRs** (Phase 3), grouped to keep each reviewable:
    `relevance` + `preview` + `companyBrief`; **`keypoints` + `assessment` +
-   `battlecard`**; `research` + `ocr`; `compare` + `enrichment` + `contacts` +
+   `battlecard`**; ~~`research` + `ocr`~~ **`research` (shipped; `ocr` split off
+   into its own decision PR — see the group 3 entry below)**; `compare` +
+   `enrichment` + `contacts` +
    `companies`; `brief`; `watch` + scheduler env; `arena` + `arenaHistory` +
    `personas` (depends on 4); `discovery`; `analysis` + `proposals` (last).
 
@@ -1845,6 +1847,240 @@ decomposition exists so that per-file spokes stay tractable.
    unknown` and the comment reads backwards. It is group 1's to fix — stamping
    at the Gemini branch of `aiCall`, one line — and it is a separate PR because
    it changes the log line on every migrated fail-open path at once.
+
+   **✅ Group 3 shipped 2026-08-28 — the `research` HALF ONLY.** Branch
+   `feat/adr-0006-cutover-group-3-research`. **ONE** call site moved onto
+   `aiCall.generateStructured`: `knowledge/research.js`'s `analyze()`
+   (`research.analyze` → task `research`). That is one `generateStructured`
+   call, in one function, under one key — the count is stated that way because
+   three separate comments got it wrong in group 2 by counting the *functions*
+   edited. `research` joined `DISPATCH_READY` in the same PR, which is now
+   **seven** keys and **ten** seam call sites wide (four from group 1, five from
+   group 2, one from group 3). Membership is eligibility, not activation: every
+   task still resolves to Gemini, and `AI_PROVIDER_RESEARCH` is unset in every
+   environment.
+
+   **GROUP 3 WAS SPLIT, AND THE `ocr` HALF IS DEFERRED TO ITS OWN DECISION PR.**
+   This item lists the group as "`research` + `ocr`", written before either file
+   had been read against the seam. They are not the same kind of work, and
+   bundling them would have put a decision inside a cutover:
+
+   - **There is no `ocr` task key.** `knowledge/ocr.js` does not appear in
+     `models.TASKS` at all, so nothing routes it, nothing can flip it, and there
+     is no `AI_PROVIDER_OCR`. Adding the key is itself the decision.
+   - **It pins its Gemini tier by hand and says why** — `OCR_MODEL =
+     process.env.GEMINI_OCR_MODEL || TIERS.gemini.flash`, with a comment stating
+     that OCR is deliberately outside the task router. Every key in groups 1–3
+     takes its tier *from* the router; this one reaches around it.
+   - **It is free text, not structured output.** `aiCall.generateStructured` is
+     a one-prompt-in, one-schema-shaped-JSON-out seam; OCR has no
+     `responseSchema`. So the §9 item 3 live harness — the only thing in this
+     migration that catches a provider rejecting a request before a flip —
+     **structurally cannot cover it**, and the argument every other group's
+     "run `--cluster=` before and after" line rests on is unavailable here.
+   - **`ocrViaFilesApi` has no equivalent in `anthropic.js`.** It uploads to
+     Google's Files API and polls `PROCESSING → ACTIVE`; Claude takes documents
+     as inline blocks. §7 already lists that polling loop as something the
+     migration *deletes*, which is a rewrite, not a swap.
+
+   The likely outcome is the one §4.2 records for embeddings — **OCR stays on
+   Gemini indefinitely** — and that is a decision with its own ADR-shaped
+   argument, not a cutover. Recorded here so the split is visible rather than
+   inferred from a group that shipped half-done; `models.js` carries the same
+   note next to the group-3 register, and `cutoverGroup3.test.js` asserts that no
+   `ocr` key exists, so "deferred" cannot quietly become "forgotten".
+
+   - **The retry answer is KEPT, and it is the first one in this migration that
+     is about two ROUTES rather than two call sites.** `analyze()` keeps
+     `aiRetry.forLabel('research')` on the default policy (3 attempts, 30s
+     backoff cap; `POLICIES.research` is unchanged and still `{}`). What is new
+     is the asymmetry this item did not previously record: **one function, one
+     label, two opposite latency contracts.** `POST /research/:companyId`
+     (`knowledge/index.js:247`) is fire-and-forget — 202, work in the background,
+     the research unit **pre-charged on admission**, so a transient failure that
+     is not retried spends a metered unit and leaves a `FAILED` row. `POST
+     /research/:companyId/reanalyze` (`:271`) is **SYNCHRONOUS**, rep-facing and
+     un-metered, behind nginx's 180s `proxy_read_timeout` — the shape PR #51
+     found on `proposals.js`.
+
+     The decision was made against measurement rather than inherited. **Measured
+     2026-08-28, driving this call site end to end:** `gemini-2.5-flash` answers
+     it in p50 **5.6s**, max **6.0s** (n=10) — so the synchronous route's worst
+     case at 3 attempts is 3 × 6s plus the sleeps, and the sleeps are 2s + 4s
+     unless Gemini's own error body suggests a longer delay, in which case the
+     30s cap gives **~78s** total. That fits 180s with room, so lowering the cap
+     the way `proposals.js` did would bound this route *and* cost the background
+     route its ability to honour a quota hint — for a bound that is not being
+     exceeded. **The trigger that would change it is stated at the call site**: a
+     single Gemini attempt averaging more than ~40s stops fitting.
+
+     **And the Claude side does not multiply, which is the part that looks
+     alarming and is not.** 3 × `ANTHROPIC_TIMEOUT_MS` (120s) would be 366s, well
+     past 180s. It does not happen because `classify()`'s Anthropic branch is
+     `transient: !perDay && !sdkRetried && status === 429`, so after a flip this
+     wrapper is effectively one attempt. §7 records that as closed;
+     `cutoverGroup3.test.js` now **asserts** it, driving both failures this call
+     site can actually produce on Claude — a truncation (502, `truncated`) and a
+     malformed answer (a seam-stamped `SyntaxError`) — through the real seam, and
+     confirming one upstream request each. That is the load-bearing half of the
+     180s argument, and quoting it from prose is exactly what this ADR has twice
+     been burned by.
+
+     **One live behaviour change comes free with the seam, and it is on Gemini.**
+     `JSON.parse` used to sit *outside* `withRetry`; the seam parses *inside*
+     `generateStructured`, which is inside the wrapper. So a Gemini answer whose
+     first ten characters match `GEMINI_TRANSIENT_RE` (V8's `SyntaxError` quotes
+     exactly ten) now costs up to three metered generations instead of one, and
+     in exchange a regeneration can fix malformed JSON. It is the same trade
+     `relevance.js` made and `aiCall.js`'s header documents; on Claude it changes
+     nothing.
+
+   - **The require-time `modelFor()` constant is gone** — `research.js`'s
+     `MODEL`, the fourth instance of the freeze §9 item 4 fixed in `personas.js`
+     and group 2 fixed twice more. Pinned BEHAVIOURALLY, not by reading a
+     constant: `GEMINI_RESEARCH_MODEL` is set *after* the module was required and
+     the fake Gemini client is asserted to receive it.
+
+   - **Nothing about a Gemini request moved**, and `research` needed no
+     `anthropicTier` to keep that true — tier `flash` already resolves to
+     `claude-sonnet-5`, which is the model §4.1 assigns this task, so the Claude
+     side needed no correction and the Gemini side was not touched. Asserted by
+     driving the REAL seam into a fake Gemini client and comparing the whole
+     `config` object (`test/cutoverGroup3.test.js`, `[GEMINI-PARITY]`): same
+     model, same `maxOutputTokens` (2600), same `temperature` (0.3), same
+     `thinkingConfig`, same schema object identity.
+
+     `claude-sonnet-5` is in `NO_TEMPERATURE`, so after a flip this call site's
+     `0.3` is dropped with the once-per-model+site warning — observed on every
+     probe run below. **Three** of the seven migrated keys now land on Sonnet 5
+     (`keypoints`, `battlecard`, `research`); the other four are Haiku 4.5. And
+     unlike `battlecard` there is no sampling-derived NUMBER downstream here:
+     `research`'s output is prose plus a `strength` enum, and
+     `semantics.keepCitations` post-filters the citations against what the
+     dossier actually showed the model.
+
+   - **THE OUTPUT BUDGET WAS MEASURED BEFORE THE KEY SHIPPED, because a
+     Gemini-sized budget is what put `keypoints` into `FLIP_BLOCKED`.**
+     `maxTokens: 2600` is the largest ask of any group so far —
+     `ANALYSIS_SCHEMA` wants a summary plus up to 8 opportunities, each a
+     headline, 2–4 sentences of reasoning, a product list and citations.
+
+     Method per this item's own note: the REAL call site through the seam, not
+     `anthropic.generate()` with a synthetic prompt. The probe drove
+     `research.reanalyze()` → `effectiveDossier` → `analyze()` →
+     `aiCall.generateStructured` → `models.resolve` → `anthropic.generate`
+     against the live API, with **only writes suppressed** (`db` UPDATE/INSERT
+     no-oped, `service.ingest` no-oped); every read was the real database, and
+     the prompts were the real ones — **45,747–50,939 chars, 19,365–22,641 input
+     tokens**, i.e. ~150× the 302-char probe that produced group 2's ~12×-wrong
+     rate.
+
+     | dossier (all four that exist) | env | prompt chars | n | truncated | peak output tokens |
+     | --- | --- | --- | --- | --- | --- |
+     | Wibmo (`4183b2c3…`) | staging | 45,747 | 29 | **0** | 861 |
+     | Ecobank (`539917ec…`) | production | 50,939 | 29 | **0** | 2,041 |
+     | Justpalm (`4243d431…`) | production | 47,346 | 29 | **0** | 1,138 |
+     | Papss card (`b27cdf8a…`) | production | 47,313 | 54 | **0** | **2,406** |
+     | **pooled** | | | **141** | **0** | |
+
+     Every one of the 141 responses came back `stop_reason: 'end_turn'`. 95% CI
+     (Clopper–Pearson) on 0/141 is **0% – 2.58%**; on the worst single dossier
+     (0/54) it is 0% – 6.60%. **`research` is therefore NOT added to
+     `FLIP_BLOCKED`**, and the entry that would have gone there does not exist
+     rather than being written and softened.
+
+     **Two things about that zero are worth carrying forward, and neither is
+     "it's fine".** First, **the headroom is thin**: peak output is 2,406 of
+     2,600, i.e. **92.5%** of the budget, and it is 92.5% on a production
+     dossier, not a contrived one. Second, **output length is dossier-driven and
+     varies ~20× across four prompts of near-identical size** (861 / 2,041 /
+     1,138 / 2,406) — it tracks how many opportunities the material supports, not
+     how long the material is, which is why the input side being pinned at
+     `DOSSIER_CAP` (40,000 chars) bounds nothing. A richer dossier than any that
+     exists today is the way this starts truncating, and on Claude a truncation
+     THROWS (`allowTruncation` unset, deliberately): a `FAILED` run with a spent
+     pre-charged unit on the background route, a 502 on the synchronous one.
+
+     **The population is small and that is a real limit on the claim.** n=141 is
+     the right denominator for a ~2% rate, but it covers **four** prompts,
+     because four is every prospect dossier in staging and production combined.
+     This measures the truncation rate *for the dossiers we have*, and says less
+     than it looks about the ones we don't.
+
+     **Do not raise `maxTokens` if this starts truncating** — same rule
+     `models.js` states for `keypoints`. The value is provider-agnostic at this
+     call site, so raising it changes what Gemini receives and breaks the parity
+     property groups 2 and 3 shipped on. Sizing per provider is the flip PR's.
+
+   - **Existing rows: `prospect_research.models` is the only stored field that
+     moves, and the frontend DOES read that column — just not the key that
+     moved.** Both writers (`run()` and `reanalyze()`) stamp
+     `{ analysis, hadPortfolio, usage }` into that `jsonb` column (plus
+     `reanalyzed: true` on the second). Only `analysis` changes: it is now the
+     SERVING model handed back by the seam rather than the boot-time constant.
+
+     **The "nothing in `web/` reads that column" premise this PR started from was
+     wrong, and the correction is the interesting part.** `grep -rn "models"
+     web/` returns one live reader — `web/admin/admin.js:9725`,
+     `r.models && r.models.hadPortfolio === false`, which renders the "no product
+     portfolio on file" hint on the research panel. It reads a SIBLING key in the
+     same object, `hadPortfolio`, which is `!!context` before and after and is
+     written by the same statement it always was. Nothing reads `.analysis` or
+     `.usage`, in `web/` or in `api/`. So the column is consumed, the changed key
+     is not, and the object is still written whole with the same key set — which
+     is why nothing has to migrate. Had the writer been narrowed to just the key
+     that changed, that hint would have gone silently missing.
+
+     Counted 2026-08-28: **17 rows on staging, 44 on production**; of those, **1
+     and 3** carry a `models.analysis` stamp (the rest are runs that failed
+     before reaching the model, which have always written a `models` object
+     without one). The only stamp value present in either database is
+     `gemini-2.5-flash`. A Claude id after a flip is the same kind of value, not
+     a new kind, and `null`/absent is already a value both readers cope with.
+
+     `models.usage` DOES change shape after a flip — Gemini's `usageMetadata`
+     (`promptTokenCount` / `candidatesTokenCount`) versus Claude's
+     `input_tokens` / `output_tokens` / `cache_*`. Nothing reads it; the real
+     spend record is `usage_costs`, which `costs.recordClaude` writes with the
+     provider-correct arithmetic. Recorded rather than glossed, because "a field
+     that changed shape and its readers" is precisely what a per-file pass
+     cannot see.
+
+   - Suite **399/399**, from **390** on `main` (+9, all in
+     `test/cutoverGroup3.test.js`), with **nineteen** deliberate mutations of
+     `src/` each confirmed to redden the assertion it targets: the dropped
+     `DISPATCH_READY` entry, an invented `FLIP_BLOCKED` entry, an `ocr` task key
+     appearing, `compare` wrongly declared ready, the wrong task key at the call
+     site, a drifted telemetry label, the output budget, the temperature, the
+     `tenantId`, `effort` decoupled from the seam default, `allowTruncation`
+     turned on, the schema passed as a copy, thinking turned back on, the
+     `thinkingBudget` value, a per-task model override that can no longer reach
+     the wire, the stored stamp taken from the router instead of the answer, the
+     retry wrapper stood down, an Anthropic failure made app-retryable, the
+     seam's own error stamp removed, `anthropicTier: 'lite'` demoting the task to
+     Haiku, the seam's default effort dropped to `low`, and the prose call-site
+     count in `anthropic.js`'s header set back to nine.
+
+   - **Live-schema check, before and after**, per this item's runbook:
+
+     ```
+     $ docker compose run --rm --no-deps -v "$PWD/api":/app -w /app \
+         api node test/live/smoke.js --cluster=research
+     live-schema smoke: 1 schema(s) × anthropic
+
+       ── research ──────────────────────────────── [anthropic]
+       ok       research.analyze                   claude-sonnet-5        accepted, output parses
+
+     1/1 accepted
+     ```
+
+     Byte-identical on `main` (before) and on the branch (after), exit 0 both
+     times — expected, since this PR touches no schema object, and run twice so
+     the sentence is evidence rather than an assumption. Read it as **schema
+     acceptance only**: `smoke.js` sends `effort: 'low'`, `max_tokens: 800` and
+     one sample, while this call site sends `effort: 'medium'` and 2600. The
+     n=141 probe above is what speaks to flip-readiness, and it is a separate
+     instrument for exactly that reason.
 
    Every group's schemas are already proven acceptable by item 3 — **except
    `proposals`, which carries the §4.7 reshape and is the reason that group is
