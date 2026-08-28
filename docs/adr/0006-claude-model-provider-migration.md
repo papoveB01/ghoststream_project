@@ -2166,7 +2166,14 @@ decomposition exists so that per-file spokes stay tractable.
      `test/costsTelemetry.test.js`), with `.env` and `ANTHROPIC_API_KEY` both
      present in the container. **399/399** as first shipped, with **twenty-two**
      deliberate mutations of
-     `src/`, each confirmed to redden the assertion it targets: the dropped
+     `src/`, each confirmed to redden the assertion it targets, plus **eleven
+     more in the fix round** — the two re-tierings that defeated the tautological
+     model assertion, a retry loop inside the seam's Gemini branch, the
+     `sdkRetried` stamp made unconditional, `x-should-retry: false` ignored, a
+     429 made non-transient, `run()`'s stamp reverted to the router constant, the
+     wrapper stood down, `hadPortfolio` dropped from the write, and the Sonnet
+     count broken from BOTH ends (the prose and the router). The first
+     twenty-two were: the dropped
      `DISPATCH_READY` entry, an invented `FLIP_BLOCKED` entry, an `ocr` task key
      appearing, `compare` wrongly declared ready, the wrong task key at the call
      site, a drifted telemetry label, the output budget, the temperature, the
