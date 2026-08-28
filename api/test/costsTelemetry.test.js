@@ -252,9 +252,10 @@ test('[TEXTUAL] the number of seam call sites is pinned, so prose has something 
   for (const file of walkJs(SRC)) {
     sites += seamSiteLabels(stripComments(fs.readFileSync(file, 'utf8'))).length;
   }
-  assert.strictEqual(sites, 9,
-    `${sites} aiCall.generateStructured call sites in src/, pinned at 9 (group 1: relevance x2, ` +
-    'preview, companyBrief; group 2: keypoints x3, assessment, battlecard). If you added or ' +
+  assert.strictEqual(sites, 10,
+    `${sites} aiCall.generateStructured call sites in src/, pinned at 10 (group 1: relevance x2, ` +
+    'preview, companyBrief; group 2: keypoints x3, assessment, battlecard; group 3: research). ' +
+    'If you added or ' +
     "moved one, update this number AND the prose that quotes it: anthropic.js's header, " +
     "models.js's DISPATCH_READY / group lists, and ADR-0006 §9 item 5.");
 
@@ -284,6 +285,44 @@ test('[TEXTUAL] the number of seam call sites is pinned, so prose has something 
     `anthropic.js's header claims ${quoted[1]} seam call sites; src/ has ${sites}. ` +
     "Fix whichever is wrong, then check the same number in models.js's DISPATCH_READY block " +
     'and ADR-0006 §9 item 5 — those three drifted apart in group 2 and had to be repaired by hand.');
+});
+
+test('the Sonnet-5 count in prose is COMPUTED from the router, not scraped', () => {
+  // A companion to the count above, and a different KIND of guard on purpose.
+  // That one is [TEXTUAL] — a regex over a comment — and it is why the sentence
+  // one line BELOW the number it pins was able to say "FOUR OF THE SEVEN LAND ON
+  // claude-sonnet-5" and then enumerate three, while the suite stayed green.
+  // Widening the regex would just move the edge; the fix is to derive the number
+  // from the thing it is a claim about.
+  //
+  // Which matters because that sentence is the operator-facing statement of
+  // "your temperature will be dropped after a flip": anthropic.js's
+  // NO_TEMPERATURE is per model, so the set of migrated keys landing on Sonnet 5
+  // IS the set whose determinism setting silently goes away.
+  const models = require(path.join(SRC, 'models.js'));
+  const sonnet = [...models.DISPATCH_READY]
+    .filter((task) => {
+      const t = models.TASKS[task];
+      const tier = (t && t.anthropicTier) || (t && t.tier);
+      return models.TIERS.anthropic[tier] === 'claude-sonnet-5';
+    })
+    .sort();
+  assert.deepStrictEqual(sonnet, ['battlecard', 'keypoints', 'research'],
+    'these are the migrated keys whose temperature is dropped after a flip');
+
+  const header = fs.readFileSync(path.join(SRC, 'anthropic.js'), 'utf8');
+  const WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7 };
+  const quoted = header.match(/(\w+) OF THE (\w+) LAND ON claude-sonnet-5/i);
+  assert.ok(quoted,
+    "anthropic.js's header no longer says '<N> OF THE <M> LAND ON claude-sonnet-5'. Re-point this " +
+    'match at the new wording rather than deleting it — the drift it catches (a count that ' +
+    'contradicts the router two lines under a guarded number) has already happened once.');
+  const claimed = WORDS[quoted[1].toLowerCase()] ?? Number(quoted[1]);
+  const outOf = WORDS[quoted[2].toLowerCase()] ?? Number(quoted[2]);
+  assert.strictEqual(claimed, sonnet.length,
+    `anthropic.js's header claims ${quoted[1]} keys on claude-sonnet-5; the router resolves ${sonnet.length} (${sonnet.join(', ')})`);
+  assert.strictEqual(outOf, models.DISPATCH_READY.size,
+    `anthropic.js's header says "of the ${quoted[2]}"; DISPATCH_READY holds ${models.DISPATCH_READY.size}`);
 });
 
 // ── 2. Claude usage accounting ──────────────────────────────────────────────

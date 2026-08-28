@@ -57,7 +57,8 @@ function toContents(contents) {
 // Claude id at Google's caches API (ADR-0006 §9 item 4). What prevents it today
 // is that `personas` is not in models.DISPATCH_READY, so providerFor() warns and
 // stays on Gemini — not that the set is empty, which it stopped being when group
-// 1 landed and is now six keys wide (groups 1 and 2, ADR-0006 §9 item 5).
+// 1 landed and is now seven keys wide (groups 1, 2 and 3's `research` half,
+// ADR-0006 §9 item 5).
 //
 // A CORRECT arena cutover never reaches this check. models.js states the rule on
 // DISPATCH_READY itself — a task joins the set in the same PR that migrates its

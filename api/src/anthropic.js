@@ -1,6 +1,6 @@
 // Anthropic client wrapper — the Claude half of the ADR-0006 provider migration.
 //
-// THIS MODULE CAN NOW MOVE REAL TRAFFIC. Six tasks are in models.DISPATCH_READY
+// THIS MODULE CAN NOW MOVE REAL TRAFFIC. Seven tasks are in models.DISPATCH_READY
 // (ADR-0006 §9 item 5) and every one of their call sites dispatches through
 // aiCall.js, so AI_PROVIDER_RELEVANCE=anthropic routes BOTH relevance call sites
 // into this file — checkDocRelevance, on every competitor document, and
@@ -8,16 +8,27 @@
 // at all. That is an environment change, not a code change.
 //
 //   group 1  relevance, preview, companyBrief
-//   group 2  keypoints, assessment, battlecard — NINE seam call sites in total
-//            now (four in group 1, five in group 2; count the
-//            generateStructured calls, not the functions holding them —
-//            knowledge/keypoints.js is one key over three of them), and the
-//            group-2 three are the first to reach a NON-Haiku tier:
-//            `keypoints` and `battlecard` carry anthropicTier 'flash', so they
-//            land on claude-sonnet-5, which is in NO_TEMPERATURE below. Their
-//            call sites still pass temperature (0.3), so a flip drops it here
-//            with the warning rather than 400ing — which is the whole reason
-//            that list is per-model and lives in this file.
+//   group 2  keypoints, assessment, battlecard
+//   group 3  research (the `ocr` half of that group is deferred to its own
+//            decision PR — see models.js)
+//
+//            TEN seam call sites in total now — four in group 1, five in group
+//            2, one in group 3. Count the generateStructured calls, not the
+//            functions holding them: knowledge/keypoints.js is one key over
+//            three of them, and knowledge/research.js is one key over one.
+//
+//            THREE OF THE SEVEN LAND ON claude-sonnet-5, which is in
+//            NO_TEMPERATURE below — the group-2 pair `keypoints` and
+//            `battlecard` by way of an anthropicTier override, and group 3's
+//            `research` because tier `flash` already resolves there on both
+//            providers. The other four are claude-haiku-4-5. All three still
+//            pass temperature (0.3), so a flip drops it here with the warning
+//            rather than 400ing — which is the whole reason that list is
+//            per-model and lives in this file. (This said FOUR and then listed
+//            three, one line under the guarded "TEN seam call sites" number and
+//            just outside its regex. The count is now COMPUTED from
+//            models.TASKS in costsTelemetry.test.js rather than scraped, so it
+//            cannot disagree with the router again.)
 //
 // TWO env gates, not one — the shorthand "one env var away" is true only while
 // the key happens to be set. providerFor() falls back to Gemini and warns unless
@@ -120,8 +131,22 @@
 //     on DEFAULT_TIMEOUT_MS below for the measurement that killed it. The SDK's
 //     own retries fire on FAST failures only; a slow generation gets the whole
 //     budget rather than being killed to make room for a retry of itself.
-//   - (2) is fixed by (3): the app layer no longer re-enters generate() on ANY
-//     Anthropic error, so there is no outer multiplication left to bound.
+//   - (2) is NARROWED by (3), not eliminated, and this line used to overclaim.
+//     "The app layer no longer re-enters generate() on ANY Anthropic error, so
+//     there is no outer multiplication left to bound" is false in two measured
+//     cases, both of which turn on `sdkRetried` being honestly false:
+//       • ANTHROPIC_MAX_RETRIES=0 — SDK_RETRIES_AT_ALL below makes every stamp
+//         false, so aiRetry classifies a 429 transient and an app-level wrapper
+//         re-enters generate() up to `tries` times. Measured: unset ⇒ 1 upstream
+//         attempt, =0 ⇒ 3. That is the correct behaviour (the retry has to live
+//         SOMEWHERE), but it is outer multiplication, and it multiplies the
+//         per-attempt bound below rather than a 120s constant.
+//       • a 429 carrying `x-should-retry: false`, at DEFAULT settings —
+//         sdkRetriesStatus subtracts it from the SDK's retryable set, so it
+//         reaches the app layer unretried and transient.
+//     Callers on a wall-clock-bounded route must therefore size for
+//     `tries × (ANTHROPIC_TIMEOUT_MS + maxRetries × retry-after)`, not for one
+//     attempt. knowledge/research.js's analyze() carries the worked example.
 //   - (3) is fixed in aiRetry.js, which reads the `provider`/`sdkRetried` stamp
 //     translateError() puts on errors leaving here instead of regexing a message
 //     we rewrote. Nothing the SDK already retried is retried again.

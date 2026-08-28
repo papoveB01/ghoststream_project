@@ -2,7 +2,7 @@
 //
 // Scrapes the prospect's own site (Firecrawl /map → /scrape on the high-value
 // pages) plus a handful of targeted web searches (Firecrawl /search), assembles
-// a numbered, source-tagged "dossier", and has Gemini turn it into sales-
+// a numbered, source-tagged "dossier", and has a model turn it into sales-
 // opportunity points mapped to THIS tenant's product portfolio & objectives.
 //
 // Fire-and-forget: `start(tenantId, companyId)` inserts a RUNNING row and runs
@@ -11,18 +11,43 @@
 // are reaped to FAILED on read so the UI doesn't spin forever.
 
 const db = require('../db');
-const gemini = require('../gemini');
 const semantics = require('../semantics');
 const web = require('./web');
 const keypoints = require('./keypoints');
 const apollo = require('./apollo');
-const costs = require('../costs');
 
-const MODEL = require('../models').modelFor('research');
+// One-shot provider seam (ADR-0006 §9 item 5, cutover group 3).
+//
+// ONE call site, one task key: analyze() below is the only model call in this
+// file, and `research` is the only key it resolves. That makes the migration
+// itself small — the interesting part of this group is not the swap, it is the
+// two ROUTES the one function serves (see the note above analyze()).
+//
+// The require-time `modelFor('research')` constant that used to sit here is
+// GONE, not moved. It froze the model at boot behind a routing decision — the
+// personas.js hazard §9 item 4 fixed, and the same freeze group 2 removed from
+// keypoints.js and assessment.js — so the id could outlive the provider choice
+// that produced it and the two could disagree. aiCall resolves provider and
+// model per call as a matched pair, fail-closed fallback included. The model
+// that SERVED the call now comes back out of the seam and is what gets stamped
+// into `prospect_research.models`, instead of a boot-time constant.
+//
+// GROUP 3 WAS SPLIT: this PR is the `research` half only. ADR-0006 §9 item 5
+// lists the group as `research` + `ocr`, but knowledge/ocr.js has no task key at
+// all, pins its Gemini tier deliberately, is free-text rather than structured
+// output (so the live schema harness structurally cannot cover it), and reaches
+// Gemini through the Files API, which this wrapper has no equivalent for. It is
+// its own decision PR — see the ADR entry.
+const aiCall = require('../aiCall');
 
 // Shared retry helper (ADR-0006 §7). Bound here with this module's label so
 // every call site below is unchanged; the classification that used to live in
 // a local copy of this function now happens once, in aiRetry.classify().
+//
+// KEPT, and re-decided rather than inherited: the seam does not retry (§9 item
+// 5 — every forLabel() binding lives in a caller), so moving the call site onto
+// it made the wrapper a live choice again. The per-ROUTE attempt budget that
+// choice produced is argued at analyze(), which is where both routes meet.
 const aiRetry = require('../aiRetry');
 const withRetry = aiRetry.forLabel('research');
 
@@ -306,22 +331,146 @@ const ANALYSIS_PROMPT =
   'CRITICAL — completely ignore website boilerplate: cookie/consent banners, "we use cookies", "we value/take your privacy", "we process your personal information in accordance with regulations", "by continuing to use this site", privacy policies, terms of use, navigation, footers, copyright lines. None of that is a signal — never quote, paraphrase, or build a point on it. ' +
   'If the dossier (minus boilerplate) is thin, return few or no opportunities. Do not pass off a generic company description as an "opportunity".';
 
+// ONE FUNCTION, TWO ROUTES WITH OPPOSITE LATENCY CONTRACTS. Both reach this one
+// call site, and one aiRetry label covers both, so the retry answer here is not
+// the same question group 2 answered per call site — it is one policy against
+// two contracts, and the tighter one is what it has to fit.
+//
+//   POST /research/:companyId            (knowledge/index.js) — FIRE-AND-FORGET.
+//     202 immediately; run() works in the background and flips the row to DONE /
+//     FAILED. Nobody holds a socket, and the research unit is PRE-CHARGED on
+//     admission — so a transient failure that is NOT retried costs the tenant a
+//     metered unit and leaves a FAILED row. Backoff is free; retry is valuable.
+//
+//   POST /research/:companyId/reanalyze  — SYNCHRONOUS and rep-facing. The
+//     request holds open until the model answers, behind nginx's 180s
+//     proxy_read_timeout (proxy/nginx.conf, the /api/ location). Past that bound
+//     nginx 504s while the handler runs on to completion: the row IS updated and
+//     the next page load shows it, but the rep sees an error for work that
+//     succeeded. This is the shape PR #51 found on proposals.js — a synchronous
+//     route inheriting a backoff bound nobody had sized for it.
+//
+// DECISION: KEEP THE DEFAULT POLICY (3 attempts, 30s backoff cap) FOR BOTH, and
+// it is a measurement rather than an inheritance. Measured 2026-08-28 by driving
+// this call site end to end against both live providers on all four real
+// dossiers in the estate (staging + production; ADR-0006 §9 item 5, group 3):
+//
+//   gemini-2.5-flash   p50 5.6s, max 6.0s per attempt (n=10)
+//   claude-sonnet-5    p50 8-22s, max 27.1s per attempt (n=141)
+//
+// THE ~78s FIGURE BELOW IS THE **GEMINI** BOUND, and only that. It is stated
+// first because Gemini serves 100% of this traffic today; it is NOT the bound
+// after a flip, and an earlier version of this note let it read as though it
+// were. The synchronous route's worst case on Gemini is 3 × 6s of generation
+// plus the sleeps. The sleeps are 2s + 4s normally and reach the 30s cap only
+// when Gemini's own error body suggests a delay that long (aiRetry's retryDelay
+// parser) — 3 × 6 + 60 = ~78s, inside the 180s window with room. Lowering the
+// cap the way proposals.js did would bound this route AND take the background
+// route's ability to honour a quota hint it has every reason to honour, for a
+// bound that is not being exceeded.
+//
+// WHAT WOULD CHANGE THE GEMINI BOUND: a single attempt averaging more than ~40s
+// stops fitting at 3 tries with the cap reached twice. Note the input side is
+// NOT what bounds it — `DOSSIER_CAP` (40,000 chars) is applied once inside
+// buildDossier, but appendSource concatenates onto dossier_md with no total cap
+// and effectiveDossier then appends up to 20 filed docs × 3,500 chars AFTER it.
+// A fresh run's ceiling is therefore ~111,000 chars, and a rep-augmented one has
+// none at all, against the 45,747-50,939 the 141 live calls actually sampled. An
+// earlier version of this comment said "the input side is bounded"; it is not,
+// and capping it is a follow-up rather than this PR's, because a .slice() here
+// changes what Gemini receives and breaks the parity property.
+//
+// THE CLAUDE BOUND IS DIFFERENT AND IS CONDITIONAL. classify()'s Anthropic
+// branch is `transient: !perDay && !sdkRetried && status === 429`, so a
+// truncation or a malformed answer takes ONE attempt — that part is
+// unconditional, and the test for this file asserts it rather than quoting it.
+// But a 429 is transient here whenever the SDK did not retry it, and there are
+// two ways for that to be true:
+//
+//   ANTHROPIC_MAX_RETRIES=0. anthropic.js gates its `sdkRetried` stamp on
+//     SDK_RETRIES_AT_ALL (= DEFAULT_MAX_RETRIES > 0) — deliberately, so a client
+//     told never to retry does not claim it did. Zero is a permitted value and
+//     anthropic.js's own DEFAULT_TIMEOUT_MS note RECOMMENDS it for user-facing
+//     routes. At 0, every 429 stamps sdkRetried:false, this wrapper takes 3
+//     attempts, and the synchronous route becomes 3 × ANTHROPIC_TIMEOUT_MS
+//     (120s) + 2s + 4s ≈ 366s against nginx's 180s. Measured: unset ⇒ 1 upstream
+//     attempt, =0 ⇒ 3.
+//   A 429 carrying `x-should-retry: false`, at DEFAULT settings. sdkRetriesStatus
+//     subtracts exactly that case from the SDK's retryable set, correctly — so
+//     aiRetry's "the SDK's retryable set is a superset of ours" is false for it,
+//     and it reaches this wrapper as transient.
+//
+// AND THE PER-ATTEMPT BOUND IS NOT 120s EITHER. The SDK's inter-retry sleep
+// takes no signal and parses `retry-after` unclamped, so the composed deadline
+// is only observed at the top of the next attempt: the real bound is
+// `ANTHROPIC_TIMEOUT_MS + maxRetries × retry-after`, unbounded above. Measured
+// on this branch: a 3s budget took 20.059s on a `retry-after: 20`.
+//
+// SO reanalyze IS THE SECOND ROUTE IN THE proposals.js CLASS, not an escapee
+// from it — a synchronous, rep-facing handler that nginx can 504 while it keeps
+// running, billing and writing. It is safe TODAY because Gemini serves it and
+// the Gemini arithmetic above holds. **ANTHROPIC_MAX_RETRIES >= 1 is therefore
+// part of the flip checklist for this task**, alongside AI_PROVIDER_RESEARCH —
+// .env.example and ADR-0006 §9 item 5 say the same, and cutoverGroup3.test.js
+// pins the upstream count at both settings so the precondition is asserted
+// rather than remembered.
+//
+// The retry now also covers the JSON PARSE, because the seam parses inside
+// generateStructured and the wrapper is outside it. That is the same deliberate
+// trade relevance.js made when it moved its parse inside withRetry: on Gemini a
+// malformed answer can now cost up to three metered generations instead of one,
+// and in exchange a re-generation can fix malformed JSON — the failure mode that
+// actually happens. The exposure is narrow: V8's SyntaxError quotes the WHOLE
+// input below a length threshold and only the first ten characters above it (the
+// "always exactly ten" rule this comment used to state is not what V8 does), and
+// of GEMINI_TRANSIENT_RE's alternatives only `503` and `overloaded` fit in a
+// ten-character excerpt. On Claude it changes nothing: aiCall stamps the
+// SyntaxError `provider: 'anthropic'`, and a parse error carries no 429.
 async function analyze(tenantId, name, dossier) {
   const context = await keypoints.tenantContextText(tenantId);
-  const ai = gemini.getClient();
   const prompt =
     `${ANALYSIS_PROMPT}\n\n` +
     (context
       ? `===OUR COMPANY (product portfolio & objectives)===\n${context}\n\n`
       : '===OUR COMPANY===\n(No product portfolio on file. Frame `products` as capability categories — e.g. "AI Wait Predictions", "Branch Orchestration" — and note in the summary that mapping to the actual catalogue requires the company\'s product lines to be added.)\n\n') +
     `===RESEARCH DOSSIER — ${name}===\n${dossier}`;
-  const resp = await withRetry(() => ai.models.generateContent({
-    model: MODEL,
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: { temperature: 0.3, maxOutputTokens: 2600, responseMimeType: 'application/json', responseSchema: ANALYSIS_SCHEMA, thinkingConfig: { thinkingBudget: 0 } },
+  // maxTokens 2600 IS A GEMINI-SIZED BUDGET, and a Gemini-sized budget is what
+  // put `keypoints` into models.FLIP_BLOCKED. So it was measured rather than
+  // assumed, at this exact call site, before this key shipped:
+  //
+  //   claude-sonnet-5, effort 'medium', thinking off, all four real dossiers in
+  //   the estate (staging Wibmo; production Ecobank / Justpalm / Papss card),
+  //   n = 141 → 0 truncations. Every response stop_reason 'end_turn'; 95% CI
+  //   (Clopper-Pearson) on 0/141 is 0% - 2.58%.
+  //
+  // THE HEADROOM IS THIN AND THAT IS THE PART WORTH CARRYING FORWARD, not the
+  // zero: output length is driven by how many opportunities the dossier
+  // supports, and it varies 2.8x across four prompts of near-identical size
+  // (peak output 861 / 2,041 / 1,138 / 2,406 tokens against the 2,600 budget —
+  // 2,406 / 861 = 2.79, and the largest is 92.5% of the budget. This said "~20x",
+  // which the four numbers printed beside it refute; the spread is real and the
+  // multiplier was not). A dossier richer than any we have today is the way
+  // this starts truncating, and on Claude a truncation THROWS (allowTruncation
+  // is unset, deliberately), so it is a FAILED run on the background route and a
+  // 502 on the synchronous one, not a silently short answer.
+  //
+  // Do NOT "fix" a future truncation by raising this number: it is
+  // provider-agnostic here, so raising it changes what Gemini receives and
+  // breaks the parity property groups 2 and 3 shipped on. Sizing per provider is
+  // the flip PR's problem, exactly as models.js says for `keypoints`.
+  const { parsed, usage, model } = await withRetry(() => aiCall.generateStructured({
+    task: 'research',
+    prompt,
+    responseSchema: ANALYSIS_SCHEMA,
+    maxTokens: 2600,
+    // Dropped on claude-sonnet-5 (anthropic.js's NO_TEMPERATURE), with the
+    // once-per-model+site warning — `research` is tier `flash`, which resolves
+    // to Sonnet 5 on Claude with no anthropicTier override needed. Kept because
+    // it is live on Gemini, which serves 100% of this traffic.
+    temperature: 0.3,
+    tenantId,
+    site: 'research.analyze',
   }));
-  costs.recordGemini(tenantId, 'research.analyze', MODEL, resp.usageMetadata);
-  const parsed = JSON.parse(resp.text);
   // Which [n] the model was actually shown. Read back off the dossier string
   // rather than the source array, because DOSSIER_CAP truncation can cut a
   // source's head off — one that was never visible can't legitimately be cited.
@@ -338,7 +487,11 @@ async function analyze(tenantId, name, dossier) {
     }))
     .filter((o) => o.analysis)
     .slice(0, 8);
-  return { summary: String(parsed.summary || '').trim() || null, opportunities, hadPortfolio: !!context, usage: resp.usageMetadata || null };
+  // `model` is the model that SERVED this call, handed back by the seam. It is
+  // what run() and reanalyze() stamp into prospect_research.models — the value
+  // the deleted require-time constant used to supply, and the reason that
+  // constant could disagree with the provider after a flip.
+  return { summary: String(parsed.summary || '').trim() || null, opportunities, hadPortfolio: !!context, usage: usage || null, model };
 }
 
 // ── orchestration ─────────────────────────────────────────────────────────
@@ -359,7 +512,10 @@ async function run(researchId, tenantId, companyId) {
     // (so the intel library feeds research). dossier_md keeps the auto sources
     // only — effectiveDossier re-merges current filed intel on each (re)analyze.
     const fullDossier = await effectiveDossier(tenantId, companyId, dossier);
-    const { summary, opportunities, hadPortfolio, usage } = await analyze(tenantId, name, fullDossier);
+    // THE FIRE-AND-FORGET ROUTE — the other half of the contract pair argued
+    // over analyze(). Nobody is on the socket here; the failure surfaces as a
+    // FAILED row, and the research unit was already charged on admission.
+    const { summary, opportunities, hadPortfolio, usage, model } = await analyze(tenantId, name, fullDossier);
     const opps = applyPins(opportunities, await pinnedTitlesForCompany(tenantId, companyId));
 
     await db.query(
@@ -369,7 +525,7 @@ async function run(researchId, tenantId, companyId) {
               models = $7, error = NULL, updated_at = now()
         WHERE id = $8`,
       [queryCount, slimSources.length, JSON.stringify(slimSources), dossier, summary,
-       JSON.stringify(opps), JSON.stringify({ analysis: MODEL, hadPortfolio, usage }), researchId]
+       JSON.stringify(opps), JSON.stringify({ analysis: model, hadPortfolio, usage }), researchId]
     );
     await persistSynthesisDoc(tenantId, companyId, name, summary, opps, researchId);
   } catch (err) {
@@ -400,7 +556,7 @@ async function start(tenantId, companyId) {
 }
 
 // ── Manual additions: append a source (URL or freeform note) to an existing
-// research row, and an explicit re-analyze that re-runs Gemini against the
+// research row, and an explicit re-analyze that re-runs the model against the
 // current dossier (auto sources + any manual additions). Keeps re-analysis
 // cheap and explicit so the rep can stack several adds and click once.
 
@@ -514,7 +670,11 @@ async function reanalyze(tenantId, companyId) {
   }
   // Re-analyze picks up newly filed intel (no web refetch) by re-merging it.
   const fullDossier = await effectiveDossier(tenantId, companyId, dossier);
-  const { summary, opportunities, hadPortfolio, usage } = await analyze(tenantId, c.rows[0].name, fullDossier);
+  // THE SYNCHRONOUS ROUTE. This one holds the rep's request open behind nginx's
+  // 180s proxy_read_timeout, where run() above answers 202 and works in the
+  // background — one call site, two contracts. The retry budget is deliberately
+  // the same for both and the arithmetic that says it fits is over analyze().
+  const { summary, opportunities, hadPortfolio, usage, model } = await analyze(tenantId, c.rows[0].name, fullDossier);
   const prevPinned = new Set((((r.rows[0] && r.rows[0].opportunities) || []).filter((o) => o && o.pinned)).map((o) => o.title));
   const opps = applyPins(opportunities, prevPinned);
   await db.query(
@@ -525,7 +685,7 @@ async function reanalyze(tenantId, companyId) {
             updated_at    = now()
       WHERE id = $1`,
     [run.id, summary, JSON.stringify(opps),
-     JSON.stringify({ analysis: MODEL, hadPortfolio, usage, reanalyzed: true })]
+     JSON.stringify({ analysis: model, hadPortfolio, usage, reanalyzed: true })]
   );
   await persistSynthesisDoc(tenantId, companyId, c.rows[0].name, summary, opps, run.id);
   return latest(tenantId, companyId);

@@ -156,7 +156,10 @@ test('group 2 is dispatch-ready — all three keys, because two of them share a 
   // matters most here: it shares knowledge/preview.js with an ALREADY-migrated
   // key, which is the same one-file-two-keys shape as assessment.js — and the
   // opposite answer, because its call site has not moved.
-  for (const t of ['compare', 'research', 'discovery']) {
+  // (`research` used to be in this list and moved out in group 3 — a cutover
+  // group's "not yet" list is a claim with a shelf life, which is why it is
+  // pinned here rather than left as prose.)
+  for (const t of ['compare', 'discovery']) {
     assert.ok(!models.DISPATCH_READY.has(t),
       `${t}'s call site still speaks to the Gemini SDK — adding it would 404 every call`);
   }
