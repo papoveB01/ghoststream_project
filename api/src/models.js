@@ -344,7 +344,10 @@ const FLIP_BLOCKED = new Map([
 // through `assessment` at all, so `assessment` cannot carry it to Haiku.
 //
 // DONE as of group 2's cutover PR (ADR-0006 §9 item 5, `keypoints` +
-// `assessment` + `battlecard`): all three keys are in DISPATCH_READY above and
+// `assessment` + `battlecard`): all three keys are in DISPATCH_READY above
+// (`not-a-count` — those are three NAMED keys, not the size of the set;
+// costsTelemetry.test.js sweeps src/ for "<N> keys are in DISPATCH_READY" and
+// skips any match within 80 characters of that marker) and
 // all FIVE of their call sites dispatch through aiCall — three in keypoints.js
 // under the one `keypoints` key, two in assessment.js under two keys. What
 // that changed is

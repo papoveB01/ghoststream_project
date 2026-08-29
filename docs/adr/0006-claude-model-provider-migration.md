@@ -2157,10 +2157,21 @@ decomposition exists so that per-file spokes stay tractable.
      pre-fix SHA `d5e5e83`, while repointing the Gemini `flash` tier entry
      (`models.js:39`) was NOT — `providerRouter.test.js`'s "an unknown task falls
      back to the flash tier of its provider" already caught it (399/398/1), so
-     that one defeated the tautological assertion and not the branch (re-verified
-     2026-08-29; that test pins the literal `gemini-2.5-flash`, so it bites the
-     tier entry and not `FLASH`'s own default at `models.js:33`, which
-     `GEMINI_MODEL` masks in both environments) — retry tests that
+     that one defeated the tautological assertion and not the branch.
+     **The mask that makes this look narrower than it is belongs to the local
+     command, not to the merge gate**: `providerRouter.test.js` and group 3's own
+     `[GEMINI-PARITY]` pin both compare against the literal `gemini-2.5-flash`,
+     and `.github/workflows/ci.yml`'s `api-tests` job sets only `REDIS_HOST`,
+     `REDIS_PORT`, `JWT_SECRET`, `ENCRYPTION_KEY` and `NODE_ENV` — **no
+     `GEMINI_MODEL`** — so on CI the `models.js:33` default is live and mutating
+     it reds: **399/398/1 at `d5e5e83`** and **403/401/2 at `ad170f9`**, the
+     second failure being the `[GEMINI-PARITY]` pin. What hides it is the
+     documented local run (`docker compose run`, which injects `.env`) and the
+     two deployed containers — and they hide it only because `GEMINI_MODEL`
+     happens to be set to the *identical* string `gemini-2.5-flash`. Any other
+     value reds both pins with no mutation at all, which is the residual
+     `cutoverGroup3.test.js:364-368` records from the other side. Re-verified
+     2026-08-29 — retry tests that
      counted seam invocations rather than upstream requests (a loop inside the
      seam's Gemini branch is 6 metered generations for one logical call and stayed
      green), `run()` being executed by **no test in the entire suite** (reverting
@@ -2274,28 +2285,46 @@ fourth cannot be fixed on the Claude side at all without moving Gemini.)*
   input cap suggests.
 
 - **The OUTPUT side has no bound in the schema either: "up to 8 opportunities"
-  is prompt text, not `maxItems`.** `ANALYSIS_SCHEMA.opportunities`
-  (`knowledge/research.js:304`) is an unbounded array — the "Up to 8" lives in
-  the property `description` and in `ANALYSIS_PROMPT`, and the real enforcement,
-  `.slice(0, 8)` at `research.js:489`, runs **after** the model has generated
-  and been billed for however many it returned. At roughly 300 output tokens per
-  opportunity, eight of them land at ~2,500 of the 2,600 `maxTokens` budget. So
-  what drives truncation at this call site is **how many opportunities the
-  material supports**, not how long the input is — so the input-side entry above
-  does not bound it, and the `maxTokens` comment at `research.js:437` is saying
+  is one clause of one property description.** `ANALYSIS_SCHEMA.opportunities`
+  (`knowledge/research.js:304`) is an unbounded array, and the cap exists in
+  **exactly one place in the whole call**: the words "Up to 8 opportunities" at
+  the head of that property's `description` (`research.js:306`).
+  `ANALYSIS_PROMPT` — 10 lines of instruction, `research.js:323-332` — does not
+  state it at all; its only quantity language is "Lead with the strongest plays"
+  and "If the dossier … is thin, return few or no opportunities". The real
+  enforcement, `.slice(0, 8)` at `research.js:489`, runs **after** the model has
+  generated and been billed for however many it returned. And eight would not
+  fit: fitted over the 33 confidence-pass calls that record an opportunity
+  count, output is **`132 + 311 × nOpps` tokens**, so eight lands at **~2,620
+  against a 2,600 budget — over it, not inside it** (the same rows' mean of 345
+  output tokens per opportunity puts eight at ~2,892). The schema permits an
+  answer the budget cannot hold; what has kept that theoretical is that no
+  dossier has yet supported more than six. What drives truncation at this call
+  site is therefore **how many opportunities the material supports**, not how
+  long the input is — which is why the input-side entry above does not bound it,
+  and why the `maxTokens` comment at `research.js:437` is saying
   the same thing when it records a 2.8× output spread across four prompts of
   near-identical size. Measured, and it is the measurement that identifies the
   driver: **0 truncations in 141 live calls** (implementer, four real dossiers)
-  plus **0 in a further 120 independent calls** (confidence pass — 84 at the
-  real prompt shape and 36 at 2.6× the input; peak 2,205 / 2,600 = **84.8%** of
-  budget, at 2–6 opportunities observed and never >8), and the peak went **down**
-  at the top of the input range, because output tracks opportunity count rather
-  than input length. **Why it is not fixed here:** `ANALYSIS_SCHEMA` is
+  plus **0 in a further 120 independent calls** (confidence pass — 84 at the real
+  prompt shape and 36 at 2.6× the input). The two arms measured different things
+  and are not interchangeable: the **peak of 2,205 / 2,600 = 84.8%** of budget is
+  a real-shape row, and those 84 calls record no opportunity count at all, while
+  the opportunity band comes from the other arm — 33 of its 36 rows carry a
+  count, running **0–6** (0:4, 1:4, 2:8, 3:3, 5:12, 6:2), never 7 or 8. The peak
+  also went **down** at the top of the input range, because output tracks
+  opportunity count rather than input length. **Why it is not fixed here:** `ANALYSIS_SCHEMA` is
   provider-agnostic at that call site, so adding `maxItems` changes what
   **Gemini** receives — Gemini serves 100% of this traffic — and breaks the
   parity property group 3 shipped on, exactly as raising `maxTokens` would. It
   belongs with the per-provider sizing work in the flip PR, alongside the same
-  file's `maxTokens` note.
+  file's `maxTokens` note. **That reason is human-held, not enforced, and this
+  entry leans on it:** `cutoverGroup3.test.js`'s `[GEMINI-PARITY]` assertion
+  compares the captured request's `responseSchema` against
+  `research.ANALYSIS_SCHEMA` **by identity**, so adding `maxItems` moves both
+  sides together and the pin stays green — the same tautology class F01/F02
+  exposed on the `model` field, still live on the schema field beside it. Pinning
+  the schema's shape there is PR #58's own follow-up, not this entry's.
 
 - **`kb_documents.metadata` is written as a whole column by three writers that
   each snapshot it first** (raised 2026-08-14, PR #57 review; **deliberately not
