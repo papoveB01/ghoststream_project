@@ -2734,10 +2734,17 @@ those carry their own provenance and dates.)*
 
   The one still outstanding is the CALLER's — `knowledge/parsers.js`'s OCR block
   still says the fallback "returns null on any failure, in which case we keep
-  the short result and let the caller raise the usual error". That file *is*
-  untouched by the PR that wrote this entry (it is neither the decision nor a
-  comment that PR had reason to open), so it is listed here as the site to fix
-  with the defect itself.
+  the short result and let the caller raise the usual error". The first version
+  of this entry deferred it on the grounds that the file was untouched by the
+  PR; **that is no longer true** — the same PR later added the §4.8 provenance
+  marker at `parsers.js:63` — and a false excuse inside the entry that catalogues
+  false statements is the one place it cannot stand. The real reason, which does
+  not expire: unlike the other three, that sentence describes the CALLER's
+  contract with `ocrPdf`, and that contract is exactly what changes when the
+  truncation defect is fixed. Whether a truncated transcription starts returning
+  `null` (today's loud path fires), or is stored with a flag, or is continued
+  with a second call, this comment has to be rewritten to whichever was chosen —
+  so writing it twice is the only alternative to writing it once, with the fix.
 
   It is named here because **§4.8 depends on the reader knowing it.** That
   subsection argues from a failure asymmetry — OCR fails loudly today, a
