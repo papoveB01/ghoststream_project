@@ -618,12 +618,43 @@ decision gets reversed by accident — and it fails if the call reaches no Gemin
 client at all, i.e. a swap onto another SDK.
 
 All three were confirmed able to fail on 2026-08-29, each by the mutation it
-exists to catch, with the rest of the suite green. **One gap is stated rather
-than implied:** a branch keyed on an env var the test does not set resolves
-Gemini under the test and Claude in production; no executing guard can enumerate
-env names it was never given, so that one is a reviewer's catch. Reversing this
-decision in code means changing that test, and the honest version of the claim
-is that it cannot happen *quietly* — not that it cannot happen.
+exists to catch. **Only one of the three fails alone**, and the difference is
+worth stating precisely in a subsection whose subject is a guard that overstated
+itself. Measured, on a 406-test suite:
+
+| mutation | result | which tests |
+| --- | --- | --- |
+| resolve the model **per call** inside `generateFromParts`, constant untouched | 405 pass, **1 fail** | assertion 3 |
+| add `'ocr'` to `DISPATCH_READY` | 401 pass, **5 fail** | assertion 2, plus *"membership in DISPATCH_READY is eligibility, not a flip"*, the Sonnet-count and `DISPATCH_READY`-size prose sweeps, and *"the shipped set survives the only test that rewrites the whole set"* |
+| add an `ocr` key to `models.TASKS` | 404 pass, **2 fail** | assertion 1, plus assertion 3's closing check that no key appeared while it resolved |
+
+The wider blast radius of the last two is a property of those sets being pinned
+in several places, **not** evidence that assertions 1 and 2 are strong: they are
+keyed on a string and say nothing about `knowledge/ocr.js`. Assertion 3 is the
+one that fences the file, and it is also the one whose mutation nothing else
+notices.
+
+**Two gaps are stated rather than implied**, both measured green against the
+guard as it stands:
+
+- a branch keyed on an env var the test does not set resolves Gemini under the
+  test and Claude in production. No executing guard can enumerate env names it
+  was never given. The strongest proposal for closing it — pinning the *set* of
+  `process.env` names `knowledge/ocr.js` reads, which is bounded and reds only
+  on a visible diff — was considered and **declined**: string-concatenated
+  indirection walks through it, and it is the source-text-scrape form whose
+  failures §10 and §9 item 5 already document three generations of;
+- a decoy: one throwaway Gemini call left on `OCR_MODEL` while the real
+  transcription goes to `anthropic.generate`. The guard proves a Gemini call
+  happened carrying a Gemini id; it does not prove that call carried the PDF.
+  Closing it means asserting the request's *contents*, which is more test logic
+  than a deliberate-only shape earns.
+
+The first is the shape a careless port takes; the second has to be built on
+purpose. Both are a reviewer's catch — a new provider env read, or a second
+model call, appearing in a file whose whole subject is that it does neither.
+Reversing this decision in code means changing that test, and the honest version
+of the claim is that it cannot happen *quietly* — not that it cannot happen.
 
 ## 5. Revised unit-cost model (amends ADR-0004 §3.1–§3.2)
 

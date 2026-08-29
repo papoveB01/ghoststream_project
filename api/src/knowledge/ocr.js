@@ -76,11 +76,24 @@ const { TIERS } = require('../models');
 //      exported constant alone walks straight past. It also fails if the call
 //      reaches no Gemini client at all, i.e. a swap onto another SDK.
 //
-// The gap it does NOT close, so nobody has to rediscover it: a branch keyed on
-// an env var the test does not set (`KB_OCR_PROVIDER === 'anthropic' ? …`)
-// resolves Gemini under the test and Claude in production. No executing guard
-// can enumerate env names it was never told about. A new provider env read
-// appearing in this file is a reviewer's catch, not a test's.
+// TWO gaps it does NOT close, named so nobody has to rediscover them — both
+// measured green against the guard as it stands:
+//
+//   a. a branch keyed on an env var the test does not set
+//      (`KB_OCR_PROVIDER === 'anthropic' ? …`) resolves Gemini under the test
+//      and Claude in production. No executing guard can enumerate env names it
+//      was never told about;
+//   b. a decoy — one throwaway Gemini call left on OCR_MODEL here while the real
+//      transcription goes to anthropic.generate. The guard proves a Gemini call
+//      HAPPENED carrying a Gemini id, not that that call carried the PDF.
+//
+// (a) is the shape a careless port would take; (b) has to be built on purpose.
+// The strongest fix offered for (a) — pinning the SET of process.env names this
+// file reads — was considered and declined: `process.env['KB_' + 'OCR_PROVIDER']`
+// defeats it, and it is the source-scrape form whose failures this migration has
+// documented three times over. So: a new provider env read, or a second model
+// call, appearing in this file is a REVIEWER's catch. The honest claim is that
+// §4.8 cannot be reversed here QUIETLY — not that it cannot be reversed.
 const OCR_MODEL = process.env.GEMINI_OCR_MODEL || TIERS.gemini.flash;
 
 // Gemini caps a single request payload at ~20MB. Base64 inflates bytes ~33%, so

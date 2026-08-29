@@ -329,19 +329,44 @@ test('group 3 is dispatch-ready for `research`, and only for `research`', () => 
 //     Indifferent to WHERE the id came from — constant, per-call, router,
 //     override — so it covers shapes 1-3 alike. It also fails if the request
 //     reaches no Gemini client at all, which is the only way to notice a port
-//     onto another SDK; a "which id" assertion alone would pass vacuously.
+//     onto another SDK. That assertion is load-bearing rather than decorative:
+//     weaken it to the id check alone and a full Anthropic-SDK port is GREEN,
+//     one test-insertion away — at this block's current position the port
+//     happens to throw a TypeError on an empty geminiCalls, but move the block
+//     after the research tests and the array is already populated, so the
+//     weakened guard reads someone else's call and passes.
+//
+//     Pinning the count to `before + 1` is what makes reading
+//     `geminiCalls[length - 1]` sound: it proves the entry IS the call ocrPdf
+//     made, so the assertion does not depend on where this block sits.
 //
 // WHAT IT STILL DOES NOT COVER, stated rather than implied, because the first
 // version of this comment claimed to cover "any env var it does not name" and
-// that is false: a per-call branch keyed on an env var this test does not SET
-// resolves Gemini here and Claude in production —
-// `model: process.env.KB_OCR_PROVIDER === 'anthropic' ? 'claude-opus-5' : OCR_MODEL`
-// is green at 13/13 against this test as written. No executing guard can close
-// that, because the space of env names is unbounded and the test can only set
-// names it knows. What closes it is a reviewer seeing a new env read appear in
-// a 150-line file whose entire subject is that it does not branch on provider —
-// which is a diff a human looks at, and is why this limit is written down here
-// instead of being papered over with a source-text scrape that would rot.
+// that is false. TWO shapes survive it, both measured, both green:
+//
+//   a. A per-call branch keyed on an env var this test does not SET —
+//      `model: process.env.KB_OCR_PROVIDER === 'anthropic' ? 'claude-opus-5' : OCR_MODEL`
+//      resolves Gemini here and Claude in production: 13/13.
+//   b. A DECOY: leave one throwaway Gemini call on OCR_MODEL in
+//      generateFromParts and send the real transcription to anthropic.generate.
+//      The count is still exactly `before + 1` and the id on it is still a
+//      `gemini-` one: 13/13. The guard proves a Gemini call HAPPENED carrying a
+//      Gemini id; it does not prove that call carried the PDF.
+//
+// (a) is the accidental shape and (b) is a deliberate one, which is why neither
+// changes the decision to stop here. No executing guard can close (a): the space
+// of env names is unbounded and a test can only set names it knows. The
+// strongest counter-proposal — deepStrictEqual over the SET of process.env reads
+// in this one file, which is bounded and reds only on a visible diff — was
+// considered and declined: `process.env['KB_' + 'OCR_PROVIDER']` walks through
+// it, and it is the source-text-scrape form this repo has now watched rot
+// through three generations of prose guard. Closing (b) means asserting the
+// request carried the document, which is more test logic than the risk earns.
+//
+// What closes both is a reviewer seeing a new env read, or a second model call,
+// appear in a file whose entire subject is that it does neither — a diff a human
+// looks at. Hence: this decision cannot be reversed QUIETLY. Not that it cannot
+// be reversed.
 //
 // Both assert the PROVIDER FAMILY, not a literal id, so a legitimate
 // GEMINI_MODEL / GEMINI_OCR_MODEL override does not red them — a Gemini id is a
