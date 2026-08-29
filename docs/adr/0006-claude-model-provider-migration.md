@@ -2150,7 +2150,28 @@ decomposition exists so that per-file spokes stay tractable.
      ARGUMENT**: the conditional Claude retry bound above (four passes reproduced
      it independently), a `[GEMINI-PARITY]` model assertion that compared the wire
      value against a live re-derivation of the function that produced it — a
-     tautology two different re-tierings walked through green — retry tests that
+     tautology two different re-tierings walked through green — **only one of
+     which escaped the branch as a whole**, and this entry read as though both
+     had: re-tiering `research` flash→lite on the Gemini side with
+     `anthropicTier: 'flash'` preserving Claude was green on all 399 tests at the
+     pre-fix SHA `d5e5e83`, while repointing the Gemini `flash` tier entry
+     (`models.js:39`) was NOT — `providerRouter.test.js`'s "an unknown task falls
+     back to the flash tier of its provider" already caught it (399/398/1), so
+     that one defeated the tautological assertion and not the branch.
+     **The mask that makes this look narrower than it is belongs to the local
+     command, not to the merge gate**: `providerRouter.test.js` and group 3's own
+     `[GEMINI-PARITY]` pin both compare against the literal `gemini-2.5-flash`,
+     and `.github/workflows/ci.yml`'s `api-tests` job sets only `REDIS_HOST`,
+     `REDIS_PORT`, `JWT_SECRET`, `ENCRYPTION_KEY` and `NODE_ENV` — **no
+     `GEMINI_MODEL`** — so on CI the `models.js:33` default is live and mutating
+     it reds: **399/398/1 at `d5e5e83`** and **403/401/2 at `ad170f9`**, the
+     second failure being the `[GEMINI-PARITY]` pin. What hides it is the
+     documented local run (`docker compose run`, which injects `.env`) and the
+     two deployed containers — and they hide it only because `GEMINI_MODEL`
+     happens to be set to the *identical* string `gemini-2.5-flash`. Any other
+     value reds both pins with no mutation at all, which is the residual
+     `cutoverGroup3.test.js:364-368` records from the other side. Re-verified
+     2026-08-29 — retry tests that
      counted seam invocations rather than upstream requests (a loop inside the
      seam's Gemini branch is 6 metered generations for one logical call and stayed
      green), `run()` being executed by **no test in the entire suite** (reverting
@@ -2223,9 +2244,10 @@ Not in scope for any PR above: embeddings (§4.2), `capture/`, `mcp/`, any
 
 ## 10. Open questions / follow-ups
 
-*(The three below were raised by group 3's review round, 2026-08-28, and are
-deliberately NOT fixed in that PR — each is its own reviewable concern and two of
-them change files group 3 does not touch.)*
+*(The four below were raised by group 3's review round and its confidence pass,
+2026-08-28, and are deliberately NOT fixed in that PR — each is its own
+reviewable concern, two of them change files group 3 does not touch, and the
+fourth cannot be fixed on the Claude side at all without moving Gemini.)*
 
 - **`stop_reason: 'model_context_window_exceeded'` returns a truncated answer as
   a SUCCESS.** `anthropic.generate` guards `refusal` and `max_tokens` and treats
@@ -2262,6 +2284,51 @@ them change files group 3 does not touch.)*
   on. It also means the truncation measurement's headroom is thinner than the
   input cap suggests.
 
+- **The OUTPUT side has no bound in the schema either: "up to 8 opportunities"
+  is one clause of one property description.** `ANALYSIS_SCHEMA.opportunities`
+  (`knowledge/research.js:304`) is an unbounded array, and the cap exists in
+  **exactly one place in the whole call**: the words "Up to 8 opportunities" at
+  the head of that property's `description` (`research.js:306`).
+  `ANALYSIS_PROMPT` — 10 lines of instruction, `research.js:323-332` — does not
+  state it at all; its only quantity language is "Lead with the strongest plays"
+  and "If the dossier … is thin, return few or no opportunities". The real
+  enforcement, `.slice(0, 8)` at `research.js:489`, runs **after** the model has
+  generated and been billed for however many it returned. And eight would not
+  fit: fitted over the 33 confidence-pass calls that record an opportunity
+  count, output is **`132 + 311 × nOpps` tokens**, so eight lands at **~2,620
+  against a 2,600 budget — over it, not inside it** (the same rows give ~347
+  tokens per opportunity as Σ output ÷ Σ opportunities, and 363 as the mean of
+  the per-call ratios, putting eight at **2,780–2,900 depending on the
+  estimator**; all three exceed the 2,600 budget, so the conclusion does not
+  turn on the choice). The schema permits an
+  answer the budget cannot hold; what has kept that theoretical is that no
+  dossier has yet supported more than six. What drives truncation at this call
+  site is therefore **how many opportunities the material supports**, not how
+  long the input is — which is why the input-side entry above does not bound it,
+  and why the `maxTokens` comment at `research.js:437` is saying
+  the same thing when it records a 2.8× output spread across four prompts of
+  near-identical size. Measured, and it is the measurement that identifies the
+  driver: **0 truncations in 141 live calls** (implementer, four real dossiers)
+  plus **0 in a further 120 independent calls** (confidence pass — 84 at the real
+  prompt shape and 36 at 2.6× the input). The two arms measured different things
+  and are not interchangeable: the **peak of 2,205 / 2,600 = 84.8%** of budget is
+  a real-shape row, and those 84 calls record no opportunity count at all, while
+  the opportunity band comes from the other arm — 33 of its 36 rows carry a
+  count, running **0–6** (0:4, 1:4, 2:8, 3:3, 5:12, 6:2), never 7 or 8. The peak
+  also went **down** at the top of the input range, because output tracks
+  opportunity count rather than input length. **Why it is not fixed here:** `ANALYSIS_SCHEMA` is
+  provider-agnostic at that call site, so adding `maxItems` changes what
+  **Gemini** receives — Gemini serves 100% of this traffic — and breaks the
+  parity property group 3 shipped on, exactly as raising `maxTokens` would. It
+  belongs with the per-provider sizing work in the flip PR, alongside the same
+  file's `maxTokens` note. **That reason is human-held, not enforced, and this
+  entry leans on it:** `cutoverGroup3.test.js`'s `[GEMINI-PARITY]` assertion
+  compares the captured request's `responseSchema` against
+  `research.ANALYSIS_SCHEMA` **by identity**, so adding `maxItems` moves both
+  sides together and the pin stays green — the same tautology class F01/F02
+  exposed on the `model` field, still live on the schema field beside it. Pinning
+  the schema's shape there is PR #58's own follow-up, not this entry's.
+
 - **`kb_documents.metadata` is written as a whole column by three writers that
   each snapshot it first** (raised 2026-08-14, PR #57 review; **deliberately not
   fixed there** — that PR is a data-loss fix, and this is a concurrency
@@ -2290,6 +2357,33 @@ them change files group 3 does not touch.)*
   `knowledge/index.js`'s `POST /documents/:id/keypoints` is **unmetered and
   unrestricted** while triggering up to four model calls per click, unlike every
   other rep-facing generate path.
+
+- **The prose-count guards are on their FOURTH generation, and the fifth must
+  not be another regex** (recorded 2026-08-29, PR #59's confidence pass).
+  `costsTelemetry.test.js` pins three numbers that live in prose as well as in
+  code — the seam call-site count, how many DISPATCH_READY keys land on Sonnet
+  5, and the size of DISPATCH_READY. Each generation closed the previous
+  generation's escapes, and there are four: (1) one canonical file, first match
+  only; (2) every file under `src/`, two hard-coded wordings; (3) a claim SHAPE
+  (count token, assignment verb, model) swept over all of `src/`; (4) that shape
+  with its floor anchored to the canonical phrase, its `not-a-count` opt-out
+  scoped to the matched sentence and every use of it pinned by value, and
+  `.cjs`/`.mjs` included in the sweep. An independent pass defeated (3) in **at
+  least eight ways** — the ones reconstructible from its report, which counted
+  eleven: `dispatch to` and `route to` (the verbs `anthropic.js` and `aiCall.js`
+  already use about this mechanism in their own opening paragraphs, so the most
+  likely *accidental* restatement is also an escaping one), `are served by`,
+  `are mapped to`, a single `.` anywhere in the filler, `half-dozen`, `Sonnet5`
+  and `call-sites`. The shape rule and
+  the proximity rule it was chosen over are **enumeration with different blast
+  radii, not different classes**: proximity reds on today's live-probe tables,
+  and the shape will red on a plausible future row of that same table with the
+  wrong diagnosis and `not-a-count` as its only remedy. **Decision: the next
+  time this drifts, delete the prose copies so the number lives once and is
+  derived, or move it into a structured token the test parses exactly
+  (`@count sonnetKeys 3`) with the prose pointing at that.** Not implemented in
+  #59 — it changes how these files are written, which is its own reviewable
+  concern.
 
 - **Measure the engagement path's real prompt mix, per leg** (raised
   2026-08-05 — the highest-value measurement left, ahead of the output question

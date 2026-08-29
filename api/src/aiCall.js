@@ -73,8 +73,15 @@
 //                 actually flip today into a temperature drop. This list said
 //                 `{keypoints, battlecard}` after group 3 landed, which sent
 //                 exactly that operator looking for their key and not finding
-//                 it. The count is now computed from the router in
-//                 costsTelemetry.test.js.
+//                 it. The count is computed from the router in
+//                 costsTelemetry.test.js, which sweeps every file under src/
+//                 for sentences OF THIS SHAPE — a count, an assignment verb, the
+//                 model — so this line is checked, not just anthropic.js's. It
+//                 did not start there: it read anthropic.js's first match only,
+//                 and THIS line was set to FIVE with the suite green at 403/403.
+//                 A differently-worded restatement can still escape the shape;
+//                 the guard is a tripwire on the phrasings we use, not a proof,
+//                 and that test says so in the same words.
 //   effort        Claude only. Validated here against anthropic.js's own set so
 //                 a bad value fails at the seam on either provider rather than
 //                 passing silently on Gemini and 400ing after the flip — see

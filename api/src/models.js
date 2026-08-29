@@ -157,8 +157,11 @@ const DEFAULT_PROVIDER = 'gemini';
 // that changes this set deliberately greps for it, fixes both pins in the same
 // pass and goes green first try, never seeing either one. That PR is the reader
 // this note is for. costsTelemetry.test.js pins the seam CALL-SITE COUNT, and
-// checks it against the number anthropic.js's header quotes, because a count
-// living in prose is the half of this a set-equality assertion cannot see.
+// checks it against every prose copy of that number it can find — it sweeps
+// ALL of src/, not just anthropic.js's header, because a restatement in THIS
+// block was one of three that were green against the header-only version. It
+// pins the size of DISPATCH_READY quoted in prose the same way. A count living
+// in prose is the half of this a set-equality assertion cannot see.
 const DISPATCH_READY = new Set([
   'relevance', 'preview', 'companyBrief',      // group 1
   'keypoints', 'assessment', 'battlecard',     // group 2
@@ -344,7 +347,12 @@ const FLIP_BLOCKED = new Map([
 // through `assessment` at all, so `assessment` cannot carry it to Haiku.
 //
 // DONE as of group 2's cutover PR (ADR-0006 §9 item 5, `keypoints` +
-// `assessment` + `battlecard`): all three keys are in DISPATCH_READY above and
+// `assessment` + `battlecard`): all three keys are in DISPATCH_READY above
+// (`not-a-count` — those are three NAMED keys, not the size of the set;
+// costsTelemetry.test.js sweeps src/ for "<N> keys are in DISPATCH_READY" and
+// skips a match whose own sentence, bounded by `.` or `;`, carries that marker.
+// The marker alone is not enough: every opt-out is also pinned by value in that
+// file, so adding one is a diff someone has to approve) and
 // all FIVE of their call sites dispatch through aiCall — three in keypoints.js
 // under the one `keypoints` key, two in assessment.js under two keys. What
 // that changed is

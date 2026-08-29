@@ -28,7 +28,13 @@
 //            three, one line under the guarded "TEN seam call sites" number and
 //            just outside its regex. The count is now COMPUTED from
 //            models.TASKS in costsTelemetry.test.js rather than scraped, so it
-//            cannot disagree with the router again.)
+//            cannot disagree with the router again — and that guard matches
+//            EVERY sentence of this shape in EVERY file under src/, not the
+//            first match in this one. Three narrowings were walked through
+//            green before they were closed: a restatement two lines below this
+//            sentence, aiCall.js's twin of it, and the same claim phrased with
+//            a different verb. A fourth phrasing could still escape; the test
+//            states its own limits rather than claiming to cover English.)
 //
 // TWO env gates, not one — the shorthand "one env var away" is true only while
 // the key happens to be set. providerFor() falls back to Gemini and warns unless
