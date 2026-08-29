@@ -2688,13 +2688,21 @@ those carry their own provenance and dates.)*
   `docs/code-review-2026-07-29.md:163` — *"OCR silently truncated at 16K tokens
   and stored READY"* — and has not been fixed.
 
-  **Three comments state the false absolute, and only two are corrected here.**
-  `knowledge/ocr.js`'s header and §4.8 reason 6 now bound the claim; the caller's
-  does not — `knowledge/parsers.js`'s OCR block still says the fallback "returns
-  null on any failure, in which case we keep the short result and let the caller
-  raise the usual error". That file is untouched by the PR that wrote this entry
-  (it is neither the decision nor a comment that PR had reason to open), so it is
-  listed here as the third site to fix with the defect itself.
+  **Four comments state the false absolute, and three are corrected here.**
+  `knowledge/ocr.js`'s header, §4.8 reason 6, and `ocrPdf`'s own return-contract
+  line (`knowledge/ocr.js`, *"Returns extracted text (form-feed-separated pages)
+  or null on any failure"*) now bound the claim. The fourth was miscounted as
+  three in the first version of this entry, which listed only the header: the
+  return-contract line sits 173 lines below the header that contradicts it, in
+  the very file the PR rewrites, so the "untouched by this PR" excuse never
+  applied to it.
+
+  The one still outstanding is the CALLER's — `knowledge/parsers.js`'s OCR block
+  still says the fallback "returns null on any failure, in which case we keep
+  the short result and let the caller raise the usual error". That file *is*
+  untouched by the PR that wrote this entry (it is neither the decision nor a
+  comment that PR had reason to open), so it is listed here as the site to fix
+  with the defect itself.
 
   It is named here because **§4.8 depends on the reader knowing it.** That
   subsection argues from a failure asymmetry — OCR fails loudly today, a

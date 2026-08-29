@@ -182,7 +182,16 @@ async function ocrViaFilesApi(client, buffer, mimeType, tenantId = null) {
   }
 }
 
-// Returns extracted text (form-feed-separated pages) or null on any failure.
+// Returns extracted text or null. NOT "null on any failure": null on the HARD
+// failures only (no key, no client, empty buffer, oversized-upload trouble,
+// model error, empty result). A response truncated at OCR_MAX_OUTPUT_TOKENS is
+// non-empty, so it is returned as a success — see the truncation note at the
+// top of this file, and ADR-0006 §10.
+//
+// Pages are form-feed-separated when the model honours the prompt's separator
+// instruction; parsers.js derives chunk page numbers by splitting on it. The
+// one production row has none at all, so treat the separator as best-effort
+// rather than as part of this contract (ADR-0006 §4.8).
 async function ocrPdf(buffer, { mimeType = 'application/pdf', tenantId = null } = {}) {
   if (!process.env.GEMINI_API_KEY) {
     console.warn('[kb-ocr] GEMINI_API_KEY not set — skipping OCR fallback');
