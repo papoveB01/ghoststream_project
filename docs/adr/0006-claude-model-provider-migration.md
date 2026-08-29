@@ -481,7 +481,7 @@ cutover.
    threshold: the single sample sits at 97.7% of it.
 
    **"No recorded execution" is the strongest form this evidence supports, and
-   "never executed" is not.** The evidence is one *successful* row, and reason 6
+   "never executed" is not.** The evidence is one *successful* row, and reason 5
    below establishes that a firing which returns `null` leaves no row at all —
    so an oversized PDF that took this branch and failed is possible and would be
    invisible to the query. Nor is the input space closed: `KB_UPLOAD_MAX_MB` is
@@ -2751,7 +2751,7 @@ those carry their own provenance and dates.)*
   the short result and let the caller raise the usual error". The first version
   of this entry deferred it on the grounds that the file was untouched by the
   PR; **that is no longer true** — the same PR later added the §4.8 provenance
-  marker at `parsers.js:63` — and a false excuse inside the entry that catalogues
+  marker at `parsers.js:64` — and a false excuse inside the entry that catalogues
   false statements is the one place it cannot stand. The real reason, which does
   not expire: unlike the other three, that sentence describes the CALLER's
   contract with `ocrPdf`, and that contract is exactly what changes when the
