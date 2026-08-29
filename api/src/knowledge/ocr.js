@@ -62,12 +62,25 @@ const { TIERS } = require('../models');
 // announcement.
 //
 // WHAT THE TESTS PIN, EXACTLY, because the honest scope is narrower than "this
-// cannot drift back": cutoverGroup3.test.js asserts that no `ocr` key exists in
-// models.TASKS or DISPATCH_READY, and — behaviourally, with the router told to
-// prefer Claude — that whatever OCR_MODEL resolves to below is still a Gemini
-// id. The first two do not fence THIS file; the third does, and it is what
-// catches this constant being re-pointed at another task's key or growing its
-// own AI_PROVIDER_OCR branch.
+// cannot drift back". cutoverGroup3.test.js asserts three things, and only the
+// third fences THIS file:
+//
+//   1. no `ocr` key in models.TASKS, and 2. none in DISPATCH_READY — both keyed
+//      on the string, so neither says anything about this module.
+//   3. with the router told to prefer Claude every way it can be told, the
+//      constant below AND the model actually handed to the client on a real
+//      ocrPdf() call are both Gemini ids. Reading the REQUEST is the load-
+//      bearing half: it catches a model resolved per call inside
+//      generateFromParts — the shape §9 item 4 pushed every other task towards,
+//      and so the likeliest accidental port — which an assertion on the
+//      exported constant alone walks straight past. It also fails if the call
+//      reaches no Gemini client at all, i.e. a swap onto another SDK.
+//
+// The gap it does NOT close, so nobody has to rediscover it: a branch keyed on
+// an env var the test does not set (`KB_OCR_PROVIDER === 'anthropic' ? …`)
+// resolves Gemini under the test and Claude in production. No executing guard
+// can enumerate env names it was never told about. A new provider env read
+// appearing in this file is a reviewer's catch, not a test's.
 const OCR_MODEL = process.env.GEMINI_OCR_MODEL || TIERS.gemini.flash;
 
 // Gemini caps a single request payload at ~20MB. Base64 inflates bytes ~33%, so

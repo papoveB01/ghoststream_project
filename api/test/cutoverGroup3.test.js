@@ -299,31 +299,59 @@ test('group 3 is dispatch-ready for `research`, and only for `research`', () => 
 
 // The two assertions above are keyed on the STRING `ocr`, and that is a narrower
 // fence than §4.8 needs. They say nothing about knowledge/ocr.js itself, which
-// can be moved to Claude without either of them noticing — two ways, both green
-// at 405/405 before this test existed:
+// can be moved to Claude without either of them noticing — three ways, all three
+// green at 405/405 before this test existed:
 //
 //   1. re-point its constant at a key that IS dispatch-ready:
 //      `OCR_MODEL = process.env.GEMINI_OCR_MODEL || require('../models').modelFor('research')`
 //      After that, OCR follows AI_PROVIDER_RESEARCH — the exact variable group
 //      3's runbook tells an operator to set. No `ocr` string appears anywhere.
 //   2. give it its own AI_PROVIDER_OCR / ANTHROPIC_OCR_MODEL branch, without a
-//      TASKS entry.
+//      TASKS entry — or one keyed on any other env var, which is the same shape.
+//   3. resolve PER CALL: leave the exported OCR_MODEL constant alone and pick
+//      the model inside generateFromParts. Every request then goes out on a
+//      Claude id while the constant still reads `gemini-2.5-flash`.
 //
-// So this pins the property §4.8 actually decided — the MODEL THIS FILE USES IS
-// A GEMINI ONE — behaviourally, by requiring the module fresh with the router
-// told to prefer Claude in every way it can be told. Mutation 1 reds it
-// (modelFor('research') returns claude-sonnet-5 under these env vars); mutation
-// 2 reds it (the override is a Claude id). Neither is caught by anything else.
+// SHAPE 3 IS THE ONE TO WORRY ABOUT, and the first version of this test missed
+// it while claiming otherwise. ADR-0006 §9 item 4 deliberately moved every OTHER
+// task off require-time resolution, so per-call is the idiom a future OCR port
+// would reach for first. A guard that reads the constant is looking at the one
+// place such a port would leave untouched.
 //
-// It asserts the PROVIDER FAMILY, not a literal id, so a legitimate
-// GEMINI_MODEL / GEMINI_OCR_MODEL override does not red it — a Gemini id is a
+// So this pins the property §4.8 actually decided — THE MODEL THIS FILE SENDS IS
+// A GEMINI ONE — at BOTH points, with the router told to prefer Claude in every
+// way it can be told:
+//
+//   - the exported constant, on a fresh require. Cheap, and its failure names
+//     the resolved id.
+//   - THE MODEL THAT REACHES THE WIRE, by running ocrPdf() against the fake
+//     client at the top of this file and reading the `model` it was handed.
+//     Indifferent to WHERE the id came from — constant, per-call, router,
+//     override — so it covers shapes 1-3 alike. It also fails if the request
+//     reaches no Gemini client at all, which is the only way to notice a port
+//     onto another SDK; a "which id" assertion alone would pass vacuously.
+//
+// WHAT IT STILL DOES NOT COVER, stated rather than implied, because the first
+// version of this comment claimed to cover "any env var it does not name" and
+// that is false: a per-call branch keyed on an env var this test does not SET
+// resolves Gemini here and Claude in production —
+// `model: process.env.KB_OCR_PROVIDER === 'anthropic' ? 'claude-opus-5' : OCR_MODEL`
+// is green at 13/13 against this test as written. No executing guard can close
+// that, because the space of env names is unbounded and the test can only set
+// names it knows. What closes it is a reviewer seeing a new env read appear in
+// a 150-line file whose entire subject is that it does not branch on provider —
+// which is a diff a human looks at, and is why this limit is written down here
+// instead of being papered over with a source-text scrape that would rot.
+//
+// Both assert the PROVIDER FAMILY, not a literal id, so a legitimate
+// GEMINI_MODEL / GEMINI_OCR_MODEL override does not red them — a Gemini id is a
 // Gemini id, and pinning `gemini-2.5-flash` here would carry the same
 // deployment-env residual the [GEMINI-PARITY] pin below documents, for no gain.
-test('OCR resolves a GEMINI model even with the router told to prefer Claude (ADR-0006 §4.8)', () => {
+test('OCR sends a GEMINI model even with the router told to prefer Claude (ADR-0006 §4.8)', async () => {
   const ocrPath = require.resolve(path.join(SRC, 'knowledge', 'ocr.js'));
   const KEYS = [
     'AI_PROVIDER', 'AI_PROVIDER_OCR', 'AI_PROVIDER_RESEARCH',
-    'ANTHROPIC_API_KEY', 'ANTHROPIC_OCR_MODEL', 'GEMINI_OCR_MODEL',
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_OCR_MODEL', 'GEMINI_OCR_MODEL', 'GEMINI_API_KEY',
   ];
   const saved = new Map(KEYS.map((k) => [k, process.env[k]]));
   // Everything an operator could set that ought NOT to move this file.
@@ -332,6 +360,9 @@ test('OCR resolves a GEMINI model even with the router told to prefer Claude (AD
   process.env.AI_PROVIDER_RESEARCH = 'anthropic';
   process.env.ANTHROPIC_API_KEY = 'sk-ant-not-a-real-key';
   process.env.ANTHROPIC_OCR_MODEL = 'claude-opus-5';
+  // ocrPdf returns null immediately without this, and a guard that never
+  // reaches the client would pass on a file that had been ported outright.
+  process.env.GEMINI_API_KEY = 'test-gemini-key';
   // Cleared so the assertion is about what the file RESOLVES, not about an
   // override happening to be a Gemini id.
   delete process.env.GEMINI_OCR_MODEL;
@@ -343,6 +374,23 @@ test('OCR resolves a GEMINI model even with the router told to prefer Claude (AD
       'decided OCR stays on Gemini indefinitely: this file must not take its model from the task ' +
       'router, from another task\'s key, or from an ANTHROPIC_* override. Reversing that decision ' +
       'means amending §4.8, not making this assertion pass.');
+
+    // …and the same property where it actually bites. Small buffer on purpose:
+    // above INLINE_MAX_BYTES this would take the Files API branch, which the
+    // fake client has no `files` for, and a thrown-and-swallowed error would
+    // make this assertion vacuous rather than red.
+    const before = geminiCalls.length;
+    await ocr.ocrPdf(Buffer.from('%PDF-1.4 stand-in for a scanned page'), { tenantId: null });
+    assert.strictEqual(geminiCalls.length, before + 1,
+      'ocrPdf reached no client at all, so the wire assertion below would prove nothing. If OCR ' +
+      'was moved to another SDK, that is the finding — this fake client is the GEMINI one.');
+    assert.match(geminiCalls[geminiCalls.length - 1].model, /^gemini-/,
+      `knowledge/ocr.js sent "${geminiCalls[geminiCalls.length - 1].model}" to the model client ` +
+      'with AI_PROVIDER=anthropic. This assertion reads the REQUEST, not the exported constant, ' +
+      'so it also covers a model resolved per call inside generateFromParts — the shape ADR-0006 ' +
+      '§9 item 4 pushed every other task towards, and therefore the likeliest way OCR gets ported ' +
+      'by accident. §4.8 is what a real port has to amend.');
+
     // No task key was created as a side effect of resolving it.
     assert.ok(!Object.prototype.hasOwnProperty.call(models.TASKS, 'ocr'));
   } finally {

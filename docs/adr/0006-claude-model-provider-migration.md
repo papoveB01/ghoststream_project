@@ -509,11 +509,17 @@ cutover.
    row at all: `knowledge/service.js` throws before the INSERT, the 4xx goes
    back to the uploader, and nothing durable records that OCR was attempted.
    Neither database holds a single `kb_documents` row with `error IS NOT NULL`
-   (0 of 26 staging, 0 of 36 production) — but on this path that is not
-   evidence, because a failure leaves no row to carry an error. The container
-   logs would hold the `[kb-ocr]` warnings and hold none, and that is not
-   evidence either: `docker logs` retains only since the current container
-   start, which was minutes before this measurement. **So: the SUCCESS count is
+   (0 of 26 staging, 0 of 36 production) — but that count is not evidence of
+   anything at all: **`kb_documents.error` has no writer anywhere in
+   `api/src`.** It is absent from the INSERT column list in
+   `knowledge/service.js`, and no `UPDATE` sets it (the only `SET … error =` in
+   the knowledge module is on `prospect_research`). So the column reads empty
+   for every failure mode, not merely for the pre-INSERT one this path takes.
+   The container logs would hold the `[kb-ocr]` warnings and hold none, and that
+   is not evidence either: `docker logs` retains only since the container was
+   **created**, which for both was minutes before this measurement. (A restart
+   preserves the log; only a re-create truncates it — `RestartCount` was 0 on
+   both, so here the window really is minutes.) **So: the SUCCESS count is
    1, the firing rate is structurally unmeasured, and no argument here rests on
    the firing rate.**
 6. **The failure asymmetry runs the wrong way — for HARD failures, which is
@@ -593,13 +599,31 @@ volume — which turns the count above into a number worth acting on. In that ca
 measure **both** providers against the same corpus before porting, because that
 comparison, and not this ADR, is what a port should rest on.
 
-**The decision is machine-checked, not merely written down.**
-`api/test/cutoverGroup3.test.js` asserts that `models.TASKS` has no `ocr` key
-and that `DISPATCH_READY` does not contain `ocr`. Both were confirmed able to
-fail on 2026-08-29 by adding each in turn and watching the assertion redden, so
-this is a guard rather than a coincidence. Adding the key is what reversing this
-decision looks like in code, and it cannot happen without also changing that
-test — which is the point.
+**The decision is machine-checked, not merely written down — and here is
+exactly how far the check reaches.** `api/test/cutoverGroup3.test.js` asserts
+three things:
+
+1. `models.TASKS` has no `ocr` key;
+2. `DISPATCH_READY` does not contain `ocr`;
+3. with `AI_PROVIDER`, `AI_PROVIDER_OCR` and `AI_PROVIDER_RESEARCH` all set to
+   `anthropic`, an `ANTHROPIC_API_KEY` present and `ANTHROPIC_OCR_MODEL` set to
+   a Claude id, `knowledge/ocr.js`'s exported constant **and the model actually
+   handed to the client on a real `ocrPdf()` call** are both Gemini ids.
+
+The first two are keyed on the string `ocr` and say nothing about the file; the
+third is what fences it. Reading the *request* rather than the constant is the
+load-bearing part: it catches a model resolved **per call**, which is the shape
+§9 item 4 pushed every other task towards and therefore the likeliest way this
+decision gets reversed by accident — and it fails if the call reaches no Gemini
+client at all, i.e. a swap onto another SDK.
+
+All three were confirmed able to fail on 2026-08-29, each by the mutation it
+exists to catch, with the rest of the suite green. **One gap is stated rather
+than implied:** a branch keyed on an env var the test does not set resolves
+Gemini under the test and Claude in production; no executing guard can enumerate
+env names it was never given, so that one is a reviewer's catch. Reversing this
+decision in code means changing that test, and the honest version of the claim
+is that it cannot happen *quietly* — not that it cannot happen.
 
 ## 5. Revised unit-cost model (amends ADR-0004 §3.1–§3.2)
 
@@ -2575,6 +2599,14 @@ those carry their own provenance and dates.)*
   is indexed as a complete one. It was recorded in
   `docs/code-review-2026-07-29.md:163` — *"OCR silently truncated at 16K tokens
   and stored READY"* — and has not been fixed.
+
+  **Three comments state the false absolute, and only two are corrected here.**
+  `knowledge/ocr.js`'s header and §4.8 reason 6 now bound the claim; the caller's
+  does not — `knowledge/parsers.js`'s OCR block still says the fallback "returns
+  null on any failure, in which case we keep the short result and let the caller
+  raise the usual error". That file is untouched by the PR that wrote this entry
+  (it is neither the decision nor a comment that PR had reason to open), so it is
+  listed here as the third site to fix with the defect itself.
 
   It is named here because **§4.8 depends on the reader knowing it.** That
   subsection argues from a failure asymmetry — OCR fails loudly today, a
