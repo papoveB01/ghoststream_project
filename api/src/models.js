@@ -118,8 +118,10 @@ const DEFAULT_PROVIDER = 'gemini';
 // tier by hand, is FREE TEXT rather than structured output (so neither
 // aiCall.generateStructured nor the live schema harness can cover it), reaches
 // Gemini through the Files API, which anthropic.js has no equivalent for, and is
-// a fallback that had fired once in production when the decision was taken. §4.8
-// carries the argument, the counter-arguments and the evidence that reverses it.
+// a fallback that had produced exactly ONE document in production when the
+// decision was taken (how often it FIRED is not measurable — a failed OCR
+// leaves no row). §4.8 carries the argument, the counter-arguments and the
+// evidence that reverses it.
 //
 // THE THREE GROUP-2 KEYS HAD TO LAND TOGETHER, and `battlecard` is the reason.
 // assessment.js holds two call sites resolving two different keys since PR #53.

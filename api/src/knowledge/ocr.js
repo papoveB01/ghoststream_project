@@ -9,9 +9,17 @@
 // raw PDF bytes to the model and ask for a verbatim transcription. This keeps
 // the OCR path dependency-free — no Tesseract/poppler binaries in the image.
 //
-// Best-effort by contract: any failure (no API key, oversized file, model
+// Best-effort by contract: any HARD failure (no API key, oversized file, model
 // error, empty result) returns null so the caller falls back to the original
 // short-text result and the existing 4xx error still fires.
+//
+// TRUNCATION IS NOT A HARD FAILURE AND IS NOT COVERED BY THAT SENTENCE. Nothing
+// below inspects finishReason, so a transcription that exhausts
+// OCR_MAX_OUTPUT_TOKENS comes back as non-empty truncated text, ocrPdf returns
+// it (its only test is length > 0), and the document is stored READY —
+// half-transcribed and looking complete. Recorded, unfixed, and NOT this file's
+// to fix in the PR that wrote this comment: docs/code-review-2026-07-29.md:163,
+// "OCR silently truncated at 16K tokens and stored READY", and ADR-0006 §10.
 
 const os = require('os');
 const fs = require('fs');
@@ -32,17 +40,34 @@ const { TIERS } = require('../models');
 // short: the live-schema harness cannot cover free-text transcription (no
 // responseSchema to post, and no fidelity probe exists); Gemini's key and SDK
 // are already permanent for embeddings, so keeping this path adds no
-// dependency; ocrViaFilesApi below has no equivalent in anthropic.js, which has
-// no document affordance at all; and this is a FALLBACK that had fired once in
-// production as of the decision, so a port cannot repay a rewrite. The failure
-// asymmetry is the load-bearing one: today any failure returns null and the
-// caller's 4xx fires LOUDLY, while a degraded port would ingest worse text
-// silently into retrieval and battlecards.
+// dependency; and this is a FALLBACK that had produced exactly ONE document in
+// production as of the decision, so a port cannot repay a rewrite.
+//
+// ocrViaFilesApi below has no equivalent in anthropic.js — no PDF helper, no
+// base64 or size handling, no upload-and-reference path. Stated that way rather
+// than as "no document support": anthropic.generate's normalizeMessages accepts
+// a block array and forwards it verbatim, so a hand-built document block WOULD
+// reach the API. What is missing is everything around it, in this tree.
+//
+// The failure asymmetry is the load-bearing reason, and it holds for HARD
+// failures only — see the truncation note at the top of this file. Bounded
+// form: a port would add a SECOND silent-degradation mode to a path that
+// already has one and has not fixed it, and the new one would be worse, because
+// a systematically worse transcription is uniform, complete-looking and
+// invisible to every check we have.
 //
 // WHAT WOULD REVERSE IT is evidence that these transcriptions are bad —
-// measurable against kb_documents rows carrying metadata.ocr — or Gemini
-// changing its native PDF / Files API handling. Not a new model announcement.
-// cutoverGroup3.test.js pins the absence of the key so this cannot drift back.
+// measurable against kb_documents rows carrying metadata.ocr, truncation first —
+// or Gemini changing its native PDF / Files API handling. Not a new model
+// announcement.
+//
+// WHAT THE TESTS PIN, EXACTLY, because the honest scope is narrower than "this
+// cannot drift back": cutoverGroup3.test.js asserts that no `ocr` key exists in
+// models.TASKS or DISPATCH_READY, and — behaviourally, with the router told to
+// prefer Claude — that whatever OCR_MODEL resolves to below is still a Gemini
+// id. The first two do not fence THIS file; the third does, and it is what
+// catches this constant being re-pointed at another task's key or growing its
+// own AI_PROVIDER_OCR branch.
 const OCR_MODEL = process.env.GEMINI_OCR_MODEL || TIERS.gemini.flash;
 
 // Gemini caps a single request payload at ~20MB. Base64 inflates bytes ~33%, so

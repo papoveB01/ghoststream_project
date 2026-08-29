@@ -284,7 +284,9 @@ test('group 3 is dispatch-ready for `research`, and only for `research`', () => 
   assert.ok(!Object.prototype.hasOwnProperty.call(models.TASKS, 'ocr'),
     'ADR-0006 §4.8 decided OCR stays on Gemini permanently — an `ocr` key is the reversal of a ' +
     'standing decision, not the next step of this migration. Read §4.8 before you add one.');
-  assert.ok(!models.DISPATCH_READY.has('ocr'));
+  assert.ok(!models.DISPATCH_READY.has('ocr'),
+    'same decision, second half: ADR-0006 §4.8 keeps `ocr` out of the router entirely, so it can ' +
+    'never become dispatch-eligible. If you are here from a red run, §4.8 is what you are changing.');
 
   // Still not migrated, each for its own reason. `compare` matters most: it
   // shares knowledge/preview.js with an already-migrated key, so the file holds
@@ -292,6 +294,60 @@ test('group 3 is dispatch-ready for `research`, and only for `research`', () => 
   for (const t of ['compare', 'discovery', 'marketWatch', 'brief']) {
     assert.ok(!models.DISPATCH_READY.has(t),
       `${t}'s call site still speaks to the Gemini SDK — adding it would 404 every call`);
+  }
+});
+
+// The two assertions above are keyed on the STRING `ocr`, and that is a narrower
+// fence than §4.8 needs. They say nothing about knowledge/ocr.js itself, which
+// can be moved to Claude without either of them noticing — two ways, both green
+// at 405/405 before this test existed:
+//
+//   1. re-point its constant at a key that IS dispatch-ready:
+//      `OCR_MODEL = process.env.GEMINI_OCR_MODEL || require('../models').modelFor('research')`
+//      After that, OCR follows AI_PROVIDER_RESEARCH — the exact variable group
+//      3's runbook tells an operator to set. No `ocr` string appears anywhere.
+//   2. give it its own AI_PROVIDER_OCR / ANTHROPIC_OCR_MODEL branch, without a
+//      TASKS entry.
+//
+// So this pins the property §4.8 actually decided — the MODEL THIS FILE USES IS
+// A GEMINI ONE — behaviourally, by requiring the module fresh with the router
+// told to prefer Claude in every way it can be told. Mutation 1 reds it
+// (modelFor('research') returns claude-sonnet-5 under these env vars); mutation
+// 2 reds it (the override is a Claude id). Neither is caught by anything else.
+//
+// It asserts the PROVIDER FAMILY, not a literal id, so a legitimate
+// GEMINI_MODEL / GEMINI_OCR_MODEL override does not red it — a Gemini id is a
+// Gemini id, and pinning `gemini-2.5-flash` here would carry the same
+// deployment-env residual the [GEMINI-PARITY] pin below documents, for no gain.
+test('OCR resolves a GEMINI model even with the router told to prefer Claude (ADR-0006 §4.8)', () => {
+  const ocrPath = require.resolve(path.join(SRC, 'knowledge', 'ocr.js'));
+  const KEYS = [
+    'AI_PROVIDER', 'AI_PROVIDER_OCR', 'AI_PROVIDER_RESEARCH',
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_OCR_MODEL', 'GEMINI_OCR_MODEL',
+  ];
+  const saved = new Map(KEYS.map((k) => [k, process.env[k]]));
+  // Everything an operator could set that ought NOT to move this file.
+  process.env.AI_PROVIDER = 'anthropic';
+  process.env.AI_PROVIDER_OCR = 'anthropic';
+  process.env.AI_PROVIDER_RESEARCH = 'anthropic';
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-not-a-real-key';
+  process.env.ANTHROPIC_OCR_MODEL = 'claude-opus-5';
+  // Cleared so the assertion is about what the file RESOLVES, not about an
+  // override happening to be a Gemini id.
+  delete process.env.GEMINI_OCR_MODEL;
+  delete require.cache[ocrPath];
+  try {
+    const ocr = require(ocrPath);
+    assert.match(ocr.OCR_MODEL, /^gemini-/,
+      `knowledge/ocr.js resolved "${ocr.OCR_MODEL}" with AI_PROVIDER=anthropic. ADR-0006 §4.8 ` +
+      'decided OCR stays on Gemini indefinitely: this file must not take its model from the task ' +
+      'router, from another task\'s key, or from an ANTHROPIC_* override. Reversing that decision ' +
+      'means amending §4.8, not making this assertion pass.');
+    // No task key was created as a side effect of resolving it.
+    assert.ok(!Object.prototype.hasOwnProperty.call(models.TASKS, 'ocr'));
+  } finally {
+    delete require.cache[ocrPath];
+    for (const [k, v] of saved) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
 });
 

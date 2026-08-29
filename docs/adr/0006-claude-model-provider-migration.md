@@ -224,6 +224,10 @@ the image for that one module, and `kb_chunks` is not touched. This is a
 standing decision, not a transitional one; revisiting it requires its own ADR
 and a re-embed plan.
 
+*(It is no longer the only one: **§4.8** keeps `knowledge/ocr.js` on Gemini
+indefinitely for different reasons, and quotes this subsection. A reader here
+for "what stays on Gemini forever" needs both.)*
+
 ### 4.3 Cost mechanics are adopted as design constraints, not optimizations
 
 Three are mandatory for any call site that qualifies. §6 shows the margin
@@ -450,8 +454,11 @@ cutover.
    deletes both the temp file and the remote object in a `finally`.
    `anthropic.generate()` takes `prompt` or `messages` and has no document
    affordance at all — no PDF helper, no base64 or size handling, no
-   upload-and-reference path; its only content-block awareness is
-   `countBreakpoints()` counting `cache_control`. *(Stated precisely, because
+   upload-and-reference path; its only *semantic* handling of a content block is
+   `countBreakpoints()` counting `cache_control`. (`normalizeMessages` is
+   block-aware too, but only structurally: it validates that content is a string
+   or an array and rebuilds the array on a same-role merge, without reading what
+   the blocks are.) *(Stated precisely, because
    the looser version is false: `normalizeMessages` accepts a block array and
    passes it through untouched, so a hand-built `document` block would reach the
    API. What is absent is everything around it — the wrapper neither builds,
@@ -463,13 +470,23 @@ cutover.
    `FILES_ACTIVE_TIMEOUT_MS` among the things the migration *deletes* — deleting
    a code path is a rewrite, not a swap, which is why that §7 line is struck as
    part of this decision rather than left standing.
+
+   **Recorded because it cuts both ways: `ocrViaFilesApi` has never executed.**
+   The selector is `buffer.length > INLINE_MAX_BYTES` (14,680,064), and the one
+   OCR-produced document is **14,341,540 bytes** — under the threshold by ~330KB,
+   so it went inline. There is no recorded execution of the Files API branch in
+   either environment. That makes reason 4 smaller than it looks (less code to
+   port) *and* the §7 saving smaller than it looked (less code that would go
+   away), and neither number should be quoted without it. It also says something
+   about the threshold: the single sample sits at 97.7% of it.
 5. **The benefit is small by construction, and the measurement says so.** OCR is
    a fallback, not a stage: `parsers.js` calls it only when `pdf-parse` extracts
    fewer than `KB_OCR_TRIGGER_CHARS` (default **100**) characters from an
    uploaded PDF. It is not on any hot path and barely touches the §5.2/§6 margin
    model. Since `parsers.js` stamps `metadata.ocr = true` and
    `metadata.ocrModel` on every document the fallback produced, how often it
-   fires is countable — **measured read-only in both databases on 2026-08-29**:
+   **succeeded** is countable — **measured read-only in both databases on
+   2026-08-29**:
 
    | environment | `kb_documents` | of which PDFs | `metadata.ocr = true` |
    | --- | --- | --- | --- |
@@ -479,22 +496,60 @@ cutover.
    The single production row is `3f8093e2-9d66-446e-b1e5-98ed46c9c323`
    ("MICAsys-deck"), ingested 2026-06-15 with `ocrModel: gemini-2.5-flash`, 13
    pages, 10,925 characters across 6 chunks — a slide deck with no text layer,
-   transcribed into usable text. **One document out of 62 across both
-   environments, one of the 8 PDFs among them, in the product's life to date.**
-   That is the size of the thing being argued over, and it is the plainest
-   argument for leaving it alone: a path that has fired once cannot repay a
-   rewrite, and cannot generate the evidence that would justify one either.
-6. **The failure asymmetry runs the wrong way.** Today OCR is best-effort *by
-   contract*: `ocrPdf` returns `null` on a missing key, a client failure, an
-   upload that never goes `ACTIVE`, a model error or an empty result;
-   `parsers.js` then keeps the short `pdf-parse` result and the ingest path's
-   existing 4xx — *"extracted text too short — file may be image-only or
-   unreadable"* — fires. That is a **loud** failure, at upload time, in front of
-   the person who chose the file. A degraded port fails in the opposite
-   direction and quietly: the document ingests, with worse transcription, and
-   that text is what gets chunked, embedded, retrieved and synthesised into
-   battlecards. Wrong text is worse than no text, and far harder to notice —
-   nothing downstream can tell a mis-transcribed figure from a real one.
+   transcribed into usable text. **One OCR-produced document out of 62 across
+   both environments, one of the 8 PDFs among them, in the product's life to
+   date.** That is the size of the thing being argued over, and it is the
+   plainest argument for leaving it alone: a path that has produced one document
+   cannot repay a rewrite, and cannot generate the evidence that would justify
+   one either.
+
+   **What this does NOT measure is how often the fallback FIRED**, and the
+   difference matters enough to state rather than gloss. `parsers.js` stamps the
+   metadata *inside* `if (ocrText)`, so a firing that returns `null` produces no
+   row at all: `knowledge/service.js` throws before the INSERT, the 4xx goes
+   back to the uploader, and nothing durable records that OCR was attempted.
+   Neither database holds a single `kb_documents` row with `error IS NOT NULL`
+   (0 of 26 staging, 0 of 36 production) — but on this path that is not
+   evidence, because a failure leaves no row to carry an error. The container
+   logs would hold the `[kb-ocr]` warnings and hold none, and that is not
+   evidence either: `docker logs` retains only since the current container
+   start, which was minutes before this measurement. **So: the SUCCESS count is
+   1, the firing rate is structurally unmeasured, and no argument here rests on
+   the firing rate.**
+6. **The failure asymmetry runs the wrong way — for HARD failures, which is
+   most of them but not all.** On a missing key, a client failure, an upload
+   that never goes `ACTIVE`, a model error or an empty result, `ocrPdf` returns
+   `null`; `parsers.js` keeps the short `pdf-parse` result and the ingest path's
+   4xx — *"extracted text too short — file may be image-only or unreadable"*
+   (`knowledge/service.js`) — fires. That is a **loud** failure, at upload time,
+   in front of the person who chose the file. A degraded port fails in the
+   opposite direction and quietly: the document ingests, with worse
+   transcription, and that text is what gets chunked, embedded, retrieved and
+   synthesised into battlecards. Wrong text is worse than no text, and far
+   harder to notice — nothing downstream can tell a mis-transcribed figure from
+   a real one.
+
+   **This does NOT hold for output truncation, and the absolute version of this
+   argument is false.** `ocr.js` never inspects `finishReason`. A transcription
+   that exhausts `OCR_MAX_OUTPUT_TOKENS` (16,384) comes back as **non-empty
+   truncated text**, `ocrPdf` returns it because the only test is
+   `text && text.length > 0`, `parsers.js` accepts it, and the document is
+   stored `READY` — silently, half-transcribed. That is already an open finding
+   in this repo: `docs/code-review-2026-07-29.md:163`, *"OCR silently truncated
+   at 16K tokens and stored READY"*, unfixed. It is named in §10 so a reader of
+   this subsection cannot miss it.
+
+   So the honest form of the argument, and the one this decision rests on: a
+   port would add a **second** silent-degradation mode to a path that already
+   has one and has not fixed it — and the new one would be worse, because
+   truncation at least stops at a boundary the page count can expose, while a
+   systematically worse transcription is uniform, complete-looking and invisible
+   to every check we have. *(A second, narrower gap in the "loud" claim: the
+   ingest floor is `< 10` characters while `KB_OCR_TRIGGER_CHARS` is 100, so a
+   PDF whose text layer yields 10–99 characters fires OCR and, if OCR returns
+   `null`, still ingests — with near-empty text and no error at all. A scanned
+   PDF normally yields ~0 characters, so the loud path is the common one, but
+   "always" was wrong here too.)*
 
 **What it costs, stated as the counter-argument it is.**
 
@@ -509,7 +564,8 @@ cutover.
   documents. On dense tables or multi-column layouts it could plausibly beat
   Gemini Flash. **This subsection is not a finding that Gemini transcribes
   better.** It is that the benefit is unmeasured, the instrument to measure it
-  does not exist, and the path has fired once — the row counted above.
+  does not exist, and the path has produced one document — the row counted
+  above.
 - **A change on Gemini's side forces the port anyway.** Files API deprecation, a
   change to native PDF handling, or a key that loses vision on Flash each make
   this a live problem with no prepared alternative. The mitigation is only that
@@ -525,8 +581,12 @@ measurable against the rows counted above — a `kb_documents` row with
 `metadata.ocr = true` whose stored text is demonstrably wrong against its source
 PDF: garbled glyphs, pages dropped (`metadata.pdfPageCount` against the real
 page count), invented content, or a body short enough that the trigger should
-have fired again. Today that population is one row, so the honest state is *no
-evidence in either direction and almost no exposure*. Two further triggers, each
+have fired again. **Check truncation first when you look**: reason 6 and §10
+record that a transcription stopping at `OCR_MAX_OUTPUT_TOKENS` is stored as a
+success, so "the text looks complete" is not the same as "the text is
+complete", and a truncated row is bad-transcription evidence that this decision
+would have to answer. Today that population is one row, so the honest state is
+*no evidence in either direction and almost no exposure*. Two further triggers, each
 sufficient alone: Gemini changing or withdrawing native PDF handling or the
 Files API; or a real workload arriving — a tenant ingesting scanned documents at
 volume — which turns the count above into a number worth acting on. In that case
@@ -839,7 +899,10 @@ creating one; `plans.js` has no code path that migrates a v1 tenant to v2.
   on Gemini, so the polling loop and its timeout stay too.** It is struck rather than
   deleted because it was this migration's one stated saving on that file, and
   §4.8's case is partly that collecting it means rewriting the oversized-file
-  path, not swapping a client.
+  path, not swapping a client. Worth knowing on both sides of that: **the branch
+  has never executed** — the only OCR-produced document is 14,341,540 bytes
+  against a 14,680,064 threshold — so the saving withdrawn here was never a
+  saving on running code.
 - Six hand-duplicated `withRetry` functions (`watch.js:36`, `proposals.js:30`,
   `research.js:305`, `relevance.js:52`, `assessment.js:86`, `discovery.js:78`),
   each regex-matching Gemini error strings, collapse into one helper over
@@ -2038,9 +2101,12 @@ decomposition exists so that per-file spokes stay tractable.
      "run `--cluster=` before and after" line rests on is unavailable here.
    - **`ocrViaFilesApi` has no equivalent in `anthropic.js`.** It uploads to
      Google's Files API and polls `PROCESSING → ACTIVE`; Claude takes documents
-     as inline blocks. §7 listed that polling loop as something the migration
-     *deletes*, which is a rewrite, not a swap — and that §7 line is now struck,
-     because §4.8 keeps the loop.
+     as inline blocks. §7 already lists that polling loop as something the
+     migration *deletes*, which is a rewrite, not a swap.
+     *[2026-08-29: that §7 line is now struck — §4.8 keeps the loop. The
+     sentence above is left as it was written, because this entry's purpose is
+     that the split's reasoning survives unrewritten. Also learned since:
+     `ocrViaFilesApi` has never executed in either environment — §4.8 reason 4.]*
 
    **That outcome is now the decision, and it is the one §4.2 records for
    embeddings: OCR stays on Gemini indefinitely (§4.8).** §4.8 carries the
@@ -2411,10 +2477,14 @@ Not in scope for any PR above: embeddings (§4.2), OCR (§4.8), `capture/`,
 
 ## 10. Open questions / follow-ups
 
-*(The four below were raised by group 3's review round and its confidence pass,
-2026-08-28, and are deliberately NOT fixed in that PR — each is its own
+*(The first four below were raised by group 3's review round and its confidence
+pass, 2026-08-28, and are deliberately NOT fixed in that PR — each is its own
 reviewable concern, two of them change files group 3 does not touch, and the
-fourth cannot be fixed on the Claude side at all without moving Gemini.)*
+fourth cannot be fixed on the Claude side at all without moving Gemini. The
+fifth, directly after them, was added 2026-08-29 by §4.8's review round, which
+found that §4.8's failure-asymmetry argument depended on the reader knowing
+about a defect this repo had already recorded and not fixed. The bullets below
+those carry their own provenance and dates.)*
 
 - **`stop_reason: 'model_context_window_exceeded'` returns a truncated answer as
   a SUCCESS.** `anthropic.generate` guards `refusal` and `max_tokens` and treats
@@ -2495,6 +2565,34 @@ fourth cannot be fixed on the Claude side at all without moving Gemini.)*
   sides together and the pin stays green — the same tautology class F01/F02
   exposed on the `model` field, still live on the schema field beside it. Pinning
   the schema's shape there is PR #58's own follow-up, not this entry's.
+
+- **Gemini's OCR truncates at 16K output tokens and stores the result `READY`
+  — the same defect as the first entry above, on the other provider, and
+  already known.** `knowledge/ocr.js` never inspects `finishReason`. A
+  transcription that exhausts `OCR_MAX_OUTPUT_TOKENS` (16,384) returns
+  **non-empty truncated text**; `ocrPdf`'s only test is `text &&
+  text.length > 0`, so it returns it, `parsers.js` accepts it, and the document
+  is indexed as a complete one. It was recorded in
+  `docs/code-review-2026-07-29.md:163` — *"OCR silently truncated at 16K tokens
+  and stored READY"* — and has not been fixed.
+
+  It is named here because **§4.8 depends on the reader knowing it.** That
+  subsection argues from a failure asymmetry — OCR fails loudly today, a
+  degraded port would fail quietly — and the absolute form of that claim is
+  false precisely because of this defect. §4.8 now states the bounded form (a
+  port would add a *second* silent mode to a path that already has one), which
+  is only checkable if this entry exists.
+
+  **Not fixed here, deliberately:** it is a runtime change to a file this PR
+  keeps comment-only, it belongs to the code-review backlog that first found
+  it, and the fix is a real decision rather than a guard — a truncated
+  transcription could be rejected (`null`, so today's loud path fires), stored
+  with a `metadata.ocrTruncated` flag, or continued with a second call. The
+  cheapest observable first step is to record `finishReason` alongside
+  `metadata.ocrModel`, which would also turn §4.8's "no evidence either way"
+  into something measurable. **Exposure today is one document**, and it is not
+  truncated: 10,925 characters over 13 pages is far under a 16,384-token
+  ceiling.
 
 - **`kb_documents.metadata` is written as a whole column by three writers that
   each snapshot it first** (raised 2026-08-14, PR #57 review; **deliberately not
