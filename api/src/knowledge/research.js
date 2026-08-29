@@ -36,9 +36,12 @@ const apollo = require('./apollo');
 // CLOSED. ADR-0006 §9 item 5 lists the group as `research` + `ocr`, but
 // knowledge/ocr.js has no task key at all, pins its Gemini tier deliberately, is
 // free-text rather than structured output (so the live schema harness
-// structurally cannot cover it), and reaches Gemini through the Files API, which
-// this wrapper has no equivalent for. Those reasons became a decision on
-// 2026-08-29: OCR stays on Gemini permanently (§4.8). Nothing is pending here.
+// structurally cannot cover it), and reaches Gemini through the Files API on
+// oversized inputs — a path anthropic.js (not aiCall, which is what "this
+// wrapper" would read as here) has no equivalent for, and one that has never
+// executed in either environment, so it is an argument about a rewrite nobody
+// has needed rather than about live behaviour. Those reasons became a decision
+// on 2026-08-29: OCR stays on Gemini indefinitely (§4.8).
 const aiCall = require('../aiCall');
 
 // Shared retry helper (ADR-0006 §7). Bound here with this module's label so

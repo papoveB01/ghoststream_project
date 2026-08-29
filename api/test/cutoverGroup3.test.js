@@ -272,8 +272,9 @@ test('group 3 is dispatch-ready for `research`, and only for `research`', () => 
 
   // These two assertions ENCODE A DECISION, not a pause. The `ocr` half of the
   // group was split off and then decided on 2026-08-29: OCR stays on Gemini
-  // permanently — ADR-0006 §4.8, the same standing form §4.2 uses for
-  // embeddings. So the absence of the key is the machine-readable half of that
+  // indefinitely — ADR-0006 §4.8, the same STANDING form §4.2 uses for
+  // embeddings, though not the same kind of permanence (§4.2's is structural,
+  // §4.8's is contingent on evidence it names). So the absence of the key is the machine-readable half of that
   // decision: no `ocr` task key exists, nothing can route it, nothing can flip
   // it. Adding one is what REVERSING §4.8 looks like in code, and §4.8 names
   // what would justify that (evidence the Gemini transcriptions are bad, or
@@ -282,7 +283,7 @@ test('group 3 is dispatch-ready for `research`, and only for `research`', () => 
   // when §4.8 landed: adding an `ocr` key to models.TASKS reds the first, and
   // adding `ocr` to DISPATCH_READY reds the second.
   assert.ok(!Object.prototype.hasOwnProperty.call(models.TASKS, 'ocr'),
-    'ADR-0006 §4.8 decided OCR stays on Gemini permanently — an `ocr` key is the reversal of a ' +
+    'ADR-0006 §4.8 decided OCR stays on Gemini indefinitely — an `ocr` key is the reversal of a ' +
     'standing decision, not the next step of this migration. Read §4.8 before you add one.');
   assert.ok(!models.DISPATCH_READY.has('ocr'),
     'same decision, second half: ADR-0006 §4.8 keeps `ocr` out of the router entirely, so it can ' +

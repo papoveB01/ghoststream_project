@@ -403,7 +403,7 @@ It is also a standing warning for §9 item 6: on Claude, schema growth is
 bounded by this ceiling; on Gemini it is bounded by nothing. The constraint is
 invisible until a flip, so the smoke check is the only thing that surfaces it.
 
-### 4.8 OCR stays on Gemini — indefinitely, like embeddings (decided 2026-08-29)
+### 4.8 OCR stays on Gemini — a standing decision, not a pending cutover (decided 2026-08-29)
 
 `api/src/knowledge/ocr.js` — the PDF OCR fallback — keeps calling
 `client.models.generateContent` on `GEMINI_OCR_MODEL || TIERS.gemini.flash`.
@@ -1588,7 +1588,7 @@ decomposition exists so that per-file spokes stay tractable.
 5. **Per-task cutover PRs** (Phase 3), grouped to keep each reviewable:
    `relevance` + `preview` + `companyBrief`; **`keypoints` + `assessment` +
    `battlecard`**; ~~`research` + `ocr`~~ **`research` (shipped; the `ocr`
-   half was split off and is now CLOSED — it stays on Gemini permanently, §4.8.
+   half was split off and is now CLOSED — it stays on Gemini indefinitely, §4.8.
    Group 3 is done; there is no outstanding `ocr` cutover)**; `compare` +
    `enrichment` + `contacts` +
    `companies`; `brief`; `watch` + scheduler env; `arena` + `arenaHistory` +
@@ -2175,7 +2175,7 @@ decomposition exists so that per-file spokes stay tractable.
    environment.
 
    **GROUP 3 WAS SPLIT, AND THE `ocr` HALF IS NOW CLOSED: IT STAYS ON GEMINI
-   PERMANENTLY (§4.8, decided 2026-08-29).** The deferral this entry originally
+   INDEFINITELY (§4.8, decided 2026-08-29).** The deferral this entry originally
    recorded is discharged, not outstanding — there is no pending `ocr` cutover
    and no `ocr` work left in this item. The split itself is kept below, because
    the four reasons it gave are the argument §4.8 decided on, and a reader who
@@ -2188,6 +2188,14 @@ decomposition exists so that per-file spokes stay tractable.
    - **There is no `ocr` task key.** `knowledge/ocr.js` does not appear in
      `models.TASKS` at all, so nothing routes it, nothing can flip it, and there
      is no `AI_PROVIDER_OCR`. Adding the key is itself the decision.
+     *[2026-08-29: bounded, and left as written for the same reason as the
+     annotation two bullets down. Adding the key is ONE way the decision gets
+     reversed, not the boundary of it: §4.8 records three shapes that move OCR
+     onto Claude with no `ocr` string anywhere — re-point `OCR_MODEL` at
+     `modelFor('research')`; an `AI_PROVIDER_OCR` branch with no `TASKS` entry;
+     resolve the model per call inside `generateFromParts`. Assertion 3 of
+     `cutoverGroup3.test.js`, which reads the request, is the only fence that
+     covers those; assertions 1 and 2 are keyed on the string.]*
    - **It pins its Gemini tier by hand and says why** — `OCR_MODEL =
      process.env.GEMINI_OCR_MODEL || TIERS.gemini.flash`, with a comment stating
      that OCR is deliberately outside the task router. Every key in groups 1–3
@@ -2207,14 +2215,19 @@ decomposition exists so that per-file spokes stay tractable.
      that the split's reasoning survives unrewritten. Also learned since:
      `ocrViaFilesApi` has never executed in either environment — §4.8 reason 4.]*
 
-   **That outcome is now the decision, and it is the one §4.2 records for
-   embeddings: OCR stays on Gemini indefinitely (§4.8).** §4.8 carries the
+   **That outcome is now the decision: OCR stays on Gemini indefinitely
+   (§4.8).** It takes the same STANDING form §4.2 uses for embeddings, but not
+   the same kind of permanence, and the two should not be equated: §4.2's is
+   structural — Anthropic ships no embedding model at all — while this one is
+   contingent on named evidence, which §4.8 says twice in its own body. §4.8
+   carries the
    normative form — the four reasons above plus two this entry did not have: the
    benefit is small by construction (`parsers.js` fires OCR only under
    `KB_OCR_TRIGGER_CHARS`, and the fallback has produced exactly **one**
    document across staging and production to date), and the failure asymmetry
-   runs the wrong way (today a failure is loud and returns `null`; a degraded
-   port ingests worse text silently). It also records the counter-arguments and
+   runs the wrong way (§4.8 reason 6 carries the bounded form: a HARD failure
+   today is loud and returns `null`, but truncation is not a hard failure and
+   stores `READY`; a degraded port ingests worse text silently). It also records the counter-arguments and
    the evidence that would reverse it, which is what makes it a decision rather
    than an opinion.
 

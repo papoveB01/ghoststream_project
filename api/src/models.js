@@ -111,17 +111,25 @@ const DEFAULT_PROVIDER = 'gemini';
 //                 latencies are at the call site.
 //
 // THE `ocr` HALF OF GROUP 3 IS DECIDED, NOT DEFERRED: OCR STAYS ON GEMINI
-// PERMANENTLY (ADR-0006 §4.8, 2026-08-29), the way §4.2 keeps embeddings there.
+// INDEFINITELY (ADR-0006 §4.8, 2026-08-29). That is the same STANDING form §4.2
+// uses for embeddings, but not the same kind of permanence — §4.2's is
+// structural (there is no Anthropic embedding model), this one is contingent on
+// evidence §4.8 names.
+//
 // So the absence of an `ocr` key from TASKS below is a decision rather than an
-// omission, and adding one is how that decision gets reversed — which is why
-// cutoverGroup3.test.js asserts it is absent. knowledge/ocr.js pins its Gemini
-// tier by hand, is FREE TEXT rather than structured output (so neither
-// aiCall.generateStructured nor the live schema harness can cover it), reaches
-// Gemini through the Files API, which anthropic.js has no equivalent for, and is
-// a fallback that had produced exactly ONE document in production when the
-// decision was taken (how often it FIRED is not measurable — a failed OCR
-// leaves no row). §4.8 carries the argument, the counter-arguments and the
-// evidence that reverses it.
+// omission, and adding one is *one* way that decision gets reversed; §4.8 lists
+// the three that add no key. Adding one is nonetheless what cutoverGroup3.test.js
+// asserts against here, because a key is the shape this file can see.
+// knowledge/ocr.js pins its Gemini tier by hand, is FREE TEXT rather than
+// structured output (so neither aiCall.generateStructured nor the live schema
+// harness can cover it), and reaches Gemini through the Files API on oversized
+// inputs — a path anthropic.js has no equivalent for, though bound that claim
+// the way §4.8 does: it has never executed in either environment. It is a
+// fallback whose production volume is too small to repay a rewrite; the number
+// is a database observation and lives once, dated and scoped, in §4.8 (how
+// often it FIRED is not measurable at all — a failed OCR leaves no row). §4.8
+// carries the argument, the counter-arguments and the evidence that reverses
+// it.
 //
 // THE THREE GROUP-2 KEYS HAD TO LAND TOGETHER, and `battlecard` is the reason.
 // assessment.js holds two call sites resolving two different keys since PR #53.
