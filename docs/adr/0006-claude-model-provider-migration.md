@@ -2150,7 +2150,17 @@ decomposition exists so that per-file spokes stay tractable.
      ARGUMENT**: the conditional Claude retry bound above (four passes reproduced
      it independently), a `[GEMINI-PARITY]` model assertion that compared the wire
      value against a live re-derivation of the function that produced it — a
-     tautology two different re-tierings walked through green — retry tests that
+     tautology two different re-tierings walked through green — **only one of
+     which escaped the branch as a whole**, and this entry read as though both
+     had: re-tiering `research` flash→lite on the Gemini side with
+     `anthropicTier: 'flash'` preserving Claude was green on all 399 tests at the
+     pre-fix SHA `d5e5e83`, while repointing the Gemini `flash` tier entry
+     (`models.js:39`) was NOT — `providerRouter.test.js`'s "an unknown task falls
+     back to the flash tier of its provider" already caught it (399/398/1), so
+     that one defeated the tautological assertion and not the branch (re-verified
+     2026-08-29; that test pins the literal `gemini-2.5-flash`, so it bites the
+     tier entry and not `FLASH`'s own default at `models.js:33`, which
+     `GEMINI_MODEL` masks in both environments) — retry tests that
      counted seam invocations rather than upstream requests (a loop inside the
      seam's Gemini branch is 6 metered generations for one logical call and stayed
      green), `run()` being executed by **no test in the entire suite** (reverting
@@ -2223,9 +2233,10 @@ Not in scope for any PR above: embeddings (§4.2), `capture/`, `mcp/`, any
 
 ## 10. Open questions / follow-ups
 
-*(The three below were raised by group 3's review round, 2026-08-28, and are
-deliberately NOT fixed in that PR — each is its own reviewable concern and two of
-them change files group 3 does not touch.)*
+*(The four below were raised by group 3's review round and its confidence pass,
+2026-08-28, and are deliberately NOT fixed in that PR — each is its own
+reviewable concern, two of them change files group 3 does not touch, and the
+fourth cannot be fixed on the Claude side at all without moving Gemini.)*
 
 - **`stop_reason: 'model_context_window_exceeded'` returns a truncated answer as
   a SUCCESS.** `anthropic.generate` guards `refusal` and `max_tokens` and treats
@@ -2261,6 +2272,30 @@ them change files group 3 does not touch.)*
   what **Gemini** receives and breaks the parity property groups 2 and 3 shipped
   on. It also means the truncation measurement's headroom is thinner than the
   input cap suggests.
+
+- **The OUTPUT side has no bound in the schema either: "up to 8 opportunities"
+  is prompt text, not `maxItems`.** `ANALYSIS_SCHEMA.opportunities`
+  (`knowledge/research.js:304`) is an unbounded array — the "Up to 8" lives in
+  the property `description` and in `ANALYSIS_PROMPT`, and the real enforcement,
+  `.slice(0, 8)` at `research.js:489`, runs **after** the model has generated
+  and been billed for however many it returned. At roughly 300 output tokens per
+  opportunity, eight of them land at ~2,500 of the 2,600 `maxTokens` budget. So
+  what drives truncation at this call site is **how many opportunities the
+  material supports**, not how long the input is — so the input-side entry above
+  does not bound it, and the `maxTokens` comment at `research.js:437` is saying
+  the same thing when it records a 2.8× output spread across four prompts of
+  near-identical size. Measured, and it is the measurement that identifies the
+  driver: **0 truncations in 141 live calls** (implementer, four real dossiers)
+  plus **0 in a further 120 independent calls** (confidence pass — 84 at the
+  real prompt shape and 36 at 2.6× the input; peak 2,205 / 2,600 = **84.8%** of
+  budget, at 2–6 opportunities observed and never >8), and the peak went **down**
+  at the top of the input range, because output tracks opportunity count rather
+  than input length. **Why it is not fixed here:** `ANALYSIS_SCHEMA` is
+  provider-agnostic at that call site, so adding `maxItems` changes what
+  **Gemini** receives — Gemini serves 100% of this traffic — and breaks the
+  parity property group 3 shipped on, exactly as raising `maxTokens` would. It
+  belongs with the per-provider sizing work in the flip PR, alongside the same
+  file's `maxTokens` note.
 
 - **`kb_documents.metadata` is written as a whole column by three writers that
   each snapshot it first** (raised 2026-08-14, PR #57 review; **deliberately not

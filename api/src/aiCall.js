@@ -73,8 +73,12 @@
 //                 actually flip today into a temperature drop. This list said
 //                 `{keypoints, battlecard}` after group 3 landed, which sent
 //                 exactly that operator looking for their key and not finding
-//                 it. The count is now computed from the router in
-//                 costsTelemetry.test.js.
+//                 it. The count is computed from the router in
+//                 costsTelemetry.test.js — which reads EVERY copy of the claim
+//                 under src/, this one included. It did not at first: it read
+//                 anthropic.js's sentence only, and THIS line was set to FIVE
+//                 with the suite green at 403/403, which is how an unguarded
+//                 twin of a guarded number gets to exist at all.
 //   effort        Claude only. Validated here against anthropic.js's own set so
 //                 a bad value fails at the seam on either provider rather than
 //                 passing silently on Gemini and 400ing after the flip — see
