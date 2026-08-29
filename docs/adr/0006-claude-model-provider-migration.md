@@ -548,9 +548,16 @@ cutover.
    So the honest form of the argument, and the one this decision rests on: a
    port would add a **second** silent-degradation mode to a path that already
    has one and has not fixed it — and the new one would be worse, because
-   truncation at least stops at a boundary the page count can expose, while a
-   systematically worse transcription is uniform, complete-looking and invisible
-   to every check we have. *(A second, narrower gap in the "loud" claim: the
+   truncation is at least *checkable after the fact* — compare
+   `max(kb_chunks.metadata.page)` for the document against its
+   `metadata.pdfPageCount`, i.e. how far the transcription got against how long
+   the source PDF is — while a systematically worse transcription is uniform,
+   complete-looking and invisible to every check we have. Note what that check
+   is NOT: `metadata.pdfPageCount` is set from pdf-parse's `data.numpages`
+   (`parsers.js:62`), a property of the SOURCE, and it is written the same way
+   whether OCR transcribed thirteen pages or seven — so it can only ever be one
+   SIDE of the comparison. "What would reverse it" below states what this check
+   returns on the one row we have, and how it can be blinded. *(A second, narrower gap in the "loud" claim: the
    ingest floor is `< 10` characters while `KB_OCR_TRIGGER_CHARS` is 100, so a
    PDF whose text layer yields 10–99 characters fires OCR and, if OCR returns
    `null`, still ingests — with near-empty text and no error at all. A scanned
@@ -585,23 +592,60 @@ cutover.
 **evidence that Gemini's OCR is producing bad transcriptions today.** That is
 measurable against the rows counted above — a `kb_documents` row with
 `metadata.ocr = true` whose stored text is demonstrably wrong against its source
-PDF: garbled glyphs, pages dropped (`metadata.pdfPageCount` against the real
-page count), invented content, or a body short enough that the trigger should
-have fired again. **Check truncation first when you look**: reason 6 and §10
+PDF: garbled glyphs, **pages dropped or page boundaries lost** —
+`max(kb_chunks.metadata.page)` for that document against its
+`metadata.pdfPageCount` — invented content, or a body short enough that the
+trigger should have fired again. That comparison is written out because the
+obvious short form of it is a tautology: an earlier draft of this line said
+*"`metadata.pdfPageCount` against the real page count"*, and `pdfPageCount` IS
+the source PDF's page count (`parsers.js:62`, from pdf-parse's `data.numpages`),
+so that check compares a value against itself and can never fire. The
+transcription-side number is the page metadata on the chunks, which
+`buildPdfResult` derives by splitting the OCR output on form feeds. **Check truncation first when you look**: reason 6 and §10
 record that a transcription stopping at `OCR_MAX_OUTPUT_TOKENS` is stored as a
 success, so "the text looks complete" is not the same as "the text is
 complete", and a truncated row is bad-transcription evidence that this decision
-would have to answer. Today that population is one row, so the honest state is
-*no evidence in either direction and almost no exposure*. Two further triggers, each
-sufficient alone: Gemini changing or withdrawing native PDF handling or the
-Files API; or a real workload arriving — a tenant ingesting scanned documents at
-volume — which turns the count above into a number worth acting on. In that case
-measure **both** providers against the same corpus before porting, because that
-comparison, and not this ADR, is what a port should rest on.
+would have to answer.
+
+**That check was run on 2026-08-29, and it does not come back clean — so "no
+evidence in either direction" is not an unqualified claim.** On `dsp-db` the
+sole OCR row, `3f8093e2-9d66-446e-b1e5-98ed46c9c323`, carries
+`metadata.pdfPageCount = 13`, while all six of its `kb_chunks` carry
+`metadata.page = 1` and not one of them contains a form-feed character at all.
+The transcription therefore came back with **no page boundaries**, although
+`ocr.js`'s prompt explicitly asks for one form feed per page boundary and
+`ocrPdf` documents its return as form-feed-separated pages.
+
+**It was checked and judged immaterial to this decision, on the evidence rather
+than on preference.** The stored body is 10,925 characters — on the order of
+2,700 tokens against an `OCR_MAX_OUTPUT_TOKENS` ceiling of 16,384 — so this row
+cannot be a truncation, and ~10.9k characters is a plausible volume for a whole
+13-slide deck rather than for one page of one. What was lost is the page
+*separator*, which costs page attribution in chunk metadata and in retrieval
+citations; there is no sign that text was lost. The honest state is therefore
+*no evidence that the transcription is wrong, one confirmed defect in its page
+segmentation, and almost no exposure either way* — not *nothing observed*.
+
+It matters for a second reason: on this corpus the page check above is
+**blind**. With no form feeds in the output, `max(kb_chunks.metadata.page)` is 1
+whether thirteen pages were transcribed or one, so a page-dropping regression
+would look exactly like what is already there. Anyone reaching for that check as
+evidence has to establish that the form feeds are present first.
+
+Two further triggers, each sufficient alone: Gemini changing or withdrawing
+native PDF handling or the Files API; or **a real workload arriving —
+concretely, `select count(*) from kb_documents where metadata->>'ocr' = 'true'`
+reaching 25 in any environment**, which is the same query that produced the
+count above and is where the trigger is taken. It is counted when this ADR is
+revised and by whoever holds §9 item 5; it is stated as a number so that "a
+real workload" is not left to judgement the way the first draft of this
+paragraph left it. In that case measure **both** providers against the same
+corpus before porting, because that comparison, and not this ADR, is what a port
+should rest on.
 
 **The decision is machine-checked, not merely written down — and here is
 exactly how far the check reaches.** `api/test/cutoverGroup3.test.js` asserts
-three things:
+the following, and the list — not a count of it — is the statement:
 
 1. `models.TASKS` has no `ocr` key;
 2. `DISPATCH_READY` does not contain `ocr`;
