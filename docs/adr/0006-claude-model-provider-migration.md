@@ -2296,8 +2296,10 @@ fourth cannot be fixed on the Claude side at all without moving Gemini.)*
   generated and been billed for however many it returned. And eight would not
   fit: fitted over the 33 confidence-pass calls that record an opportunity
   count, output is **`132 + 311 × nOpps` tokens**, so eight lands at **~2,620
-  against a 2,600 budget — over it, not inside it** (the same rows' mean of 345
-  output tokens per opportunity puts eight at ~2,892). The schema permits an
+  against a 2,600 budget — over it, not inside it** (the same rows give ~347
+  tokens per opportunity as Σ output ÷ Σ opportunities, and 363 as the mean of
+  the per-call ratios; eight lands near 2,900 on either, so the conclusion does
+  not turn on the choice of estimator). The schema permits an
   answer the budget cannot hold; what has kept that theoretical is that no
   dossier has yet supported more than six. What drives truncation at this call
   site is therefore **how many opportunities the material supports**, not how
@@ -2354,6 +2356,28 @@ fourth cannot be fixed on the Claude side at all without moving Gemini.)*
   `knowledge/index.js`'s `POST /documents/:id/keypoints` is **unmetered and
   unrestricted** while triggering up to four model calls per click, unlike every
   other rep-facing generate path.
+
+- **The prose-count guards are on their FOURTH generation, and the fifth must
+  not be another regex** (recorded 2026-08-29, PR #59's confidence pass).
+  `costsTelemetry.test.js` pins three numbers that live in prose as well as in
+  code — the seam call-site count, how many DISPATCH_READY keys land on Sonnet
+  5, and the size of DISPATCH_READY. Each generation closed the previous
+  generation's escapes: one canonical file → two hard-coded wordings → a claim
+  SHAPE (count token, assignment verb, model) swept over all of `src/`. An
+  independent pass then defeated the shape **eleven ways**, including `dispatch
+  to` and `route to` — the verbs `anthropic.js` and `aiCall.js` already use
+  about this mechanism in their own opening paragraphs, so the most likely
+  *accidental* restatement is also an escaping one — plus a single `.` anywhere
+  in the filler, `half-dozen`, `Sonnet5` and `call-sites`. The shape rule and
+  the proximity rule it was chosen over are **enumeration with different blast
+  radii, not different classes**: proximity reds on today's live-probe tables,
+  and the shape will red on a plausible future row of that same table with the
+  wrong diagnosis and `not-a-count` as its only remedy. **Decision: the next
+  time this drifts, delete the prose copies so the number lives once and is
+  derived, or move it into a structured token the test parses exactly
+  (`@count sonnetKeys 3`) with the prose pointing at that.** Not implemented in
+  #59 — it changes how these files are written, which is its own reviewable
+  concern.
 
 - **Measure the engagement path's real prompt mix, per leg** (raised
   2026-08-05 — the highest-value measurement left, ahead of the output question

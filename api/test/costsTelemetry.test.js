@@ -65,7 +65,10 @@ function walkJs(dir, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) walkJs(full, out);
-    else if (entry.name.endsWith('.js')) out.push(full);
+    // `.js` is not the only module extension Node loads, and a sweep that
+    // cannot see api/src/foo.cjs is a sweep a lying claim can be parked outside
+    // of. Verified: a .cjs carrying two wrong counts was invisible here.
+    else if (/\.[cm]?js$/.test(entry.name)) out.push(full);
   }
   return out;
 }
@@ -258,6 +261,27 @@ test('[TEXTUAL] the recorded site labels are unique and namespaced', () => {
 // then told the reader to add `research` to WORDS), and `not-a-count` anywhere
 // within 80 characters of a match opts a sentence out.
 //
+// GENERATION FOUR, AND THE LAST ONE THAT SHOULD BE A REGEX. One canonical-file
+// scrape became two hard-coded wordings; those became this shape. An
+// independent pass then defeated the shape ELEVEN ways — `dispatch to`,
+// `route to`, `are served by`, `are mapped to`, a single `.` anywhere in the
+// filler (`models.js`, `§4.1`, `2.5`), `half-dozen`, `Sonnet5`, `call-sites`.
+// The first two of those verbs are the ones anthropic.js and aiCall.js already
+// use about this mechanism in their own opening paragraphs, so the most likely
+// ACCIDENTAL restatement is also an escaping one. And this shape is not a
+// different KIND of guard from the proximity rule it was chosen over, only a
+// different blast radius: proximity reds on today's live-probe tables, and this
+// will red on a future row of that same table ("2 of 5 retried calls stay on
+// the Sonnet tier") with the wrong diagnosis and `not-a-count` as its only
+// remedy.
+//
+// DECISION (2026-08-29, ADR-0006 §10): the next time this drifts, do NOT write
+// a fifth regex. Either delete the prose copies so the number lives once and is
+// derived, or move it into a structured token the test parses exactly
+// (`@count sonnetKeys 3`) with the prose referring to that. No regex over
+// English is a proof, and the honest form of that sentence is a decision, not
+// a caveat.
+//
 // NOTE FOR THE NEXT WIDENING: these sweep src/ ONLY. Pointing them at test/ is
 // the obvious next move and this file would self-trip on its own worked
 // examples — the mutation quotes below carry deliberately wrong numbers. Break
@@ -294,7 +318,7 @@ const NUMBER = `(?<![\\w-])(${['\\d+', ...Object.keys(WORDS)].join('|')})(?![\\w
 
 // The three claim shapes. Filler is bounded and may not cross a sentence break,
 // so a count in one sentence cannot reach a subject in the next.
-const SEAM_SITES = new RegExp(`${NUMBER}[^.;]{0,20}?seam call sites`, 'gi');
+const SEAM_SITES = new RegExp(`${NUMBER}[^.;]{0,20}?seam call sites(?: in total)?`, 'gi');
 const SONNET_KEYS = new RegExp(
   `${NUMBER}(?: of the ${NUMBER})?[^.;]{0,40}?` +
   '\\b(?:land|lands|resolve|resolves|end up|ends up|sit|sits|map|maps|run|runs|go|goes)\\b' +
@@ -316,17 +340,37 @@ const prose = (src) => src
 // — a reviewer deleting the guard to get their PR green — is how this class of
 // check dies. models.js's "all three keys are in DISPATCH_READY" is the first
 // real one: three named keys, not the size of the set.
+//
+// TWO THINGS KEEP THE OPT-OUT FROM BEING A HOLE, because as a bare ±80-char
+// window it was one:
+//
+//   - it is scoped to the SENTENCE the match sits in, bounded by `.`/`;` the
+//     same way the shape's own filler is. A character window shields whatever
+//     happens to sit near a legitimate marker.
+//   - every skip is PINNED by the test below. That is the part that bites: a
+//     marker can still be written into the same sentence as a lying count (and
+//     a claim inserted directly above models.js's marker is inside its sentence
+//     with no punctuation between them — both were green at 22/22), but it
+//     cannot be added without the pinned list changing, so an opt-out is a
+//     visible diff and a reviewer's decision rather than a silent one.
 function sweepSrc(re) {
-  const found = [];
+  const matched = [];
+  const skipped = [];
   for (const file of walkJs(SRC)) {
     const text = prose(fs.readFileSync(file, 'utf8'));
     for (const m of text.matchAll(re)) {
-      const around = text.slice(Math.max(0, m.index - 80), m.index + m[0].length + 80);
-      if (around.includes('not-a-count')) continue;
-      found.push({ file: path.relative(SRC, file), quote: m[0], count: m[1], outOf: m[2] });
+      const entry = { file: path.relative(SRC, file), quote: m[0], count: m[1], outOf: m[2] };
+      const head = text.slice(0, m.index);
+      const from = Math.max(head.lastIndexOf('.'), head.lastIndexOf(';')) + 1;
+      const tailAt = m.index + m[0].length;
+      const tail = text.slice(tailAt);
+      const stop = tail.search(/[.;]/);
+      const sentence = text.slice(from, tailAt + (stop === -1 ? tail.length : stop));
+      if (sentence.includes('not-a-count')) skipped.push(entry);
+      else matched.push(entry);
     }
   }
-  return found;
+  return { matched, skipped };
 }
 
 // A floor per canonical file: a sweep that matches nothing is a guard that
@@ -389,8 +433,17 @@ test('[TEXTUAL] the number of seam call sites is pinned, so prose has something 
   // against the one-file version — one two lines below anthropic.js's sentence,
   // one in aiCall.js, and one in models.js's DISPATCH_READY block, which is the
   // very place this test's own failure message tells you to check by hand.
-  const quoted = sweepSrc(SEAM_SITES);
-  assertPresentIn(quoted, ['anthropic.js'], "how many '<N> seam call sites' there are");
+  const quoted = sweepSrc(SEAM_SITES).matched;
+  // The floor is on the CANONICAL SENTENCE, not on "any match in anthropic.js".
+  // That file carries a second, DECORATIVE match — `the guarded "TEN seam call
+  // sites" number`, in the paragraph that narrates the last drift — and a
+  // file-level floor was satisfied by it: rewording the canonical sentence to
+  // "A handful of seam call-sites in total now" was green here and RED on main.
+  // A fix round had made this floor weaker than the one-file scrape it
+  // replaced, which is the erosion-by-plausible-edit this test exists to stop.
+  assertPresentIn(quoted.filter((q) => /in total/i.test(q.quote)), ['anthropic.js'],
+    "'<N> seam call sites in total' (the canonical sentence — a passing mention of the phrase " +
+    'elsewhere in the same file does not stand in for it)');
   for (const q of quoted) {
     const where = `${q.file}: "${q.quote}"`;
     assert.strictEqual(wordToNumber(q.count, where), sites,
@@ -444,7 +497,7 @@ test('the Sonnet-5 count in prose is COMPUTED from the router, not scraped', () 
   // seam, so the claim earns its place there — and removing a comment to "keep
   // the number in one place" leaves nothing to stop the next copy being
   // written, which is exactly how this one arrived.
-  const claims = sweepSrc(SONNET_KEYS);
+  const claims = sweepSrc(SONNET_KEYS).matched;
   assertPresentIn(claims, ['anthropic.js', 'aiCall.js'],
     'how many migrated keys land on claude-sonnet-5 (the operator-facing statement of ' +
     '"your temperature will be dropped after a flip")');
@@ -476,7 +529,7 @@ test('the DISPATCH_READY size quoted in prose is checked against the set', () =>
   // Group 4 takes the set to eight, at which point both go stale silently, in
   // the paragraph an operator reads first to find out what is flippable.
   const models = require(path.join(SRC, 'models.js'));
-  const ready = sweepSrc(READY_SIZE);
+  const ready = sweepSrc(READY_SIZE).matched;
   assertPresentIn(ready, ['anthropic.js', 'aiCall.js'], "'<N> tasks are in models.DISPATCH_READY'");
   for (const r of ready) {
     const where = `${r.file}: "${r.quote}"`;
@@ -485,6 +538,27 @@ test('the DISPATCH_READY size quoted in prose is checked against the set', () =>
       `(${[...models.DISPATCH_READY].join(', ')}). The next cutover group has to move BOTH headers, ` +
       'and ADR-0006 §9 item 5 with them.');
   }
+});
+
+test('every not-a-count opt-out under src/ is pinned, so adding one is a visible diff', () => {
+  // The opt-out is the guards' escape hatch and therefore their weakest point:
+  // a marker anywhere in a matched sentence turns a checked claim into an
+  // unchecked one, silently. Demonstrated at 22/22 green — a wrong count
+  // carrying `(not-a-count)` in anthropic.js, and a wrong count inserted
+  // directly above models.js's legitimate marker, inside its sentence.
+  //
+  // So the list is pinned by value. Marking a sentence is fine; marking one
+  // without saying so in a diff is not. If you are here because this failed:
+  // read the quoted sentence, decide whether it really is not a count, and add
+  // it below with the reason — do not widen the pin to make it pass.
+  const skipped = [SEAM_SITES, SONNET_KEYS, READY_SIZE]
+    .flatMap((re) => sweepSrc(re).skipped)
+    .map((s) => `${s.file}: ${s.quote}`)
+    .sort();
+  assert.deepStrictEqual(skipped, ['models.js: three keys are in DISPATCH_READY'],
+    'the set of `not-a-count` opt-outs under src/ changed. The only sanctioned one is models.js\'s ' +
+    '"all three keys are in DISPATCH_READY" — three NAMED keys, not the size of the set. Anything ' +
+    'else here is a claim that stopped being checked; anything missing means a marker was dropped.');
 });
 
 // ── 2. Claude usage accounting ──────────────────────────────────────────────
