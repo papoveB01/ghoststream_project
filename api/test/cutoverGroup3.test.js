@@ -373,6 +373,15 @@ test('group 3 is dispatch-ready for `research`, and only for `research`', () => 
 // GEMINI_MODEL / GEMINI_OCR_MODEL override does not red them — a Gemini id is a
 // Gemini id, and pinning `gemini-2.5-flash` here would carry the same
 // deployment-env residual the [GEMINI-PARITY] pin below documents, for no gain.
+//
+// They ask models.providerOfModel() rather than matching /^gemini-/, because
+// that is what "provider family" MEANS in this codebase and an anchored prefix
+// is not it: providerOfModel uses includes('gemini') on purpose, since ids can
+// be prefixed. A deployment setting GEMINI_MODEL=models/gemini-2.5-flash — an
+// env this test does NOT clear, unlike GEMINI_OCR_MODEL — would red an anchored
+// match on a completely correct configuration. Asking the router is strictly
+// better on both sides: it reds on the same ports and greens on the same
+// legitimate overrides the router itself accepts.
 test('OCR sends a GEMINI model even with the router told to prefer Claude (ADR-0006 §4.8)', async () => {
   const ocrPath = require.resolve(path.join(SRC, 'knowledge', 'ocr.js'));
   const KEYS = [
@@ -380,6 +389,16 @@ test('OCR sends a GEMINI model even with the router told to prefer Claude (ADR-0
     'ANTHROPIC_API_KEY', 'ANTHROPIC_OCR_MODEL', 'GEMINI_OCR_MODEL', 'GEMINI_API_KEY',
   ];
   const saved = new Map(KEYS.map((k) => [k, process.env[k]]));
+  // Lift FLIP_BLOCKED for the duration, the way withAnthropic() above does and
+  // for the same reason. Without this, "the router told to prefer Claude every
+  // way it can be told" is false for any blocked key: providerFor() falls back
+  // to Gemini for `battlecard` and `keypoints` regardless of AI_PROVIDER, so
+  // re-pointing OCR_MODEL at modelFor('battlecard') — reversal shape 1, with a
+  // blocked key — resolves a Gemini id and passes GREEN. That is latent only
+  // because those two keys happen to be blocked today; FLIP_BLOCKED is
+  // temporary by design (models.js), and the day a key leaves it, OCR would
+  // silently follow it onto Claude with this test still green.
+  const savedBlocks = new Map(models.FLIP_BLOCKED);
   // Everything an operator could set that ought NOT to move this file.
   process.env.AI_PROVIDER = 'anthropic';
   process.env.AI_PROVIDER_OCR = 'anthropic';
@@ -392,10 +411,11 @@ test('OCR sends a GEMINI model even with the router told to prefer Claude (ADR-0
   // Cleared so the assertion is about what the file RESOLVES, not about an
   // override happening to be a Gemini id.
   delete process.env.GEMINI_OCR_MODEL;
+  models.FLIP_BLOCKED.clear();
   delete require.cache[ocrPath];
   try {
     const ocr = require(ocrPath);
-    assert.match(ocr.OCR_MODEL, /^gemini-/,
+    assert.strictEqual(models.providerOfModel(ocr.OCR_MODEL), 'gemini',
       `knowledge/ocr.js resolved "${ocr.OCR_MODEL}" with AI_PROVIDER=anthropic. ADR-0006 §4.8 ` +
       'decided OCR stays on Gemini indefinitely: this file must not take its model from the task ' +
       'router, from another task\'s key, or from an ANTHROPIC_* override. Reversing that decision ' +
@@ -410,17 +430,23 @@ test('OCR sends a GEMINI model even with the router told to prefer Claude (ADR-0
     assert.strictEqual(geminiCalls.length, before + 1,
       'ocrPdf reached no client at all, so the wire assertion below would prove nothing. If OCR ' +
       'was moved to another SDK, that is the finding — this fake client is the GEMINI one.');
-    assert.match(geminiCalls[geminiCalls.length - 1].model, /^gemini-/,
+    assert.strictEqual(models.providerOfModel(geminiCalls[geminiCalls.length - 1].model), 'gemini',
       `knowledge/ocr.js sent "${geminiCalls[geminiCalls.length - 1].model}" to the model client ` +
       'with AI_PROVIDER=anthropic. This assertion reads the REQUEST, not the exported constant, ' +
       'so it also covers a model resolved per call inside generateFromParts — the shape ADR-0006 ' +
       '§9 item 4 pushed every other task towards, and therefore the likeliest way OCR gets ported ' +
       'by accident. §4.8 is what a real port has to amend.');
 
-    // No task key was created as a side effect of resolving it.
-    assert.ok(!Object.prototype.hasOwnProperty.call(models.TASKS, 'ocr'));
+    // Deliberately NOT re-asserting `!('ocr' in models.TASKS)` here. The first
+    // test in this file already does, models.TASKS is a static object literal
+    // that nothing writes to, and models.js is not re-required in this block —
+    // so a copy here could not fail for a reason the earlier one would miss. It
+    // read as "no key appeared while it resolved"; nothing in this block can
+    // make one appear.
   } finally {
     delete require.cache[ocrPath];
+    models.FLIP_BLOCKED.clear();
+    for (const [t, reason] of savedBlocks) models.FLIP_BLOCKED.set(t, reason);
     for (const [k, v] of saved) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
 });

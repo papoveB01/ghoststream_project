@@ -661,22 +661,42 @@ load-bearing part: it catches a model resolved **per call**, which is the shape
 decision gets reversed by accident — and it fails if the call reaches no Gemini
 client at all, i.e. a swap onto another SDK.
 
-All three were confirmed able to fail on 2026-08-29, each by the mutation it
-exists to catch. **Only one of the three fails alone**, and the difference is
-worth stating precisely in a subsection whose subject is a guard that overstated
-itself. Measured, on a 406-test suite:
+All three were confirmed able to fail, each by the mutation it exists to catch.
+**Only one of the three fails alone**, and the difference is worth stating
+precisely in a subsection whose subject is a guard that overstated itself.
+Re-measured 2026-08-29 after the guard was repaired (see the fourth row), on a
+406-test suite:
 
 | mutation | result | which tests |
 | --- | --- | --- |
 | resolve the model **per call** inside `generateFromParts`, constant untouched | 405 pass, **1 fail** | assertion 3 |
 | add `'ocr'` to `DISPATCH_READY` | 401 pass, **5 fail** | assertion 2, plus *"membership in DISPATCH_READY is eligibility, not a flip"*, the Sonnet-count and `DISPATCH_READY`-size prose sweeps, and *"the shipped set survives the only test that rewrites the whole set"* |
-| add an `ocr` key to `models.TASKS` | 404 pass, **2 fail** | assertion 1, plus assertion 3's closing check that no key appeared while it resolved |
+| add an `ocr` key to `models.TASKS` | 405 pass, **1 fail** | assertion 1 |
+| re-point `OCR_MODEL` at `modelFor('battlecard')` — a key in `FLIP_BLOCKED` | 405 pass, **1 fail** | assertion 3 |
 
-The wider blast radius of the last two is a property of those sets being pinned
-in several places, **not** evidence that assertions 1 and 2 are strong: they are
-keyed on a string and say nothing about `knowledge/ocr.js`. Assertion 3 is the
-one that fences the file, and it is also the one whose mutation nothing else
-notices.
+The third row was **404 pass / 2 fail** when this table was first written. The
+second failure was assertion 3's closing re-check that no `ocr` key had appeared
+while it resolved, which was removed on review: `models.TASKS` is a static object
+literal, nothing writes to it, and the test does not re-require `models.js`, so
+that assertion could only ever fail in company with assertion 1. Blast radius
+shrank; detection did not.
+
+The fourth row is new, and it only reds because the guard was fixed in the same
+round. Assertion 3's setup did not lift `models.FLIP_BLOCKED`, so for a key that
+is blocked — `battlecard`, `keypoints` — `providerFor()` falls back to Gemini
+whatever `AI_PROVIDER` says, and reversal shape 1 aimed at such a key resolved a
+Gemini id and passed **13/13**. That was latent rather than harmless:
+`FLIP_BLOCKED` is temporary by design, and on the day a key leaves it, OCR would
+have followed it onto Claude with this test still green. The setup now clears
+`FLIP_BLOCKED` for the duration and restores it, the way the file's
+`withAnthropic()` helper already did, and the mutation reds with *"knowledge/ocr.js
+resolved `claude-sonnet-5` with AI_PROVIDER=anthropic"*.
+
+The wider blast radius of the `DISPATCH_READY` row is a property of that set
+being pinned in several places, **not** evidence that assertions 1 and 2 are
+strong: they are keyed on a string and say nothing about `knowledge/ocr.js`.
+Assertion 3 is the one that fences the file, and it is also the one whose
+mutations nothing else notices.
 
 **Two gaps are stated rather than implied**, both measured green against the
 guard as it stands:
