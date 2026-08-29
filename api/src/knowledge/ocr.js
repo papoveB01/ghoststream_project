@@ -9,9 +9,17 @@
 // raw PDF bytes to the model and ask for a verbatim transcription. This keeps
 // the OCR path dependency-free — no Tesseract/poppler binaries in the image.
 //
-// Best-effort by contract: any failure (no API key, oversized file, model
+// Best-effort by contract: any HARD failure (no API key, oversized file, model
 // error, empty result) returns null so the caller falls back to the original
 // short-text result and the existing 4xx error still fires.
+//
+// TRUNCATION IS NOT A HARD FAILURE AND IS NOT COVERED BY THAT SENTENCE. Nothing
+// below inspects finishReason, so a transcription that exhausts
+// OCR_MAX_OUTPUT_TOKENS comes back as non-empty truncated text, ocrPdf returns
+// it (its only test is length > 0), and the document is stored READY —
+// half-transcribed and looking complete. Recorded, unfixed, and NOT this file's
+// to fix in the PR that wrote this comment: docs/code-review-2026-07-29.md:163,
+// "OCR silently truncated at 16K tokens and stored READY", and ADR-0006 §10.
 
 const os = require('os');
 const fs = require('fs');
@@ -24,10 +32,69 @@ const { TIERS } = require('../models');
 // Vision-capable model for transcription. Flash (not flash-lite) by default for
 // OCR fidelity; override with GEMINI_OCR_MODEL.
 //
-// Pinned to the Gemini tier explicitly: OCR is not in the task router, so it
-// does not participate in the per-task provider flip. Moving it to Claude means
-// rewriting this file for document blocks (and re-checking page limits), not
-// changing a tier — see ADR-0006 §7 on vision.
+// PINNED TO GEMINI BY DECISION, NOT BY OMISSION — ADR-0006 §4.8, which decided
+// on 2026-08-29 that OCR stays on Gemini indefinitely, the way §4.2 keeps
+// embeddings there. So this file is deliberately absent from models.TASKS:
+// there is no `ocr` key, no AI_PROVIDER_OCR, no ANTHROPIC_OCR_MODEL, and
+// nothing here participates in the per-task provider flip. The reasons, in
+// short: the live-schema harness cannot cover free-text transcription (no
+// responseSchema to post, and no fidelity probe exists); Gemini's key and SDK
+// are already permanent for embeddings, so keeping this path adds no
+// dependency; and this is a FALLBACK whose production volume is too small to
+// repay a rewrite. The volume is a database observation, so it is NOT restated
+// here where nothing can keep it true — §4.8 carries the number, dated, scoped
+// to an environment, and with the row id.
+//
+// ocrViaFilesApi below has no equivalent in anthropic.js — no PDF helper, no
+// base64 or size handling, no upload-and-reference path. Stated that way rather
+// than as "no document support": anthropic.generate's normalizeMessages accepts
+// a block array and passes the blocks through UNINSPECTED — untouched in the
+// common case, and re-wrapped into a fresh array (same block objects) when it
+// merges two same-role messages. Either way it never reads a block's type or
+// contents, so a hand-built document block WOULD reach the API. What is missing
+// is everything around it, in this tree.
+//
+// Bounded the same way §4.8 bounds it: there is NO RECORDED EXECUTION of
+// ocrViaFilesApi in either environment, so "no equivalent" is an argument about
+// a rewrite nobody is known to have needed, not about a path in use. Not
+// "never executed" — a firing that returns null leaves no row, so the query
+// behind that claim can only see successes.
+//
+// The failure asymmetry is the load-bearing reason, and it holds for HARD
+// failures only — see the truncation note at the top of this file. Bounded
+// form: a port would add a SECOND silent-degradation mode to a path that
+// already has one and has not fixed it, and the new one would be worse, because
+// a systematically worse transcription is uniform, complete-looking and
+// invisible to every check we have.
+//
+// WHAT WOULD REVERSE IT is evidence that these transcriptions are bad — or
+// Gemini changing its native PDF / Files API handling. Not a new model
+// announcement. kb_documents rows carrying metadata.ocr IDENTIFY the documents
+// to look at; they carry no truncation signal, because nothing here records
+// finishReason, so measuring the truncation case needs that recorded first
+// (ADR-0006 §10). §4.8 has the rest, including what the page-coverage check
+// returns on the one row that exists.
+//
+// WHAT PINS THIS FILE, and how narrowly. cutoverGroup3.test.js asserts the
+// absence of an `ocr` key and of `ocr` from DISPATCH_READY — both keyed on the
+// string, so neither says anything about this module — and then, with the
+// router told to prefer Claude every way it can be told, that the constant
+// below AND the model actually handed to the client on a real ocrPdf() call are
+// both Gemini ids. Reading the REQUEST is the half that fences THIS file: it
+// catches a model resolved per call inside generateFromParts, which an
+// assertion on the exported constant alone walks straight past.
+//
+// It is not airtight and does not claim to be. A provider branch keyed on an
+// env var the test never sets resolves Gemini under the test and Claude in
+// production, and no executing guard can enumerate env names it was not given.
+// So: A NEW PROVIDER ENV READ, OR A SECOND MODEL CALL, APPEARING IN THIS FILE
+// IS A REVIEWER'S CATCH — this file's whole subject is that it does neither.
+// The honest claim is that §4.8 cannot be reversed here QUIETLY, not that it
+// cannot be reversed. The full account of what the guard covers, the two shapes
+// it does not, and why the strongest proposed fix was declined lives with the
+// test itself (cutoverGroup3.test.js, the block above the §4.8 test) and in
+// §4.8 — not duplicated here, where it would drift out of step with the
+// assertions it describes.
 const OCR_MODEL = process.env.GEMINI_OCR_MODEL || TIERS.gemini.flash;
 
 // Gemini caps a single request payload at ~20MB. Base64 inflates bytes ~33%, so
@@ -116,7 +183,16 @@ async function ocrViaFilesApi(client, buffer, mimeType, tenantId = null) {
   }
 }
 
-// Returns extracted text (form-feed-separated pages) or null on any failure.
+// Returns extracted text or null. NOT "null on any failure": null on the HARD
+// failures only (no key, no client, empty buffer, oversized-upload trouble,
+// model error, empty result). A response truncated at OCR_MAX_OUTPUT_TOKENS is
+// non-empty, so it is returned as a success — see the truncation note at the
+// top of this file, and ADR-0006 §10.
+//
+// Pages are form-feed-separated when the model honours the prompt's separator
+// instruction; parsers.js derives chunk page numbers by splitting on it. The
+// one production row has none at all, so treat the separator as best-effort
+// rather than as part of this contract (ADR-0006 §4.8).
 async function ocrPdf(buffer, { mimeType = 'application/pdf', tenantId = null } = {}) {
   if (!process.env.GEMINI_API_KEY) {
     console.warn('[kb-ocr] GEMINI_API_KEY not set — skipping OCR fallback');
