@@ -54,9 +54,11 @@ const { TIERS } = require('../models');
 // contents, so a hand-built document block WOULD reach the API. What is missing
 // is everything around it, in this tree.
 //
-// Bounded the same way §4.8 bounds it: ocrViaFilesApi has never EXECUTED in
-// either environment, so "no equivalent" is an argument about a rewrite nobody
-// has needed yet, not about a path in use.
+// Bounded the same way §4.8 bounds it: there is NO RECORDED EXECUTION of
+// ocrViaFilesApi in either environment, so "no equivalent" is an argument about
+// a rewrite nobody is known to have needed, not about a path in use. Not
+// "never executed" — a firing that returns null leaves no row, so the query
+// behind that claim can only see successes.
 //
 // The failure asymmetry is the load-bearing reason, and it holds for HARD
 // failures only — see the truncation note at the top of this file. Bounded

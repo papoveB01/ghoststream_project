@@ -38,10 +38,11 @@ const apollo = require('./apollo');
 // free-text rather than structured output (so the live schema harness
 // structurally cannot cover it), and reaches Gemini through the Files API on
 // oversized inputs — a path anthropic.js (not aiCall, which is what "this
-// wrapper" would read as here) has no equivalent for, and one that has never
-// executed in either environment, so it is an argument about a rewrite nobody
-// has needed rather than about live behaviour. Those reasons became a decision
-// on 2026-08-29: OCR stays on Gemini indefinitely (§4.8).
+// wrapper" would read as here) has no equivalent for, and one with no recorded
+// execution in either environment — bounded that way because a firing that
+// returns null leaves no row — so it is an argument about a rewrite nobody is
+// known to have needed rather than about live behaviour. Those reasons became a
+// decision on 2026-08-29: OCR stays on Gemini indefinitely (§4.8).
 const aiCall = require('../aiCall');
 
 // Shared retry helper (ADR-0006 §7). Bound here with this module's label so

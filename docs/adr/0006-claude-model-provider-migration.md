@@ -471,14 +471,25 @@ cutover.
    a code path is a rewrite, not a swap, which is why that §7 line is struck as
    part of this decision rather than left standing.
 
-   **Recorded because it cuts both ways: `ocrViaFilesApi` has never executed.**
-   The selector is `buffer.length > INLINE_MAX_BYTES` (14,680,064), and the one
-   OCR-produced document is **14,341,540 bytes** — under the threshold by ~330KB,
-   so it went inline. There is no recorded execution of the Files API branch in
-   either environment. That makes reason 4 smaller than it looks (less code to
-   port) *and* the §7 saving smaller than it looked (less code that would go
-   away), and neither number should be quoted without it. It also says something
-   about the threshold: the single sample sits at 97.7% of it.
+   **Recorded because it cuts both ways: there is no recorded execution of
+   `ocrViaFilesApi` in either environment.** The selector is
+   `buffer.length > INLINE_MAX_BYTES` (14,680,064), and the one OCR-produced
+   document is **14,341,540 bytes** — under the threshold by ~330KB, so it went
+   inline. That makes reason 4 smaller than it looks (less code to port) *and*
+   the §7 saving smaller than it looked (less code that would go away), and
+   neither number should be quoted without it. It also says something about the
+   threshold: the single sample sits at 97.7% of it.
+
+   **"No recorded execution" is the strongest form this evidence supports, and
+   "never executed" is not.** The evidence is one *successful* row, and reason 6
+   below establishes that a firing which returns `null` leaves no row at all —
+   so an oversized PDF that took this branch and failed is possible and would be
+   invisible to the query. Nor is the input space closed: `KB_UPLOAD_MAX_MB` is
+   **100** in both deployed environments (verified against the running
+   containers 2026-08-29), i.e. uploads well above the 14MB selector are
+   accepted, and the trigger that reaches OCR does not care how large the file
+   is. Every site restating this claim carries the bounded wording for that
+   reason.
 5. **The benefit is small by construction, and the measurement says so.** OCR is
    a fallback, not a stage: `parsers.js` calls it only when `pdf-parse` extracts
    fewer than `KB_OCR_TRIGGER_CHARS` (default **100**) characters from an
@@ -1033,10 +1044,12 @@ creating one; `plans.js` has no code path that migrates a v1 tenant to v2.
   on Gemini, so the polling loop and its timeout stay too.** It is struck rather than
   deleted because it was this migration's one stated saving on that file, and
   §4.8's case is partly that collecting it means rewriting the oversized-file
-  path, not swapping a client. Worth knowing on both sides of that: **the branch
-  has never executed** — the only OCR-produced document is 14,341,540 bytes
-  against a 14,680,064 threshold — so the saving withdrawn here was never a
-  saving on running code.
+  path, not swapping a client. Worth knowing on both sides of that: **there is
+  no recorded execution of the branch in either environment** — the only
+  OCR-produced document is 14,341,540 bytes against a 14,680,064 threshold — so
+  the saving withdrawn here was never a demonstrable saving on running code.
+  Bounded rather than "never executed" for the reason §4.8 reason 4 gives: a
+  firing that returned `null` leaves no row to find.
 - Six hand-duplicated `withRetry` functions (`watch.js:36`, `proposals.js:30`,
   `research.js:305`, `relevance.js:52`, `assessment.js:86`, `discovery.js:78`),
   each regex-matching Gemini error strings, collapse into one helper over
@@ -2248,7 +2261,8 @@ decomposition exists so that per-file spokes stay tractable.
      *[2026-08-29: that §7 line is now struck — §4.8 keeps the loop. The
      sentence above is left as it was written, because this entry's purpose is
      that the split's reasoning survives unrewritten. Also learned since:
-     `ocrViaFilesApi` has never executed in either environment — §4.8 reason 4.]*
+     there is no recorded execution of `ocrViaFilesApi` in either environment —
+     §4.8 reason 4, which also says why that is the strongest provable form.]*
 
    **That outcome is now the decision: OCR stays on Gemini indefinitely
    (§4.8).** It takes the same STANDING form §4.2 uses for embeddings, but not

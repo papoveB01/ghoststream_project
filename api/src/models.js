@@ -124,12 +124,14 @@ const DEFAULT_PROVIDER = 'gemini';
 // structured output (so neither aiCall.generateStructured nor the live schema
 // harness can cover it), and reaches Gemini through the Files API on oversized
 // inputs — a path anthropic.js has no equivalent for, though bound that claim
-// the way §4.8 does: it has never executed in either environment. It is a
-// fallback whose production volume is too small to repay a rewrite; the number
-// is a database observation and lives once, dated and scoped, in §4.8 (how
-// often it FIRED is not measurable at all — a failed OCR leaves no row). §4.8
-// carries the argument, the counter-arguments and the evidence that reverses
-// it.
+// the way §4.8 does: there is no RECORDED execution of it in either
+// environment, which is not the same as none (a firing that returns null leaves
+// no row). It is a fallback whose production volume is too small to repay a
+// rewrite; that number is a database observation, so no file under api/src
+// restates it — §4.8 is where it is dated, scoped and carries the row id, and
+// §9 item 5 quotes it from there (how often it FIRED is not measurable at all,
+// for the same reason). §4.8 carries the argument, the counter-arguments and
+// the evidence that reverses it.
 //
 // THE THREE GROUP-2 KEYS HAD TO LAND TOGETHER, and `battlecard` is the reason.
 // assessment.js holds two call sites resolving two different keys since PR #53.
