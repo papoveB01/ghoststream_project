@@ -350,7 +350,9 @@ const FLIP_BLOCKED = new Map([
 // `assessment` + `battlecard`): all three keys are in DISPATCH_READY above
 // (`not-a-count` — those are three NAMED keys, not the size of the set;
 // costsTelemetry.test.js sweeps src/ for "<N> keys are in DISPATCH_READY" and
-// skips any match within 80 characters of that marker) and
+// skips a match whose own sentence, bounded by `.` or `;`, carries that marker.
+// The marker alone is not enough: every opt-out is also pinned by value in that
+// file, so adding one is a diff someone has to approve) and
 // all FIVE of their call sites dispatch through aiCall — three in keypoints.js
 // under the one `keypoints` key, two in assessment.js under two keys. What
 // that changed is

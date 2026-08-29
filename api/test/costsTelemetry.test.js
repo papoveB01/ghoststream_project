@@ -258,14 +258,22 @@ test('[TEXTUAL] the recorded site labels are unique and namespaced', () => {
 // old rationale and is kept: a guard that reddens on a TRUE sentence gets
 // deleted. So the count is a NUMBER TOKEN and never `\w+` (the `\w+` version
 // reddened on "keypoints, battlecard and research land on claude-sonnet-5" and
-// then told the reader to add `research` to WORDS), and `not-a-count` anywhere
-// within 80 characters of a match opts a sentence out.
+// then told the reader to add `research` to WORDS), and a sentence can opt out
+// with `not-a-count`. THE OPT-OUT IS SENTENCE-SCOPED, not a character window:
+// the marker has to sit in the SAME sentence as the match (bounded by `.`/`;`),
+// and the opt-out must also be added to the pinned list in the test below, in
+// the same diff. A marker one sentence away does nothing — that is the whole
+// point of it, and stating the old ±80-character rule anywhere is now wrong.
 //
-// GENERATION FOUR, AND THE LAST ONE THAT SHOULD BE A REGEX. One canonical-file
-// scrape became two hard-coded wordings; those became this shape. An
-// independent pass then defeated the shape ELEVEN ways — `dispatch to`,
-// `route to`, `are served by`, `are mapped to`, a single `.` anywhere in the
-// filler (`models.js`, `§4.1`, `2.5`), `half-dozen`, `Sonnet5`, `call-sites`.
+// GENERATION FOUR, AND THE LAST ONE THAT SHOULD BE A REGEX. Count them: (1) one
+// canonical file, first match only; (2) every file under src/, two hard-coded
+// wordings; (3) a claim SHAPE instead of wordings; (4) this round — the floor
+// anchored to the canonical phrase, the opt-out sentence-scoped and its every
+// use pinned, and `.cjs`/`.mjs` swept. An independent pass defeated (3) in AT
+// LEAST EIGHT WAYS, the ones reconstructible from its report (it counted
+// eleven): `dispatch to`, `route to`, `are served by`, `are mapped to`, a
+// single `.` anywhere in the filler (`models.js`, `§4.1`, `2.5`),
+// `half-dozen`, `Sonnet5`, `call-sites`.
 // The first two of those verbs are the ones anthropic.js and aiCall.js already
 // use about this mechanism in their own opening paragraphs, so the most likely
 // ACCIDENTAL restatement is also an escaping one. And this shape is not a
@@ -306,7 +314,11 @@ function wordToNumber(word, where) {
     'If that is a spelled-out number past the end of WORDS in test/costsTelemetry.test.js, ADD IT ' +
     'THERE: the map is word-shaped because the prose is, and the guard has to go on comparing the ' +
     'prose against the code. If instead the sentence is not a count claim at all, mark it ' +
-    '`not-a-count` — the sweeps skip any match within 80 characters of that marker.');
+    '`not-a-count` — the sweeps skip a match whose OWN SENTENCE (bounded by `.` or `;`) carries ' +
+    'that marker, so it has to go in the sentence itself, not merely near it — AND add the ' +
+    "sentence to the pinned opt-out list in this file's \"every not-a-count opt-out\" test, in the " +
+    'same diff. Marking without pinning fails that test, which is deliberate: an opt-out is a ' +
+    'decision someone has to see.');
   return n;
 }
 
@@ -341,8 +353,7 @@ const prose = (src) => src
 // check dies. models.js's "all three keys are in DISPATCH_READY" is the first
 // real one: three named keys, not the size of the set.
 //
-// TWO THINGS KEEP THE OPT-OUT FROM BEING A HOLE, because as a bare ±80-char
-// window it was one:
+// TWO THINGS NARROW THE OPT-OUT, which as a bare ±80-char window was a hole:
 //
 //   - it is scoped to the SENTENCE the match sits in, bounded by `.`/`;` the
 //     same way the shape's own filler is. A character window shields whatever
@@ -353,6 +364,16 @@ const prose = (src) => src
 //     with no punctuation between them — both were green at 22/22), but it
 //     cannot be added without the pinned list changing, so an opt-out is a
 //     visible diff and a reviewer's decision rather than a silent one.
+//
+// WHAT THE PIN FIXES IS THE OPT-OUT'S IDENTITY, NOT THE SHIELDED SENTENCE'S
+// CONTENT. It keys on `file: quote`, so an existing sanctioned opt-out can be
+// rewritten IN PLACE into a different false claim with the same quote and the
+// pin will not move (demonstrated green). Pinning the surrounding sentence
+// instead would red on every ordinary reword of a marked comment, which is the
+// brittleness that gets guards deleted — so this is a stated limit, not an
+// oversight. The defence against it is that the marked sentences are few, named
+// here, and land in review as a diff on a line a reviewer is already looking
+// at.
 function sweepSrc(re) {
   const matched = [];
   const skipped = [];
@@ -434,16 +455,23 @@ test('[TEXTUAL] the number of seam call sites is pinned, so prose has something 
   // one in aiCall.js, and one in models.js's DISPATCH_READY block, which is the
   // very place this test's own failure message tells you to check by hand.
   const quoted = sweepSrc(SEAM_SITES).matched;
-  // The floor is on the CANONICAL SENTENCE, not on "any match in anthropic.js".
-  // That file carries a second, DECORATIVE match — `the guarded "TEN seam call
-  // sites" number`, in the paragraph that narrates the last drift — and a
-  // file-level floor was satisfied by it: rewording the canonical sentence to
-  // "A handful of seam call-sites in total now" was green here and RED on main.
-  // A fix round had made this floor weaker than the one-file scrape it
-  // replaced, which is the erosion-by-plausible-edit this test exists to stop.
+  // THE FLOOR IS: at least one match in anthropic.js whose quote carries `in
+  // total`. That is narrower than a file-level floor and wider than "the
+  // canonical sentence" — it cannot tell the two apart, and the comment here
+  // used to claim it could.
+  //
+  // Why the `in total` anchor at all: anthropic.js carries a SECOND,
+  // decorative match — `the guarded "TEN seam call sites" number`, in the
+  // paragraph narrating the last drift — and a file-level floor was satisfied
+  // by that aside, so rewording the canonical sentence to "A handful of seam
+  // call-sites in total now" went green while the same edit RED on main. The
+  // aside does not carry `in total` today and must not be reworded to: doing
+  // that, together with dropping the canonical sentence's number, is green here
+  // — but it is two coordinated edits, it defeats `main` identically, and it is
+  // not the one-plausible-edit erosion this test exists to stop.
   assertPresentIn(quoted.filter((q) => /in total/i.test(q.quote)), ['anthropic.js'],
-    "'<N> seam call sites in total' (the canonical sentence — a passing mention of the phrase " +
-    'elsewhere in the same file does not stand in for it)');
+    "'<N> seam call sites in total' — anthropic.js must carry at least one match saying `in " +
+    'total`, which today is the canonical sentence and must not become the decorative aside');
   for (const q of quoted) {
     const where = `${q.file}: "${q.quote}"`;
     assert.strictEqual(wordToNumber(q.count, where), sites,

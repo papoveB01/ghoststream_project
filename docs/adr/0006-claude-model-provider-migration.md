@@ -2298,8 +2298,9 @@ fourth cannot be fixed on the Claude side at all without moving Gemini.)*
   count, output is **`132 + 311 × nOpps` tokens**, so eight lands at **~2,620
   against a 2,600 budget — over it, not inside it** (the same rows give ~347
   tokens per opportunity as Σ output ÷ Σ opportunities, and 363 as the mean of
-  the per-call ratios; eight lands near 2,900 on either, so the conclusion does
-  not turn on the choice of estimator). The schema permits an
+  the per-call ratios, putting eight at **2,780–2,900 depending on the
+  estimator**; all three exceed the 2,600 budget, so the conclusion does not
+  turn on the choice). The schema permits an
   answer the budget cannot hold; what has kept that theoretical is that no
   dossier has yet supported more than six. What drives truncation at this call
   site is therefore **how many opportunities the material supports**, not how
@@ -2362,13 +2363,18 @@ fourth cannot be fixed on the Claude side at all without moving Gemini.)*
   `costsTelemetry.test.js` pins three numbers that live in prose as well as in
   code — the seam call-site count, how many DISPATCH_READY keys land on Sonnet
   5, and the size of DISPATCH_READY. Each generation closed the previous
-  generation's escapes: one canonical file → two hard-coded wordings → a claim
-  SHAPE (count token, assignment verb, model) swept over all of `src/`. An
-  independent pass then defeated the shape **eleven ways**, including `dispatch
-  to` and `route to` — the verbs `anthropic.js` and `aiCall.js` already use
-  about this mechanism in their own opening paragraphs, so the most likely
-  *accidental* restatement is also an escaping one — plus a single `.` anywhere
-  in the filler, `half-dozen`, `Sonnet5` and `call-sites`. The shape rule and
+  generation's escapes, and there are four: (1) one canonical file, first match
+  only; (2) every file under `src/`, two hard-coded wordings; (3) a claim SHAPE
+  (count token, assignment verb, model) swept over all of `src/`; (4) that shape
+  with its floor anchored to the canonical phrase, its `not-a-count` opt-out
+  scoped to the matched sentence and every use of it pinned by value, and
+  `.cjs`/`.mjs` included in the sweep. An independent pass defeated (3) in **at
+  least eight ways** — the ones reconstructible from its report, which counted
+  eleven: `dispatch to` and `route to` (the verbs `anthropic.js` and `aiCall.js`
+  already use about this mechanism in their own opening paragraphs, so the most
+  likely *accidental* restatement is also an escaping one), `are served by`,
+  `are mapped to`, a single `.` anywhere in the filler, `half-dozen`, `Sonnet5`
+  and `call-sites`. The shape rule and
   the proximity rule it was chosen over are **enumeration with different blast
   radii, not different classes**: proximity reds on today's live-probe tables,
   and the shape will red on a plausible future row of that same table with the

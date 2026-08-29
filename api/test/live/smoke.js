@@ -180,7 +180,7 @@ function resolveFor(provider, task) {
     // repeat the above silently", which is what it used to claim. It catches a
     // gate that changes the PROVIDER. A gate that keeps the provider and
     // downgrades the MODEL passes both checks in silence — and that shape is not
-    // hypothetical: `anthropicTier` (models.js:323) already re-tiers keypoints
+    // hypothetical: `anthropicTier` (models.js, the TASKS table) already re-tiers keypoints
     // and battlecard for Claude only, so a future gate written in its image
     // would leave this run reporting a green over a model production would not
     // use. test/liveHarnessGates.test.js pins the provider half for free, on
