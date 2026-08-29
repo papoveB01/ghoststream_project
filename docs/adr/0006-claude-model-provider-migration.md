@@ -9,13 +9,15 @@
   `api/src/aiContext.js`, `api/src/personas.js`,
   `api/src/knowledge/globalCache.js`, and the ~20
   `generateContent` call sites in `api/src/analysis.js`,
-  `api/src/knowledge/{discovery,keypoints,assessment,relevance,preview,research,ocr}.js`,
+  `api/src/knowledge/{discovery,keypoints,assessment,relevance,preview,research}.js`,
   `api/src/{watch,arena,arenaHistory,personas,proposals,enrichment,contacts,companies,companyBrief}.js`,
   `api/src/missions/brief.js`, `api/src/platformAdmin.js`,
   `api/test/*` (~15 stub files), `docker-compose.yml`, `.env.example`,
   `.env.production.example`, `api/package.json`.
   **Not affected:** `capture/`, `mcp/` (verified: no independent model calls),
-  `api/src/knowledge/embeddings.js` (deliberately out of scope — §4.2).
+  `api/src/knowledge/embeddings.js` (deliberately out of scope — §4.2) and
+  `api/src/knowledge/ocr.js` (likewise, decided 2026-08-29 — §4.8; it was listed
+  among the call sites above until then).
 
 ## 1. Context
 
@@ -397,6 +399,146 @@ It is also a standing warning for §9 item 6: on Claude, schema growth is
 bounded by this ceiling; on Gemini it is bounded by nothing. The constraint is
 invisible until a flip, so the smoke check is the only thing that surfaces it.
 
+### 4.8 OCR stays on Gemini — indefinitely, like embeddings (decided 2026-08-29)
+
+`api/src/knowledge/ocr.js` — the PDF OCR fallback — keeps calling
+`client.models.generateContent` on `GEMINI_OCR_MODEL || TIERS.gemini.flash`.
+**No `ocr` task key is added to `models.TASKS`**, so there is no
+`AI_PROVIDER_OCR` and no `ANTHROPIC_OCR_MODEL`, the path never joins
+`DISPATCH_READY`, and no `FLIP_BLOCKED` entry is warranted either — a key can
+only be blocked from a flip that exists. Like §4.2, this is a standing decision,
+not a transitional one; reversing it needs the evidence named at the end of this
+subsection, not a preference.
+
+This closes the split recorded in §9 item 5's group-3 entry. The `research` half
+shipped as PR #58; this is the `ocr` half, and it is a decision rather than a
+cutover.
+
+**Why.**
+
+1. **The live-schema harness structurally cannot cover this path.** Every
+   cutover group so far was de-risked by `api/test/live/smoke.js
+   --cluster=<group>`, which posts the real `responseSchema` at the real model
+   before and after a flip — the instrument §4.6 and §4.7 exist because of.
+   `ocr.js` has no `responseSchema`: it asks for a verbatim free-text
+   transcription with page boundaries marked by form feeds, and
+   `api/test/live/schemas.js` carries no `ocr` entry as a result. Porting would
+   need a different class of probe entirely — transcription *fidelity* on
+   scanned, print-to-image and outlined-glyph PDFs, scored against a known
+   ground truth. That instrument does not exist and has not been scoped, so the
+   sentence every other group's plan rests on ("run `--cluster=` before and
+   after") has nothing to say here.
+2. **It is a port, not a cutover.** Every key in groups 1–3 takes its model
+   *from* the router and moves by env var. This file reaches around the router:
+   `OCR_MODEL = process.env.GEMINI_OCR_MODEL || TIERS.gemini.flash`, with a
+   header comment that already said what moving it means — rewriting the file
+   for document blocks and re-checking page limits, not changing a tier. The
+   staged-cutover machinery of §4.5 offers this path nothing, because there is
+   nothing to stage.
+3. **The Gemini dependency is already permanent, so keeping this path costs no
+   new dependency.** §4.2: *"Anthropic ships no embedding model.
+   `api/src/knowledge/embeddings.js` keeps `gemini-embedding-2` at 768 dims,
+   `GEMINI_API_KEY` and `@google/genai` stay in the image for that one module"*
+   — indefinitely. The key, the SDK and the vendor relationship are therefore
+   already committed to for the life of the product. Keeping OCR on them changes
+   the count of modules that use them from one to two, and nothing else.
+4. **The oversized-file path has no equivalent in our Claude wrapper.**
+   `ocrViaFilesApi` writes the buffer to a temp file, uploads it with
+   `client.files.upload`, polls `PROCESSING → ACTIVE` up to
+   `KB_OCR_FILES_TIMEOUT_MS` (30s), references the result by `fileUri`, and
+   deletes both the temp file and the remote object in a `finally`.
+   `anthropic.generate()` takes `prompt` or `messages` and has no document
+   affordance at all — no PDF helper, no base64 or size handling, no
+   upload-and-reference path; its only content-block awareness is
+   `countBreakpoints()` counting `cache_control`. *(Stated precisely, because
+   the looser version is false: `normalizeMessages` accepts a block array and
+   passes it through untouched, so a hand-built `document` block would reach the
+   API. What is absent is everything around it — the wrapper neither builds,
+   sizes, nor validates such a block, and nothing in the tree does.)* The
+   threshold that selects between the two paths is a Gemini number too:
+   `INLINE_MAX_BYTES` defaults to 14MB because Gemini caps a request payload at
+   ~20MB and base64 inflates bytes by ~33%. Claude's limits are different, and
+   nothing in this repo knows them. §7 already lists that polling loop and
+   `FILES_ACTIVE_TIMEOUT_MS` among the things the migration *deletes* — deleting
+   a code path is a rewrite, not a swap.
+5. **The benefit is small by construction, and the measurement says so.** OCR is
+   a fallback, not a stage: `parsers.js` calls it only when `pdf-parse` extracts
+   fewer than `KB_OCR_TRIGGER_CHARS` (default **100**) characters from an
+   uploaded PDF. It is not on any hot path and barely touches the §5.2/§6 margin
+   model. Since `parsers.js` stamps `metadata.ocr = true` and
+   `metadata.ocrModel` on every document the fallback produced, how often it
+   fires is countable — **measured read-only in both databases on 2026-08-29**:
+
+   | environment | `kb_documents` | of which PDFs | `metadata.ocr = true` |
+   | --- | --- | --- | --- |
+   | staging (`ghost-db` / `ghoststream`) | 26 | 5 | **0** |
+   | production (`dsp-db` / `dealscope`) | 36 | 3 | **1** |
+
+   The single production row is `3f8093e2-9d66-446e-b1e5-98ed46c9c323`
+   ("MICAsys-deck"), ingested 2026-06-15 with `ocrModel: gemini-2.5-flash`, 13
+   pages, 10,925 characters across 6 chunks — a slide deck with no text layer,
+   transcribed into usable text. **One document out of 62 across both
+   environments, one of the 8 PDFs among them, in the product's life to date.**
+   That is the size of the thing being argued over, and it is the plainest
+   argument for leaving it alone: a path that has fired once cannot repay a
+   rewrite, and cannot generate the evidence that would justify one either.
+6. **The failure asymmetry runs the wrong way.** Today OCR is best-effort *by
+   contract*: `ocrPdf` returns `null` on a missing key, a client failure, an
+   upload that never goes `ACTIVE`, a model error or an empty result;
+   `parsers.js` then keeps the short `pdf-parse` result and the ingest path's
+   existing 4xx — *"extracted text too short — file may be image-only or
+   unreadable"* — fires. That is a **loud** failure, at upload time, in front of
+   the person who chose the file. A degraded port fails in the opposite
+   direction and quietly: the document ingests, with worse transcription, and
+   that text is what gets chunked, embedded, retrieved and synthesised into
+   battlecards. Wrong text is worse than no text, and far harder to notice —
+   nothing downstream can tell a mis-transcribed figure from a real one.
+
+**What it costs, stated as the counter-argument it is.**
+
+- **Two SDKs, two keys, two rate-limit shapes persist on this path.** §7 already
+  books that cost — *"for as long as embeddings stay on Gemini — i.e.
+  indefinitely"* — so this decision does not create it. It does widen it: a
+  future decision to drop `@google/genai` now has two modules to move, not one,
+  and `costs.recordGemini` keeps a live call site here, so §9 item 8's cutover
+  close cannot retire the Gemini half of `costs.js` either.
+- **Claude's vision may well be better on some document classes, and we have not
+  measured it.** Claude accepts PDFs; §7's limitation is audio and video, not
+  documents. On dense tables or multi-column layouts it could plausibly beat
+  Gemini Flash. **This subsection is not a finding that Gemini transcribes
+  better.** It is that the benefit is unmeasured, the instrument to measure it
+  does not exist, and the path fires roughly once a year.
+- **A change on Gemini's side forces the port anyway.** Files API deprecation, a
+  change to native PDF handling, or a key that loses vision on Flash each make
+  this a live problem with no prepared alternative. The mitigation is only that
+  the path is small and self-contained — 142 lines, one exported function, one
+  caller.
+- **This module never gets the migration's benefits.** No typed SDK exceptions
+  in its error handling, no prompt caching, no `effort` dial. It stays exactly
+  as good as it is now.
+
+**What would reverse it.** Not a new model announcement and not a preference:
+**evidence that Gemini's OCR is producing bad transcriptions today.** That is
+measurable against the rows counted above — a `kb_documents` row with
+`metadata.ocr = true` whose stored text is demonstrably wrong against its source
+PDF: garbled glyphs, pages dropped (`metadata.pdfPageCount` against the real
+page count), invented content, or a body short enough that the trigger should
+have fired again. Today that population is one row, so the honest state is *no
+evidence in either direction and almost no exposure*. Two further triggers, each
+sufficient alone: Gemini changing or withdrawing native PDF handling or the
+Files API; or a real workload arriving — a tenant ingesting scanned documents at
+volume — which turns the count above into a number worth acting on. In that case
+measure **both** providers against the same corpus before porting, because that
+comparison, and not this ADR, is what a port should rest on.
+
+**The decision is machine-checked, not merely written down.**
+`api/test/cutoverGroup3.test.js` asserts that `models.TASKS` has no `ocr` key
+and that `DISPATCH_READY` does not contain `ocr`. Both were confirmed able to
+fail on 2026-08-29 by adding each in turn and watching the assertion redden, so
+this is a guard rather than a coincidence. Adding the key is what reversing this
+decision looks like in code, and it cannot happen without also changing that
+test — which is the point.
+
 ## 5. Revised unit-cost model (amends ADR-0004 §3.1–§3.2)
 
 ### 5.1 Vendor rates (retrieved 2026-08-05)
@@ -690,8 +832,12 @@ creating one; `plans.js` has no code path that migrates a v1 tenant to v2.
   documents a real workaround — *"Gemini only accepts ONE cachedContent per
   call, so the Arena pastes the intelligence block inline because its slot
   belongs to the persona cache."* With 4 breakpoints, Arena caches both.
-- `ocr.js`'s Files API `PROCESSING → ACTIVE` polling loop and
-  `FILES_ACTIVE_TIMEOUT_MS` delete.
+- ~~`ocr.js`'s Files API `PROCESSING → ACTIVE` polling loop and
+  `FILES_ACTIVE_TIMEOUT_MS` delete.~~ **Withdrawn 2026-08-29 by §4.8: OCR stays
+  on Gemini, so the polling loop and its timeout stay too.** It is struck rather than
+  deleted because it was this migration's one stated saving on that file, and
+  §4.8's case is partly that collecting it means rewriting the oversized-file
+  path, not swapping a client.
 - Six hand-duplicated `withRetry` functions (`watch.js:36`, `proposals.js:30`,
   `research.js:305`, `relevance.js:52`, `assessment.js:86`, `discovery.js:78`),
   each regex-matching Gemini error strings, collapse into one helper over
@@ -1277,8 +1423,9 @@ decomposition exists so that per-file spokes stay tractable.
    because the behaviour "obviously" worked.
 5. **Per-task cutover PRs** (Phase 3), grouped to keep each reviewable:
    `relevance` + `preview` + `companyBrief`; **`keypoints` + `assessment` +
-   `battlecard`**; ~~`research` + `ocr`~~ **`research` (shipped; `ocr` split off
-   into its own decision PR — see the group 3 entry below)**; `compare` +
+   `battlecard`**; ~~`research` + `ocr`~~ **`research` (shipped; the `ocr`
+   half was split off and is now CLOSED — it stays on Gemini permanently, §4.8.
+   Group 3 is done; there is no outstanding `ocr` cutover)**; `compare` +
    `enrichment` + `contacts` +
    `companies`; `brief`; `watch` + scheduler env; `arena` + `arenaHistory` +
    `personas` (depends on 4); `discovery`; `analysis` + `proposals` (last).
@@ -1863,7 +2010,13 @@ decomposition exists so that per-file spokes stay tractable.
    task still resolves to Gemini, and `AI_PROVIDER_RESEARCH` is unset in every
    environment.
 
-   **GROUP 3 WAS SPLIT, AND THE `ocr` HALF IS DEFERRED TO ITS OWN DECISION PR.**
+   **GROUP 3 WAS SPLIT, AND THE `ocr` HALF IS NOW CLOSED: IT STAYS ON GEMINI
+   PERMANENTLY (§4.8, decided 2026-08-29).** The deferral this entry originally
+   recorded is discharged, not outstanding — there is no pending `ocr` cutover
+   and no `ocr` work left in this item. The split itself is kept below, because
+   the four reasons it gave are the argument §4.8 decided on, and a reader who
+   only sees the conclusion cannot tell whether it was reasoned or assumed.
+
    This item lists the group as "`research` + `ocr`", written before either file
    had been read against the seam. They are not the same kind of work, and
    bundling them would have put a decision inside a cutover:
@@ -1883,15 +2036,27 @@ decomposition exists so that per-file spokes stay tractable.
      "run `--cluster=` before and after" line rests on is unavailable here.
    - **`ocrViaFilesApi` has no equivalent in `anthropic.js`.** It uploads to
      Google's Files API and polls `PROCESSING → ACTIVE`; Claude takes documents
-     as inline blocks. §7 already lists that polling loop as something the
-     migration *deletes*, which is a rewrite, not a swap.
+     as inline blocks. §7 listed that polling loop as something the migration
+     *deletes*, which is a rewrite, not a swap — and that §7 line is now struck,
+     because §4.8 keeps the loop.
 
-   The likely outcome is the one §4.2 records for embeddings — **OCR stays on
-   Gemini indefinitely** — and that is a decision with its own ADR-shaped
-   argument, not a cutover. Recorded here so the split is visible rather than
-   inferred from a group that shipped half-done; `models.js` carries the same
-   note next to the group-3 register, and `cutoverGroup3.test.js` asserts that no
-   `ocr` key exists, so "deferred" cannot quietly become "forgotten".
+   **That outcome is now the decision, and it is the one §4.2 records for
+   embeddings: OCR stays on Gemini indefinitely (§4.8).** §4.8 carries the
+   normative form — the four reasons above plus two this entry did not have: the
+   benefit is small by construction (`parsers.js` fires OCR only under
+   `KB_OCR_TRIGGER_CHARS`, and the fallback has produced exactly **one**
+   document across staging and production to date), and the failure asymmetry
+   runs the wrong way (today a failure is loud and returns `null`; a degraded
+   port ingests worse text silently). It also records the counter-arguments and
+   the evidence that would reverse it, which is what makes it a decision rather
+   than an opinion.
+
+   The split is left visible here rather than rewritten away, so a group that
+   shipped half-done reads as deliberate. `models.js` carries the same note next
+   to the group-3 register, and `cutoverGroup3.test.js` asserts that no `ocr` key
+   exists and that `ocr` is not dispatch-ready — assertions that now encode a
+   decision rather than a pause, and that were re-proved able to fail when §4.8
+   landed.
 
    - **The retry answer is KEPT, and it is the first one in this migration that
      is about two ROUTES rather than two call sites.** `analyze()` keeps
@@ -2239,8 +2404,8 @@ decomposition exists so that per-file spokes stay tractable.
    no `plans.js` change (Enterprise is `contactSales`).
 8. **Cutover close** (Phase 5).
 
-Not in scope for any PR above: embeddings (§4.2), `capture/`, `mcp/`, any
-`plans.js` cap or price change (§10), any Stripe price ID work.
+Not in scope for any PR above: embeddings (§4.2), OCR (§4.8), `capture/`,
+`mcp/`, any `plans.js` cap or price change (§10), any Stripe price ID work.
 
 ## 10. Open questions / follow-ups
 

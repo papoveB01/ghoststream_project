@@ -270,12 +270,20 @@ test('group 3 is dispatch-ready for `research`, and only for `research`', () => 
     'through the real call site. If that changes, the entry goes in FLIP_BLOCKED with its number, ' +
     'and this assertion is what tells you to write one.');
 
-  // The `ocr` half of the group is DEFERRED to its own decision PR, and this is
-  // the machine-readable half of that statement: no `ocr` task key exists, so
-  // nothing can route it and nothing can flip it. ADR-0006 §9 item 5 carries the
-  // reason (free text, not structured output; Files API; no wrapper equivalent).
+  // These two assertions ENCODE A DECISION, not a pause. The `ocr` half of the
+  // group was split off and then decided on 2026-08-29: OCR stays on Gemini
+  // permanently — ADR-0006 §4.8, the same standing form §4.2 uses for
+  // embeddings. So the absence of the key is the machine-readable half of that
+  // decision: no `ocr` task key exists, nothing can route it, nothing can flip
+  // it. Adding one is what REVERSING §4.8 looks like in code, and §4.8 names
+  // what would justify that (evidence the Gemini transcriptions are bad, or
+  // Gemini changing its PDF/Files API handling) — a red line here means someone
+  // is doing that, deliberately or otherwise. Both were re-proved able to fail
+  // when §4.8 landed: adding an `ocr` key to models.TASKS reds the first, and
+  // adding `ocr` to DISPATCH_READY reds the second.
   assert.ok(!Object.prototype.hasOwnProperty.call(models.TASKS, 'ocr'),
-    'group 3 was split: adding an `ocr` key is the ocr PR\'s job, not this one\'s');
+    'ADR-0006 §4.8 decided OCR stays on Gemini permanently — an `ocr` key is the reversal of a ' +
+    'standing decision, not the next step of this migration. Read §4.8 before you add one.');
   assert.ok(!models.DISPATCH_READY.has('ocr'));
 
   // Still not migrated, each for its own reason. `compare` matters most: it

@@ -32,12 +32,13 @@ const apollo = require('./apollo');
 // that SERVED the call now comes back out of the seam and is what gets stamped
 // into `prospect_research.models`, instead of a boot-time constant.
 //
-// GROUP 3 WAS SPLIT: this PR is the `research` half only. ADR-0006 §9 item 5
-// lists the group as `research` + `ocr`, but knowledge/ocr.js has no task key at
-// all, pins its Gemini tier deliberately, is free-text rather than structured
-// output (so the live schema harness structurally cannot cover it), and reaches
-// Gemini through the Files API, which this wrapper has no equivalent for. It is
-// its own decision PR — see the ADR entry.
+// GROUP 3 WAS SPLIT: this file is the `research` half only, and the split is now
+// CLOSED. ADR-0006 §9 item 5 lists the group as `research` + `ocr`, but
+// knowledge/ocr.js has no task key at all, pins its Gemini tier deliberately, is
+// free-text rather than structured output (so the live schema harness
+// structurally cannot cover it), and reaches Gemini through the Files API, which
+// this wrapper has no equivalent for. Those reasons became a decision on
+// 2026-08-29: OCR stays on Gemini permanently (§4.8). Nothing is pending here.
 const aiCall = require('../aiCall');
 
 // Shared retry helper (ADR-0006 §7). Bound here with this module's label so

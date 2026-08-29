@@ -110,13 +110,16 @@ const DEFAULT_PROVIDER = 'gemini';
 //                 both. Measured live before keeping it — the reasoning and the
 //                 latencies are at the call site.
 //
-// THE `ocr` HALF OF GROUP 3 IS DEFERRED to its own decision PR, and the split is
-// deliberate rather than an omission. knowledge/ocr.js has no task key in TASKS
-// below at all, pins its Gemini tier by hand, is FREE TEXT rather than
-// structured output (so neither aiCall.generateStructured nor the live schema
-// harness can cover it), and reaches Gemini through the Files API, which
-// anthropic.js has no equivalent for. The likely outcome is the one §4.2 records
-// for embeddings — it stays on Gemini — and that is a decision, not a cutover.
+// THE `ocr` HALF OF GROUP 3 IS DECIDED, NOT DEFERRED: OCR STAYS ON GEMINI
+// PERMANENTLY (ADR-0006 §4.8, 2026-08-29), the way §4.2 keeps embeddings there.
+// So the absence of an `ocr` key from TASKS below is a decision rather than an
+// omission, and adding one is how that decision gets reversed — which is why
+// cutoverGroup3.test.js asserts it is absent. knowledge/ocr.js pins its Gemini
+// tier by hand, is FREE TEXT rather than structured output (so neither
+// aiCall.generateStructured nor the live schema harness can cover it), reaches
+// Gemini through the Files API, which anthropic.js has no equivalent for, and is
+// a fallback that had fired once in production when the decision was taken. §4.8
+// carries the argument, the counter-arguments and the evidence that reverses it.
 //
 // THE THREE GROUP-2 KEYS HAD TO LAND TOGETHER, and `battlecard` is the reason.
 // assessment.js holds two call sites resolving two different keys since PR #53.
@@ -165,7 +168,7 @@ const DEFAULT_PROVIDER = 'gemini';
 const DISPATCH_READY = new Set([
   'relevance', 'preview', 'companyBrief',      // group 1
   'keypoints', 'assessment', 'battlecard',     // group 2
-  'research',                                  // group 3 (the `ocr` half is deferred)
+  'research',                                  // group 3 (`ocr` stays on Gemini — §4.8)
 ]);
 
 // Tasks whose call site CAN dispatch but which must not be flipped yet, because

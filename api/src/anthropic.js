@@ -9,8 +9,9 @@
 //
 //   group 1  relevance, preview, companyBrief
 //   group 2  keypoints, assessment, battlecard
-//   group 3  research (the `ocr` half of that group is deferred to its own
-//            decision PR — see models.js)
+//   group 3  research (the `ocr` half of that group is DECIDED, not pending:
+//            OCR stays on Gemini permanently — ADR-0006 §4.8. It will never
+//            appear in this list.)
 //
 //            TEN seam call sites in total now — four in group 1, five in group
 //            2, one in group 3. Count the generateStructured calls, not the
