@@ -440,8 +440,9 @@ cutover.
    `api/src/knowledge/embeddings.js` keeps `gemini-embedding-2` at 768 dims,
    `GEMINI_API_KEY` and `@google/genai` stay in the image for that one module"*
    — indefinitely. The key, the SDK and the vendor relationship are therefore
-   already committed to for the life of the product. Keeping OCR on them changes
-   the count of modules that use them from one to two, and nothing else.
+   already committed to for the life of the product. Keeping OCR on them means
+   that at cutover close the number of modules still needing them is two rather
+   than one, and nothing else changes.
 4. **The oversized-file path has no equivalent in our Claude wrapper.**
    `ocrViaFilesApi` writes the buffer to a temp file, uploads it with
    `client.files.upload`, polls `PROCESSING → ACTIVE` up to
@@ -458,9 +459,10 @@ cutover.
    threshold that selects between the two paths is a Gemini number too:
    `INLINE_MAX_BYTES` defaults to 14MB because Gemini caps a request payload at
    ~20MB and base64 inflates bytes by ~33%. Claude's limits are different, and
-   nothing in this repo knows them. §7 already lists that polling loop and
+   nothing in this repo knows them. §7 listed that polling loop and
    `FILES_ACTIVE_TIMEOUT_MS` among the things the migration *deletes* — deleting
-   a code path is a rewrite, not a swap.
+   a code path is a rewrite, not a swap, which is why that §7 line is struck as
+   part of this decision rather than left standing.
 5. **The benefit is small by construction, and the measurement says so.** OCR is
    a fallback, not a stage: `parsers.js` calls it only when `pdf-parse` extracts
    fewer than `KB_OCR_TRIGGER_CHARS` (default **100**) characters from an
@@ -507,12 +509,12 @@ cutover.
   documents. On dense tables or multi-column layouts it could plausibly beat
   Gemini Flash. **This subsection is not a finding that Gemini transcribes
   better.** It is that the benefit is unmeasured, the instrument to measure it
-  does not exist, and the path fires roughly once a year.
+  does not exist, and the path has fired once — the row counted above.
 - **A change on Gemini's side forces the port anyway.** Files API deprecation, a
   change to native PDF handling, or a key that loses vision on Flash each make
   this a live problem with no prepared alternative. The mitigation is only that
-  the path is small and self-contained — 142 lines, one exported function, one
-  caller.
+  the path is small and self-contained: one entry point (`ocrPdf`), one caller
+  (`knowledge/parsers.js`), no other module requiring it.
 - **This module never gets the migration's benefits.** No typed SDK exceptions
   in its error handling, no prompt caching, no `effort` dial. It stays exactly
   as good as it is now.
