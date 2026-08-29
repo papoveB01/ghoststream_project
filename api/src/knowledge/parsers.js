@@ -61,6 +61,7 @@ function buildPdfResult(rawText, { pageCount, pdfInfo, ocr: didOcr } = {}) {
     meta: {
       pdfPageCount: pageCount || rawPages.length,
       pdfInfo: pdfInfo || {},
+      // OCR provider is pinned by ADR-0006 §4.8; this stamp is its provenance.
       ...(didOcr ? { ocr: true, ocrModel: ocr.OCR_MODEL } : {}),
     },
   };

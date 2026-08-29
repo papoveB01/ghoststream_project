@@ -40,14 +40,23 @@ const { TIERS } = require('../models');
 // short: the live-schema harness cannot cover free-text transcription (no
 // responseSchema to post, and no fidelity probe exists); Gemini's key and SDK
 // are already permanent for embeddings, so keeping this path adds no
-// dependency; and this is a FALLBACK that had produced exactly ONE document in
-// production as of the decision, so a port cannot repay a rewrite.
+// dependency; and this is a FALLBACK whose production volume is too small to
+// repay a rewrite. The volume is a database observation, so it is NOT restated
+// here where nothing can keep it true — §4.8 carries the number, dated, scoped
+// to an environment, and with the row id.
 //
 // ocrViaFilesApi below has no equivalent in anthropic.js — no PDF helper, no
 // base64 or size handling, no upload-and-reference path. Stated that way rather
 // than as "no document support": anthropic.generate's normalizeMessages accepts
-// a block array and forwards it verbatim, so a hand-built document block WOULD
-// reach the API. What is missing is everything around it, in this tree.
+// a block array and passes the blocks through UNINSPECTED — untouched in the
+// common case, and re-wrapped into a fresh array (same block objects) when it
+// merges two same-role messages. Either way it never reads a block's type or
+// contents, so a hand-built document block WOULD reach the API. What is missing
+// is everything around it, in this tree.
+//
+// Bounded the same way §4.8 bounds it: ocrViaFilesApi has never EXECUTED in
+// either environment, so "no equivalent" is an argument about a rewrite nobody
+// has needed yet, not about a path in use.
 //
 // The failure asymmetry is the load-bearing reason, and it holds for HARD
 // failures only — see the truncation note at the top of this file. Bounded
@@ -56,44 +65,34 @@ const { TIERS } = require('../models');
 // a systematically worse transcription is uniform, complete-looking and
 // invisible to every check we have.
 //
-// WHAT WOULD REVERSE IT is evidence that these transcriptions are bad —
-// measurable against kb_documents rows carrying metadata.ocr, truncation first —
-// or Gemini changing its native PDF / Files API handling. Not a new model
-// announcement.
+// WHAT WOULD REVERSE IT is evidence that these transcriptions are bad — or
+// Gemini changing its native PDF / Files API handling. Not a new model
+// announcement. kb_documents rows carrying metadata.ocr IDENTIFY the documents
+// to look at; they carry no truncation signal, because nothing here records
+// finishReason, so measuring the truncation case needs that recorded first
+// (ADR-0006 §10). §4.8 has the rest, including what the page-coverage check
+// returns on the one row that exists.
 //
-// WHAT THE TESTS PIN, EXACTLY, because the honest scope is narrower than "this
-// cannot drift back". cutoverGroup3.test.js asserts three things, and only the
-// third fences THIS file:
+// WHAT PINS THIS FILE, and how narrowly. cutoverGroup3.test.js asserts the
+// absence of an `ocr` key and of `ocr` from DISPATCH_READY — both keyed on the
+// string, so neither says anything about this module — and then, with the
+// router told to prefer Claude every way it can be told, that the constant
+// below AND the model actually handed to the client on a real ocrPdf() call are
+// both Gemini ids. Reading the REQUEST is the half that fences THIS file: it
+// catches a model resolved per call inside generateFromParts, which an
+// assertion on the exported constant alone walks straight past.
 //
-//   1. no `ocr` key in models.TASKS, and 2. none in DISPATCH_READY — both keyed
-//      on the string, so neither says anything about this module.
-//   3. with the router told to prefer Claude every way it can be told, the
-//      constant below AND the model actually handed to the client on a real
-//      ocrPdf() call are both Gemini ids. Reading the REQUEST is the load-
-//      bearing half: it catches a model resolved per call inside
-//      generateFromParts — the shape §9 item 4 pushed every other task towards,
-//      and so the likeliest accidental port — which an assertion on the
-//      exported constant alone walks straight past. It also fails if the call
-//      reaches no Gemini client at all, i.e. a swap onto another SDK.
-//
-// TWO gaps it does NOT close, named so nobody has to rediscover them — both
-// measured green against the guard as it stands:
-//
-//   a. a branch keyed on an env var the test does not set
-//      (`KB_OCR_PROVIDER === 'anthropic' ? …`) resolves Gemini under the test
-//      and Claude in production. No executing guard can enumerate env names it
-//      was never told about;
-//   b. a decoy — one throwaway Gemini call left on OCR_MODEL here while the real
-//      transcription goes to anthropic.generate. The guard proves a Gemini call
-//      HAPPENED carrying a Gemini id, not that that call carried the PDF.
-//
-// (a) is the shape a careless port would take; (b) has to be built on purpose.
-// The strongest fix offered for (a) — pinning the SET of process.env names this
-// file reads — was considered and declined: `process.env['KB_' + 'OCR_PROVIDER']`
-// defeats it, and it is the source-scrape form whose failures this migration has
-// documented three times over. So: a new provider env read, or a second model
-// call, appearing in this file is a REVIEWER's catch. The honest claim is that
-// §4.8 cannot be reversed here QUIETLY — not that it cannot be reversed.
+// It is not airtight and does not claim to be. A provider branch keyed on an
+// env var the test never sets resolves Gemini under the test and Claude in
+// production, and no executing guard can enumerate env names it was not given.
+// So: A NEW PROVIDER ENV READ, OR A SECOND MODEL CALL, APPEARING IN THIS FILE
+// IS A REVIEWER'S CATCH — this file's whole subject is that it does neither.
+// The honest claim is that §4.8 cannot be reversed here QUIETLY, not that it
+// cannot be reversed. The full account of what the guard covers, the two shapes
+// it does not, and why the strongest proposed fix was declined lives with the
+// test itself (cutoverGroup3.test.js, the block above the §4.8 test) and in
+// §4.8 — not duplicated here, where it would drift out of step with the
+// assertions it describes.
 const OCR_MODEL = process.env.GEMINI_OCR_MODEL || TIERS.gemini.flash;
 
 // Gemini caps a single request payload at ~20MB. Base64 inflates bytes ~33%, so

@@ -700,6 +700,21 @@ model call, appearing in a file whose whole subject is that it does neither.
 Reversing this decision in code means changing that test, and the honest version
 of the claim is that it cannot happen *quietly* — not that it cannot happen.
 
+**Reversing this in code touches**, so that a future reverser can find the whole
+surface by grep rather than by reading. Four of these carry a `§4.8` marker and
+are found by `grep -rn '§4.8' api/ docs/`; three did not, and the first of them
+now does:
+
+| site | what it is |
+| --- | --- |
+| `api/src/knowledge/ocr.js` | the transcription itself — `OCR_MODEL`, `ocrInline`, `ocrViaFilesApi`. Marker-carrying. |
+| `api/src/models.js` (group-3 register) | why no `ocr` key exists in `TASKS`. Marker-carrying. |
+| `api/test/cutoverGroup3.test.js` | the three assertions above; a port must amend them. Marker-carrying. |
+| `api/src/anthropic.js` (header) | the `DISPATCH_READY` roll-call, which states `ocr` is not coming. Marker-carrying. |
+| `api/src/knowledge/parsers.js:64` | `ocrModel: ocr.OCR_MODEL` — the **provenance stamp**. Under a per-call port (shape 3) this keeps recording `gemini-2.5-flash` for a Claude transcription, corrupting the `metadata.ocrModel` evidence base this subsection names for its own reversal. Marker added by this round. |
+| `api/src/knowledge/parsers.js:79` | the caller's "returns null on any failure" comment — the fourth site of the false absolute (§10). No marker; fixed with the defect. |
+| `docker-compose.yml:99` | `GEMINI_OCR_MODEL` — the only OCR env plumbing in the tree, and the one place a port has to add or remove a variable. No marker. |
+
 ## 5. Revised unit-cost model (amends ADR-0004 §3.1–§3.2)
 
 ### 5.1 Vendor rates (retrieved 2026-08-05)
