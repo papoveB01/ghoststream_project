@@ -235,7 +235,8 @@ test('the shipped set survives the only test that rewrites the whole set', () =>
   // contents and deliberately does not repeat this list: one copy, so the
   // reminder cannot drift the way its subject did.
   assert.deepStrictEqual([...models.DISPATCH_READY].sort(),
-    ['assessment', 'battlecard', 'companyBrief', 'keypoints', 'preview', 'relevance', 'research'],
+    ['assessment', 'battlecard', 'companyBrief', 'compare', 'keypoints', 'preview',
+     'relevance', 'research'],
     'changing this set also invalidates prose that asserts what is in it: ' +
     'anthropic.js (header), aiCall.js (header), gemini.js (assertGeminiModel), ' +
     'aiContext.js ("It does not flip any task"), test/live/contextSeam.js ' +
@@ -287,7 +288,7 @@ test('a migrated but BLOCKED task refuses the flip instead of merely warning', (
     'following it would send someone to re-do work that is already done');
 });
 
-test('both blocked keys are blocked, and each carries a reason', () => {
+test('every blocked key is blocked, and each carries a reason', () => {
   // keypoints is the one nothing else in this file would catch: its call sites
   // are migrated, its schemas pass the smoke check, and the defect is an output
   // BUDGET that truncates on Sonnet — so the refresh of an analysis that size
@@ -296,7 +297,14 @@ test('both blocked keys are blocked, and each carries a reason', () => {
   // analysis too; that half was service.js's `else delete` reading a swallowed
   // error as "this document has none", and it is fixed — regenerateKeyPoints
   // now keeps the stored value and reports the field in `refreshFailures`.)
-  assert.deepStrictEqual([...models.FLIP_BLOCKED.keys()].sort(), ['battlecard', 'keypoints']);
+  // `compare` (group 4 PR A) is the third, and the first key to be MIGRATED and
+  // BLOCKED in the same PR. That is the shape the two sets are for, not a
+  // contradiction: DISPATCH_READY is a claim about the code and FLIP_BLOCKED a
+  // claim about a live measurement, and PR A made both from their own evidence.
+  // It is also the first entry here whose defect is INVISIBLE — the other two
+  // 502 or leave a stale value, this one silently produces no comparison — which
+  // is why its reason has to carry the word that says so.
+  assert.deepStrictEqual([...models.FLIP_BLOCKED.keys()].sort(), ['battlecard', 'compare', 'keypoints']);
   for (const [task, reason] of models.FLIP_BLOCKED) {
     assert.ok(models.DISPATCH_READY.has(task),
       `${task} is blocked from flipping but not migrated — that is DISPATCH_READY's job, not this set's`);
@@ -308,6 +316,25 @@ test('both blocked keys are blocked, and each carries a reason', () => {
     // measurement." left this file 27/27 green. battlecard's figure is pinned in
     // the test above (/2 of 80/) precisely because it drifted for two rounds
     // while every check here stayed green; keypoints' had nothing holding it.
+    if (task === 'compare') {
+      // Same reasoning as the two below: `length > 40` plus /ADR-0006/ pins the
+      // SHAPE of a reason, not its content, and this key's figures are the whole
+      // argument for the entry. The truncation rate is the block; `75 of 120` is
+      // what an operator argues with if it is missing. `1800` is the knob — and
+      // the one they must NOT turn, which the reason and models.js both say.
+      assert.match(reason, /75 of 120/,
+        "compare's reason no longer carries its measurement — a bare \"blocked\" gets argued with, " +
+        'and a figure nothing pins is a figure that drifts');
+      assert.match(reason, /1800/,
+        "compare's reason no longer names the 1800-token budget — the number an operator would " +
+        'reach for is the one thing the reason cannot be allowed to drop, especially here, where ' +
+        'raising it is the WRONG fix (it is provider-agnostic at that call site, so it would move ' +
+        'what Gemini receives)');
+      assert.match(reason, /soft/i,
+        "compare's failure mode is the unusual half of this entry: it does not 502 and does not " +
+        'page anyone, it just stops producing comparisons. An operator who is not told that will ' +
+        'read the block as ordinary and the post-flip silence as normal');
+    }
     if (task === 'keypoints') {
       assert.match(reason, /5 of 5|91bfba3e/,
         'carry the measurement, not just the verdict — an operator who is told only "blocked" argues ' +

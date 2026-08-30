@@ -1,6 +1,6 @@
 // Anthropic client wrapper — the Claude half of the ADR-0006 provider migration.
 //
-// THIS MODULE CAN NOW MOVE REAL TRAFFIC. Seven tasks are in models.DISPATCH_READY
+// THIS MODULE CAN NOW MOVE REAL TRAFFIC. Eight tasks are in models.DISPATCH_READY
 // (ADR-0006 §9 item 5) and every one of their call sites dispatches through
 // aiCall.js, so AI_PROVIDER_RELEVANCE=anthropic routes BOTH relevance call sites
 // into this file — checkDocRelevance, on every competitor document, and
@@ -13,21 +13,29 @@
 //            OCR stays on Gemini indefinitely — ADR-0006 §4.8. It is not
 //            expected in this list; §4.8 names the evidence that would put it
 //            there, and knowledge/ocr.js is where such a reversal lands.)
+//   group 4  compare (the `content` half of that group is PENDING, in its own
+//            PR: §9 item 5 names the group by three FILE names, and the keys
+//            behind them are one key, `content`, over four call sites — one of
+//            them in analysis.js, which §9 schedules for the last group. That
+//            is why the group splits rather than shipping as listed.)
 //
-//            TEN seam call sites in total now — four in group 1, five in group
-//            2, one in group 3. Count the generateStructured calls, not the
-//            functions holding them: knowledge/keypoints.js is one key over
-//            three of them, and knowledge/research.js is one key over one.
+//            ELEVEN seam call sites in total now — four in group 1, five in
+//            group 2, one in group 3, one in group 4. Count the
+//            generateStructured calls, not the functions holding them:
+//            knowledge/keypoints.js is one key over three of them, and
+//            knowledge/research.js and knowledge/preview.js's
+//            buildCompetitorComparison are one key over one each.
 //
-//            THREE OF THE SEVEN LAND ON claude-sonnet-5, which is in
+//            FOUR OF THE EIGHT LAND ON claude-sonnet-5, which is in
 //            NO_TEMPERATURE below — the group-2 pair `keypoints` and
 //            `battlecard` by way of an anthropicTier override, and group 3's
-//            `research` because tier `flash` already resolves there on both
-//            providers. The other four are claude-haiku-4-5. All three still
+//            `research` and group 4's `compare` because tier `flash` already
+//            resolves there on both providers. The other four are
+//            claude-haiku-4-5. All four still
 //            pass temperature (0.3), so a flip drops it here with the warning
 //            rather than 400ing — which is the whole reason that list is
 //            per-model and lives in this file. (This said FOUR and then listed
-//            three, one line under the guarded "TEN seam call sites" number and
+//            three, one line under the guarded "ELEVEN seam call sites" number and
 //            just outside its regex. The count is now COMPUTED from
 //            models.TASKS in costsTelemetry.test.js rather than scraped, so it
 //            cannot disagree with the router again — and that guard matches

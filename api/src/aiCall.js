@@ -11,10 +11,11 @@
 // retryDelay parser) was invisible precisely because it lived in one line of
 // one module nobody diffed against the other five.
 //
-// THIS MODULE CAN NOW MOVE REAL TRAFFIC. Seven tasks are in
+// THIS MODULE CAN NOW MOVE REAL TRAFFIC. Eight tasks are in
 // models.DISPATCH_READY (ADR-0006 §9 item 5) and their call sites dispatch
 // through here — relevance, preview and companyBrief in group 1, keypoints,
-// assessment and battlecard in group 2, research in group 3 — so
+// assessment and battlecard in group 2, research in group 3, compare in
+// group 4 — so
 // AI_PROVIDER_RELEVANCE=anthropic
 // routes BOTH relevance call sites into the anthropic branch below:
 // checkDocRelevance, reached from knowledge/service.js on every competitor
@@ -34,6 +35,13 @@
 // reached from a fire-and-forget 202 AND from a synchronous rep-facing
 // reanalyze behind nginx's 180s window, under one aiRetry label. The decision
 // and the live latency numbers it rests on are at that call site.
+//
+// Group 4 adds ONE more — knowledge/preview.js's buildCompetitorComparison —
+// and with it that file's LAST direct Gemini call is gone, so no file under
+// src/ now holds a migrated key beside an unmigrated one. It is the second
+// unretried site after `battlecard`, and unlike `battlecard` it cannot acquire
+// a wrapper by accident: `aiRetry.POLICIES` has no `compare` key, so
+// `forLabel('compare')` throws. The argument is at the call site.
 //
 // THIS SEAM ADDS NO RETRY LOOP OF ITS OWN — which is NOT the same as "one
 // request per invocation", the sentence that first stood here and was wrong.
@@ -64,13 +72,18 @@
 //                 / Fable 5 return 400. The seam dropping it unconditionally was
 //                 therefore a real determinism loss on exactly the tier being
 //                 migrated, on a judge whose confidence is thresholded at 0.4.
-//                 THREE migrated keys resolve to Sonnet 5, where it IS
-//                 dropped — group 2's `keypoints` and `battlecard`, and group
-//                 3's `research`. With anthropic.js's once-per-model+site
+//                 FOUR migrated keys resolve to Sonnet 5, where it IS
+//                 dropped — group 2's `keypoints` and `battlecard`, group
+//                 3's `research` and group 4's `compare`. With anthropic.js's
+//                 once-per-model+site
 //                 warning, not silently, which is the difference that matters.
-//                 `research` is the one to read this for: the other two are in
+//                 `research` is the one to read this for: the OTHER THREE are
+//                 all in
 //                 models.FLIP_BLOCKED, so it is the ONLY key an operator can
-//                 actually flip today into a temperature drop. This list said
+//                 actually flip today into a temperature drop. `compare` joined
+//                 that list in the same PR that migrated it — eligible and
+//                 refused are separate facts, decided from different evidence.
+//                 This list said
 //                 `{keypoints, battlecard}` after group 3 landed, which sent
 //                 exactly that operator looking for their key and not finding
 //                 it. The count is computed from the router in
@@ -297,9 +310,10 @@ async function generateStructured({
     // temperature goes THROUGH: the wrapper drops it per model (NO_TEMPERATURE
     // there), which keeps it on claude-haiku-4-5 — the tier every group-1 task
     // and group 2's `assessment` resolve to, and the one that accepts it — and
-    // drops it, loudly, on the claude-sonnet-5 that `keypoints`, `battlecard`
-    // and `research` resolve to. `research` is the only one of those three not
-    // in models.FLIP_BLOCKED, i.e. the only one this can happen to today.
+    // drops it, loudly, on the claude-sonnet-5 that `keypoints`, `battlecard`,
+    // `research` and `compare` resolve to. `research` is the only one of those
+    // four not in models.FLIP_BLOCKED, i.e. the only one this can happen to
+    // today.
     const r = await anthropic.generate({
       model, prompt, system, schema: responseSchema, maxTokens, effort, thinking,
       temperature, allowTruncation, tenantId, site: label, signal,

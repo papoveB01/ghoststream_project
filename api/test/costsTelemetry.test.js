@@ -428,9 +428,10 @@ test('[TEXTUAL] the number of seam call sites is pinned, so prose has something 
   for (const file of walkJs(SRC)) {
     sites += seamSiteLabels(stripComments(fs.readFileSync(file, 'utf8'))).length;
   }
-  assert.strictEqual(sites, 10,
-    `${sites} aiCall.generateStructured call sites in src/, pinned at 10 (group 1: relevance x2, ` +
-    'preview, companyBrief; group 2: keypoints x3, assessment, battlecard; group 3: research). ' +
+  assert.strictEqual(sites, 11,
+    `${sites} aiCall.generateStructured call sites in src/, pinned at 11 (group 1: relevance x2, ` +
+    'preview, companyBrief; group 2: keypoints x3, assessment, battlecard; group 3: research; ' +
+    'group 4: compare). ' +
     'If you added or ' +
     "moved one, update this number AND the prose that quotes it: anthropic.js's header, " +
     "models.js's DISPATCH_READY / group lists, and ADR-0006 §9 item 5.");
@@ -502,7 +503,7 @@ test('the Sonnet-5 count in prose is COMPUTED from the router, not scraped', () 
       return models.TIERS.anthropic[tier] === 'claude-sonnet-5';
     })
     .sort();
-  assert.deepStrictEqual(sonnet, ['battlecard', 'keypoints', 'research'],
+  assert.deepStrictEqual(sonnet, ['battlecard', 'compare', 'keypoints', 'research'],
     'these are the migrated keys whose temperature is dropped after a flip');
 
   // EVERY match of the CLAIM SHAPE, in EVERY file under src/ — not the first

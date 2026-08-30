@@ -55,13 +55,19 @@ const ok = (parsed, provider = 'anthropic') => async () => ({
   parsed, text: JSON.stringify(parsed), usage: null, model: 'claude-haiku-4-5', provider,
 });
 
-test('group 1 is dispatch-ready, and compare deliberately is not', () => {
+test('group 1 is dispatch-ready', () => {
   for (const t of ['relevance', 'preview', 'companyBrief']) {
     assert.ok(models.DISPATCH_READY.has(t), `${t} was migrated, so it must be eligible`);
   }
-  assert.ok(!models.DISPATCH_READY.has('compare'),
-    'compare shares preview.js but belongs to a later group — flipping it here would ' +
-    'cut over a task whose call site was never migrated');
+  // THIS TEST USED TO ALSO ASSERT `!DISPATCH_READY.has('compare')`, with the
+  // reasoning that `compare` shares knowledge/preview.js with `preview` and
+  // belonged to a later group — the one-file-two-keys shape group 1 could
+  // demonstrate and group 2's `assessment`/`battlecard` had to answer the other
+  // way. Group 4 (PR A) migrated it, so both the assertion and its reason went
+  // false in the same commit and are removed here rather than left to fail as a
+  // surprise in someone else's PR. cutoverGroup4.test.js asserts the positive,
+  // and the negative it still needs (`content`, group 4's other half) lives
+  // there with the rest of the not-yet list.
 });
 
 test('relevance routes both call sites through the seam with their own labels', async () => {

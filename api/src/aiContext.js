@@ -38,7 +38,8 @@
 //     back by three DIFFERENT mechanisms, which lift at different times. Do not
 //     collapse them, and do not reach for "DISPATCH_READY is empty": it is not
 //     (relevance, preview and companyBrief joined it in group 1, keypoints,
-//     assessment and battlecard in group 2, and research in group 3, ADR-0006
+//     assessment and battlecard in group 2, research in group 3 and compare in
+//     group 4, ADR-0006
 //     §9 item 5). Check the premise that matches the branch you are touching.
 //
 //     prepare()   HELD BY THE ROUTER. Its only production caller is

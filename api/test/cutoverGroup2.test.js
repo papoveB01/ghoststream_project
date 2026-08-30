@@ -152,14 +152,16 @@ test('group 2 is dispatch-ready — all three keys, because two of them share a 
   // simulated. A second copy of a passing assertion reads as extra coverage and
   // is none.)
 
-  // Still not migrated, and each for its own reason. `compare` is the one that
-  // matters most here: it shares knowledge/preview.js with an ALREADY-migrated
-  // key, which is the same one-file-two-keys shape as assessment.js — and the
-  // opposite answer, because its call site has not moved.
-  // (`research` used to be in this list and moved out in group 3 — a cutover
-  // group's "not yet" list is a claim with a shelf life, which is why it is
-  // pinned here rather than left as prose.)
-  for (const t of ['compare', 'discovery']) {
+  // Still not migrated. (`research` used to be in this list and moved out in
+  // group 3, and `compare` in group 4 — a cutover group's "not yet" list is a
+  // claim with a shelf life, which is why it is pinned here rather than left as
+  // prose. `compare`'s entry carried the longest reason of any of them: that it
+  // shared knowledge/preview.js with an already-migrated key, the same
+  // one-file-two-keys shape as assessment.js with the opposite answer. That
+  // shape now has no instance under src/ at all, so the reason went with the
+  // assertion instead of being left behind to describe a file that no longer
+  // looks like that.)
+  for (const t of ['discovery']) {
     assert.ok(!models.DISPATCH_READY.has(t),
       `${t}'s call site still speaks to the Gemini SDK — adding it would 404 every call`);
   }
