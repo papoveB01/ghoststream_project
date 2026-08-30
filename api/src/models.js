@@ -70,11 +70,20 @@ const DEFAULT_PROVIDER = 'gemini';
 // on the line below would have sent BATTLECARD_SCHEMA synthesis to Haiku. That
 // specific hazard is gone — the synthesis has its own `battlecard` key now —
 // but the shape of the mistake is not. The "all of them" half bites separately
-// where one FILE carries call sites for two keys: `preview.js` holds `preview`
-// and `compare` and is the case where you migrate only the key you are adding,
-// while `assessment.js` holds `assessment` and `battlecard` and is the case
-// where you must add BOTH, because leaving one behind does not error — it just
-// never moves. See the GROUP 1 and GROUP 2 lists below for how each looks.
+// where one FILE carries call sites for two keys, and `assessment.js` is the
+// live example: it holds `assessment` and `battlecard`, and you must add BOTH,
+// because leaving one behind does not error — it just never moves.
+//
+// `preview.js` used to be the OTHER half of that pair — the case where you
+// migrate only the key you are adding, because its second key belonged to a
+// later group. GROUP 4 RETIRED THAT CASE: `compare` is migrated, so no file
+// under src/ now holds a migrated key beside an unmigrated one, and the
+// "one seam call and one direct Gemini call side by side" arrangement that
+// three groups' comments described no longer exists anywhere. The hazard it
+// illustrated is still real for a FUTURE file that acquires a second key; it
+// just has no instance today, and a comment that keeps naming a retired one
+// sends the next reader to a file that will not show them the shape.
+// See the GROUP 1-4 lists below for how each group looks.
 //
 // A task joins this set in the same PR that migrates its call site. Until then
 // the router honours the env var by warning and staying put, so an operator who
@@ -83,10 +92,10 @@ const DEFAULT_PROVIDER = 'gemini';
 //
 // GROUP 1 (ADR-0006 §9 item 5), migrated onto aiCall.generateStructured:
 //   relevance     knowledge/relevance.js — both call sites
-//   preview       knowledge/preview.js   — summarize() ONLY. `compare` lives in
-//                 the same file and is NOT here: it belongs to a later group,
-//                 so that file deliberately holds one seam call and one direct
-//                 Gemini call until its own cutover.
+//   preview       knowledge/preview.js   — summarize() ONLY when this group
+//                 shipped. `compare`, the file's other key, joined in group 4
+//                 below; that file now holds two seam calls and no direct
+//                 Gemini call.
 //   companyBrief  companyBrief.js
 //
 // GROUP 2 (ADR-0006 §9 item 5), likewise migrated onto the seam:
@@ -109,6 +118,26 @@ const DEFAULT_PROVIDER = 'gemini';
 //                 behind nginx's 180s proxy_read_timeout, and one label covers
 //                 both. Measured live before keeping it — the reasoning and the
 //                 latencies are at the call site.
+//
+// GROUP 4 (ADR-0006 §9 item 5), the `compare` half only:
+//   compare       knowledge/preview.js — buildCompetitorComparison(), the ONE
+//                 remaining direct Gemini call in that file. Its require-time
+//                 `modelFor('compare')` constant is gone (the §9 item 4 freeze,
+//                 removed for the fifth time), and it is deliberately NOT
+//                 wrapped in aiRetry: `aiRetry.POLICIES` has no `compare` key,
+//                 so `forLabel('compare')` throws rather than lending it a bound
+//                 it never had. The argument for that is at the call site.
+//
+// GROUP 4 IS TWO KEYS, NOT FOUR, AND IT IS BEING SHIPPED IN TWO PRs. §9 item 5
+// lists it as "`compare` + `enrichment` + `contacts` + `companies`" — three of
+// those four are FILE NAMES, not task keys. The keys are `compare` (one call
+// site, here) and `content` (four call sites: enrichment.js, contacts.js,
+// companies.js and analysis.js:357). The file-name framing hid the fourth: it
+// lives in a file §9 schedules for the LAST group, and `content` is one key over
+// all four, so they must land together — which is precisely the coupling the
+// GROUP 2 note below spells out. `content` is therefore PR B and is not here.
+// A key with more than one call site is added when EVERY one of them has moved;
+// see the `assessment`/`battlecard` note above for why half is worse than none.
 //
 // THE `ocr` HALF OF GROUP 3 IS DECIDED, NOT DEFERRED: OCR STAYS ON GEMINI
 // INDEFINITELY (ADR-0006 §4.8, 2026-08-29). That is the same STANDING form §4.2
@@ -181,6 +210,7 @@ const DISPATCH_READY = new Set([
   'relevance', 'preview', 'companyBrief',      // group 1
   'keypoints', 'assessment', 'battlecard',     // group 2
   'research',                                  // group 3 (`ocr` stays on Gemini — §4.8)
+  'compare',                                   // group 4 (PR A; `content` is PR B)
 ]);
 
 // Tasks whose call site CAN dispatch but which must not be flipped yet, because
@@ -229,8 +259,11 @@ const FLIP_BLOCKED = new Map([
   // prose ran ahead of the measurement, which is why the method is stated here
   // rather than left to be inferred.
   //
-  // 2.5% IS STILL A BLOCK. extractBattlecard is the one migrated call site with
-  // no retry, synchronous behind the rep-facing POST
+  // 2.5% IS STILL A BLOCK. extractBattlecard was the one migrated call site with
+  // no retry when this was written; group 4's `compare` is the second, so what
+  // is now singular about this one is the FAILURE MODE, not the absence of a
+  // wrapper — `compare` fails soft to a sentence on a preview card, and this one
+  // 502s the rep. It is synchronous behind the rep-facing POST
   // /portfolio/competitors/:id/battlecard/regenerate, so a flip today means
   // roughly 1 regeneration in 40 returning a 502 the rep sees, with no second
   // attempt — on a button whose whole purpose is to be pressed again.
@@ -248,8 +281,9 @@ const FLIP_BLOCKED = new Map([
   // (120s) + 2s + 4s does not: that turns a 502 into a 504 mid-write.
   ['battlecard',
     '2 of 80 live claude-sonnet-5 responses were unparseable JSON when extractBattlecard itself was ' +
-    'driven against the live API (2.5%, 95% CI 0.3-8.7%; measured 2026-08-14), on the one call site ' +
-    'with no retry, behind a synchronous rep-facing regenerate. See ADR-0006 §9 item 5.'],
+    'driven against the live API (2.5%, 95% CI 0.3-8.7%; measured 2026-08-14), on a call site ' +
+    'with no retry, behind a synchronous rep-facing regenerate that 502s the rep. ' +
+    'See ADR-0006 §9 item 5.'],
 
   // Measured 2026-08-14 (group 2's confidence pass, at the SHIPPED call-site
   // shape — maxTokens 2200, allowTruncation unset): kb.companyAnalysis against
@@ -310,6 +344,72 @@ const FLIP_BLOCKED = new Map([
   // provider-agnostic at that call site, so raising it changes what GEMINI
   // receives and breaks the parity property group 2 shipped on. Sizing per
   // provider is the flip PR's problem to solve.
+  // Measured 2026-08-30 (group 4 PR A's own confidence probe, at the SHIPPED
+  // call-site shape — maxTokens 1800, allowTruncation unset, effort medium),
+  // driving buildCompetitorComparison ITSELF against the live API: the real
+  // gatherTenantPortfolio reads, the real prompt, aiCall.generateStructured,
+  // models.resolve and anthropic.generate, nothing bypassed. 120 calls over the
+  // FOUR largest COMPETITOR-scoped documents across the two tenants that have a
+  // portfolio at all (30 each):
+  //
+  //   19eaed50 "Battlecard — Company-wide"  4,876 chars   1/30 max_tokens
+  //   432be0a3 "Battlecard — Visa Protect"  4,769 chars  26/30 max_tokens
+  //   3b8ffb5d "FIS — company overview"       768 chars  22/30 max_tokens
+  //   1eb53118 "Oracle — company overview"    733 chars  26/30 max_tokens
+  //
+  // POOLED: 75 OF 120 RESPONSES CAME BACK stop_reason 'max_tokens' — 62.5%, 95%
+  // CI (Clopper-Pearson) 53.2%-71.2% — with output_tokens exactly 1800, i.e. the
+  // budget itself, on every one of them. allowTruncation is unset at this call
+  // site (deliberately), so anthropic.js throws and the comparison fails.
+  //
+  // AND SEPARATELY, the `battlecard` defect is here too: 1 of the 45 answers
+  // that completed came back UNPARSEABLE JSON (2.2%, 95% CI 0.1%-11.8%;
+  // "Expected double-quoted property name at position 1941", stop_reason
+  // 'end_turn'). The denominator is 45 and not 120 on purpose — a truncated call
+  // throws before anything is parsed, so it never had the chance to fail this
+  // way. Together: 76 of 120, 63.3%, of comparisons would be LOST after a flip.
+  //
+  // OUTPUT LENGTH IS NOT DRIVEN BY INPUT LENGTH HERE, AND THE DATA POINTS THE
+  // OPPOSITE WAY TO THE GUESS. The two SMALLEST competitor documents (768 and
+  // 733 chars) truncated 22/30 and 26/30; the LARGEST (4,876 chars) truncated
+  // 1/30. A thin, generic company overview makes the model fill five to nine
+  // comparison dimensions with hedged prose and long `note` clauses, where a
+  // document already in battlecard form lets it be terse. So "we only truncate
+  // on big uploads" is false, and sampling by document size would have measured
+  // the safe end. (Input tokens ranged 2,859-12,401, and the 12,401 is the
+  // TENANT's portfolio — 11 products plus 7 Basis docs — not the competitor.)
+  //
+  // WHY THIS BLOCKS EVEN THOUGH IT FAILS SOFT. buildCompetitorComparison catches
+  // everything and returns { available:false, reason }, which the preview card
+  // renders as "Comparison generation failed — you can still ingest this as a
+  // battlecard and refine it manually". So a flip does not 502 and does not page
+  // anyone: roughly two comparisons in three simply stop existing, on the one
+  // feature that justifies uploading a competitor document through the preview
+  // at all, and the only trace is a log line. There is NO RETRY here (a decision,
+  // re-argued at the call site), and a retry would not help anyway — a
+  // truncation carries no 429, so classify()'s Anthropic branch gives it one
+  // attempt, and the second attempt would hit the same budget.
+  //
+  // TO DELETE THIS ENTRY you need BOTH halves re-measured AT THIS SHAPE, not a
+  // green smoke run: 0 truncations in >=100 calls driven through
+  // buildCompetitorComparison and INCLUDING 1eb53118 and 3b8ffb5d — the two
+  // documents that reproduce most often — plus 0 unparseable in >=100 completed
+  // answers. Do NOT name 19eaed50 as the exit document: it passes 29/30 today,
+  // so a criterion built on it would delete this entry with the defect untouched
+  // (the same trap the `keypoints` entry above records).
+  //
+  // AND DO NOT JUST RAISE maxTokens. The value is provider-agnostic at this call
+  // site, so raising it changes what GEMINI receives and breaks the parity
+  // property groups 2, 3 and 4 shipped on. Sizing per provider is the flip PR's
+  // problem to solve — the same rule, and the same reason, as `keypoints`.
+  ['compare',
+    'at the shipped shape (maxTokens 1800, allowTruncation unset) 75 of 120 live claude-sonnet-5 ' +
+    'responses came back stop_reason max_tokens when buildCompetitorComparison itself was driven ' +
+    'against the live API (62.5%, 95% CI 53.2-71.2%; measured 2026-08-30 over 4 competitor ' +
+    'documents and 2 tenants), and 1 of the 45 that completed was unparseable JSON. It fails SOFT, ' +
+    'so a flip would silently stop producing roughly two comparisons in three rather than erroring. ' +
+    'See ADR-0006 §9 item 5.'],
+
   ['keypoints',
     'the 2200-token budgets at kb.companyAnalysis / kb.productAnalysis are Gemini-sized and ' +
     'truncate on claude-sonnet-5 (measured 5 of 5 stop_reason max_tokens on staging document ' +
@@ -424,6 +524,18 @@ const TASKS = {
   discovery:    { tier: 'flash',   env: 'GEMINI_DISCOVERY_MODEL',    anthropicEnv: 'ANTHROPIC_DISCOVERY_MODEL' },
   marketWatch:  { tier: 'flash',   env: 'GEMINI_MARKETWATCH_MODEL',  anthropicEnv: 'ANTHROPIC_MARKETWATCH_MODEL' },
   brief:        { tier: 'flash',   env: 'GEMINI_BRIEF_MODEL',        anthropicEnv: 'ANTHROPIC_BRIEF_MODEL' },
+  // MIGRATED in group 4 (PR A). No `anthropicTier` override, for the same
+  // reason `research` needed none: tier `flash` already resolves to
+  // claude-sonnet-5 on the Claude side and to gemini-2.5-flash on the Gemini
+  // side, so the Claude tier needed no correction and the Gemini request did not
+  // move. There is therefore ZERO Haiku exposure in this group — the hazard the
+  // `assessment` split exists to prevent cannot arise here, because nothing
+  // rounds this key down.
+  //
+  // ⚠ `AI_PROVIDER_COMPARE=anthropic` IS REFUSED — this key is in FLIP_BLOCKED
+  // above, which is where the measurement and the exit criteria live. Not
+  // repeated here: two copies of a number is how one of them goes stale, and the
+  // one an operator hits at run time is the one that must be right.
   compare:      { tier: 'flash',   env: 'GEMINI_COMPARE_MODEL',      anthropicEnv: 'ANTHROPIC_COMPARE_MODEL' },
   personas:     { tier: 'flash',   env: 'GEMINI_PERSONAS_MODEL',     anthropicEnv: 'ANTHROPIC_PERSONAS_MODEL' },
   // PRO — flagship call moment-of-truth analysis (gated)

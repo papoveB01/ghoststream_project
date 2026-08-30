@@ -1206,8 +1206,15 @@ finding and must keep passing through the redesign.
 
 **Phase 3 — per-task cutover, cheapest and lowest-risk first.**
 `relevance` → `callEntities` → `preview` / `companyBrief` → `keypoints` /
-`assessment` / `battlecard` → `research` / `compare` / `brief` → `watch` →
+`assessment` / `battlecard` → `research` / ~~`compare`~~ / `brief` → `watch` →
 `arena` / `personas` → `discovery` → `analysis` / `proposals`.
+*(2026-08-30: this line and §9 item 5 give TWO different orderings for
+`compare` — here it is batched with `research` and `brief`, there it heads its
+own group with `enrichment`/`contacts`/`companies`. **§9 item 5's ordering is
+what shipped**: `research` went alone in group 3, and `compare` went alone in
+group 4 PR A, after it. Neither ordering was wrong on the merits; they simply
+disagreed, and nothing reconciled them until a PR had to pick one. The
+strikethrough marks where `compare` did NOT ship, not a change of plan.)*
 Founders/INTERNAL tenant first at each step. Shadow-compare
 `discovery.js`, `analysis.js` and `proposals.js` against Gemini before
 cutting over — these three carry the business risk and one of them
@@ -1637,9 +1644,26 @@ decomposition exists so that per-file spokes stay tractable.
    `relevance` + `preview` + `companyBrief`; **`keypoints` + `assessment` +
    `battlecard`**; ~~`research` + `ocr`~~ **`research` (shipped; the `ocr`
    half was split off and is now CLOSED — it stays on Gemini indefinitely, §4.8.
-   Group 3 is done; there is no outstanding `ocr` cutover)**; `compare` +
-   `enrichment` + `contacts` +
-   `companies`; `brief`; `watch` + scheduler env; `arena` + `arenaHistory` +
+   Group 3 is done; there is no outstanding `ocr` cutover)**;
+   ~~`compare` + `enrichment` + `contacts` + `companies`~~ **`compare` (shipped
+   as PR A) then `content` (PR B) — CORRECTED 2026-08-30, and the correction is
+   the same species as group 3's: this group was scoped by reading a list
+   nobody had checked against the router.** Three of those four names are FILE
+   names, not task keys. The keys are `compare` (one call site,
+   `knowledge/preview.js`) and `content` (ONE key over FOUR call sites —
+   `enrichment.js`, `contacts.js`, `companies.js` and **`analysis.js:357`**,
+   which is in a file this very item schedules for the LAST group). The
+   file-name framing is what hid that fourth site: nothing in
+   "enrichment + contacts + companies" says the key they share also reaches
+   `analysis.js`, and a key with several call sites has to migrate all of them in
+   one PR or the un-migrated half silently never moves — the `assessment` /
+   `battlecard` argument below, in its other direction. So the group is TWO keys,
+   not four, and it ships as two PRs. *(Group 3 recorded that half of its own
+   advance scope correction was wrong about `arenaHistory.js`; this is the same
+   shape, caught earlier. `analysis.js:399` additionally STAMPS `CONTENT_MODEL`
+   into the value that function returns, so PR B has a stored-row question that
+   PR A does not — see below.)*;
+   `brief`; `watch` + scheduler env; `arena` + `arenaHistory` +
    `personas` (depends on 4); `discovery`; `analysis` + `proposals` (last).
 
    **Group 2 is three keys, not two, and all three must SHIP together.**
@@ -2621,6 +2645,283 @@ decomposition exists so that per-file spokes stay tractable.
      one sample, while this call site sends `effort: 'medium'` and 2600. The
      n=141 probe above is what speaks to flip-readiness, and it is a separate
      instrument for exactly that reason.
+
+   **✅ Group 4 PR A shipped 2026-08-30 — the `compare` HALF ONLY.** Branch
+   `feat/adr-0006-cutover-group-4-compare`. **ONE** call site moved onto
+   `aiCall.generateStructured`: `knowledge/preview.js`'s
+   `buildCompetitorComparison()` (`kb.compare` → task `compare`). PR A **took**
+   the set to **eight** keys and **eleven** seam call sites (four from group 1,
+   five from group 2, one from group 3, one from group 4) — past tense, because
+   a shipped entry that says "is now" is false the next time anything ships, and
+   three of this ADR's own counts drifted exactly that way. Membership is
+   eligibility, not activation: every task still resolves to Gemini, and
+   `AI_PROVIDER_COMPARE` is unset in every environment. **It is also
+   `FLIP_BLOCKED` — see the measurement below.**
+
+   **THE GROUP WAS SCOPED WRONG AND THE CORRECTION IS AT THE HEAD OF THIS
+   ITEM.** In one sentence: "`compare` + `enrichment` + `contacts` +
+   `companies`" is one task key and three file names, the keys are `compare` and
+   `content`, and `content`'s four call sites include `analysis.js:357` — a file
+   this item schedules for the LAST group. One key must migrate all of its call
+   sites in one PR, so `content` cannot ship in halves and does not ship here.
+   PR B is `content`, all four sites together.
+
+   **`compare` shipped AFTER `research`, per §9 item 5's ordering — not §8 Phase
+   3's, which batches `research` / `compare` / `brief` as one step.** The two
+   orderings disagreed from the day both were written and nothing reconciled
+   them until a PR had to choose. §8 is annotated rather than rewritten.
+
+   - **knowledge/preview.js stops being half-migrated, and three comments stop
+     being true.** This file has held one seam call (`preview`, group 1) beside
+     one direct Gemini call (`compare`) since group 1, and `models.js`,
+     `preview.js` and `cutoverGroup1/2/3.test.js` all described that arrangement
+     as deliberate — `models.js` calling it "the case where you migrate only the
+     key you are adding". **No file under `api/src` now holds a migrated key
+     beside an unmigrated one**, so that case has no instance, and every one of
+     those passages was rewritten rather than left to describe a file that no
+     longer looks like that. `cutoverGroup3.test.js:293` asserted
+     `!DISPATCH_READY.has('compare')` in a loop with that reasoning in its
+     comment; it went RED in this PR, which is correct, and the assertion and its
+     comment moved in the same commit. `cutoverGroup1.test.js` and
+     `cutoverGroup2.test.js` carried the same assertion and were repaired too —
+     **that neither was named in this PR's brief is the finding**: a "not yet"
+     list is a claim with a shelf life, and three of them existed.
+
+   - **The require-time `modelFor()` constant is gone** — `preview.js`'s
+     `COMPARE_MODEL`, the FIFTH instance of the freeze §9 item 4 fixed in
+     `personas.js`. Pinned BEHAVIOURALLY, not by reading a constant:
+     `GEMINI_COMPARE_MODEL` is set *after* the module was required and the fake
+     Gemini client is asserted to receive it.
+
+   - **Nothing about a Gemini request moved**, and `compare` needed no
+     `anthropicTier` to keep that true — tier `flash` already resolves to
+     `gemini-2.5-flash` and to `claude-sonnet-5`, the model §4.1 assigns this
+     task, so the Claude side needed no correction and the Gemini side was not
+     touched. **There is ZERO Haiku exposure in this group**: nothing rounds this
+     key down, so the hazard the `assessment` split exists to prevent cannot
+     arise. Asserted by driving the REAL seam into a fake Gemini client and
+     comparing the whole request (`test/cutoverGroup4.test.js`,
+     `[GEMINI-PARITY]`): same model, same `maxOutputTokens` (1800), same
+     `temperature` (0.3), same `thinkingConfig`, same schema object **by
+     identity** — `deepStrictEqual` compares a schema structurally and a
+     defensive copy passes it, which is why identity is asserted separately.
+
+     `claude-sonnet-5` is in `NO_TEMPERATURE`, so after a flip this call site's
+     `0.3` is dropped with the once-per-model+site warning — **observed live on
+     the first call of every probe run below**, not inferred from the list.
+     **Four** of the eight migrated keys now land on Sonnet 5 (`keypoints`,
+     `battlecard`, `research`, `compare`); the other four are Haiku 4.5. Three
+     of those four are in `FLIP_BLOCKED`, so `research` is still the only key an
+     operator can actually flip into a temperature drop today.
+
+   - **NO RETRY, AND IT IS A DECISION — re-argued here rather than inherited
+     from `battlecard`.** `aiRetry.POLICIES` has no `compare` key, so
+     `forLabel('compare')` THROWS: this call site cannot acquire a bound by a
+     copy-pasted `forLabel('research')` without someone choosing to add a policy.
+     Three reasons. (1) It is SYNCHRONOUS behind `POST /api/knowledge/preview`
+     and the `dryRun` branch of the web-scrape route — a rep is watching a
+     spinner. (2) It sits **behind a Firecrawl scrape in the same request**, so
+     the wall-clock budget is largely spent before the model is called at all.
+     (3) It already **fails soft**: the catch returns `{ available:false, reason }`
+     and the preview card renders that reason as a sentence while the upload
+     still works. Three attempts with backoff would spend up to 3× an
+     1800-token generation to salvage a block whose absence is already a graceful
+     message. The observable consequence is asserted, not just the absence: a
+     transient failure takes **one** upstream generation — counted at the wire,
+     because a retry loop added inside the seam's Gemini branch reports 1 at the
+     seam and 3 at the provider — and yields the documented fail-soft object.
+
+   - **⛔ `compare` JOINED `FLIP_BLOCKED` IN THE SAME PR THAT MIGRATED IT, on a
+     measurement the live smoke check could not have produced.** This is the
+     case the brief for this PR warned about and it landed: `smoke.js
+     --site=kb.compare` was **green, exit 0, `accepted, output parses`**, before
+     and after — and it is green because it sends a contentless prompt at
+     `max_tokens: 800` and asks only whether the SCHEMA is accepted. The shipped
+     shape is a battlecard-class synthesis at 1800 tokens over a real competitor
+     document, and it fails at that shape.
+
+     **Method, per this item's own rule: the REAL call site, not
+     `anthropic.generate()` with a synthetic prompt.** The probe drove
+     `preview.buildCompetitorComparison()` → `gatherTenantPortfolio` (real
+     `products` and Basis-document reads) → `aiCall.generateStructured` →
+     `models.resolve` → `anthropic.generate` against the live API, at the
+     shipped shape — `maxTokens: 1800`, `effort` unset (seam default `medium`),
+     `allowTruncation` unset. Nothing was bypassed and nothing was written except
+     the `usage_costs` rows the calls themselves produce. **120 calls**, 30 each
+     over the four largest `COMPETITOR`-scoped documents belonging to the only
+     two tenants that have a portfolio at all — i.e. every distinct prompt this
+     feature can currently produce, the same "all of them that exist" shape group
+     3 used.
+
+     | competitor document | tenant | body chars | peak input tok | n | `max_tokens` | `end_turn` | unparseable |
+     | --- | --- | --- | --- | --- | --- | --- | --- |
+     | `19eaed50` Battlecard — Company-wide | `dfb3aad7` | 4,876 | 4,251 | 30 | **1** | 29 | **1** |
+     | `432be0a3` Battlecard — Visa Protect | `9ab24e9b` | 4,769 | 12,401 | 30 | **26** | 4 | 0 |
+     | `3b8ffb5d` FIS — company overview | `dfb3aad7` | 768 | 2,859 | 30 | **22** | 8 | 0 |
+     | `1eb53118` Oracle — company overview | `dfb3aad7` | 733 | 2,859 | 30 | **26** | 4 | 0 |
+     | **pooled** | | | | **120** | **75** | **45** | **1** |
+
+     **75 of 120 responses came back `stop_reason: 'max_tokens'` — 62.5%, 95% CI
+     (Clopper–Pearson) 53.2%–71.2%** — with `output_tokens` exactly **1800**, the
+     budget itself, on every one of them. `allowTruncation` is unset here
+     deliberately, so `anthropic.js` throws and the comparison is lost.
+
+     **And the `battlecard` defect is present too, separately: 1 of the 45
+     answers that COMPLETED was unparseable JSON** (2.2%, 95% CI 0.1%–11.8%;
+     `Expected double-quoted property name … at position 1941`, `stop_reason
+     'end_turn'`, not truncation). The denominator is 45 and not 120 on purpose —
+     a truncated call throws before anything is parsed, so it never had the
+     chance to fail this way, and quoting 1/120 would understate the rate of the
+     thing being measured. **Together, 76 of 120 — 63.3%, CI 54.1%–71.9% — of
+     comparisons would be lost after a flip.**
+
+     **The most useful thing in that table is the shape, not the rate: output
+     length is not driven by input length, and the data points the OPPOSITE way
+     to the guess.** The two SMALLEST competitor documents (768 and 733 chars)
+     truncated 22/30 and 26/30; the LARGEST (4,876) truncated **1/30**. A thin,
+     generic company overview makes the model fill five to nine comparison
+     dimensions with hedged prose and long `note` clauses; a document already in
+     battlecard form lets it be terse. So "we only truncate on big uploads" is
+     false, and a probe that sampled by document size — the obvious design —
+     would have measured the safe end and reported this key flip-ready. (The
+     12,401-token peak input is the TENANT's portfolio, 11 products plus 7 Basis
+     documents, not the competitor.)
+
+     **Why this blocks even though it fails soft — which is the argument, not a
+     caveat.** The catch returns `{ available:false, reason }` and the preview
+     card prints it, so a flip does not 502 and pages nobody: roughly two
+     comparisons in three simply stop existing, on the one feature that justifies
+     routing a competitor document through the preview at all, and the only trace
+     is a log line. That is *worse* than `battlecard`'s failure mode in
+     detectability and better in blast radius. A retry would not rescue it either
+     — a truncation carries no 429, so `classify()`'s Anthropic branch gives it
+     one attempt, and a second attempt meets the same budget.
+
+     **The exit criteria are in `models.FLIP_BLOCKED` and are deliberately not
+     repeated here**, per the rule that two copies of a number is how one goes
+     stale. The one thing worth restating: the exit document must NOT be
+     `19eaed50`, which passes 29/30 today — a criterion built on it would delete
+     the entry with the defect untouched, which is exactly the trap the
+     `keypoints` entry records having fallen into once.
+
+     **`compare` is therefore the third key in `FLIP_BLOCKED`**, and the first to
+     join it in the same PR that migrated its call site. That is the intended
+     shape rather than an embarrassment: `DISPATCH_READY` is a claim about the
+     code and `FLIP_BLOCKED` a claim about a measurement, and this PR made both
+     claims from their own evidence on the same day.
+
+
+   - **Existing stored rows: there are none, and that is the whole answer —
+     stated with how it was checked, because "nothing to migrate" is exactly the
+     conclusion this ADR has twice re-derived from a premise that was never
+     true.** `compare` is the opposite of `content` here: **it stamps a model
+     nowhere.** Checked three ways. (1) Both call paths are DRY RUNs. `POST
+     /knowledge/preview` is documented in `knowledge/index.js` as "No DB writes;
+     tenant-agnostic", and `knowledge/web.js`'s `dryRun` branch returns the card
+     *before* reaching `service.ingest`. (2) `grep -rn "kb.compare\|COMPARE_MODEL"
+     api/src web/` returns the call site, the router entry and comments — no
+     writer, no `models:` stamp, nothing analogous to
+     `prospect_research.models.analysis` or to `analysis.js:399`'s
+     `model: CONTENT_MODEL`. The comparison block is **rendered and discarded**:
+     `web/admin/admin.js:9941` calls `renderComparison(p.comparison)` on the
+     preview card, and `:9950` already handles `!c.available` by printing
+     `c.reason` — the exact shape a blocked or failed call produces. (3) The only
+     durable trace is `usage_costs`, keyed on `site='kb.compare'`, whose
+     `service` column would read `claude` instead of `gemini` after a flip.
+     Counted 2026-08-30: **zero rows on production**, and on staging the only
+     rows are the ones this PR's own probe wrote. **Bound that the way §4.8
+     bounds its OCR claim**: `costs.recordGemini` is called only on the success
+     path, so zero rows means no RECORDED successful execution, not that the
+     feature never fired — a failed call leaves nothing behind. What it does
+     establish is that no historical series exists for a flip to fork, which is
+     why the `site:` label being preserved is a cheap insurance policy here
+     rather than a load-bearing one.
+
+   - **Billing attribution for every live number in this entry, measured rather
+     than assumed.** `.env` declares `ANTHROPIC_API_KEY` **twice** — at `:19`
+     (the ADR-0006 engine block) and again at `:108` (the `gs_coordinator`
+     Slack block) — and the later declaration wins. Verified by hashing each
+     declaration's value and comparing against `printenv` inside the running
+     containers: **both `ghost-api` and `dsp-api` hold the `:108` value**. So the
+     probe runs below billed to the coordinator's account, not to the migration's.
+     Recorded as a measured fact about the deploy, not a property of any file;
+     **the duplicate declaration is an ops fix and is deliberately NOT in this
+     PR** — it changes an environment every service on the host reads, which is
+     its own reviewable concern.
+
+   - **Live-schema check, before and after**, per this item's runbook:
+
+     ```
+     $ docker compose run --rm --no-deps -v "$PWD/api":/app -w /app \
+         api node test/live/smoke.js --site=kb.compare
+     live-schema smoke: 1 schema(s) × anthropic
+
+       ── preview ───────────────────────────────── [anthropic]
+       ok       kb.compare                         claude-sonnet-5        accepted, output parses
+
+     1/1 accepted
+     ```
+
+     Exit 0. **Read it as schema acceptance ONLY, and this group is the proof of
+     why that caveat is not boilerplate**: the same check was green over a call
+     site that truncates and mis-emits JSON at its real shape. `smoke.js` sends
+     `effort: 'low'`, `max_tokens: 800`, one sample and a contentless prompt; the
+     shipped site sends `effort: 'medium'`, 1800 and a real document. The probe
+     above is what speaks to flip-readiness, and it is a separate instrument for
+     exactly that reason.
+
+   - Suite **414/414** on the branch, from **406/406** on `main` (+8, all in the
+     new `test/cutoverGroup4.test.js`), re-run four consecutive times for
+     stability. **Six** existing pins had to move with the set — `aiCall.test.js`
+     and `providerRouter.test.js`'s two set-equality lists,
+     `providerRouter.test.js`'s `FLIP_BLOCKED` key list,
+     `costsTelemetry.test.js`'s computed Sonnet list and its seam-call-site
+     count, and `cutoverGroup1/2/3.test.js`'s three `compare` negatives.
+
+     **Eighteen deliberate mutations of the branch, each confirmed to redden the
+     assertion it targets** (red count in brackets): the dropped
+     `DISPATCH_READY` entry [8]; the call site reverted wholesale to the pre-PR
+     direct Gemini call, require-time `COMPARE_MODEL` and all [3]; the output
+     budget [3]; `thinkingConfig` dropped from the seam's Gemini branch [4]; the
+     schema passed as a copy [5]; the telemetry label renamed [3] and deleted
+     [4]; the call wrapped in `aiRetry.forLabel('research')` [1]; one prose count
+     copy edited and not the others [1]; the `"<N> of the <M>"` fraction dropped
+     from `anthropic.js` [1]; the pinned seam count bumped with no call site
+     moved [1]; `providerFor`'s API-key gate removed [2]; `anthropicTier: 'lite'`
+     demoting the key to Haiku [2]; the temperature changed [3]; `tenantId`
+     dropped [2]; temperature dropped from the seam's Gemini branch [4]; the
+     `compare` `FLIP_BLOCKED` entry deleted [2]; and its reason softened to a
+     bare verdict with the figures removed [1].
+
+     **The wholesale revert is the interesting one and its number is the point:
+     it does NOT redden `[GEMINI-PARITY]`.** It cannot — the pre-PR code sends
+     Gemini a byte-equivalent request, which is the property that test exists to
+     assert. What catches it is the seam-call-site count, the task assertion and
+     the flip test. Worth stating, because "the parity test would have caught a
+     bad port" is the kind of claim this ADR has had to withdraw before: parity
+     proves the Gemini side did not move, and proves nothing about whether the
+     migration happened.
+
+     **No new `not-a-count` opt-out marker was introduced**, so
+     `costsTelemetry.test.js`'s pinned list is unchanged at one entry.
+
+     **A four-failure result that looked like a flake and was not — recorded
+     because the next person to run these tests against a worktree will hit it.**
+     Several runs came back 410/414 with the same four unrelated tests red
+     (`account locks after the failure cap…`, `denyToken revokes exactly that
+     jti`, `revokeAllForUser…`, and `every registered production schema
+     translates…`). It reproduced, so it was chased rather than re-run: the
+     errors are `NOAUTH Authentication required` and `[auth] JWT_SECRET is not
+     set`, i.e. **the container had no `.env` at all**. `docker compose run`
+     resolves both the compose file and `.env` from the **current working
+     directory**, and a `git worktree` contains `docker-compose.yml` but not the
+     gitignored `.env` — so invoking it from inside the worktree silently runs
+     the suite with an unconfigured Redis and no `JWT_SECRET`. The command must
+     be issued from `/home/admin/ghoststream` with the worktree passed as a
+     `-v` mount, which is what every number in this entry was measured with. It
+     fails in a way that reads as flaky (four unrelated tests, three of them
+     Redis-timing) rather than as a misconfiguration, which is the only reason
+     it is worth a paragraph.
 
    Every group's schemas are already proven acceptable by item 3 — **except
    `proposals`, which carries the §4.7 reshape and is the reason that group is

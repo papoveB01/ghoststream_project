@@ -3,31 +3,37 @@
 //
 // Replaces the old raw-text-slice preview with: real chunk/token/char/word
 // stats (from the same chunker the ingest path uses), a markdown-heading
-// outline, a Gemini-Flash summary + key topics + document-type guess (with a
-// metadata fallback so it still works if Gemini is down), a clean longer
+// outline, a model-generated summary + key topics + document-type guess (with a
+// metadata fallback so it still works when the model is down), a clean longer
 // excerpt, and the full extracted text (capped) for an expandable view.
+// ("Gemini-Flash summary" until group 4 — both of this file's model calls now
+// go through the provider seam, so naming a vendor here would be wrong on one
+// side of a flip and would have to be edited again on the other. The summary
+// path already stopped hardcoding one: it reports the PROVIDER that answered,
+// which is what web/admin's "AI summary" badge reads.)
 
 const chunker = require('./chunker');
-const gemini = require('../gemini');
-const costs = require('../costs');
 const db = require('../db');
 
-// This file hosts TWO tasks in DIFFERENT cutover groups (ADR-0006 §9 item 5):
-// `preview` migrates here, `compare` does not — it moves with research/brief.
-// So the file is touched twice across the migration, and until the second pass
-// it deliberately holds one seam call and one direct Gemini call side by side.
+// BOTH of this file's model calls are on the provider seam as of group 4
+// (ADR-0006 §9 item 5). It used to host two tasks in two different cutover
+// groups — `preview` migrated in group 1 while `compare` still spoke to the
+// Gemini SDK directly — and it deliberately held one seam call and one direct
+// call side by side for three groups. It no longer does: `summarize()` resolves
+// task `preview` and `buildCompetitorComparison()` resolves task `compare`,
+// both through aiCall.generateStructured, so nothing in this file reaches
+// gemini.js or costs.js any more (the seam records usage on both branches).
 //
-// COMPARE_MODEL stays resolved at require time because it is still Gemini-only.
-// The preview path no longer captures a model id at all: aiCall resolves the
-// provider and the model per call, as a matched pair. That is NOT a
-// restart-free flip — AI_PROVIDER_* is container env (docker-compose.yml), so
+// NEITHER PATH CAPTURES A MODEL ID AT REQUIRE TIME. `compare` used to
+// (`const COMPARE_MODEL = modelFor('compare')`) — the personas.js freeze of
+// §9 item 4, and the fifth instance of it this migration has removed. aiCall
+// resolves the provider and the model per call, as a matched pair. That is NOT
+// a restart-free flip — AI_PROVIDER_* is container env (docker-compose.yml), so
 // changing one means `docker compose up -d` and a fresh process either way.
 // What per-call resolution actually buys is that no model id is frozen at boot
 // behind a routing decision (fail-closed fallback included) that later differs,
 // and that flipping or rolling back a task is an env change, not a code change.
 const aiCall = require('../aiCall');
-
-const COMPARE_MODEL = require('../models').modelFor('compare');
 const FULLTEXT_CAP = parseInt(process.env.KB_PREVIEW_FULLTEXT_CAP || '60000', 10);
 const SUMMARY_INPUT_CAP = parseInt(process.env.KB_PREVIEW_SUMMARY_INPUT_CAP || '24000', 10);
 const COMPARE_COMPETITOR_CAP = parseInt(process.env.KB_PREVIEW_COMPARE_COMPETITOR_CAP || '18000', 10);
@@ -242,26 +248,44 @@ async function buildCompetitorComparison(tenantId, competitorText, competitorNam
   }
 
   try {
-    const ai = gemini.getClient();
     const prompt =
       `${COMPARISON_PROMPT}\n\n` +
       `===OUR COMPANY PORTFOLIO===\n` +
       `${ctx.productLines ? `Product lines:\n${ctx.productLines}\n\n` : ''}` +
       `${ctx.basisBlocks ? `From our knowledge base:\n${ctx.basisBlocks}\n` : ''}\n` +
       `===COMPETITOR${competitorName ? ` (${competitorName})` : ''}===\n${body.slice(0, COMPARE_COMPETITOR_CAP)}`;
-    const resp = await ai.models.generateContent({
-      model: COMPARE_MODEL,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.3,
-        maxOutputTokens: 1800,
-        responseMimeType: 'application/json',
-        responseSchema: COMPARISON_SCHEMA,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+    // DELIBERATELY NOT WRAPPED IN aiRetry, and that is a decision rather than an
+    // omission — `aiRetry.POLICIES` has no `compare` key at all, so
+    // `forLabel('compare')` THROWS rather than quietly handing this call site a
+    // bound it never had. Three reasons, re-argued for group 4 rather than
+    // inherited from the group-2 `battlecard` precedent it resembles:
+    // (1) this is synchronous behind POST /api/knowledge/preview and the
+    // `dryRun` branch of the web-scrape route — a rep is watching a spinner;
+    // (2) it already sits BEHIND a Firecrawl scrape in the same request, so the
+    // wall-clock budget is spent before the model is even called; and (3) it
+    // already fails soft — the catch below returns { available:false, reason },
+    // which the UI renders as a sentence, not an error. Three attempts with
+    // backoff would spend up to 3× an 1800-token generation to salvage a block
+    // whose absence is already a graceful message.
+    //
+    // `maxTokens`/`signal`, not `maxOutputTokens`/`abortSignal`: the seam
+    // REJECTS the Gemini spellings rather than dropping them silently, which is
+    // how an output budget survives a mechanical port. And `responseSchema`
+    // stays in the GEMINI dialect — schemaCompat translates it inside
+    // anthropic.generate (§4.6), and liveSchemaCoverage.test.js finds this
+    // schema by scanning src/ for the literal token `responseSchema:`.
+    const { parsed } = await aiCall.generateStructured({
+      task: 'compare',
+      prompt,
+      responseSchema: COMPARISON_SCHEMA,
+      maxTokens: 1800,
+      temperature: 0.3,
+      tenantId,
+      // UNCHANGED on purpose: `usage_costs` is keyed on this label, so renaming
+      // it would split this call site's spend history from its successors and
+      // silently break §6's per-task margin table across the cutover.
+      site: 'kb.compare',
     });
-    costs.recordGemini(tenantId, 'kb.compare', COMPARE_MODEL, resp.usageMetadata);
-    const parsed = JSON.parse(resp.text);
     const dimensions = (Array.isArray(parsed.dimensions) ? parsed.dimensions : []).map((d) => ({
       dimension: d.dimension || '',
       ours: d.ours || 'Unknown',

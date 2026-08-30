@@ -289,10 +289,14 @@ test('group 3 is dispatch-ready for `research`, and only for `research`', () => 
     'same decision, second half: ADR-0006 §4.8 keeps `ocr` out of the router entirely, so it can ' +
     'never become dispatch-eligible. If you are here from a red run, §4.8 is what you are changing.');
 
-  // Still not migrated, each for its own reason. `compare` matters most: it
-  // shares knowledge/preview.js with an already-migrated key, so the file holds
-  // one seam call and one direct Gemini call on purpose.
-  for (const t of ['compare', 'discovery', 'marketWatch', 'brief']) {
+  // Still not migrated, each for its own reason. `compare` IS NO LONGER ONE OF
+  // THEM: this loop used to carry it, with a comment saying knowledge/preview.js
+  // deliberately held one seam call and one direct Gemini call because its two
+  // keys sat in different groups. Group 4 (PR A) migrated it, so that sentence
+  // and this assertion both stopped being true in the same commit — which is
+  // why this list is edited here rather than being left to fail as a surprise
+  // in someone else's PR. cutoverGroup4.test.js now asserts the positive.
+  for (const t of ['discovery', 'marketWatch', 'brief']) {
     assert.ok(!models.DISPATCH_READY.has(t),
       `${t}'s call site still speaks to the Gemini SDK — adding it would 404 every call`);
   }
